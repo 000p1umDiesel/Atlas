@@ -37,7 +37,7 @@
 | Извлечение графа | **Свой пайплайн**, не LightRAG/Graphiti | полный контроль над Docling-чанками, wiki и retrieval; три архитектуры сравниваются на одних данных. LightRAG — кандидат во внешний baseline |
 | Парсинг/чанкинг | **Docling** `DocumentConverter` + `HybridChunker` | структурно-осознанный, токен-осознанный чанкинг, много форматов, OCR |
 | Эмбеддер | **EmbeddingGemma 2** через Ollama (`embeddinggemma-2:270m`, 768d) | мультиязычная, MRL (768/512/256), единое пространство для текста/изображений/аудио на будущее |
-| LLM | **Один OpenAI-compatible клиент**; по умолчанию Ollama `/v1`, модель `gemma4:26b-a4b` | Ollama, vLLM, LM Studio, OpenRouter, OpenAI — одним кодом; MoE с 4B активных параметров быстра на M4 Max |
+| LLM | **Один OpenAI-compatible клиент**; по умолчанию внешний endpoint `https://codex.sale/v1`, модель `gpt-6-luna` (ключ в `.env`); локальная альтернатива — Ollama `/v1` + `gemma4:26b-a4b` | Ollama, vLLM, LM Studio, OpenRouter, OpenAI — одним кодом. Structured output — строгая JSON Schema (`strict: true`, `additionalProperties: false`, все поля required): её требуют OpenAI-подобные провайдеры, Ollama её тоже принимает |
 | Состояние пайплайна | **SQLite** (`.mnogobase/state.db`) | файлы, этапы, ошибки, dirty-сущности; восстановление и инкрементальность |
 | Интерфейс | **Python-пакет + CLI (Typer)** | FastAPI/MCP/desktop навешиваются позже поверх того же пакета |
 | Язык wiki | **EN** (настраивается) | канонические имена сущностей на EN склеивают RU/EN упоминания |
@@ -47,7 +47,8 @@
 
 ```
 mnogobase/
-├── docker-compose.yml        # qdrant, neo4j(+APOC,GDS); profile "cuda": qdrant gpu-nvidia + ollama c GPU (Linux)
+├── docker-compose.yml        # qdrant, neo4j(+APOC,GDS)
+├── docker-compose.cuda.yml   # override для NVIDIA: qdrant gpu-nvidia + ollama c GPU (Linux)
 ├── config.yaml               # несекретные настройки
 ├── .env                      # секреты: NEO4J_PASSWORD, LLM_API_KEY
 ├── wiki/                     # сгенерированная wiki (Obsidian-совместимая)
@@ -165,9 +166,11 @@ class LLMClient(Protocol):
 
 Метаданные эмбеддера (`model_id`, `dim`) хранятся в registry (`meta`) на коллекцию; при несовпадении с конфигом `ingest`/`ask` отказываются работать и предлагают `mnogobase reindex`.
 
-Промпты EmbeddingGemma 2 (из model card):
-- документ: `title: {doc_title / headings | "none"} | text: {chunk}`
+Промпты эмбеддера задаются шаблонами в конфиге (`embedder.doc_template`, `embedder.query_template`); по умолчанию — EmbeddingGemma 2 (из model card):
+- документ: `title: {doc_title | "none"} | text: {chunk}`
 - запрос: `task: search result | query: {q}`
+
+Для `qwen3-embedding:0.6b`: `doc_template: "{text}"`, `query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"`, `dim: 1024`.
 
 ### 4.4 Wiki на диске
 
@@ -226,7 +229,7 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
    - путь+хеш известны и все этапы `done` → skip;
    - путь известен, хеш другой → **cascade delete** старого doc (Qdrant points по `doc_id`; Neo4j Chunk, MENTIONS; удаление `doc`-чанков из `evidence` рёбер; рёбра с пустым `evidence` и сущности с `mention_count = 0` удаляются вместе с wiki-страницами; затронутые сущности → dirty), затем как новый;
    - иначе — продолжить с первого не-`done` этапа.
-2. **parse** — Docling `DocumentConverter` (accelerator из `device`, OCR `auto|on|off`). `DoclingDocument` → `.mnogobase/cache/<doc_id>.json`; изображения/рисунки → `.mnogobase/cache/<doc_id>/images/` с подписью и страницей (задел на мультимодальность, не эмбеддятся).
+2. **parse** — Docling `DocumentConverter` (accelerator из `device`, OCR `true|false`). `DoclingDocument` → `.mnogobase/cache/<doc_id>.json`; изображения/рисунки → `.mnogobase/cache/<doc_id>/images/` с подписью и страницей (задел на мультимодальность, не эмбеддятся).
 3. **chunk** — `HybridChunker(tokenizer=HF google/embeddinggemma-2, max_tokens=512, merge_peers=True)`. Для эмбеддинга — `contextualize(chunk)`, в payload — чистый текст + headings + страницы.
 4. **embed** — dense батчами через Ollama `/api/embed`, sparse BM25 через fastembed → upsert в `mb_chunks`. Создание узлов `Document`, `Chunk`, `HAS_CHUNK`, `NEXT`.
 5. **extract** — для каждого чанка (asyncio, семафор `llm.concurrency`) structured output по JSON Schema:
@@ -280,10 +283,10 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 | Компонент | CUDA | MPS (Apple) |
 |---|---|---|
 | Docling | `AcceleratorOptions(device=CUDA)`, увеличенный batch | `MPS` |
-| fastembed BM25 | extra `[cuda]` → `fastembed-gpu` | CPU (BM25 дешёвый) |
+| fastembed BM25 | `SparseTextEmbedding(cuda=True)` при установленном `onnxruntime-gpu` (замена `onnxruntime`, см. README) | CPU (BM25 дешёвый) |
 | Ollama | сама использует CUDA; `OLLAMA_NUM_PARALLEL` из конфига | Metal |
-| Qdrant | compose profile `cuda`: `qdrant/qdrant:gpu-nvidia` (GPU HNSW indexing) | обычный образ |
-| Ollama в Docker | compose profile `cuda` (Linux + NVIDIA runtime) | нативно на хосте |
+| Qdrant | `docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d`: `qdrant/qdrant:v1.19.2-gpu-nvidia` (GPU HNSW indexing) | обычный образ |
+| Ollama в Docker | тот же `docker-compose.cuda.yml` (Linux + NVIDIA runtime) | нативно на хосте |
 | LLM-сервер | vLLM — через `llm.base_url`, без кода | — |
 
 ## 7. Обработка ошибок и восстановление
@@ -307,9 +310,9 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 ```yaml
 device: auto
 llm:
-  base_url: http://localhost:11434/v1
-  model: gemma4:26b-a4b
-  api_key_env: LLM_API_KEY          # для Ollama не нужен
+  base_url: https://codex.sale/v1   # локально: http://localhost:11434/v1
+  model: gpt-6-luna                 # локально: gemma4:26b-a4b
+  api_key_env: LLM_API_KEY          # ключ в .env; для Ollama не нужен
   concurrency: 4
   temperature: 0
   timeout_s: 120
@@ -317,13 +320,15 @@ llm:
 embedder:
   provider: ollama
   base_url: http://localhost:11434
-  model: embeddinggemma-2:270m
+  model: embeddinggemma-2:270m      # fallback: qwen3-embedding:0.6b (dim 1024, свои шаблоны)
   dim: 768
   batch_size: 32
+  doc_template: "title: {title} | text: {text}"
+  query_template: "task: search result | query: {query}"
 sparse:
   model: Qdrant/bm25
 parsing:
-  ocr: auto
+  ocr: true
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
 chunking:
   tokenizer: google/embeddinggemma-2
