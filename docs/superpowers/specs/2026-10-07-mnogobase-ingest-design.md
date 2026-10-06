@@ -36,7 +36,7 @@
 | Графовая БД | **Neo4j 5 Community** + APOC + GDS (Docker) | Cypher, Neo4j Browser для визуального исследования графа, GDS (Leiden/Louvain, centrality) пригодится для knowledge gaps и community summaries |
 | Извлечение графа | **Свой пайплайн**, не LightRAG/Graphiti | полный контроль над Docling-чанками, wiki и retrieval; три архитектуры сравниваются на одних данных. LightRAG — кандидат во внешний baseline |
 | Парсинг/чанкинг | **Docling** `DocumentConverter` + `HybridChunker` | структурно-осознанный, токен-осознанный чанкинг, много форматов, OCR |
-| Эмбеддер | **EmbeddingGemma 2** через Ollama (`embeddinggemma-2:270m`, 768d) | мультиязычная, MRL (768/512/256), единое пространство для текста/изображений/аудио на будущее |
+| Эмбеддер | **EmbeddingGemma 2** через Ollama (`embeddinggemma-2:740m`, 768d) | мультиязычная, MRL (768/512/256), единое пространство для текста/изображений/аудио на будущее |
 | LLM | **Один OpenAI-compatible клиент**; по умолчанию внешний endpoint `https://codex.sale/v1`, модель `gpt-6-luna` (ключ в `.env`); локальная альтернатива — Ollama `/v1` + `gemma4:26b-a4b` | Ollama, vLLM, LM Studio, OpenRouter, OpenAI — одним кодом. Structured output — строгая JSON Schema (`strict: true`, `additionalProperties: false`, все поля required): её требуют OpenAI-подобные провайдеры, Ollama её тоже принимает |
 | Состояние пайплайна | **SQLite** (`.mnogobase/state.db`) | файлы, этапы, ошибки, dirty-сущности; восстановление и инкрементальность |
 | Интерфейс | **Python-пакет + CLI (Typer)** | FastAPI/MCP/desktop навешиваются позже поверх того же пакета |
@@ -320,7 +320,7 @@ llm:
 embedder:
   provider: ollama
   base_url: http://localhost:11434
-  model: embeddinggemma-2:270m      # fallback: qwen3-embedding:0.6b (dim 1024, свои шаблоны)
+  model: embeddinggemma-2:740m      # fallback: qwen3-embedding:0.6b (dim 1024, свои шаблоны)
   dim: 768
   batch_size: 32
   doc_template: "title: {title} | text: {text}"
