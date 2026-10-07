@@ -108,3 +108,44 @@ async def test_descriptions_are_summarized(graph, make_resolver):
     assert rec.description == "Merged description."
     assert graph.get_entity(rec.entity_id).descriptions == ["Merged description."]
     assert len(llm.calls_for("resolve")) == 1
+
+
+class FlakyEmbedder(MapEmbedder):
+    """Fails `embed_documents` once `budget` successful calls are used up."""
+
+    def __init__(self, budget: int):
+        self.budget = budget
+
+    def embed_documents(self, items):
+        if self.budget <= 0:
+            raise RuntimeError("embedder down")
+        self.budget -= 1
+        return super().embed_documents(items)
+
+
+async def test_embedder_failure_leaves_no_graph_entity_without_vector(graph, make_resolver):
+    resolver, vectors, _ = make_resolver()
+    resolver._embedder = FlakyEmbedder(budget=1)  # the candidate search works, the write fails
+    with pytest.raises(RuntimeError, match="embedder down"):
+        await resolver.resolve(E("Transformer", description="attention model"))
+    assert graph.get_entity(entity_id("Method", "Transformer")) is None
+    assert vectors.client.count(vectors.entities).count == 0
+
+    resolver._embedder = MapEmbedder()  # a retry creates both
+    rec = await resolver.resolve(E("Transformer", description="attention model"))
+    assert graph.get_entity(rec.entity_id) is not None
+    assert vectors.client.count(vectors.entities).count == 1
+
+
+async def test_embedder_failure_on_merge_keeps_graph_unchanged(graph, make_resolver):
+    resolver, vectors, _ = make_resolver()
+    first = await resolver.resolve(E("Transformer", description="one"))
+    resolver._embedder = FlakyEmbedder(budget=0)
+    with pytest.raises(RuntimeError, match="embedder down"):
+        await resolver.resolve(E("Transformer", description="two"))
+    # the graph is not ahead of Qdrant, so the retry still sees a change and writes both
+    assert graph.get_entity(first.entity_id).descriptions == ["one"]
+    resolver._embedder = MapEmbedder()
+    await resolver.resolve(E("Transformer", description="two"))
+    assert graph.get_entity(first.entity_id).descriptions == ["one", "two"]
+    assert vectors.client.count(vectors.entities).count == 1

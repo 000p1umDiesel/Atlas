@@ -67,8 +67,11 @@ class EntityResolver:
         else:
             record, changed = await self._merge(existing, entity)
         if changed:
+            # spec §7 order: vector first, then Qdrant, then Neo4j. An embedder or Qdrant
+            # failure must not leave the graph ahead (a retry would see "no change").
+            vector = self._vector(record)
+            self._vectors.upsert_entities([record], [vector])
             self._graph.upsert_entity(record)
-            self._vectors.upsert_entities([record], [self._vector(record)])
         self._resolved[key] = record.entity_id
         return record
 
