@@ -16,6 +16,10 @@ _SHARED = [
     structlog.processors.add_log_level,
     structlog.processors.TimeStamper(fmt="iso", key="ts"),
 ]
+# structured tracebacks without frame locals: locals can hold API keys or document text
+_TRACEBACKS = structlog.processors.ExceptionRenderer(
+    structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
+)
 
 
 def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True) -> None:
@@ -33,7 +37,7 @@ def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True)
         structlog.stdlib.ProcessorFormatter(
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                structlog.processors.dict_tracebacks,
+                _TRACEBACKS,
                 structlog.processors.JSONRenderer(ensure_ascii=False),
             ],
             foreign_pre_chain=_SHARED,

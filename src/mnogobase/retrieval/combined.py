@@ -24,7 +24,7 @@ class CombinedRetriever:
                     continue
                 cost = estimate_tokens(item.text)
                 if used + cost > limit:
-                    break
+                    continue  # a smaller later item may still fit
                 seen.add(key)
                 used += cost
                 out.append(item)

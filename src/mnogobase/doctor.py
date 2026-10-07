@@ -54,10 +54,15 @@ def run_checks(
             timeout=timeout,
             headers={"Authorization": f"Bearer {settings.llm.api_key()}"},
         )
+        where = f"{settings.llm.model} @ {settings.llm.base_url}"
+        if resp.status_code in (404, 405):
+            # some OpenAI-compatible endpoints serve chat completions without a model list;
+            # 401/403 (bad key) and other errors still fail below
+            return Check("llm", True, f"{where} (models endpoint not available)")
         resp.raise_for_status()
         ids = {m["id"] for m in resp.json().get("data", [])}
         if not ids or settings.llm.model in ids:
-            return Check("llm", True, f"{settings.llm.model} @ {settings.llm.base_url}")
+            return Check("llm", True, where)
         return Check("llm", False, f"{settings.llm.model} is not served by {settings.llm.base_url}")
 
     def qdrant() -> Check:

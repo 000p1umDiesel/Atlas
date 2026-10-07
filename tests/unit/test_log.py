@@ -59,3 +59,22 @@ def test_bind_and_unbind_context(tmp_path):
     bound, unbound = _read(tmp_path)[-2:]
     assert bound["event"] == "bound" and bound["doc_path"] == "a.pdf"
     assert unbound["event"] == "unbound" and "doc_path" not in unbound
+
+
+def test_tracebacks_do_not_include_frame_locals(tmp_path):
+    configure_logging(tmp_path, console=False)
+
+    def leaky():
+        api_key = "sk-very-secret-value"  # noqa: F841 — a local that must not be logged
+        raise RuntimeError("boom")
+
+    try:
+        leaky()
+    except RuntimeError:
+        get_logger("t").error("failed", exc_info=True)
+    raw = (tmp_path / "mnogobase.jsonl").read_text(encoding="utf-8")
+    rec = _read(tmp_path)[-1]
+    assert rec["event"] == "failed"
+    assert rec["exception"]  # the traceback itself is still structured in the record
+    assert "sk-very-secret-value" not in raw
+    assert "api_key" not in raw

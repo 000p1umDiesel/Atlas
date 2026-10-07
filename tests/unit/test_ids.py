@@ -63,3 +63,25 @@ def test_slugify_caps_length_with_stable_hash():
 def test_slugify_caps_bytes_for_wide_scripts():
     slug = ids.slugify("𠀀" * 100)  # 4-byte UTF-8 word characters
     assert len((slug + ".md").encode("utf-8")) <= 255
+
+
+# Golden values: stored Qdrant points, graph ids and wiki pages are keyed by these hashes.
+# A change here silently orphans every existing index, so it must be deliberate.
+def test_namespace_is_pinned():
+    assert str(ids.NAMESPACE) == "5b0c9a8e-3f61-4d2a-9b7e-0c1d2e3f4a5b"
+
+
+def test_point_id_golden_values():
+    assert ids.point_id("abc:00001") == "3abf48ae-e1b7-5cab-8afa-229e4a8c8f55"
+    assert ids.point_id("chunk:0123456789abcdef:00000") == "6205ee60-de3b-5dea-bf3e-373d09f1a7ee"
+
+
+def test_entity_id_golden_values():
+    assert ids.entity_id("Method", "Attention Mechanism") == "42454f7230bee8f7"
+    assert ids.entity_id("Person", "Ashish Vaswani") == "5f2cfae423c91f73"
+
+
+def test_file_doc_id_golden_value(tmp_path):
+    path = tmp_path / "golden.md"
+    path.write_bytes(b"mnogobase golden\n")
+    assert ids.file_doc_id(path) == "2be6f3db35862591"

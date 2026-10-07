@@ -80,6 +80,12 @@ def test_combined_dedupes_and_respects_budget():
     assert [(i.kind, i.ref) for i in tight] == [("chunk", "c1")]
 
 
+def test_combined_skips_an_oversized_item_but_keeps_smaller_later_ones():
+    parts = {"rag": Stub([item("chunk", "big", "x" * 400), item("chunk", "small", "x" * 8)])}
+    picked = CombinedRetriever(parts, {"rag": 1.0}, 20).retrieve("q", 5)
+    assert [i.ref for i in picked] == ["small"]
+
+
 async def test_answerer_marks_cited_sources():
     llm = FakeLLM(lambda task, prompt: "Because of X [2].")
     answer = await Answerer(llm, 1000).answer(
@@ -202,13 +208,40 @@ def test_wiki_retriever_dedupes_and_caps_cited_chunks():
         [ChunkView(chunk_id=f"d:0000{i}", doc_id="d", text=f"c{i}") for i in (1, 2, 3)]
     )
     items = WikiRetriever(vectors, emb, sparse, graph).retrieve("transformer", 2)
-    # sections first (in hit order), then their cited chunks: de-duplicated, at most k
-    assert [i.kind for i in items] == ["wiki", "wiki", "chunk", "chunk"]
-    assert {i.ref for i in items[:2]} == {"p1#0", "p1#1"}
+    # each section is followed by its own cited chunks: de-duplicated, at most k in total
+    # (the first section's two citations already use the cap of k=2)
+    assert [i.kind for i in items] == ["wiki", "chunk", "chunk", "wiki"]
+    assert {items[0].ref, items[3].ref} == {"p1#0", "p1#1"}
     cited = {"p1#0": ["d:00001", "d:00002"], "p1#1": ["d:00002", "d:00003"]}
-    expected = list(dict.fromkeys(cited[items[0].ref] + cited[items[1].ref]))[:2]
+    expected = cited[items[0].ref]
     assert graph.requested == [expected]
-    assert [i.ref for i in items[2:]] == expected
+    assert [i.ref for i in items[1:3]] == expected
+
+
+def test_wiki_retriever_interleaves_cited_chunks_after_their_section():
+    emb, sparse, vectors = _stores()
+    sections = [
+        Section("Summary", "transformer summary", ["d:00001"]),
+        Section("Details", "transformer details", ["d:00001", "d:00002"]),
+    ]
+    texts = [s.text for s in sections]
+    vectors.upsert_wiki_sections(
+        "p1",
+        "e1",
+        "entities/transformer.md",
+        sections,
+        emb.embed_documents([EmbedInput(text=t) for t in texts]),
+        sparse.encode_documents(texts),
+    )
+    graph = StubGraph([ChunkView(chunk_id=f"d:0000{i}", doc_id="d", text=f"c{i}") for i in (1, 2)])
+    items = WikiRetriever(vectors, emb, sparse, graph).retrieve("transformer", 5)
+    cited = {"p1#0": ["d:00001"], "p1#1": ["d:00001", "d:00002"]}
+    first, second = items[0].ref, next(i.ref for i in items[1:] if i.kind == "wiki")
+    expected = [("wiki", first)] + [("chunk", c) for c in cited[first]]
+    expected += [("wiki", second)]
+    expected += [("chunk", c) for c in cited[second] if c not in cited[first]]
+    assert [(i.kind, i.ref) for i in items] == expected
+    assert len(graph.requested) == 1  # still one graph round trip
 
 
 def test_wiki_retriever_skips_graph_without_cited_chunks():
