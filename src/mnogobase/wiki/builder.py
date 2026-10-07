@@ -20,6 +20,7 @@ from mnogobase.models import (
     SearchHit,
     WikiPageRecord,
 )
+from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -105,6 +106,7 @@ class WikiBuilder:
         run_id: str = "",
         deleted: list[str] | None = None,
         documents: list[str] | None = None,
+        progress: ProgressSink = NULL_PROGRESS,
     ) -> WikiReport:
         dirty = set(self._registry.dirty())
         eligible = self._graph.entities(min_mentions=self._s.min_mentions)
@@ -128,11 +130,15 @@ class WikiBuilder:
         # evidence first: a candidate without evidence gets no page, so nothing may link to it
         evidence: dict[str, list[SearchHit]] = {}
         failed_ids: set[str] = set()
+        progress.step("wiki evidence", len(candidates))
         for entity in candidates:
             try:
                 evidence[entity.entity_id] = self._evidence(entity)
             except Exception as exc:  # one bad entity must not fail the whole build
                 self._record_failure(report, failed_ids, entity, exc)
+                progress.advance(failed=True)
+            else:
+                progress.advance()
         writable = [e for e in candidates if evidence.get(e.entity_id)]
         report.skipped = [e.name for e in candidates if evidence.get(e.entity_id) == []]
 
@@ -140,23 +146,31 @@ class WikiBuilder:
 
         async def draft_safely(entity: EntityRecord) -> _Draft | None:
             try:
-                return await self._draft(
+                draft = await self._draft(
                     entity, evidence[entity.entity_id], slugs[entity.entity_id]
                 )
             except Exception as exc:  # one bad entity must not fail the whole build
                 self._record_failure(report, failed_ids, entity, exc)
+                progress.advance(failed=True)
                 return None
+            progress.advance()
+            return draft
 
+        progress.step("wiki draft", len(writable))
         drafts = [d for d in await asyncio.gather(*map(draft_safely, writable)) if d is not None]
         # links may only target pages that exist or are written in this run
         drafted = {d.entity.entity_id for d in drafts}
         lookup = self._page_lookup([e for e in writable if e.entity_id in drafted], slugs)
         built: list[_Built] = []
+        progress.step("wiki write", len(drafts))
         for draft in drafts:
             try:
                 built.append(self._write(draft, lookup))
             except Exception as exc:  # one bad entity must not fail the whole build
                 self._record_failure(report, failed_ids, draft.entity, exc)
+                progress.advance(failed=True)
+            else:
+                progress.advance()
         # two passes so LINKS_TO can target pages created in this same run
         for b in built:
             self._graph.upsert_wiki_page(b.record, b.entity.entity_id, [], b.cited)

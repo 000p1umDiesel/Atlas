@@ -10,6 +10,7 @@ from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render
 from mnogobase.log import get_logger
 from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
+from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
 
 PROMPT_VERSION = "extract-v2"
@@ -145,8 +146,11 @@ class Extractor:
         return result
 
     async def extract_many(
-        self, chunks: list[ChunkRecord], title: str
+        self, chunks: list[ChunkRecord], title: str, progress: ProgressSink = NULL_PROGRESS
     ) -> dict[str, ExtractionResult]:
+        """Extract all chunks concurrently; `progress` advances as each one finishes (cache
+        hits and failures included)."""
+
         async def one(chunk: ChunkRecord) -> tuple[str, ExtractionResult | None]:
             try:
                 result = await self.extract(chunk, title)
@@ -160,8 +164,10 @@ class Extractor:
                     error_type=type(exc).__name__,
                     error=str(exc),
                 )
+                progress.advance(failed=True)
                 return chunk.chunk_id, None
             self._registry.set_chunk_extract(chunk.chunk_id, "done")
+            progress.advance()
             return chunk.chunk_id, result
 
         pairs = await asyncio.gather(*(one(c) for c in chunks))

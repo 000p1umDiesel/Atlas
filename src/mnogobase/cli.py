@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -11,7 +13,18 @@ import yaml
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    ProgressColumn,
+    SpinnerColumn,
+    Task,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
+from rich.text import Text
 
 from mnogobase.app import App, build_app
 from mnogobase.config import Settings, load_settings
@@ -145,6 +158,82 @@ def _print_wiki_report(report: WikiReport) -> None:
         console.print(f"[red]✗[/red] wiki page {escape(name)} (retried on the next build)")
 
 
+class _Count(ProgressColumn):
+    """`done/total`, or nothing while the total is unknown (parse, chunk, embed)."""
+
+    def render(self, task: Task) -> Text:
+        if task.total is None:
+            return Text("")
+        return Text(f"{int(task.completed)}/{int(task.total)}", style="progress.download")
+
+
+class RichProgress:
+    """The library's ProgressSink drawn with rich.progress: a bar for the files of the run and
+    one for the current step (a stage of the current file, or a wiki / reindex step)."""
+
+    def __init__(self, bars: Progress):
+        self.bars = bars
+        self._files: TaskID | None = None
+        self._step: TaskID | None = None
+        self._file = ""  # short name of the file being ingested
+        self._failed = 0  # failed units of the current step
+        self._outcomes: Counter[str] = Counter()
+
+    def files_found(self, total: int) -> None:
+        self._files = self.bars.add_task("files", total=total, note="")
+
+    def file_started(self, path: str) -> None:
+        name = Path(path).name
+        self._file = name if len(name) <= 40 else f"{name[:39]}…"
+
+    def file_done(self, status: str) -> None:
+        self._outcomes[status] += 1
+        note = " · ".join(f"{n} {s}" for s, n in sorted(self._outcomes.items()))
+        if self._files is not None:
+            self.bars.update(self._files, advance=1, note=note)
+        self._file = ""
+        self._drop_step()
+
+    def step(self, name: str, total: int | None = None) -> None:
+        self._drop_step()  # a new task: its bar, count and elapsed time start over
+        label = f"{self._file} · {name}" if self._file else name
+        self._step = self.bars.add_task(escape(label), total=total, note="")
+        self._failed = 0
+
+    def advance(self, n: int = 1, *, failed: bool = False) -> None:
+        if self._step is None:
+            return
+        self._failed += n if failed else 0
+        note = f"[red]{self._failed} failed[/red]" if self._failed else ""
+        self.bars.update(self._step, advance=n, note=note)
+
+    def _drop_step(self) -> None:
+        if self._step is not None:
+            self.bars.remove_task(self._step)
+            self._step = None
+
+
+@contextmanager
+def _progress() -> Iterator[RichProgress]:
+    """Live progress while a long command runs. Transient: the bars disappear when it ends
+    and the summary is printed instead. Off a terminal (pipe, CI) nothing is drawn."""
+    bars = Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        _Count(),
+        TimeElapsedColumn(),
+        TextColumn("{task.fields[note]}"),
+        console=console,
+        transient=True,
+        disable=not console.is_terminal,
+    )
+    with bars:
+        progress = RichProgress(bars)
+        progress.step("starting")
+        yield progress
+
+
 def _check_status(check: Check) -> str:
     if not check.ok:
         return "[red]fail[/red]"
@@ -226,7 +315,7 @@ def ingest(
                 console.print("Nothing to ingest.")
                 return
             run_id = new_run_id()
-            with console.status("Ingesting…"):
+            with _progress() as progress:
                 try:
                     report = asyncio.run(
                         application.pipeline.ingest(
@@ -234,6 +323,7 @@ def ingest(
                             build_wiki=not no_wiki,
                             retry_failed=retry_failed,
                             run_id=run_id,
+                            progress=progress,
                         )
                     )
                 except (EmbedderMismatchError, DimensionMismatchError, PendingRemovalError) as exc:
@@ -276,11 +366,15 @@ def wiki_build(
                 deleted = application.pipeline.finish_pending_removals()
             except PendingRemovalError as exc:
                 _fail_cleanly(exc)
-            report = asyncio.run(
-                application.wiki.build(
-                    rebuild_all=rebuild_all, run_id=new_run_id(), deleted=deleted
+            with _progress() as progress:
+                report = asyncio.run(
+                    application.wiki.build(
+                        rebuild_all=rebuild_all,
+                        run_id=new_run_id(),
+                        deleted=deleted,
+                        progress=progress,
+                    )
                 )
-            )
         finally:
             application.close()
     finally:
@@ -371,9 +465,9 @@ def reindex() -> None:
     try:
         application = build_app(settings)
         try:
-            with console.status("Re-embedding…"):
+            with _progress() as progress:
                 try:
-                    stats = do_reindex(application)
+                    stats = do_reindex(application, progress=progress)
                 except ReindexError as exc:
                     _fail_cleanly(exc)
         finally:

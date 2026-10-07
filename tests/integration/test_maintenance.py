@@ -12,7 +12,13 @@ from mnogobase.embedding.base import embedder_signature
 from mnogobase.maintenance import reindex, reset
 from mnogobase.pipeline import EmbedderMismatchError
 from mnogobase.stores.qdrant_store import QdrantStore
-from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
+from tests.fakes import (
+    FakeEmbedder,
+    FakeLLM,
+    FakeSparse,
+    RecordingProgress,
+    scripted_llm_handler,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -108,6 +114,24 @@ async def test_reindex_without_chunk_cache_uses_graph_chunks(graph, docs, settin
     for chunk_id, payload in before.items():
         for key in ("doc_id", "text", "path", "page", "headings", "entity_ids"):
             assert after[chunk_id][key] == payload[key], (chunk_id, key)
+    app.registry.close()
+
+
+async def test_reindex_reports_progress(graph, docs, settings):
+    client = QdrantClient(":memory:")
+    app = make_app(settings, graph, client, FakeEmbedder(64))
+    await app.pipeline.ingest([docs])
+    progress = RecordingProgress()
+    reindex(app, progress=progress)
+    entities, pages = len(app.graph.entities()), len(app.graph.wiki_pages())
+    assert progress.steps() == [
+        ("step", "reindex chunks", 2),  # documents
+        ("step", "reindex entities", entities),
+        ("step", "reindex wiki", pages),
+    ]
+    assert progress.advanced("reindex chunks") == [("advance", 1, False)] * 2
+    assert sum(n for _, n, _ in progress.advanced("reindex entities")) == entities
+    assert progress.advanced("reindex wiki") == [("advance", 1, False)] * pages
     app.registry.close()
 
 

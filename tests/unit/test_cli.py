@@ -406,7 +406,7 @@ def test_reindex_with_a_wrong_embedder_dimension_is_a_clear_error(tmp_path, monk
     monkeypatch.chdir(tmp_path)
     make_project(tmp_path)
 
-    def failing(application):
+    def failing(application, **kwargs):
         raise ReindexError("embedder check failed: model returned 768 dims; nothing was changed")
 
     monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
@@ -415,3 +415,94 @@ def test_reindex_with_a_wrong_embedder_dimension_is_a_clear_error(tmp_path, monk
     assert result.exit_code == 2, result.output
     assert "model returned 768 dims" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def _drive(progress) -> None:
+    """What a one-file ingest with a wiki update reports."""
+    progress.files_found(1)
+    progress.file_started("/docs/statya.pdf")
+    for stage in ("parse", "chunk", "embed"):
+        progress.step(stage)
+    progress.step("extract", 3)
+    progress.advance()
+    progress.advance()
+    progress.advance(failed=True)
+    progress.step("graph", 2)
+    progress.advance(2)
+    progress.file_done("processed")
+    progress.step("wiki draft", 1)
+    progress.advance()
+    progress.step("wiki write", 1)
+    progress.advance()
+
+
+def test_ingest_reports_progress_and_prints_only_the_summary_off_a_terminal(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    async def ingest(targets, **kwargs):
+        seen.append(kwargs["progress"])
+        _drive(kwargs["progress"])
+        return SimpleNamespace(
+            processed=["/docs/statya.pdf"], skipped=[], failed={}, wiki=None, types_warning=None
+        )
+
+    stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
+    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    result = runner.invoke(cli.app, ["ingest", "docs"])
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+    # CliRunner is not a terminal: no progress frames, just the summary as before
+    lines = result.output.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("run ")
+    assert lines[0].endswith("processed 1, skipped 0, failed 0")
+
+
+def test_progress_shows_files_the_current_file_its_stage_and_failures(monkeypatch):
+    monkeypatch.setattr(cli, "console", Console(file=io.StringIO(), force_terminal=True))
+    screen = Console(record=True, width=120, file=io.StringIO())
+    with cli._progress() as progress:
+        progress.files_found(12)
+        progress.file_started("/docs/a/statya.pdf")
+        progress.step("extract")
+        progress.step("extract", 96)
+        for _ in range(41):
+            progress.advance()
+        progress.advance(failed=True)
+        screen.print(progress.bars)
+        progress.file_done("processed")
+        progress.step("wiki draft", 5)
+        progress.advance()
+        screen.print(progress.bars)
+    first, second = screen.export_text().split("files", 2)[1:]
+    assert "0/12" in first
+    assert "statya.pdf · extract" in first and "42/96" in first and "1 failed" in first
+    assert "1/12" in second and "1 processed" in second
+    assert "wiki draft" in second and "1/5" in second and "statya.pdf" not in second
+
+
+def test_wiki_build_and_reindex_report_progress(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+    seen: list[str] = []
+
+    async def build(**kwargs):
+        seen.append(f"wiki {type(kwargs['progress']).__name__}")
+        return SimpleNamespace(created=[], updated=[], deleted=[], skipped=[], failed=[])
+
+    def reindex(application, **kwargs):
+        seen.append(f"reindex {type(kwargs['progress']).__name__}")
+        return {"chunks": 1, "entities": 2, "wiki_sections": 3}
+
+    stub = SimpleNamespace(
+        pipeline=SimpleNamespace(prepare=lambda resume: None, finish_pending_removals=list),
+        wiki=SimpleNamespace(build=build),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli, "do_reindex", reindex)
+    assert runner.invoke(cli.app, ["wiki", "build"]).exit_code == 0
+    result = runner.invoke(cli.app, ["reindex"])
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "reindexed: 1 chunks, 2 entities, 3 wiki sections"
+    assert seen == ["wiki RichProgress", "reindex RichProgress"]

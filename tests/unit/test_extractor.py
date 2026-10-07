@@ -9,7 +9,7 @@ from mnogobase.extraction.extractor import (
 )
 from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
 from mnogobase.registry import Registry
-from tests.fakes import FakeLLM, scripted_llm_handler
+from tests.fakes import FakeLLM, RecordingProgress, scripted_llm_handler
 
 DOC = "a" * 16
 
@@ -95,6 +95,29 @@ async def test_extract_many_isolates_failures(tmp_path):
     results = await ex.extract_many([ok, bad], "Doc")
     assert list(results) == [ok.chunk_id]
     assert reg.chunk_extract_counts(DOC) == {"done": 1, "failed": 1}
+
+
+async def test_extract_many_advances_once_per_chunk_with_cache_hits_and_failures(tmp_path):
+    reg = Registry(tmp_path / "s.db")
+
+    def handler(task, prompt):
+        if "BROKEN" in prompt:
+            raise RuntimeError("llm down")
+        return scripted_llm_handler(task, prompt)
+
+    llm = FakeLLM(handler)
+    ex = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
+    cached, fresh, bad = chunk("Softmax text", 0), chunk("Transformer text", 1), chunk("BROKEN", 2)
+    await ex.extract(cached, "Doc")
+    progress = RecordingProgress()
+    results = await ex.extract_many([cached, fresh, bad], "Doc", progress=progress)
+    assert set(results) == {cached.chunk_id, fresh.chunk_id}
+    assert sorted(progress.events) == [
+        ("advance", 1, False),
+        ("advance", 1, False),
+        ("advance", 1, True),
+    ]
+    assert len(llm.calls_for("extract")) == 3  # the cache hit made no call
 
 
 async def test_cached_falls_back_to_another_model(tmp_path):

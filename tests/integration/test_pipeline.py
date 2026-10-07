@@ -14,7 +14,13 @@ from mnogobase.ids import entity_id, file_doc_id
 from mnogobase.maintenance import reset
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
 from mnogobase.stores.qdrant_store import QdrantStore
-from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
+from tests.fakes import (
+    FakeEmbedder,
+    FakeLLM,
+    FakeSparse,
+    RecordingProgress,
+    scripted_llm_handler,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -105,6 +111,61 @@ async def test_ingest_builds_vectors_graph_and_wiki(make_app, docs, tmp_path):
     assert hits
     log = (tmp_path / "wiki" / "log.md").read_text(encoding="utf-8")
     assert all(path in log for path in report.processed)
+
+
+async def test_ingest_reports_progress(make_app, tmp_path):
+    folder = tmp_path / "one"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "attention_en.md", folder / "attention_en.md")
+    app = make_app()
+    progress = RecordingProgress()
+    report = await app.pipeline.ingest([folder], progress=progress)
+    [path] = report.processed
+    _, chunks = app.pipeline.load_chunks(file_doc_id(Path(path)))
+    graph_total = progress.steps()[6][2]
+    pages = len(report.wiki.created)
+    assert progress.steps() == [
+        ("step", "parse", None),
+        ("step", "chunk", None),
+        ("step", "embed", None),
+        ("step", "extract", None),
+        ("step", "extract", len(chunks)),  # the total once the chunks are loaded
+        ("step", "graph", None),
+        ("step", "graph", graph_total),
+        ("step", "wiki evidence", pages),
+        ("step", "wiki draft", pages),
+        ("step", "wiki write", pages),
+    ]
+    assert progress.events[:2] == [("files", 1), ("file", path)]
+    assert progress.advanced("extract") == [("advance", 1, False)] * len(chunks)
+    assert graph_total > 0 and progress.advanced("graph") == [("advance", 1, False)] * graph_total
+    for step in ("wiki evidence", "wiki draft", "wiki write"):
+        assert progress.advanced(step) == [("advance", 1, False)] * pages
+    # the file is done after its graph stage, before the wiki of the whole run
+    done = progress.events.index(("file_done", "processed"))
+    assert progress.events[done - 1][0] == "advance"
+    assert progress.events[done + 1] == ("step", "wiki evidence", pages)
+
+    again = RecordingProgress()
+    await app.pipeline.ingest([folder], build_wiki=False, progress=again)
+    assert again.events == [("files", 1), ("file", path), ("file_done", "skipped")]
+
+
+async def test_failed_files_are_reported_done_as_failed(make_app, docs):
+    def broken(task, prompt):
+        if task == "extract":
+            raise RuntimeError("llm down")
+        return scripted_llm_handler(task, prompt)
+
+    app = make_app(broken)
+    progress = RecordingProgress()
+    await app.pipeline.ingest([docs], build_wiki=False, progress=progress)
+    assert [e for e in progress.events if e[0] == "file_done"] == [("file_done", "failed")] * 2
+    assert all(failed for _, _, failed in progress.advanced("extract"))
+
+    again = RecordingProgress()  # previously failed: skipped with a message, still counted
+    await app.pipeline.ingest([docs], build_wiki=False, progress=again)
+    assert [e for e in again.events if e[0] == "file_done"] == [("file_done", "failed")] * 2
 
 
 async def test_reingest_is_noop(make_app, docs):
@@ -435,7 +496,7 @@ async def test_legacy_signature_of_the_same_model_is_accepted_and_upgraded(make_
 async def test_graph_stage_uses_extractions_of_a_previous_model(make_app, docs, monkeypatch):
     app = make_app()
 
-    async def graph_down(doc_id):
+    async def graph_down(doc_id, progress):
         raise RuntimeError("neo4j down")
 
     monkeypatch.setattr(app.pipeline, "_build_graph", graph_down)

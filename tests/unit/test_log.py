@@ -78,3 +78,21 @@ def test_tracebacks_do_not_include_frame_locals(tmp_path):
     assert rec["exception"]  # the traceback itself is still structured in the record
     assert "sk-very-secret-value" not in raw
     assert "api_key" not in raw
+
+
+def test_third_party_noise_is_quieted_but_warnings_pass(tmp_path):
+    from huggingface_hub.utils import are_progress_bars_disabled
+    from transformers.utils import logging as hf_logging
+
+    configure_logging(tmp_path, console=False)
+    ocr = logging.getLogger("RapidOCR")
+    ocr.setLevel(logging.INFO)  # what rapidocr does when docling imports it later
+
+    def passes(level: int) -> bool:
+        record = logging.LogRecord("RapidOCR", level, __file__, 1, "msg", None, None)
+        return bool(ocr.filter(record))
+
+    assert not passes(logging.INFO)
+    assert passes(logging.WARNING) and passes(logging.ERROR)
+    assert are_progress_bars_disabled()  # Hugging Face downloads
+    assert not hf_logging.is_progress_bar_enabled()  # transformers "Loading weights"

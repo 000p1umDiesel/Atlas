@@ -146,3 +146,40 @@ class FakeSparse:
 
     def encode_query(self, text: str) -> qm.SparseVector:
         return self._sv(text)
+
+
+class RecordingProgress:
+    """ProgressSink that records every call as a tuple, for asserting the reported sequence."""
+
+    def __init__(self):
+        self.events: list[tuple] = []
+
+    def files_found(self, total: int) -> None:
+        self.events.append(("files", total))
+
+    def file_started(self, path: str) -> None:
+        self.events.append(("file", path))
+
+    def file_done(self, status: str) -> None:
+        self.events.append(("file_done", status))
+
+    def step(self, name: str, total: int | None = None) -> None:
+        self.events.append(("step", name, total))
+
+    def advance(self, n: int = 1, *, failed: bool = False) -> None:
+        self.events.append(("advance", n, failed))
+
+    def steps(self) -> list[tuple]:
+        return [e for e in self.events if e[0] == "step"]
+
+    def advanced(self, step: str) -> list[tuple]:
+        """The advances reported while the last `step(step, ...)` was current."""
+        current, out = None, []
+        for event in self.events:
+            if event[0] == "step":
+                current = event[1]
+                if current == step:
+                    out = []
+            elif event[0] == "advance" and current == step:
+                out.append(event)
+        return out

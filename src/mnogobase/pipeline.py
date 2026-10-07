@@ -21,6 +21,7 @@ from mnogobase.ids import file_doc_id, normalize_name
 from mnogobase.log import bind_context, get_logger, log_stage, unbind_context
 from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput
 from mnogobase.parsing.docling_parser import DoclingParser
+from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -163,17 +164,21 @@ class Pipeline:
         build_wiki: bool = True,
         retry_failed: bool = False,
         run_id: str = "",
+        progress: ProgressSink = NULL_PROGRESS,
     ) -> IngestReport:
         self.prepare()
         report = IngestReport()
         removed_names = self.finish_pending_removals()
-        for path in self.discover(paths):
+        files = self.discover(paths)
+        progress.files_found(len(files))
+        for path in files:
             key = str(path)
+            progress.file_started(key)
             try:
-                status = await self._ingest_file(path, retry_failed, removed_names)
+                status = await self._ingest_file(path, retry_failed, removed_names, progress)
             except _PreviouslyFailed as exc:
                 report.failed[key] = str(exc)
-                continue
+                status = "failed"
             except Exception as exc:
                 report.failed[key] = f"{type(exc).__name__}: {exc}"
                 self._log.error(
@@ -183,14 +188,16 @@ class Pipeline:
                     error=str(exc),
                     exc_info=True,
                 )
-                continue
-            (report.processed if status == "processed" else report.skipped).append(key)
+                status = "failed"
+            else:
+                (report.processed if status == "processed" else report.skipped).append(key)
+            progress.file_done(status)
         if stale_entity_types(self._registry, self._s.extract.entity_types):
             report.types_warning = TYPES_CHANGED
             self._log.warning("entity_types_changed", detail=TYPES_CHANGED)
         if build_wiki:
             report.wiki = await self._wiki.build(
-                run_id=run_id, deleted=removed_names, documents=report.processed
+                run_id=run_id, deleted=removed_names, documents=report.processed, progress=progress
             )
         self._log.info(
             "ingest_done",
@@ -201,7 +208,9 @@ class Pipeline:
         )
         return report
 
-    async def _ingest_file(self, path: Path, retry_failed: bool, removed_names: list[str]) -> str:
+    async def _ingest_file(
+        self, path: Path, retry_failed: bool, removed_names: list[str], progress: ProgressSink
+    ) -> str:
         key = str(path)
         doc_id = file_doc_id(path)
         stat = path.stat()
@@ -233,9 +242,10 @@ class Pipeline:
         try:
             for stage in pending:
                 self._registry.set_stage(doc_id, stage, "running")
+                progress.step(stage)
                 try:
                     with log_stage(self._log, stage, path=key):
-                        await self._run_stage(stage, path, doc_id)
+                        await self._run_stage(stage, path, doc_id, progress)
                 except Exception as exc:
                     self._registry.set_stage(
                         doc_id, stage, "failed", error=f"{type(exc).__name__}: {exc}"
@@ -428,7 +438,9 @@ class Pipeline:
             doc = doc.model_copy(update={"path": path})
             self._save_chunks(doc, [c.model_copy(update={"path": path}) for c in chunks])
 
-    async def _run_stage(self, stage: str, path: Path, doc_id: str) -> None:
+    async def _run_stage(
+        self, stage: str, path: Path, doc_id: str, progress: ProgressSink = NULL_PROGRESS
+    ) -> None:
         if stage == "parse":
             self._parser.parse(path, doc_id)
         elif stage == "chunk":
@@ -445,9 +457,9 @@ class Pipeline:
         elif stage == "embed":
             self._embed(doc_id)
         elif stage == "extract":
-            await self._extract(doc_id)
+            await self._extract(doc_id, progress)
         elif stage == "graph":
-            await self._build_graph(doc_id)
+            await self._build_graph(doc_id, progress)
         else:
             raise ValueError(f"unknown stage {stage}")
 
@@ -467,18 +479,19 @@ class Pipeline:
         self.index_chunks(doc, chunks)
         self._graph.upsert_chunks(chunks)
 
-    async def _extract(self, doc_id: str) -> None:
+    async def _extract(self, doc_id: str, progress: ProgressSink) -> None:
         doc, chunks = self.load_chunks(doc_id)
         if not chunks:
             return
-        results = await self._extractor.extract_many(chunks, doc.title)
+        progress.step("extract", len(chunks))
+        results = await self._extractor.extract_many(chunks, doc.title, progress)
         failed = len(chunks) - len(results)
         if failed / len(chunks) > self._s.extract.max_failed_ratio:
             raise ExtractionFailedError(f"{failed}/{len(chunks)} chunks failed extraction")
         if failed:
             self._log.warning("extract_partial", failed=failed, total=len(chunks))
 
-    async def _build_graph(self, doc_id: str) -> None:
+    async def _build_graph(self, doc_id: str, progress: ProgressSink) -> None:
         _doc, chunks = self.load_chunks(doc_id)
         # the extract stage may have run with another model / prompt version (changed before
         # a retry of this stage): its results are still this document's knowledge
@@ -491,6 +504,7 @@ class Pipeline:
                 f"{missing}/{len(chunks)} chunks have no cached extraction; "
                 "rerun with --retry-failed to extract them again"
             )
+        progress.step("graph", sum(len(r.entities) for r in results.values() if r is not None))
         touched: set[str] = set()
         for chunk in chunks:
             result = results[chunk.chunk_id]
@@ -499,6 +513,7 @@ class Pipeline:
             ids_by_name: dict[str, str] = {}
             for extracted in result.entities:
                 record = await self._resolver.resolve(extracted)
+                progress.advance()
                 ids_by_name[normalize_name(extracted.name)] = record.entity_id
                 for alias in extracted.aliases:
                     ids_by_name.setdefault(normalize_name(alias), record.entity_id)

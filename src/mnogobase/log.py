@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 import uuid
@@ -20,6 +21,42 @@ _SHARED = [
 _TRACEBACKS = structlog.processors.ExceptionRenderer(
     structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
 )
+
+# third-party loggers whose INFO lines bury the CLI progress display (warnings still pass)
+_NOISY = ("httpx", "httpcore", "neo4j", "urllib3", "docling", "docling_core", "filelock")
+
+
+class _WarningsOnly(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING
+
+
+_WARNINGS_ONLY = _WarningsOnly()
+
+
+class _CurrentStderr(logging.StreamHandler):
+    """Writes to whatever `sys.stderr` is now: a Rich live display redirects it while it
+    runs, so a warning is printed above the progress bars instead of through them."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.stream = sys.stderr
+        super().emit(record)
+
+
+def _quiet_third_party() -> None:
+    """Silence chatty INFO logs and model-loading progress bars of the parsing stack."""
+    for name in _NOISY:
+        logging.getLogger(name).setLevel(logging.WARNING)
+    # RapidOCR (docling's OCR) logs INFO to its own handler and resets its level to INFO
+    # when it is imported, so a filter is what keeps it quiet
+    logging.getLogger("RapidOCR").addFilter(_WARNINGS_ONLY)
+    # Hugging Face download bars and transformers' "Loading weights" bar
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    try:
+        from transformers.utils import logging as hf_logging
+    except ImportError:  # pragma: no cover - transformers is a dependency
+        return
+    hf_logging.disable_progress_bar()  # also disables huggingface_hub's bars
 
 
 def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True) -> None:
@@ -49,7 +86,7 @@ def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True)
         handler.close()
     root.addHandler(file_handler)
     if console:
-        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler = _CurrentStderr(sys.stderr)
         console_handler.setFormatter(
             structlog.stdlib.ProcessorFormatter(
                 processors=[
@@ -62,8 +99,7 @@ def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True)
         console_handler.setLevel(logging.WARNING)  # Rich progress owns the terminal
         root.addHandler(console_handler)
     root.setLevel(level)
-    for noisy in ("httpx", "httpcore", "neo4j", "urllib3", "docling", "filelock"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    _quiet_third_party()
 
 
 def get_logger(name: str | None = None):

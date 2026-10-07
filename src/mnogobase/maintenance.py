@@ -7,6 +7,7 @@ from mnogobase.app import App
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.extraction.resolver import entity_embed_input
 from mnogobase.log import get_logger
+from mnogobase.progress import NULL_PROGRESS, ProgressSink
 
 ENTITY_BATCH = 64
 WIKI_FILES = ("index.md", "log.md")
@@ -33,7 +34,7 @@ def _check_embedder(app: App) -> None:
         )
 
 
-def reindex(app: App) -> dict[str, int]:
+def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     """Recompute all vectors with the current embedder; graph and wiki files stay untouched.
 
     The collections are dropped and recreated with the embedder's dimension, so this also
@@ -48,15 +49,16 @@ def reindex(app: App) -> dict[str, int]:
 
     # every document whose chunks were embedded once, whatever happened in later stages
     doc_ids = sorted({f.doc_id for f in app.registry.files()})
+    doc_ids = [d for d in doc_ids if app.registry.stage_status(d, "embed") == "done"]
+    progress.step("reindex chunks", len(doc_ids))
     for doc_id in doc_ids:
-        if app.registry.stage_status(doc_id, "embed") != "done":
-            continue
         if app.pipeline.chunks_path(doc_id).exists():
             doc, chunks = app.pipeline.load_chunks(doc_id)
         else:
             stored = app.graph.doc_chunks(doc_id)
             if stored is None:
                 log.warning("reindex_document_missing", doc_id=doc_id)
+                progress.advance(failed=True)
                 continue
             doc, chunks = stored
         app.pipeline.index_chunks(doc, chunks)
@@ -64,22 +66,29 @@ def reindex(app: App) -> dict[str, int]:
             if entity_ids:
                 app.vectors.set_chunk_entities(chunk_id, entity_ids)
         stats["chunks"] += len(chunks)
+        progress.advance()
 
     entities = app.graph.entities()
+    progress.step("reindex entities", len(entities))
     for start in range(0, len(entities), ENTITY_BATCH):
         batch = entities[start : start + ENTITY_BATCH]
         dense = app.embedder.embed_documents([entity_embed_input(e) for e in batch])
         app.vectors.upsert_entities(batch, dense)
+        progress.advance(len(batch))
     stats["entities"] = len(entities)
 
-    for row in app.graph.wiki_pages():
+    pages = app.graph.wiki_pages()
+    progress.step("reindex wiki", len(pages))
+    for row in pages:
         file = app.settings.wiki.dir / row.path
         if not file.exists():
             log.warning("reindex_wiki_page_missing", page_id=row.page_id, path=row.path)
+            progress.advance(failed=True)
             continue
         # page_id == entity_id: one page per entity
         text = file.read_text(encoding="utf-8")
         stats["wiki_sections"] += app.wiki.index_page(row.page_id, row.page_id, row.path, text)
+        progress.advance()
 
     app.registry.set_meta("embedder", embedder_signature(app.embedder))
     log.info("reindex_done", **stats)
