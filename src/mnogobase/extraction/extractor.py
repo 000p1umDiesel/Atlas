@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+from collections.abc import Iterable, Mapping
 
 from mnogobase.ids import normalize_name
 from mnogobase.llm.client import LLMClient
@@ -9,13 +12,43 @@ from mnogobase.log import get_logger
 from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
 from mnogobase.registry import Registry
 
-PROMPT_VERSION = "extract-v1"
+PROMPT_VERSION = "extract-v2"
+# Registry meta: signature of the entity types the cached extractions were made with, or
+# MIXED_TYPES once they come from more than one type set. Only a registry without any
+# extraction (new project, after `reset`) takes the current signature again.
+TYPES_META = "entity_types"
+MIXED_TYPES = "mixed"
+TYPES_CHANGED = (
+    "entity types changed in config: already-ingested documents keep their old types "
+    "(new and changed documents use the new ones); run `mnogobase reset`, then "
+    "`mnogobase ingest`, to re-extract everything"
+)
 
 
-def clean_extraction(result: ExtractionResult, entity_types: list[str]) -> ExtractionResult:
-    """Normalize types, merge duplicate names, resolve aliases in relations, drop bad edges."""
-    allowed = {t.casefold(): t for t in entity_types}
-    fallback = allowed.get("other", entity_types[-1])
+def entity_types_signature(entity_types: Mapping[str, str]) -> str:
+    """Short stable hash of the type names, their order and descriptions."""
+    payload = json.dumps(list(entity_types.items()), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def stale_entity_types(registry: Registry, entity_types: Mapping[str, str]) -> bool:
+    """True when existing extractions were (also) made with another type set."""
+    if not registry.has_extractions():
+        return False
+    return registry.get_meta(TYPES_META) != entity_types_signature(entity_types)
+
+
+def format_entity_types(entity_types: Mapping[str, str]) -> str:
+    return "\n".join(f"- {n}: {d}" if d else f"- {n}" for n, d in entity_types.items())
+
+
+def clean_extraction(result: ExtractionResult, entity_types: Iterable[str]) -> ExtractionResult:
+    """Normalize types, merge duplicate names, resolve aliases in relations, drop bad edges.
+
+    An unknown type becomes `Other` if that type exists, else the last type."""
+    names = list(entity_types)
+    allowed = {t.casefold(): t for t in names}
+    fallback = allowed.get("other", names[-1])
     entities: dict[str, ExtractedEntity] = {}
     lookup: dict[str, str] = {}  # normalized name or alias -> entity key
     for e in result.entities:
@@ -61,10 +94,13 @@ def clean_extraction(result: ExtractionResult, entity_types: list[str]) -> Extra
 
 
 class Extractor:
-    def __init__(self, llm: LLMClient, registry: Registry, entity_types: list[str]):
+    def __init__(self, llm: LLMClient, registry: Registry, entity_types: Mapping[str, str]):
         self._llm = llm
         self._registry = registry
-        self._types = entity_types
+        self._types = dict(entity_types)
+        self._signature = entity_types_signature(self._types)
+        # cache key: a changed type set (names or descriptions) means extracting again
+        self._version = f"{PROMPT_VERSION}:{self._signature}"
         self._log = get_logger(__name__)
 
     @property
@@ -72,12 +108,28 @@ class Extractor:
         return self._llm.model_for("extract")
 
     def cached(self, chunk: ChunkRecord, any_version: bool = False) -> ExtractionResult | None:
-        """The cached extraction for the current model and prompt version; with
-        `any_version`, fall back to the latest one made by any model or prompt version."""
-        raw = self._registry.get_extraction(chunk.chunk_id, PROMPT_VERSION, self.model)
+        """The cached extraction for the current model, prompt version and entity types; with
+        `any_version`, fall back to the latest one made by any model, prompt or types.
+
+        Every hit is cleaned with the current types, so a type that is no longer configured
+        never reaches an entity_id (it becomes `Other`)."""
+        raw = self._registry.get_extraction(chunk.chunk_id, self._version, self.model)
         if raw is None and any_version:
-            raw = self._registry.get_latest_extraction(chunk.chunk_id)
-        return ExtractionResult.model_validate_json(raw) if raw is not None else None
+            latest = self._registry.get_latest_extraction(chunk.chunk_id)
+            if latest is not None:
+                version, raw = latest
+                if version != self._version:  # made for other types: the graph mixes sets
+                    self._registry.set_meta(TYPES_META, MIXED_TYPES)
+        if raw is None:
+            return None
+        return clean_extraction(ExtractionResult.model_validate_json(raw), self._types)
+
+    def _record_types(self) -> None:
+        """Before storing a fresh extraction: remember which type set the cache holds."""
+        if not self._registry.has_extractions():
+            self._registry.set_meta(TYPES_META, self._signature)
+        elif self._registry.get_meta(TYPES_META) != self._signature:
+            self._registry.set_meta(TYPES_META, MIXED_TYPES)
 
     async def extract(self, chunk: ChunkRecord, title: str) -> ExtractionResult:
         hit = self.cached(chunk)
@@ -85,7 +137,7 @@ class Extractor:
             return hit
         prompt = render(
             "extract",
-            entity_types=", ".join(self._types),
+            entity_types=format_entity_types(self._types),
             title=title,
             headings=" > ".join(chunk.headings) or "-",
             text=chunk.text,
@@ -94,8 +146,10 @@ class Extractor:
             [{"role": "user", "content": prompt}], ExtractionResult, task="extract"
         )
         result = clean_extraction(raw, self._types)
+        # no await between the check and the write: concurrent chunks cannot interleave
+        self._record_types()
         self._registry.put_extraction(
-            chunk.chunk_id, PROMPT_VERSION, self.model, result.model_dump_json()
+            chunk.chunk_id, self._version, self.model, result.model_dump_json()
         )
         return result
 

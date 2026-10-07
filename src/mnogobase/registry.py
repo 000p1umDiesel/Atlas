@@ -163,13 +163,18 @@ class Registry:
         ).fetchone()
         return row[0] if row else None
 
-    def get_latest_extraction(self, chunk_id: str) -> str | None:
-        """The most recently written extraction of a chunk, whatever its model or prompt."""
+    def get_latest_extraction(self, chunk_id: str) -> tuple[str, str] | None:
+        """(prompt_version, result_json) of the most recently written extraction of a chunk,
+        whatever its model or prompt."""
         row = self._db.execute(
-            "SELECT result_json FROM extraction_cache WHERE chunk_id=? ORDER BY rowid DESC LIMIT 1",
+            "SELECT prompt_version, result_json FROM extraction_cache WHERE chunk_id=? "
+            "ORDER BY rowid DESC LIMIT 1",
             (chunk_id,),
         ).fetchone()
-        return row[0] if row else None
+        return (row[0], row[1]) if row else None
+
+    def has_extractions(self) -> bool:
+        return self._db.execute("SELECT 1 FROM extraction_cache LIMIT 1").fetchone() is not None
 
     def put_extraction(
         self, chunk_id: str, prompt_version: str, model: str, result_json: str

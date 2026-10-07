@@ -5,23 +5,70 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 LLM_TASKS = ("extract", "resolve", "wiki", "answer")
 LANGUAGE_NAMES = {"en": "English", "ru": "Russian"}
-DEFAULT_ENTITY_TYPES = [
-    "Person",
-    "Organization",
-    "Concept",
-    "Method",
-    "Technology",
-    "Dataset",
-    "Work",
-    "Event",
-    "Location",
-    "Other",
-]
+# Entity types: name -> one-line description for the extraction prompt. The type is part
+# of entity_id, so the types must not overlap; `Other` stays last (the fallback).
+DEFAULT_ENTITY_TYPES: dict[str, str] = {
+    "Person": "A real or fictional individual, named or clearly identified.",
+    "Organization": (
+        "A company, institution, university, government body, team or community; "
+        "not the place it is located in (Location)."
+    ),
+    "Location": "A country, city, region, geographic feature or a specific facility or building.",
+    "Event": (
+        "A dated happening such as a conference, incident, battle, release or election; "
+        "not an ongoing initiative (Project)."
+    ),
+    "Project": (
+        "A named initiative, programme or mission with a goal; not a one-off happening (Event)."
+    ),
+    "Product": (
+        "A physical or commercial good or service that is not software, or a brand; "
+        "software goes to Software."
+    ),
+    "Software": (
+        "A program, app, library, framework, programming language or software platform; "
+        "a trained ML model goes to AIModel."
+    ),
+    "Technology": (
+        "A general technology, standard, protocol or hardware category, not a specific "
+        "product or program (e.g. 5G, lithium-ion battery, blockchain)."
+    ),
+    "AIModel": (
+        "A named trained machine-learning model or model family (e.g. GPT-4, BERT); "
+        "the software running it goes to Software, the architecture or technique to Method."
+    ),
+    "Method": (
+        "A technique, algorithm, procedure or process for doing something (e.g. gradient "
+        "descent, PCR); not an abstract idea (Concept) or a technology (Technology)."
+    ),
+    "Concept": (
+        "An abstract idea, theory, principle or term; not a way of doing something (Method) "
+        "or a whole discipline (Field)."
+    ),
+    "Field": (
+        "A discipline or domain of knowledge or industry (e.g. machine learning, oncology, "
+        "banking); not a single idea within it (Concept)."
+    ),
+    "Work": (
+        "A book, paper, article, report, film, artwork, song or other created work, "
+        "named by its title."
+    ),
+    "Dataset": "A named data collection, corpus or benchmark.",
+    "Metric": (
+        "A measure or indicator (e.g. accuracy, BLEU, GDP, inflation rate); "
+        "not a benchmark (Dataset)."
+    ),
+    "Regulation": "A law, regulation, policy, treaty or other legal act.",
+    "Substance": "A chemical, material, drug or food ingredient.",
+    "Condition": "A disease, disorder, symptom or other medical or psychological condition.",
+    "Organism": "A species, organism, cell type or other living thing.",
+    "Other": "Anything meaningful that fits none of the types above.",
+}
 DEFAULT_EXTENSIONS = ["pdf", "docx", "pptx", "xlsx", "html", "htm", "md", "adoc", "csv", "txt"]
 
 
@@ -67,8 +114,25 @@ class ChunkingSettings(BaseModel):
 
 
 class ExtractSettings(BaseModel):
-    entity_types: list[str] = Field(default_factory=lambda: list(DEFAULT_ENTITY_TYPES))
+    # name -> description (YAML mapping, order kept); a plain list of names also works
+    entity_types: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ENTITY_TYPES))
     max_failed_ratio: float = 0.2
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def _names_or_mapping(cls, value: object) -> object:
+        if isinstance(value, list | tuple):
+            value = {name: "" for name in value}
+        if isinstance(value, dict):
+            # `Name:` without a description is null in YAML
+            value = {str(k).strip(): str(v or "").strip() for k, v in value.items()}
+            if not value:
+                raise ValueError("entity_types must list at least one type")
+        return value
+
+    @property
+    def type_names(self) -> list[str]:
+        return list(self.entity_types)
 
 
 class ResolveSettings(BaseModel):

@@ -81,9 +81,17 @@ def test_latest_extraction_ignores_model_and_prompt_version(reg):
     reg.put_extraction("c1", "v1", "model-a", '{"a": 1}')
     reg.put_extraction("c1", "v2", "model-b", '{"b": 2}')
     reg.put_extraction("c2", "v1", "model-a", '{"c": 3}')
-    assert reg.get_latest_extraction("c1") == '{"b": 2}'
+    assert reg.get_latest_extraction("c1") == ("v2", '{"b": 2}')
     reg.put_extraction("c1", "v1", "model-a", '{"a": 4}')  # rewritten: now the latest
-    assert reg.get_latest_extraction("c1") == '{"a": 4}'
+    assert reg.get_latest_extraction("c1") == ("v1", '{"a": 4}')
+
+
+def test_has_extractions(reg):
+    assert not reg.has_extractions()
+    reg.put_extraction("c1", "v1", "m", "{}")
+    assert reg.has_extractions()
+    reg.wipe()
+    assert not reg.has_extractions()
 
 
 def test_pending_removal_journal(reg):
