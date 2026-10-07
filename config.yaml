@@ -1,0 +1,73 @@
+device: auto                         # auto | cuda | mps | cpu
+data_dir: .mnogobase
+logs_dir: logs
+runs_dir: runs
+
+llm:
+  base_url: https://codex.sale/v1    # local: http://localhost:11434/v1
+  model: gpt-6-luna                  # local: gemma4:26b-a4b
+  api_key_env: LLM_API_KEY
+  concurrency: 4
+  temperature: 0
+  timeout_s: 120
+  overrides: {extract: null, resolve: null, wiki: null, answer: null}
+
+embedder:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: embeddinggemma-2:740m
+  dim: 768
+  batch_size: 32
+  doc_template: "title: {title} | text: {text}"
+  query_template: "task: search result | query: {query}"
+  # Fallback if EmbeddingGemma 2 is unavailable (requires `mnogobase reindex` after switching):
+  # model: qwen3-embedding:0.6b
+  # dim: 1024
+  # doc_template: "{text}"
+  # query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
+
+sparse:
+  model: Qdrant/bm25
+
+parsing:
+  ocr: true
+  extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
+
+chunking:
+  tokenizer: google/embeddinggemma-2
+  max_tokens: 512
+
+extract:
+  entity_types: [Person, Organization, Concept, Method, Technology, Dataset, Work, Event, Location, Other]
+  max_failed_ratio: 0.2
+
+resolve:
+  auto_merge: 0.92
+  llm_check: 0.80
+  max_descriptions: 5
+
+wiki:
+  dir: wiki
+  language: en
+  min_mentions: 2
+  evidence_k: 12
+
+retrieval:
+  k: 8
+  context_tokens: 6000
+  budget: {rag: 0.4, wiki: 0.3, graph: 0.3}
+
+graph:
+  hops: 2
+  max_relations: 30
+  seeds: 5
+  seed_threshold: 0.3
+
+qdrant:
+  url: http://localhost:6333
+  prefix: mb_
+
+neo4j:
+  uri: bolt://localhost:7687
+  user: neo4j
+  password_env: NEO4J_PASSWORD
