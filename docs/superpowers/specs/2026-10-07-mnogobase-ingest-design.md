@@ -58,34 +58,39 @@ mnogobase/
 ├── src/mnogobase/
 │   ├── config.py             # pydantic-settings: YAML + env
 │   ├── device.py             # auto-detect cuda > mps > cpu
-│   ├── logging.py            # structlog setup, run_id context
-│   ├── models.py             # доменные dataclass/pydantic: Document, Chunk, Entity, Relation, WikiPage, EmbedInput
+│   ├── log.py                # structlog setup, run_id context, log_stage
+│   ├── models.py             # доменные pydantic-модели: DocumentRecord, ChunkRecord, EntityRecord, ContextItem, Answer, EmbedInput…
 │   ├── ids.py                # детерминированные ID
+│   ├── registry.py           # SQLite state + файловый lock
 │   ├── parsing/docling_parser.py
 │   ├── chunking/hybrid.py
 │   ├── embedding/
-│   │   ├── base.py           # Embedder protocol
+│   │   ├── base.py           # протоколы Embedder, SparseEncoder
 │   │   ├── ollama.py         # dense
 │   │   └── sparse.py         # BM25 (fastembed)
 │   ├── llm/
-│   │   ├── client.py         # OpenAI-compatible, structured output, retries
-│   │   └── prompts/          # extract.md, resolve.md, wiki_page.md, answer.md (версионируются)
+│   │   ├── client.py         # async OpenAI-compatible клиент, structured output, retries
+│   │   ├── templates.py      # загрузка и рендер промптов
+│   │   └── prompts/          # extract.md, resolve_same.md, resolve_summarize.md, wiki_page.md, answer.md (версионируются)
 │   ├── extraction/
 │   │   ├── extractor.py      # chunk → entities + relations
 │   │   └── resolver.py       # entity resolution / merge
 │   ├── stores/
 │   │   ├── qdrant_store.py   # VectorStore
-│   │   ├── graph_store.py    # GraphStore (Neo4j)
-│   │   └── registry.py       # SQLite state
+│   │   └── graph_store.py    # GraphStore (Neo4j)
 │   ├── wiki/
 │   │   ├── builder.py        # генерация/обновление страниц
 │   │   ├── render.py         # markdown, frontmatter, ссылки, index.md, log.md
 │   │   └── validate.py       # проверка цитат и ссылок
 │   ├── retrieval/
+│   │   ├── base.py           # протокол Retriever
 │   │   ├── rag.py  wiki.py  graph.py  combined.py
 │   │   ├── answer.py         # LLM-ответ с [n]-цитатами
 │   │   └── compare.py
 │   ├── pipeline.py           # оркестрация этапов ingest
+│   ├── app.py                # сборка зависимостей (build_app)
+│   ├── doctor.py             # проверки `mnogobase doctor` и preflight команд
+│   ├── maintenance.py        # reindex, reset
 │   └── cli.py
 └── tests/ (unit/, integration/, e2e/, fixtures/)
 ```
@@ -111,9 +116,11 @@ class Embedder(Protocol):
     def embed_documents(self, items: list[EmbedInput]) -> list[list[float]]: ...
     def embed_query(self, query: str) -> list[float]: ...
 
-class LLMClient(Protocol):
-    def complete(self, messages, *, task: str) -> str: ...
-    def structured(self, messages, schema: type[BaseModel], *, task: str) -> BaseModel: ...
+class LLMClient(Protocol):     # асинхронный: extract/wiki идут параллельно (семафор llm.concurrency)
+    usage: Usage               # накопленные tokens_in / tokens_out
+    def model_for(self, task: str) -> str: ...
+    async def complete(self, messages, *, task: str) -> str: ...
+    async def structured(self, messages, schema: type[T], *, task: str, max_repairs: int = 2) -> T: ...
 ```
 
 `task` (`extract | resolve | wiki | answer`) выбирает модель через `llm.overrides` и тегирует логи.
@@ -126,7 +133,7 @@ class LLMClient(Protocol):
 |---|---|
 | Document | `doc_id = sha256(file_bytes)[:16]` |
 | Chunk | `chunk_id = f"{doc_id}:{idx:05d}"` |
-| Entity | `entity_id = sha1(f"{type}|{normalize(canonical_name)}")[:16]` |
+| Entity | `entity_id = sha1(f"{type.casefold()}|{normalize(canonical_name)}")[:16]` (тип без учёта регистра: `Method` и `method` — одна сущность) |
 | WikiPage | `page_id = entity_id`, `slug = kebab(canonical_name)` (коллизии → суффикс `-{type}`) |
 | Qdrant point | `uuid5(NAMESPACE, <chunk_id \| entity_id \| page_id#section_idx>)` |
 
@@ -135,7 +142,7 @@ class LLMClient(Protocol):
 ### 4.2 Neo4j
 
 ```
-(:Document {doc_id, path, title, mime, lang, n_pages, ingested_at})
+(:Document {doc_id, path, title, mime, n_pages, ingested_at})
 (:Chunk    {chunk_id, doc_id, idx, text, headings[], page_start, page_end, n_tokens, modality})
 (:Entity   {entity_id, name, type, aliases[], description, mention_count})
 (:WikiPage {page_id, slug, title, path, content_hash, version, updated_at})
@@ -200,8 +207,8 @@ version: 3
 …
 
 ## Related
-- uses → [[Softmax]]
-- part_of → [[Transformer]]
+- uses → [[softmax|Softmax]]
+- part_of → [[transformer|Transformer]]
 
 ## Sources
 [^a91c…:00012]: *attention.pdf*, p.3
@@ -250,8 +257,8 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 
 1. Кандидаты: `dirty_entities` (или все при `--all`) с `mention_count ≥ wiki.min_mentions` (2).
 2. Контекст на сущность: описание, aliases, связи (predicate + сосед + описание), top-K (`wiki.evidence_k`, 12) evidence-чанков, ранжированных по близости к эмбеддингу сущности, **текущий текст страницы** (если есть) — LLM дополняет и правит, а не переписывает.
-3. LLM возвращает markdown-тело с `[^chunk_id]` и `[[Name]]`.
-4. Валидация: цитаты на несуществующие или не входившие в контекст чанки удаляются; `[[Name]]` остаётся ссылкой, только если у Name есть страница (или она создаётся в этом же прогоне), иначе превращается в текст.
+3. LLM возвращает markdown-тело с `[^chunk_id]` и `[[Name]]`; при записи ссылки переписываются в `[[slug|Name]]` (файлы названы по slug, поэтому в Obsidian ссылка ведёт на нужную страницу, а отображается имя).
+4. Валидация: цитаты на несуществующие или не входившие в контекст чанки удаляются; `[[Name]]` остаётся ссылкой (`[[slug|Name]]`), только если у Name есть страница (или она создаётся в этом же прогоне), иначе превращается в текст.
 5. Запись `.md`, upsert `WikiPage` (`version += 1`, `content_hash`), `ABOUT`, `LINKS_TO`, `CITES`; секции → `mb_wiki_pages`.
 6. Пересборка `index.md`, запись в `log.md` (run_id, дата, новые/обновлённые/удалённые страницы, обработанные документы), очистка обработанных `dirty_entities`.
 
@@ -272,7 +279,7 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 ### 5.4 Прочие команды
 
 - `mnogobase doctor` — device, доступность Ollama/Qdrant/Neo4j, наличие моделей (подсказка `ollama pull`), совпадение dim коллекций.
-- `mnogobase status` — сводка по registry: документы по этапам, ошибки, время, токены.
+- `mnogobase status` — сводка по registry: файлы по статусам, документы по этапам, сущности, ждущие обновления wiki, ошибки. Длительность каждого этапа пишется в `logs/mnogobase.jsonl` (событие `stage_done`, поле `duration_ms`); учёт токенов на этапах ingest отложен до трейсинга в Langfuse (токены ответов — в `compare`).
 - `mnogobase reindex` — пересчёт dense/sparse по текстам из Neo4j (чанки, сущности, wiki-секции) при смене эмбеддера; пересоздаёт коллекции. Граф и wiki не трогает.
 - `mnogobase reset [--yes]` — удаление коллекций с префиксом, очистка Neo4j, registry, cache и wiki (с подтверждением).
 
@@ -362,8 +369,8 @@ neo4j:
 
 ## 10. Тестирование
 
-- **Unit** (`pytest`, по умолчанию): `FakeEmbedder` (детерминированные векторы из хеша), `FakeLLM` (canned JSON), in-memory фейки store-интерфейсов. Покрытие: ids/normalize, chunk → payload, extractor (валидация/repair), resolver (пороги merge), cascade delete, registry/resume, wiki validate/render, fusion в `all`, answer citation parsing.
-- **Integration** (`-m integration`): `testcontainers` поднимает временные Qdrant и Neo4j — рабочие данные не затрагиваются. Проверяются store-реализации, hybrid query, Cypher k-hop, cascade delete.
+- **Unit** (`pytest`, по умолчанию): `FakeEmbedder` (детерминированные векторы из хеша), `FakeLLM` (canned JSON), `FakeSparse`, локальный Qdrant (`QdrantClient(":memory:")`). Покрытие: ids/normalize, chunk → payload, extractor (валидация/repair), registry, wiki validate/render, fusion в `all`, answer citation parsing.
+- **Integration** (`-m integration`): `testcontainers` поднимает временные Qdrant и Neo4j — рабочие данные не затрагиваются. Проверяются store-реализации, hybrid query, Cypher k-hop, resolver (пороги merge), wiki builder, а также пайплайн с фейковыми эмбеддером/LLM: cascade delete и resume (прерванные/упавшие этапы). In-memory фейков Neo4j нет — эти сценарии требуют Docker.
 - **E2E** (`-m e2e`, нужна Ollama с моделями): фикстуры `tests/fixtures/` (md, docx, pdf; RU и EN, пересекающиеся сущности) → `ingest` → проверки: сущности есть и RU/EN склеены, wiki-страница создана с валидными цитатами, `ask` во всех 4 режимах возвращает цитаты, повторный `ingest` — no-op.
 - Инструменты: `uv`, Python 3.12, `ruff` (lint + format).
 
