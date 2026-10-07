@@ -80,6 +80,13 @@ def test_replace_meta_only_swaps_the_expected_value(reg):
     assert reg.get_meta("embedder") == "a:1:tpl-y"
 
 
+def test_drop_file_removes_only_that_path(reg):
+    reg.upsert_file("/a.md", "d1", 1, 1.0, "done")
+    reg.upsert_file("/b.md", "d1", 1, 1.0, "done")
+    reg.drop_file("/a.md")
+    assert reg.paths_for_doc("d1") == ["/b.md"]
+
+
 def test_ingest_lock_is_exclusive(tmp_path):
     with ingest_lock(tmp_path), pytest.raises(filelock.Timeout):
         ingest_lock(tmp_path).acquire()

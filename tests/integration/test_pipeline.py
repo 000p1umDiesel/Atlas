@@ -200,6 +200,106 @@ async def test_renamed_then_edited_file_removes_the_old_version(make_app, tmp_pa
     assert app.registry.pending_removals() == []
 
 
+def _softmax_folder(tmp_path) -> Path:
+    folder = tmp_path / "moved"
+    folder.mkdir()
+    a = folder / "a.md"
+    a.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n", encoding="utf-8")
+    return a
+
+
+def _assert_points_at(app, doc_id: str, path: str) -> None:
+    assert document_path(app, doc_id) == path
+    assert chunk_paths(app, doc_id) == {path}
+    if app.pipeline.chunks_path(doc_id).exists():
+        doc, chunks = app.pipeline.load_chunks(doc_id)
+        assert doc.path == path and {c.path for c in chunks} == {path}
+
+
+@pytest.mark.parametrize(
+    ("where", "name"), [("vectors", "set_doc_path"), ("graph", "set_document_path")]
+)
+async def test_interrupted_repoint_is_finished_by_the_next_ingest(
+    make_app, tmp_path, monkeypatch, where, name
+):
+    a = _softmax_folder(tmp_path)
+    app = make_app()
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    doc_id = file_doc_id(a)
+    b = a.parent / "b.md"
+    a.rename(b)
+
+    _fail_once(monkeypatch, getattr(app, where), name)
+    failed = await app.pipeline.ingest([a.parent], build_wiki=False)
+    assert str(b.resolve()) in failed.failed
+    again = await app.pipeline.ingest([a.parent], build_wiki=False)
+
+    assert again.failed == {} and again.skipped == [str(b.resolve())]
+    _assert_points_at(app, doc_id, str(b.resolve()))
+
+
+async def test_renamed_file_refreshes_the_wiki_sources(make_app, tmp_path):
+    a = _softmax_folder(tmp_path)
+    app = make_app()
+    await app.pipeline.ingest([a.parent])
+    page = tmp_path / "wiki" / "entities" / "softmax.md"
+    assert "*a.md*" in page.read_text(encoding="utf-8")
+    b = a.parent / "b.md"
+    a.rename(b)
+
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    assert entity_id("Concept", "Softmax") in app.registry.dirty()
+    report = await app.wiki.build()
+
+    assert report.updated == ["Softmax"]
+    text = page.read_text(encoding="utf-8")
+    assert "*b.md*" in text and "*a.md*" not in text
+
+
+async def test_renamed_file_without_a_chunk_cache_is_repointed_from_the_graph(make_app, tmp_path):
+    a = _softmax_folder(tmp_path)
+    app = make_app()
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    doc_id = file_doc_id(a)
+    app.pipeline.chunks_path(doc_id).unlink()
+    b = a.parent / "b.md"
+    a.rename(b)
+
+    report = await app.pipeline.ingest([a.parent], build_wiki=False)
+
+    assert report.failed == {} and report.skipped == [str(b.resolve())]
+    _assert_points_at(app, doc_id, str(b.resolve()))
+    assert entity_id("Concept", "Softmax") in app.registry.dirty()
+
+
+async def test_repoint_drops_the_registry_row_of_the_missing_path(make_app, tmp_path, monkeypatch):
+    a = _softmax_folder(tmp_path)
+    copy = a.parent / "c.md"  # same content under a path that stays
+    shutil.copy(a, copy)
+    app = make_app()
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    doc_id = file_doc_id(a)
+    b = a.parent / "b.md"
+    a.rename(b)
+
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    assert app.registry.get_file(str(a.resolve())) is None  # renamed away: row dropped
+    assert sorted(app.registry.paths_for_doc(doc_id)) == sorted(
+        [str(b.resolve()), str(copy.resolve())]  # existing duplicates are kept
+    )
+    assert document_path(app, doc_id) == str(b.resolve())
+
+    loads: list[str] = []
+    real = app.pipeline.load_chunks
+    monkeypatch.setattr(app.pipeline, "load_chunks", lambda d: loads.append(d) or real(d))
+    copy.unlink()  # one copy left: nothing to compare against once the stale row is gone
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    _assert_points_at(app, doc_id, str(b.resolve()))
+    loads.clear()
+    report = await app.pipeline.ingest([a.parent], build_wiki=False)
+    assert report.skipped == [str(b.resolve())] and loads == []
+
+
 async def test_empty_document(make_app, tmp_path):
     folder = tmp_path / "empty_docs"
     folder.mkdir()

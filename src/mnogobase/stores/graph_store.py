@@ -117,6 +117,22 @@ class GraphStore:
                 pairs=pairs,
             )
 
+    def document_path(self, doc_id: str) -> str | None:
+        """The path recorded on the Document node (None if the document is unknown)."""
+        rows = self._run("MATCH (d:Document {doc_id: $id}) RETURN d.path AS path", id=doc_id)
+        return rows[0]["path"] if rows else None
+
+    def set_document_path(self, doc_id: str, path: str) -> None:
+        self._run("MATCH (d:Document {doc_id: $id}) SET d.path = $path", id=doc_id, path=path)
+
+    def pages_citing_document(self, doc_id: str) -> list[str]:
+        """Wiki pages (page_id == entity_id) whose Sources cite a chunk of this document."""
+        rows = self._run(
+            "MATCH (p:WikiPage)-[:CITES]->(:Chunk {doc_id: $id}) RETURN DISTINCT p.page_id AS pid",
+            id=doc_id,
+        )
+        return sorted(r["pid"] for r in rows)
+
     def has_document(self, doc_id: str) -> bool:
         return bool(self._run("MATCH (d:Document {doc_id: $id}) RETURN 1 AS x LIMIT 1", id=doc_id))
 

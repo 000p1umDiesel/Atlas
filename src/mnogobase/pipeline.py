@@ -385,28 +385,48 @@ class Pipeline:
 
     def _follow_moved_document(self, doc_id: str, path: str) -> None:
         """`path` holds an already ingested document: if the path its citations name no
-        longer has it (the file was renamed, deleted or edited), point them at `path`."""
+        longer has it (the file was renamed, deleted or edited), point them at `path`.
+        Then forget registry rows of this content whose file is gone, so later runs need
+        not check again."""
         if all(p == path for p in self._registry.paths_for_doc(doc_id)):
             return  # no other file ever had this content: the citations already name `path`
-        if not self.chunks_path(doc_id).exists():
-            return  # never chunked: nothing stored carries a path yet
-        doc, _chunks = self.load_chunks(doc_id)
-        if doc.path != path and not _holds(doc.path, doc_id):
+        if any(p != path and not _holds(p, doc_id) for p in self._recorded_paths(doc_id)):
             self._repoint_doc(doc_id, [path])
+        for stale in self._registry.paths_for_doc(doc_id):
+            if not Path(stale).exists():
+                self._registry.drop_file(stale)
+
+    def _recorded_paths(self, doc_id: str) -> set[str]:
+        """Paths the stored document names: the chunk cache and the graph's Document node
+        (either can be missing: the cache was deleted, or the document was never embedded)."""
+        recorded = set()
+        if self.chunks_path(doc_id).exists():
+            recorded.add(self.load_chunks(doc_id)[0].path)
+        graph_path = self._graph.document_path(doc_id)
+        if graph_path is not None:
+            recorded.add(graph_path)
+        return recorded
 
     def _repoint_doc(self, doc_id: str, survivors: list[str]) -> None:
-        """Shared content stays; make sure citations name a path that still has it."""
-        if not self.chunks_path(doc_id).exists():
+        """Shared content stays; make sure citations name a path that still has it.
+
+        Qdrant is updated first and the chunk cache last: the next run decides from the
+        cache and the graph, so a failure part-way is retried instead of being forgotten."""
+        recorded = self._recorded_paths(doc_id)
+        if not recorded:
             return  # never chunked: nothing stored carries a path yet
-        doc, chunks = self.load_chunks(doc_id)
-        if doc.path in survivors:
+        if recorded <= set(survivors):
             return
         path = survivors[0]
-        self._log.info("document_repointed", old_path=doc.path, path=path)
-        doc = doc.model_copy(update={"path": path})
-        self._save_chunks(doc, [c.model_copy(update={"path": path}) for c in chunks])
-        self._graph.upsert_document(doc)
+        self._log.info("document_repointed", old_path=sorted(recorded - {path}), path=path)
         self._vectors.set_doc_path(doc_id, path)
+        self._graph.set_document_path(doc_id, path)
+        # wiki pages citing this document name its file in their Sources
+        self._registry.mark_dirty(self._graph.pages_citing_document(doc_id))
+        if self.chunks_path(doc_id).exists():
+            doc, chunks = self.load_chunks(doc_id)
+            doc = doc.model_copy(update={"path": path})
+            self._save_chunks(doc, [c.model_copy(update={"path": path}) for c in chunks])
 
     async def _run_stage(self, stage: str, path: Path, doc_id: str) -> None:
         if stage == "parse":

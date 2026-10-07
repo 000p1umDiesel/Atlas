@@ -72,6 +72,9 @@ class Registry:
             "UPDATE files SET status=?, updated_at=? WHERE path=?", (status, _now(), path)
         )
 
+    def drop_file(self, path: str) -> None:
+        self._db.execute("DELETE FROM files WHERE path=?", (path,))
+
     def files(self) -> list[FileRow]:
         rows = self._db.execute(
             "SELECT path, doc_id, size, mtime, status FROM files ORDER BY path"
