@@ -63,6 +63,13 @@ class _RemovalPlan(BaseModel):
     relinked: int  # how many of those only linked to a removed page
 
 
+def _holds(path: str, doc_id: str) -> bool:
+    """Whether the file at `path` exists and currently has this content (registry rows and
+    recorded document paths can be stale: the file was renamed, deleted or edited)."""
+    file = Path(path)
+    return file.is_file() and file_doc_id(file) == doc_id
+
+
 class Pipeline:
     def __init__(
         self,
@@ -203,6 +210,7 @@ class Pipeline:
         pending = self._registry.pending_stages(doc_id)
         if not pending:
             self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "done")
+            self._follow_moved_document(doc_id, key)
             return "skipped"
         failed_stage = next(
             (s for s in pending if self._registry.stage_status(doc_id, s) == "failed"), None
@@ -237,7 +245,8 @@ class Pipeline:
         journaled = self._registry.get_removal(doc_id)
         if journaled is not None:  # an interrupted earlier attempt
             return self._resume_removal(doc_id, _RemovalPlan.model_validate_json(journaled))
-        survivors = [p for p in self._registry.paths_for_doc(doc_id) if p != keep_path]
+        # only a file that still has this content keeps it (not a renamed or edited one)
+        survivors = [p for p in self._live_copies(doc_id) if p != keep_path]
         if survivors:
             self._repoint_doc(doc_id, survivors)
             return []
@@ -292,10 +301,10 @@ class Pipeline:
             return self._start_removal(doc_id)
         return self._apply_removal(doc_id, plan, survivors)
 
-    def _live_copies(self, doc_id: str, live: Sequence[str]) -> list[str]:
+    def _live_copies(self, doc_id: str, live: Sequence[str] = ()) -> list[str]:
         """Paths whose file currently holds this content (registry rows can be stale)."""
         candidates = dict.fromkeys([*self._registry.paths_for_doc(doc_id), *live])
-        return [p for p in candidates if Path(p).is_file() and file_doc_id(Path(p)) == doc_id]
+        return [p for p in candidates if _holds(p, doc_id)]
 
     def _removal_plan(self, doc_id: str) -> _RemovalPlan:
         """Read-only: everything a removal must clean up, computed while the graph still has it."""
@@ -365,6 +374,17 @@ class Pipeline:
         mentioned = {e for ids in self._graph.chunk_entity_ids(doc_id).values() for e in ids}
         paged = [row.page_id for row in self._graph.wiki_pages() if row.page_id in mentioned]
         return {page_id: self._graph.pages_linking_to([page_id]) for page_id in paged}
+
+    def _follow_moved_document(self, doc_id: str, path: str) -> None:
+        """`path` holds an already ingested document: if the path its citations name no
+        longer has it (the file was renamed, deleted or edited), point them at `path`."""
+        if all(p == path for p in self._registry.paths_for_doc(doc_id)):
+            return  # no other file ever had this content: the citations already name `path`
+        if not self.chunks_path(doc_id).exists():
+            return  # never chunked: nothing stored carries a path yet
+        doc, _chunks = self.load_chunks(doc_id)
+        if doc.path != path and not _holds(doc.path, doc_id):
+            self._repoint_doc(doc_id, [path])
 
     def _repoint_doc(self, doc_id: str, survivors: list[str]) -> None:
         """Shared content stays; make sure citations name a path that still has it."""

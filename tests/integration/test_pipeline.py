@@ -150,6 +150,55 @@ async def test_duplicate_content_survives_change(make_app, docs):
     assert doc.path == survivor and {c.path for c in chunks} == {survivor}
 
 
+async def test_renamed_file_moves_citations_to_the_new_path(make_app, docs):
+    app = make_app()
+    await app.pipeline.ingest([docs])
+    old = docs / "attention_en.md"
+    doc_id = file_doc_id(old)
+    calls = len(app.llm.calls_for("extract"))
+    new = docs / "renamed.md"
+    old.rename(new)
+
+    report = await app.pipeline.ingest([docs])
+    assert report.failed == {} and report.processed == []
+    assert str(new.resolve()) in report.skipped  # same content: nothing is redone
+    assert len(app.llm.calls_for("extract")) == calls
+    path = str(new.resolve())
+    assert document_path(app, doc_id) == path
+    assert chunk_paths(app, doc_id) == {path}
+    doc, chunks = app.pipeline.load_chunks(doc_id)
+    assert doc.path == path and {c.path for c in chunks} == {path}
+
+
+async def test_renamed_then_edited_file_removes_the_old_version(make_app, tmp_path):
+    folder = tmp_path / "renamed"
+    folder.mkdir()
+    a = folder / "a.md"
+    a.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n", encoding="utf-8")
+    app = make_app()
+    await app.pipeline.ingest([folder])
+    old = file_doc_id(a)
+    softmax = entity_id("Concept", "Softmax")
+    page = tmp_path / "wiki" / "entities" / "softmax.md"
+    assert page.exists()
+
+    b = folder / "b.md"
+    a.rename(b)  # the registry still lists a.md with the old content
+    renamed = await app.pipeline.ingest([folder])
+    assert renamed.skipped == [str(b.resolve())]
+    b.write_text("# Notes\n\nThe Transformer is a network.\n", encoding="utf-8")
+    report = await app.pipeline.ingest([folder])
+
+    assert report.failed == {} and report.processed == [str(b.resolve())]
+    assert not app.graph.has_document(old)  # a.md is gone: it does not keep the old version
+    assert chunk_count(app, old) == 0
+    assert app.graph.counts()["Document"] == 1
+    assert app.graph.get_entity(softmax) is None
+    assert _points(app, app.vectors.entities, "entity_id", softmax) == 0
+    assert "Softmax" in report.wiki.deleted and not page.exists()
+    assert app.registry.pending_removals() == []
+
+
 async def test_empty_document(make_app, tmp_path):
     folder = tmp_path / "empty_docs"
     folder.mkdir()
