@@ -7,6 +7,7 @@ from typing import Annotated
 
 import filelock
 import typer
+import yaml
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -36,6 +37,8 @@ console = Console()
 _state: dict[str, Path | None] = {"config": None}
 # services a command needs before it starts: embedder, LLM, vector store, graph
 PREFLIGHT_CHECKS = ("ollama", "llm", "qdrant", "neo4j")
+REINDEX_CHECKS = ("ollama", "qdrant", "neo4j")
+RESET_CHECKS = ("qdrant", "neo4j")
 
 
 @app.callback()
@@ -53,13 +56,16 @@ def _settings() -> Settings:
     except FileNotFoundError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2) from None
+    except (yaml.YAMLError, ValueError) as exc:  # bad YAML, or a pydantic ValidationError
+        console.print(f"[red]Invalid configuration:[/red] {escape(str(exc))}")
+        raise typer.Exit(2) from None
     configure_logging(settings.logs_dir)
     return settings
 
 
-def _preflight(settings: Settings) -> None:
+def _preflight(settings: Settings, checks: tuple[str, ...] = PREFLIGHT_CHECKS) -> None:
     """Stop early (exit 2) when a service the command depends on is unreachable."""
-    failed = [c for c in run_checks(settings, only=PREFLIGHT_CHECKS) if not c.ok]
+    failed = [c for c in run_checks(settings, only=checks) if not c.ok]
     if failed:
         for check in failed:
             console.print(f"[red]✗ {check.name}[/red]: {escape(check.detail)}")
@@ -306,6 +312,7 @@ def compare(
 def reindex() -> None:
     """Recompute every vector after changing the embedder (graph and wiki are kept)."""
     settings = _settings()
+    _preflight(settings, REINDEX_CHECKS)
     lock = _lock(settings)
     try:
         application = build_app(settings)
@@ -322,14 +329,37 @@ def reindex() -> None:
     )
 
 
+def _reset_targets(settings: Settings) -> list[str]:
+    wiki_dir = settings.wiki.dir.resolve()
+    return [
+        f"Neo4j {settings.neo4j.uri}: all nodes in the default database",
+        f"Qdrant {settings.qdrant.url}: collections with prefix {settings.qdrant.prefix!r}",
+        f"state and caches in {settings.data_dir.resolve()}",
+        f"wiki pages in {wiki_dir}: entities/, index.md, log.md",
+    ]
+
+
 @app.command()
 def reset(
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask for confirmation.")] = False,
 ) -> None:
     """Delete ALL vectors, graph data, registry state, caches and wiki pages."""
-    if not yes and not typer.confirm("Delete all mnogobase data (Qdrant, Neo4j, wiki, cache)?"):
-        raise typer.Exit(1)
     settings = _settings()
+    state_db = settings.data_dir / "state.db"
+    if not state_db.is_file():
+        # --yes never bypasses this: a wrong CWD or config must not wipe someone else's data
+        console.print(
+            f"[red]No mnogobase project here: {escape(str(state_db.resolve()))} does not exist.[/red] "
+            "Run reset from the project directory or pass its --config.",
+            soft_wrap=True,
+        )
+        raise typer.Exit(2)
+    _preflight(settings, RESET_CHECKS)
+    console.print("This deletes:", soft_wrap=True)
+    for target in _reset_targets(settings):
+        console.print(f"  - {escape(target)}", soft_wrap=True)
+    if not yes and not typer.confirm("Delete all of the above?"):
+        raise typer.Exit(1)
     lock = _lock(settings)
     try:
         application = build_app(settings)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import shutil
 
 from mnogobase.app import App
@@ -8,6 +9,7 @@ from mnogobase.extraction.resolver import entity_embed_input
 from mnogobase.log import get_logger
 
 ENTITY_BATCH = 64
+WIKI_FILES = ("index.md", "log.md")
 # Stored while a reindex runs: an interrupted reindex leaves a partial index behind, and
 # `Pipeline.prepare` then refuses to use it until `mnogobase reindex` completes.
 REINDEX_IN_PROGRESS = "reindex-in-progress"
@@ -63,10 +65,18 @@ def reindex(app: App) -> dict[str, int]:
 
 
 def reset(app: App) -> None:
-    """Delete every vector, graph node, registry row, cache file and wiki page."""
+    """Delete every vector, graph node, registry row, cache file and wiki page.
+
+    Only the wiki files mnogobase writes are removed (`entities/`, `index.md`, `log.md`); the
+    wiki directory itself goes only if nothing else is left in it."""
     app.vectors.drop_collections()
     app.graph.wipe()
     app.registry.wipe()
     shutil.rmtree(app.settings.data_dir / "cache", ignore_errors=True)
-    shutil.rmtree(app.settings.wiki.dir, ignore_errors=True)
+    wiki_dir = app.settings.wiki.dir
+    shutil.rmtree(wiki_dir / "entities", ignore_errors=True)
+    for name in WIKI_FILES:
+        (wiki_dir / name).unlink(missing_ok=True)
+    with contextlib.suppress(OSError):  # missing, or holds files mnogobase does not own
+        wiki_dir.rmdir()
     get_logger(__name__).info("reset_done")

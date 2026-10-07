@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from typer.testing import CliRunner
 from mnogobase import cli
 from mnogobase.doctor import Check
 from mnogobase.models import Answer, Source
+from mnogobase.registry import Registry
 
 runner = CliRunner()
 
@@ -41,8 +43,13 @@ def test_doctor_exit_code_reflects_failures(tmp_path, monkeypatch):
     assert "neo4j" in result.output and "fail" in result.output
 
 
+def make_project(root: Path) -> None:
+    Registry(root / ".mnogobase" / "state.db").close()
+
+
 def test_reset_requires_confirmation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
     called = []
     monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(cli, "do_reset", lambda application: called.append(application))
@@ -50,6 +57,69 @@ def test_reset_requires_confirmation(tmp_path, monkeypatch):
     assert declined.exit_code == 1 and called == []
     accepted = runner.invoke(cli.app, ["reset", "--yes"])
     assert accepted.exit_code == 0 and len(called) == 1
+
+
+def test_reset_prompt_lists_the_resolved_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "neo4j:\n  uri: bolt://graph.example:7999\n"
+        "qdrant:\n  url: http://vectors.example:6399\n  prefix: proj_\n"
+        "wiki:\n  dir: kb\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "do_reset", lambda application: pytest.fail("declined reset ran"))
+    result = runner.invoke(cli.app, ["reset"], input="n\n")
+    assert result.exit_code == 1, result.output
+    assert "bolt://graph.example:7999" in result.output
+    assert "http://vectors.example:6399" in result.output and "'proj_'" in result.output
+    assert str((tmp_path / ".mnogobase").resolve()) in result.output
+    assert str((tmp_path / "kb").resolve()) in result.output
+
+
+@pytest.mark.parametrize("args", [["reset"], ["reset", "--yes"]])
+def test_reset_refuses_outside_a_project(tmp_path, monkeypatch, args):
+    monkeypatch.chdir(tmp_path)  # no .mnogobase/state.db here
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    monkeypatch.setattr(cli, "do_reset", lambda application: pytest.fail("reset ran"))
+    result = runner.invoke(cli.app, args, input="y\n")
+    assert result.exit_code == 2, result.output
+    assert "No mnogobase project" in result.output and "state.db" in result.output
+    assert not (tmp_path / ".mnogobase").exists()
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [(["reset", "--yes"], {"qdrant", "neo4j"}), (["reindex"], {"ollama", "qdrant", "neo4j"})],
+)
+def test_reset_and_reindex_preflight(tmp_path, monkeypatch, args, expected):
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+    asked: list[tuple[str, ...]] = []
+
+    def failing(settings, only=None):
+        asked.append(tuple(only or ()))
+        return [Check("neo4j", False, "ServiceUnavailable: down")]
+
+    monkeypatch.setattr(cli, "run_checks", failing)
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2, result.output
+    assert "ServiceUnavailable: down" in result.output
+    assert set(asked[0]) == expected
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["wiki: [unclosed\n", "wiki:\n  min_mentions: lots\n", "- just\n- a list\n"],
+)
+def test_invalid_config_is_a_clear_error(tmp_path, monkeypatch, content):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text(content, encoding="utf-8")
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 2, result.output
+    assert "Invalid configuration" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
 
 
 def test_ingest_without_paths_is_a_noop(tmp_path, monkeypatch):
