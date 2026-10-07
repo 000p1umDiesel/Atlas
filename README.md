@@ -138,7 +138,7 @@ uv run mnogobase compare "Что такое механизм внимания?" 
 1. Откройте **http://localhost:7474**.
 2. Подключение: `neo4j://localhost:7687`, пользователь `neo4j`, пароль из `.env` (по умолчанию `mnogobase-dev`).
 3. **Стиль (один раз).** Выполните в строке запроса `:style`, затем перетащите в открывшуюся панель файл [`docs/neo4j/mnogobase.grass`](docs/neo4j/mnogobase.grass). У сущностей появятся имена, у связей — предикаты, у документов и чанков — свои цвета.
-4. **Цвет по типу сущности (по желанию).** Тип хранится в свойстве `type`; чтобы раскрасить узлы, добавьте его как метку (стиль выше уже содержит цвета для `Person`, `Concept`, `Method` и других):
+4. **Цвет по типу сущности (по желанию).** Тип хранится в свойстве `type`; чтобы раскрасить узлы, добавьте его как метку (стиль выше уже содержит цвета для всех типов по умолчанию, см. раздел 11):
 
    ```cypher
    MATCH (e:Entity) CALL apoc.create.addLabels(e, [e.type]) YIELD node RETURN count(node);
@@ -277,7 +277,7 @@ uv run ruff check . && uv run ruff format --check .
 
 | Команда | Что делает |
 |---|---|
-| `doctor` | проверяет устройство, модель Ollama, LLM, Qdrant, Neo4j, совместимость индекса (код выхода 1 при ошибке) |
+| `doctor` | проверяет устройство, модель Ollama, LLM, Qdrant, Neo4j, совместимость индекса (код выхода 1 при ошибке); смена типов сущностей — только предупреждение |
 | `status` | файлы по статусам, состояние этапов, сущности в очереди на обновление wiki, незавершённые удаления, ошибки |
 | `ingest PATH... [--no-wiki] [--retry-failed]` | загрузка документов (раздел 4) |
 | `wiki build [--all]` | обновить страницы сущностей с новыми упоминаниями (или все) |
@@ -308,9 +308,38 @@ uv run ruff check . && uv run ruff format --check .
 - **Чанкирование** — `chunking.max_tokens` (по умолчанию 512).
 - **Wiki** — `wiki.language` (`en`), `wiki.min_mentions` (2), `wiki.evidence_k` (12 чанков-доказательств на страницу).
 - **Поиск** — `retrieval.k`, `retrieval.context_tokens`, доли бюджета для режима `all` в `retrieval.budget`.
-- **Сущности** — список типов в `extract.entity_types`.
+- **Сущности** — типы в `extract.entity_types`, см. ниже.
 
 Логи в формате JSON по строкам пишутся в `logs/mnogobase.jsonl` (поля `run_id`, `doc_id`, `stage`, `duration_ms` и др.).
+
+### Типы сущностей
+
+Типы задаются в `extract.entity_types`: имя типа → одна строка описания. Описания попадают в промпт извлечения и помогают LLM различать похожие типы. По умолчанию 20 типов для документов из любых областей, не только научных статей:
+
+`Person`, `Organization`, `Location`, `Event`, `Project`, `Product`, `Software`, `Technology`, `AIModel`, `Method`, `Concept`, `Field`, `Work`, `Dataset`, `Metric`, `Regulation`, `Substance`, `Condition`, `Organism`, `Other`.
+
+Чтобы добавить или изменить тип, отредактируйте список в `config.yaml` (порядок сохраняется, `Other` оставляйте последним: в него попадает всё, что LLM отнесла к неизвестному типу):
+
+```yaml
+extract:
+  entity_types:
+    Person: A real or fictional individual, named or clearly identified.
+    Gene: A named gene or protein; not the disease it causes (Condition).
+    Condition: A disease, disorder, symptom or other medical or psychological condition.
+    Other: Anything meaningful that fits none of the types above.
+```
+
+Можно указать и просто список имён без описаний: `entity_types: [Person, Gene, Other]`.
+
+Главное правило: **типы не должны пересекаться**. Тип входит в идентификатор сущности (`entity_id`), поэтому если одну и ту же вещь можно отнести к двум типам, она расколется на две разные сущности (например, `PyTorch` как `Software` и как `Technology`). В описании полезно прямо писать, чем тип отличается от соседних.
+
+Что происходит после изменения типов:
+
+- новые и изменённые документы сразу извлекаются с новыми типами (кэш извлечения учитывает набор типов);
+- уже загруженные документы сохраняют старые типы. `status`, `doctor` и `ingest` предупреждают об этом, пока всё не будет извлечено заново;
+- чтобы переизвлечь всё с новыми типами: `uv run mnogobase reset`, затем `uv run mnogobase ingest documents/` (это заново вызывает LLM для всех чанков).
+
+Для раскраски новых типов в Neo4j добавьте строку вида `node.Gene { color: #...; border-color: #...; }` в [`docs/neo4j/mnogobase.grass`](docs/neo4j/mnogobase.grass) (раздел 6).
 
 ## 12. GPU / CUDA
 
