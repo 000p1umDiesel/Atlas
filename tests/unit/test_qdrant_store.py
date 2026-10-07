@@ -83,6 +83,20 @@ def test_delete_doc_only_removes_that_doc():
     assert store.client.count(store.chunks).count == 1
 
 
+def test_set_doc_path_only_touches_that_doc():
+    store = make_store()
+    index(store, chunks("aaaa", ["one", "two"]))
+    index(store, chunks("bbbb", ["three"]))
+    store.set_doc_path("aaaa", "/elsewhere.md")
+    points, _ = store.client.scroll(store.chunks, with_payload=True, limit=10)
+    paths = {p.payload["chunk_id"]: p.payload["path"] for p in points}
+    assert paths == {
+        "aaaa:00000": "/elsewhere.md",
+        "aaaa:00001": "/elsewhere.md",
+        "bbbb:00000": "/bbbb.md",
+    }
+
+
 def test_chunk_entity_filter():
     store = make_store()
     index(store, chunks("aaaa", ["transformer attention", "cats and dogs"]))

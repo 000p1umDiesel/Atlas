@@ -157,6 +157,12 @@ class QdrantStore:
             points=[point_id(chunk_id)],
         )
 
+    def set_doc_path(self, doc_id: str, path: str) -> None:
+        """Point every chunk of a document at another file path (used for citations)."""
+        self._call(
+            self.client.set_payload, self.chunks, {"path": path}, points=_match("doc_id", doc_id)
+        )
+
     def delete_doc(self, doc_id: str) -> None:
         self._delete_where(self.chunks, "doc_id", doc_id)
 

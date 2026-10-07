@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from mnogobase.chunking.hybrid import Chunker
+from mnogobase.config import Settings
+from mnogobase.embedding.base import Embedder, SparseEncoder, embedder_signature
+from mnogobase.extraction.extractor import Extractor
+from mnogobase.extraction.resolver import EntityResolver
+from mnogobase.ids import file_doc_id, normalize_name
+from mnogobase.log import bind_context, get_logger, log_stage, unbind_context
+from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput
+from mnogobase.parsing.docling_parser import DoclingParser
+from mnogobase.registry import Registry
+from mnogobase.stores.graph_store import GraphStore
+from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.wiki.builder import WikiBuilder, WikiReport
+
+
+class EmbedderMismatchError(RuntimeError):
+    pass
+
+
+class ExtractionFailedError(RuntimeError):
+    pass
+
+
+@dataclass
+class IngestReport:
+    processed: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    failed: dict[str, str] = field(default_factory=dict)
+    wiki: WikiReport | None = None  # per-page wiki failures are in `wiki.failed`
+
+
+class _PreviouslyFailed(Exception):
+    pass
+
+
+class Pipeline:
+    def __init__(
+        self,
+        settings: Settings,
+        registry: Registry,
+        parser: DoclingParser,
+        chunker: Chunker,
+        embedder: Embedder,
+        sparse: SparseEncoder,
+        vectors: QdrantStore,
+        graph: GraphStore,
+        extractor: Extractor,
+        resolver: EntityResolver,
+        wiki: WikiBuilder,
+    ):
+        self._s = settings
+        self._registry = registry
+        self._parser = parser
+        self._chunker = chunker
+        self._embedder = embedder
+        self._sparse = sparse
+        self._vectors = vectors
+        self._graph = graph
+        self._extractor = extractor
+        self._resolver = resolver
+        self._wiki = wiki
+        self._log = get_logger(__name__)
+
+    # ---- setup ----
+    def prepare(self, check_embedder: bool = True, resume: bool = True) -> None:
+        signature = embedder_signature(self._embedder)
+        stored = self._registry.get_meta("embedder")
+        if check_embedder and stored is not None and stored != signature:
+            raise EmbedderMismatchError(
+                f"index was built with {stored}, config now uses {signature}; "
+                "run `mnogobase reindex`"
+            )
+        self._vectors.ensure_collections()
+        self._graph.ensure_schema()
+        if stored is None:
+            self._registry.set_meta("embedder", signature)
+        if resume:
+            resumed = self._registry.reset_running()
+            if resumed:
+                self._log.warning("resuming_interrupted_stages", count=resumed)
+
+    def discover(self, paths: Sequence[Path]) -> list[Path]:
+        exts = {f".{e.lower().lstrip('.')}" for e in self._s.parsing.extensions}
+        found: list[Path] = []
+        for path in paths:
+            path = Path(path)
+            if path.is_dir():
+                for file in sorted(path.rglob("*")):
+                    hidden = any(part.startswith(".") for part in file.relative_to(path).parts)
+                    if file.is_file() and file.suffix.lower() in exts and not hidden:
+                        found.append(file)
+            elif path.is_file() and path.suffix.lower() in exts:
+                found.append(path)
+        return list(dict.fromkeys(f.resolve() for f in found))
+
+    # ---- chunk cache ----
+    def chunks_path(self, doc_id: str) -> Path:
+        return self._s.data_dir / "cache" / f"{doc_id}.chunks.json"
+
+    def _save_chunks(self, doc: DocumentRecord, chunks: list[ChunkRecord]) -> None:
+        path = self.chunks_path(doc.doc_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"document": doc.model_dump(), "chunks": [c.model_dump() for c in chunks]}
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def load_chunks(self, doc_id: str) -> tuple[DocumentRecord, list[ChunkRecord]]:
+        payload = json.loads(self.chunks_path(doc_id).read_text(encoding="utf-8"))
+        return (
+            DocumentRecord(**payload["document"]),
+            [ChunkRecord(**c) for c in payload["chunks"]],
+        )
+
+    # ---- ingest ----
+    async def ingest(
+        self,
+        paths: Sequence[Path],
+        *,
+        build_wiki: bool = True,
+        retry_failed: bool = False,
+        run_id: str = "",
+    ) -> IngestReport:
+        self.prepare()
+        report = IngestReport()
+        removed_names: list[str] = []
+        for path in self.discover(paths):
+            key = str(path)
+            try:
+                status = await self._ingest_file(path, retry_failed, removed_names)
+            except _PreviouslyFailed as exc:
+                report.failed[key] = str(exc)
+                continue
+            except Exception as exc:
+                report.failed[key] = f"{type(exc).__name__}: {exc}"
+                self._log.error(
+                    "ingest_file_failed",
+                    path=key,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    exc_info=True,
+                )
+                continue
+            (report.processed if status == "processed" else report.skipped).append(key)
+        if build_wiki:
+            report.wiki = await self._wiki.build(
+                run_id=run_id, deleted=removed_names, documents=report.processed
+            )
+        self._log.info(
+            "ingest_done",
+            processed=len(report.processed),
+            skipped=len(report.skipped),
+            failed=len(report.failed),
+            wiki_failed=len(report.wiki.failed) if report.wiki else 0,
+        )
+        return report
+
+    async def _ingest_file(self, path: Path, retry_failed: bool, removed_names: list[str]) -> str:
+        key = str(path)
+        doc_id = file_doc_id(path)
+        stat = path.stat()
+        row = self._registry.get_file(key)
+        if row is not None and row.doc_id != doc_id:
+            removed_names.extend(self._remove_doc(row.doc_id, keep_path=key))
+        pending = self._registry.pending_stages(doc_id)
+        if not pending:
+            self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "done")
+            return "skipped"
+        failed_stage = next(
+            (s for s in pending if self._registry.stage_status(doc_id, s) == "failed"), None
+        )
+        if failed_stage and not retry_failed:
+            self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "failed")
+            raise _PreviouslyFailed(
+                f"stage {failed_stage} failed earlier; rerun with --retry-failed"
+            )
+        self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "processing")
+        bind_context(doc_id=doc_id)
+        try:
+            for stage in pending:
+                self._registry.set_stage(doc_id, stage, "running")
+                try:
+                    with log_stage(self._log, stage, path=key):
+                        await self._run_stage(stage, path, doc_id)
+                except Exception as exc:
+                    self._registry.set_stage(
+                        doc_id, stage, "failed", error=f"{type(exc).__name__}: {exc}"
+                    )
+                    self._registry.set_file_status(key, "failed")
+                    raise
+                self._registry.set_stage(doc_id, stage, "done")
+        finally:
+            unbind_context("doc_id")
+        self._registry.set_file_status(key, "done")
+        return "processed"
+
+    def _remove_doc(self, doc_id: str, keep_path: str) -> list[str]:
+        """Delete an old document version unless another path still has the same content."""
+        survivors = [p for p in self._registry.paths_for_doc(doc_id) if p != keep_path]
+        if survivors:
+            self._repoint_doc(doc_id, survivors)
+            return []
+        linkers = self._pages_linking_into(doc_id)
+        result = self._graph.delete_document(doc_id)
+        removed = set(result.removed_entity_ids)
+        self._vectors.delete_doc(doc_id)
+        self._vectors.delete_entities(result.removed_entity_ids)
+        for page_id, rel_path in result.removed_pages:
+            self._vectors.delete_wiki_page(page_id)
+            (self._s.wiki.dir / rel_path).unlink(missing_ok=True)
+        # pages linking to a removed page are rewritten so the stale link disappears
+        stale_linkers = {p for target in removed for p in linkers.get(target, [])}
+        self._registry.mark_dirty((set(result.affected) | stale_linkers) - removed)
+        self._registry.clear_dirty(result.removed_entity_ids)
+        self._registry.clear_doc(doc_id)
+        self._parser.drop_cache(doc_id)
+        self.chunks_path(doc_id).unlink(missing_ok=True)
+        self._log.info(
+            "document_removed",
+            old_doc_id=doc_id,
+            removed_entities=len(removed),
+            relinked_pages=len(stale_linkers - removed),
+        )
+        return result.removed_names
+
+    def _pages_linking_into(self, doc_id: str) -> dict[str, list[str]]:
+        """Before a cascade delete: for each wiki page of an entity this document mentions,
+        the pages that link to it (page_id == entity_id). The edges vanish with the delete."""
+        mentioned = {e for ids in self._graph.chunk_entity_ids(doc_id).values() for e in ids}
+        paged = [row.page_id for row in self._graph.wiki_pages() if row.page_id in mentioned]
+        return {page_id: self._graph.pages_linking_to([page_id]) for page_id in paged}
+
+    def _repoint_doc(self, doc_id: str, survivors: list[str]) -> None:
+        """Shared content stays; make sure citations name a path that still has it."""
+        if not self.chunks_path(doc_id).exists():
+            return  # never chunked: nothing stored carries a path yet
+        doc, chunks = self.load_chunks(doc_id)
+        if doc.path in survivors:
+            return
+        path = survivors[0]
+        self._log.info("document_repointed", old_path=doc.path, path=path)
+        doc = doc.model_copy(update={"path": path})
+        self._save_chunks(doc, [c.model_copy(update={"path": path}) for c in chunks])
+        self._graph.upsert_document(doc)
+        self._vectors.set_doc_path(doc_id, path)
+
+    async def _run_stage(self, stage: str, path: Path, doc_id: str) -> None:
+        if stage == "parse":
+            self._parser.parse(path, doc_id)
+        elif stage == "chunk":
+            parsed = self._parser.load(doc_id, path)
+            chunks = self._chunker.chunk(parsed, doc_id, str(path))
+            doc = DocumentRecord(
+                doc_id=doc_id,
+                path=str(path),
+                title=parsed.title,
+                mime=parsed.mime,
+                n_pages=parsed.n_pages,
+            )
+            self._save_chunks(doc, chunks)
+        elif stage == "embed":
+            self._embed(doc_id)
+        elif stage == "extract":
+            await self._extract(doc_id)
+        elif stage == "graph":
+            await self._build_graph(doc_id)
+        else:
+            raise ValueError(f"unknown stage {stage}")
+
+    def index_chunks(self, doc: DocumentRecord, chunks: list[ChunkRecord]) -> None:
+        """Embed chunks (dense + sparse) and upsert them into Qdrant."""
+        if not chunks:
+            return
+        texts = [c.context_text for c in chunks]
+        dense = self._embedder.embed_documents([EmbedInput(text=t, title=doc.title) for t in texts])
+        self._vectors.upsert_chunks(chunks, dense, self._sparse.encode_documents(texts))
+
+    def _embed(self, doc_id: str) -> None:
+        doc, chunks = self.load_chunks(doc_id)
+        self._graph.upsert_document(doc)
+        if not chunks:
+            return
+        self.index_chunks(doc, chunks)
+        self._graph.upsert_chunks(chunks)
+
+    async def _extract(self, doc_id: str) -> None:
+        doc, chunks = self.load_chunks(doc_id)
+        if not chunks:
+            return
+        results = await self._extractor.extract_many(chunks, doc.title)
+        failed = len(chunks) - len(results)
+        if failed / len(chunks) > self._s.extract.max_failed_ratio:
+            raise ExtractionFailedError(f"{failed}/{len(chunks)} chunks failed extraction")
+        if failed:
+            self._log.warning("extract_partial", failed=failed, total=len(chunks))
+
+    async def _build_graph(self, doc_id: str) -> None:
+        _doc, chunks = self.load_chunks(doc_id)
+        touched: set[str] = set()
+        for chunk in chunks:
+            result = self._extractor.cached(chunk)
+            if result is None:
+                continue
+            ids_by_name: dict[str, str] = {}
+            for extracted in result.entities:
+                record = await self._resolver.resolve(extracted)
+                ids_by_name[normalize_name(extracted.name)] = record.entity_id
+                for alias in extracted.aliases:
+                    ids_by_name.setdefault(normalize_name(alias), record.entity_id)
+            entity_ids = sorted(set(ids_by_name.values()))
+            self._graph.add_mentions(chunk.chunk_id, entity_ids)
+            self._vectors.set_chunk_entities(chunk.chunk_id, entity_ids)
+            for rel in result.relations:
+                src = ids_by_name.get(normalize_name(rel.source))
+                dst = ids_by_name.get(normalize_name(rel.target))
+                if src and dst and src != dst:
+                    self._graph.merge_relation(
+                        src, dst, rel.predicate, rel.description, rel.strength, chunk.chunk_id
+                    )
+            touched.update(entity_ids)
+        self._registry.mark_dirty(touched)
