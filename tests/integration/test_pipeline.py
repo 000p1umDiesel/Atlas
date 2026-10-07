@@ -9,7 +9,6 @@ from structlog.testing import capture_logs
 
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, ExtractSettings, WikiSettings, load_settings
-from mnogobase.extraction.extractor import MIXED_TYPES, TYPES_META, entity_types_signature
 from mnogobase.ids import entity_id, file_doc_id
 from mnogobase.maintenance import reset
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
@@ -532,8 +531,6 @@ async def test_changed_entity_types_warn_until_everything_is_reextracted(make_ap
     app = make_app()
     report = await app.pipeline.ingest([docs], build_wiki=False)
     assert report.types_warning is None
-    old_sig = entity_types_signature(app.settings.extract.entity_types)
-    assert app.registry.get_meta(TYPES_META) == old_sig
 
     new_types = {"Person": "A human.", "Other": "Anything else."}
     changed = make_app(entity_types=new_types)
@@ -542,18 +539,26 @@ async def test_changed_entity_types_warn_until_everything_is_reextracted(make_ap
     assert len(skipped.skipped) == 2  # unchanged documents keep their old types
     assert skipped.types_warning is not None and "mnogobase reset" in skipped.types_warning
     assert any(e["event"] == "entity_types_changed" for e in logs)
-    assert changed.registry.get_meta(TYPES_META) == old_sig
 
-    # a new document is extracted with the new types: the graph now mixes both sets
+    # a new document is extracted with the new types; the old ones still have the old types
     (docs / "extra.md").write_text("# Extra\n\nSoftmax and attention again.\n", encoding="utf-8")
     mixed = await changed.pipeline.ingest([docs], build_wiki=False)
     assert len(mixed.processed) == 1 and mixed.types_warning is not None
-    assert changed.registry.get_meta(TYPES_META) == MIXED_TYPES
     assert changed.graph.get_entity(entity_id("Other", "Softmax")) is not None
 
-    reset(changed)
-    fresh = await changed.pipeline.ingest([docs], build_wiki=False)
-    assert len(fresh.processed) == 3 and fresh.types_warning is None
-    assert changed.registry.get_meta(TYPES_META) == entity_types_signature(new_types)
+    # editing both old documents re-extracts them with the new types: no warning, no reset
+    for name in ("attention_en.md", "vnimanie_ru.md"):
+        path = docs / name
+        path.write_text(path.read_text(encoding="utf-8") + "\nEdited.\n", encoding="utf-8")
+    edited = await changed.pipeline.ingest([docs], build_wiki=False)
+    assert len(edited.processed) == 2 and edited.types_warning is None
     assert changed.graph.get_entity(entity_id("Method", "Attention Mechanism")) is None
     assert changed.graph.get_entity(entity_id("Other", "Attention Mechanism")) is not None
+
+    # reset + ingest is the other way to re-extract everything
+    stale = make_app()  # back to the defaults: everything is stale again
+    assert (await stale.pipeline.ingest([docs], build_wiki=False)).types_warning is not None
+    reset(stale)
+    fresh = await stale.pipeline.ingest([docs], build_wiki=False)
+    assert len(fresh.processed) == 3 and fresh.types_warning is None
+    assert stale.graph.get_entity(entity_id("Method", "Attention Mechanism")) is not None

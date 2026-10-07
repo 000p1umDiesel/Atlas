@@ -13,11 +13,6 @@ from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, Ex
 from mnogobase.registry import Registry
 
 PROMPT_VERSION = "extract-v2"
-# Registry meta: signature of the entity types the cached extractions were made with, or
-# MIXED_TYPES once they come from more than one type set. Only a registry without any
-# extraction (new project, after `reset`) takes the current signature again.
-TYPES_META = "entity_types"
-MIXED_TYPES = "mixed"
 TYPES_CHANGED = (
     "entity types changed in config: already-ingested documents keep their old types "
     "(new and changed documents use the new ones); run `mnogobase reset`, then "
@@ -31,11 +26,22 @@ def entity_types_signature(entity_types: Mapping[str, str]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
+def _cache_version(entity_types: Mapping[str, str]) -> str:
+    # the cache key: a changed type set (names, order or descriptions) means extracting again
+    return f"{PROMPT_VERSION}:{entity_types_signature(entity_types)}"
+
+
 def stale_entity_types(registry: Registry, entity_types: Mapping[str, str]) -> bool:
-    """True when existing extractions were (also) made with another type set."""
-    if not registry.has_extractions():
-        return False
-    return registry.get_meta(TYPES_META) != entity_types_signature(entity_types)
+    """True when some chunk's latest extraction was made with another type set.
+
+    Only the types part of the cache version counts (a new prompt version with the same
+    types is not a type change); a version without it predates typed keys."""
+    signature = entity_types_signature(entity_types)
+    for version in registry.latest_extraction_versions():
+        prompt, sep, types = version.rpartition(":")
+        if not sep or not prompt or types != signature:
+            return True
+    return False
 
 
 def format_entity_types(entity_types: Mapping[str, str]) -> str:
@@ -98,9 +104,7 @@ class Extractor:
         self._llm = llm
         self._registry = registry
         self._types = dict(entity_types)
-        self._signature = entity_types_signature(self._types)
-        # cache key: a changed type set (names or descriptions) means extracting again
-        self._version = f"{PROMPT_VERSION}:{self._signature}"
+        self._version = _cache_version(self._types)
         self._log = get_logger(__name__)
 
     @property
@@ -115,21 +119,10 @@ class Extractor:
         never reaches an entity_id (it becomes `Other`)."""
         raw = self._registry.get_extraction(chunk.chunk_id, self._version, self.model)
         if raw is None and any_version:
-            latest = self._registry.get_latest_extraction(chunk.chunk_id)
-            if latest is not None:
-                version, raw = latest
-                if version != self._version:  # made for other types: the graph mixes sets
-                    self._registry.set_meta(TYPES_META, MIXED_TYPES)
+            raw = self._registry.get_latest_extraction(chunk.chunk_id)
         if raw is None:
             return None
         return clean_extraction(ExtractionResult.model_validate_json(raw), self._types)
-
-    def _record_types(self) -> None:
-        """Before storing a fresh extraction: remember which type set the cache holds."""
-        if not self._registry.has_extractions():
-            self._registry.set_meta(TYPES_META, self._signature)
-        elif self._registry.get_meta(TYPES_META) != self._signature:
-            self._registry.set_meta(TYPES_META, MIXED_TYPES)
 
     async def extract(self, chunk: ChunkRecord, title: str) -> ExtractionResult:
         hit = self.cached(chunk)
@@ -146,8 +139,6 @@ class Extractor:
             [{"role": "user", "content": prompt}], ExtractionResult, task="extract"
         )
         result = clean_extraction(raw, self._types)
-        # no await between the check and the write: concurrent chunks cannot interleave
-        self._record_types()
         self._registry.put_extraction(
             chunk.chunk_id, self._version, self.model, result.model_dump_json()
         )

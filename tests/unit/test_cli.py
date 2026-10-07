@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from mnogobase import cli
 from mnogobase.doctor import Check
-from mnogobase.extraction.extractor import MIXED_TYPES, TYPES_META
+from mnogobase.extraction.extractor import PROMPT_VERSION
 from mnogobase.models import Answer, Source
 from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
@@ -339,17 +339,15 @@ def test_doctor_warning_is_shown_but_does_not_fail(tmp_path, monkeypatch):
     assert "warn" in result.output and "mnogobase reset" in result.output
 
 
-def _extracted_project(root: Path, types_meta: str | None) -> None:
+def _extracted_project(root: Path, types_signature: str) -> None:
     registry = Registry(root / ".mnogobase" / "state.db")
-    registry.put_extraction("c1", "v", "m", "{}")
-    if types_meta is not None:
-        registry.set_meta(TYPES_META, types_meta)
+    registry.put_extraction("c1", f"{PROMPT_VERSION}:{types_signature}", "m", "{}")
     registry.close()
 
 
 def test_status_warns_when_the_entity_types_changed(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _extracted_project(tmp_path, MIXED_TYPES)
+    _extracted_project(tmp_path, "0123456789ab")
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
     assert "entity types changed" in result.output

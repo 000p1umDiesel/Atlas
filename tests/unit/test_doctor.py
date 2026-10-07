@@ -4,7 +4,7 @@ import pytest
 from mnogobase import doctor
 from mnogobase.config import EmbedderSettings, Settings
 from mnogobase.doctor import run_checks
-from mnogobase.extraction.extractor import MIXED_TYPES, TYPES_META, entity_types_signature
+from mnogobase.extraction.extractor import PROMPT_VERSION, entity_types_signature
 from mnogobase.registry import Registry
 
 
@@ -84,12 +84,12 @@ def test_types_check_warns_without_failing_when_the_types_changed(tmp_path):
     assert not (tmp_path / ".mb" / "state.db").exists()
 
     registry = Registry(tmp_path / ".mb" / "state.db")
-    registry.put_extraction("c1", "v", "m", "{}")
-    registry.set_meta(TYPES_META, entity_types_signature(settings.extract.entity_types))
+    sig = entity_types_signature(settings.extract.entity_types)
+    registry.put_extraction("c1", f"{PROMPT_VERSION}:{sig}", "m", "{}")
     [same] = run_checks(settings, only=["types"])
     assert same.ok and not same.warn
 
-    registry.set_meta(TYPES_META, MIXED_TYPES)
+    registry.put_extraction("c2", f"{PROMPT_VERSION}:0123456789ab", "m", "{}")
     registry.close()
     [changed] = run_checks(settings, only=["types"])
     assert changed.ok and changed.warn  # a warning, never a failure

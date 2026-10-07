@@ -1,7 +1,6 @@
 from mnogobase.config import DEFAULT_ENTITY_TYPES
 from mnogobase.extraction.extractor import (
-    MIXED_TYPES,
-    TYPES_META,
+    PROMPT_VERSION,
     Extractor,
     clean_extraction,
     entity_types_signature,
@@ -15,10 +14,10 @@ from tests.fakes import FakeLLM, scripted_llm_handler
 DOC = "a" * 16
 
 
-def chunk(text: str, idx: int = 0) -> ChunkRecord:
+def chunk(text: str, idx: int = 0, doc: str = DOC) -> ChunkRecord:
     return ChunkRecord(
-        chunk_id=f"{DOC}:{idx:05d}",
-        doc_id=DOC,
+        chunk_id=f"{doc}:{idx:05d}",
+        doc_id=doc,
         idx=idx,
         text=text,
         context_text=text,
@@ -164,51 +163,62 @@ async def test_cache_hits_are_recleaned_with_the_current_types(tmp_path):
     assert [e.type for e in genes.cached(c).entities] == ["Other"]
 
 
-async def test_types_meta_follows_what_was_extracted(tmp_path):
+def test_empty_cache_is_never_stale(tmp_path):
+    assert not stale_entity_types(Registry(tmp_path / "s.db"), DEFAULT_ENTITY_TYPES)
+
+
+async def test_stale_until_every_document_is_extracted_with_the_current_types(tmp_path):
     reg = Registry(tmp_path / "s.db")
     llm = FakeLLM(scripted_llm_handler)
-    first = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
-    assert not stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # nothing extracted yet
-    await first.extract(chunk("The Transformer uses softmax.", 0), "Doc")
-    assert reg.get_meta(TYPES_META) == entity_types_signature(DEFAULT_ENTITY_TYPES)
-    await first.extract(chunk("Vaswani wrote it.", 1), "Doc")
+    doc_a, doc_b, doc_a2, doc_b2 = "a" * 16, "b" * 16, "c" * 16, "d" * 16
+    old = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
+    await old.extract(chunk("The Transformer uses softmax.", doc=doc_a), "A")
+    await old.extract(chunk("Vaswani wrote it.", doc=doc_b), "B")
     assert not stale_entity_types(reg, DEFAULT_ENTITY_TYPES)
     # config changed, nothing re-extracted yet: the old documents keep the old types
     assert stale_entity_types(reg, GENES)
-    assert reg.get_meta(TYPES_META) == entity_types_signature(DEFAULT_ENTITY_TYPES)
-    # a new chunk extracted with the new types: the graph now mixes both sets
-    await Extractor(llm, reg, GENES).extract(chunk("Attention text", 2), "Doc")
-    assert reg.get_meta(TYPES_META) == MIXED_TYPES
-    assert stale_entity_types(reg, GENES) and stale_entity_types(reg, DEFAULT_ENTITY_TYPES)
-    # after a reset everything is extracted again with one set
-    reg.wipe()
-    await Extractor(llm, reg, GENES).extract(chunk("Attention text", 2), "Doc")
+
+    # both documents are edited (new doc_ids) and re-extracted with the new types
+    new = Extractor(llm, reg, GENES)
+    reg.clear_doc(doc_a)
+    await new.extract(chunk("The Transformer uses softmax again.", doc=doc_a2), "A")
+    assert stale_entity_types(reg, GENES)  # B still has the old types
+    reg.clear_doc(doc_b)
+    await new.extract(chunk("Vaswani wrote it again.", doc=doc_b2), "B")
     assert not stale_entity_types(reg, GENES)
+    assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)
 
 
-async def test_extractions_without_a_types_record_are_stale(tmp_path):
-    reg = Registry(tmp_path / "s.db")
-    reg.put_extraction(
-        f"{DOC}:00000",
-        "extract-v1",
-        "fake-extract",
-        ExtractionResult(entities=[], relations=[]).model_dump_json(),
-    )
-    assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # made before types were recorded
-    await Extractor(FakeLLM(scripted_llm_handler), reg, DEFAULT_ENTITY_TYPES).extract(
-        chunk("Softmax text", 1), "Doc"
-    )
-    assert reg.get_meta(TYPES_META) == MIXED_TYPES
-
-
-async def test_graph_fallback_to_other_types_marks_them_mixed(tmp_path):
+async def test_a_chunk_re_extracted_with_the_current_types_is_not_stale(tmp_path):
     reg = Registry(tmp_path / "s.db")
     llm = FakeLLM(scripted_llm_handler)
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
-    llm.model_for = lambda task: "another-model"
-    same_types = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
-    assert same_types.cached(c, any_version=True) is not None
-    assert reg.get_meta(TYPES_META) == entity_types_signature(DEFAULT_ENTITY_TYPES)
+    await Extractor(llm, reg, GENES).extract(c, "Doc")  # e.g. --retry-failed of extract
+    assert not stale_entity_types(reg, GENES)  # only the latest row of a chunk counts
+
+
+def test_legacy_extractions_are_stale(tmp_path):
+    reg = Registry(tmp_path / "s.db")
+    empty = ExtractionResult(entities=[], relations=[]).model_dump_json()
+    reg.put_extraction(f"{DOC}:00000", "extract-v1", "fake-extract", empty)
+    assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # made before types were in the key
+
+
+def test_a_new_prompt_version_with_the_same_types_is_not_stale(tmp_path):
+    reg = Registry(tmp_path / "s.db")
+    empty = ExtractionResult(entities=[], relations=[]).model_dump_json()
+    sig = entity_types_signature(DEFAULT_ENTITY_TYPES)
+    reg.put_extraction(f"{DOC}:00000", f"extract-v99:{sig}", "m", empty)
+    reg.put_extraction(f"{DOC}:00001", f"{PROMPT_VERSION}:{sig}", "m", empty)
+    assert not stale_entity_types(reg, DEFAULT_ENTITY_TYPES)
+
+
+async def test_cached_does_not_write(tmp_path):
+    reg = Registry(tmp_path / "s.db")
+    llm = FakeLLM(scripted_llm_handler)
+    c = chunk("The Transformer uses softmax.")
+    await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
+    before = reg._db.execute("SELECT * FROM meta").fetchall()
     assert Extractor(llm, reg, GENES).cached(c, any_version=True) is not None
-    assert reg.get_meta(TYPES_META) == MIXED_TYPES
+    assert reg._db.execute("SELECT * FROM meta").fetchall() == before
