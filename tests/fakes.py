@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 from collections.abc import Callable
+
+from qdrant_client import models as qm
 
 from mnogobase.llm.client import Usage
 
@@ -97,3 +101,47 @@ def scripted_llm_handler(task: str, prompt: str) -> str:
     if task == "answer":
         return "The answer is supported by the sources [1]."
     raise AssertionError(f"unexpected task {task}")
+
+
+_TOKEN = re.compile(r"\w+", re.UNICODE)
+
+
+def _bucket(token: str, size: int) -> int:
+    return int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % size
+
+
+class FakeEmbedder:
+    """Hashed bag-of-words: texts sharing words get high cosine similarity."""
+
+    def __init__(self, dim: int = 64):
+        self.dim = dim
+        self.model_id = "fake-embed"
+
+    def _vec(self, text: str) -> list[float]:
+        vec = [0.0] * self.dim
+        for token in _TOKEN.findall(text.casefold()):
+            vec[_bucket(token, self.dim)] += 1.0
+        norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+        return [x / norm for x in vec]
+
+    def embed_documents(self, items) -> list[list[float]]:
+        return [self._vec(item.text or "") for item in items]
+
+    def embed_query(self, query: str) -> list[float]:
+        return self._vec(query)
+
+
+class FakeSparse:
+    def _sv(self, text: str) -> qm.SparseVector:
+        counts: dict[int, float] = {}
+        for token in _TOKEN.findall(text.casefold()):
+            idx = _bucket(token, 1_000_003)
+            counts[idx] = counts.get(idx, 0.0) + 1.0
+        indices = sorted(counts)
+        return qm.SparseVector(indices=indices, values=[counts[i] for i in indices])
+
+    def encode_documents(self, texts) -> list[qm.SparseVector]:
+        return [self._sv(t) for t in texts]
+
+    def encode_query(self, text: str) -> qm.SparseVector:
+        return self._sv(text)
