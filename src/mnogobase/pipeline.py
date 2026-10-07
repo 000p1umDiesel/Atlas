@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
 from mnogobase.embedding.base import Embedder, SparseEncoder, embedder_signature
-from mnogobase.extraction.extractor import Extractor
+from mnogobase.extraction.extractor import TYPES_CHANGED, Extractor, stale_entity_types
 from mnogobase.extraction.resolver import EntityResolver
 from mnogobase.ids import file_doc_id, normalize_name
 from mnogobase.log import bind_context, get_logger, log_stage, unbind_context
@@ -36,6 +36,8 @@ class IngestReport:
     skipped: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)
     wiki: WikiReport | None = None  # per-page wiki failures are in `wiki.failed`
+    # set when the graph holds entities typed with another entity type set than the config
+    types_warning: str | None = None
 
 
 class _PreviouslyFailed(Exception):
@@ -168,6 +170,9 @@ class Pipeline:
                 )
                 continue
             (report.processed if status == "processed" else report.skipped).append(key)
+        if stale_entity_types(self._registry, self._s.extract.entity_types):
+            report.types_warning = TYPES_CHANGED
+            self._log.warning("entity_types_changed", detail=TYPES_CHANGED)
         if build_wiki:
             report.wiki = await self._wiki.build(
                 run_id=run_id, deleted=removed_names, documents=report.processed

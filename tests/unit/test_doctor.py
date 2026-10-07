@@ -4,6 +4,7 @@ import pytest
 from mnogobase import doctor
 from mnogobase.config import EmbedderSettings, Settings
 from mnogobase.doctor import run_checks
+from mnogobase.extraction.extractor import MIXED_TYPES, TYPES_META, entity_types_signature
 from mnogobase.registry import Registry
 
 
@@ -74,3 +75,22 @@ def test_llm_model_listed_or_empty_list_is_ok(tmp_path, monkeypatch):
     assert run_checks(make_settings(tmp_path), only=["llm"])[0].ok
     _models_endpoint(monkeypatch, 200, {"data": []})
     assert run_checks(make_settings(tmp_path), only=["llm"])[0].ok
+
+
+def test_types_check_warns_without_failing_when_the_types_changed(tmp_path):
+    settings = make_settings(tmp_path)
+    [fresh] = run_checks(settings, only=["types"])
+    assert fresh.ok and not fresh.warn
+    assert not (tmp_path / ".mb" / "state.db").exists()
+
+    registry = Registry(tmp_path / ".mb" / "state.db")
+    registry.put_extraction("c1", "v", "m", "{}")
+    registry.set_meta(TYPES_META, entity_types_signature(settings.extract.entity_types))
+    [same] = run_checks(settings, only=["types"])
+    assert same.ok and not same.warn
+
+    registry.set_meta(TYPES_META, MIXED_TYPES)
+    registry.close()
+    [changed] = run_checks(settings, only=["types"])
+    assert changed.ok and changed.warn  # a warning, never a failure
+    assert "mnogobase reset" in changed.detail and "ingest" in changed.detail

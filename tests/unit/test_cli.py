@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from mnogobase import cli
 from mnogobase.doctor import Check
+from mnogobase.extraction.extractor import MIXED_TYPES, TYPES_META
 from mnogobase.models import Answer, Source
 from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
@@ -230,7 +231,9 @@ def test_ingest_summary_reports_wiki_failures(tmp_path, monkeypatch):
 
     async def ingest(targets, **kwargs):
         wiki = SimpleNamespace(created=["A"], updated=[], deleted=[], skipped=[], failed=["Bad"])
-        return SimpleNamespace(processed=["x.md"], skipped=[], failed={}, wiki=wiki)
+        return SimpleNamespace(
+            processed=["x.md"], skipped=[], failed={}, wiki=wiki, types_warning=None
+        )
 
     stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
     monkeypatch.setattr(cli, "build_app", lambda settings: stub)
@@ -325,3 +328,55 @@ def test_status_shows_pending_removals(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "pending document removals: 1" in result.output
     assert "abcd1234abcd1234" in result.output
+
+
+def test_doctor_warning_is_shown_but_does_not_fail(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    warning = Check("types", True, "entity types changed: run `mnogobase reset`", warn=True)
+    monkeypatch.setattr(cli, "run_checks", lambda settings: [Check("device", True, "mps"), warning])
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "warn" in result.output and "mnogobase reset" in result.output
+
+
+def _extracted_project(root: Path, types_meta: str | None) -> None:
+    registry = Registry(root / ".mnogobase" / "state.db")
+    registry.put_extraction("c1", "v", "m", "{}")
+    if types_meta is not None:
+        registry.set_meta(TYPES_META, types_meta)
+    registry.close()
+
+
+def test_status_warns_when_the_entity_types_changed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _extracted_project(tmp_path, MIXED_TYPES)
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "entity types changed" in result.output
+    assert "mnogobase reset" in result.output and "mnogobase ingest" in result.output
+
+
+def test_status_is_quiet_when_the_entity_types_match(tmp_path, monkeypatch):
+    from mnogobase.config import DEFAULT_ENTITY_TYPES
+    from mnogobase.extraction.extractor import entity_types_signature
+
+    monkeypatch.chdir(tmp_path)
+    _extracted_project(tmp_path, entity_types_signature(DEFAULT_ENTITY_TYPES))
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "entity types changed" not in result.output
+
+
+def test_ingest_prints_the_entity_types_warning(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    async def ingest(targets, **kwargs):
+        return SimpleNamespace(
+            processed=[], skipped=["x.md"], failed={}, wiki=None, types_warning="TYPES CHANGED"
+        )
+
+    stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
+    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    result = runner.invoke(cli.app, ["ingest", "docs"])
+    assert result.exit_code == 0, result.output
+    assert "TYPES CHANGED" in result.output

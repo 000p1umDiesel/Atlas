@@ -8,8 +8,10 @@ from qdrant_client import models as qm
 from structlog.testing import capture_logs
 
 from mnogobase.app import build_app
-from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
+from mnogobase.config import ChunkingSettings, ExtractSettings, WikiSettings, load_settings
+from mnogobase.extraction.extractor import MIXED_TYPES, TYPES_META, entity_types_signature
 from mnogobase.ids import entity_id, file_doc_id
+from mnogobase.maintenance import reset
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
@@ -38,15 +40,16 @@ def make_app(graph, tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("{}\n", encoding="utf-8")
 
-    def factory(handler=scripted_llm_handler):
-        settings = load_settings(config).model_copy(
-            update={
-                "data_dir": tmp_path / ".mb",
-                "logs_dir": tmp_path / "logs",
-                "wiki": WikiSettings(dir=tmp_path / "wiki", min_mentions=1),
-                "chunking": ChunkingSettings(max_tokens=128),
-            }
-        )
+    def factory(handler=scripted_llm_handler, entity_types=None):
+        update = {
+            "data_dir": tmp_path / ".mb",
+            "logs_dir": tmp_path / "logs",
+            "wiki": WikiSettings(dir=tmp_path / "wiki", min_mentions=1),
+            "chunking": ChunkingSettings(max_tokens=128),
+        }
+        if entity_types is not None:
+            update["extract"] = ExtractSettings(entity_types=entity_types)
+        settings = load_settings(config).model_copy(update=update)
         vectors = QdrantStore(QdrantClient(":memory:"), "t_", 64)
         app = build_app(
             settings,
@@ -523,3 +526,34 @@ async def test_failed_pending_removal_names_only_itself_and_keeps_finished_names
     monkeypatch.setattr(app.vectors, "delete_doc", real)
     assert app.pipeline.finish_pending_removals() == ["Alpha", "Beta"]  # Alpha not lost
     assert app.pipeline.finish_pending_removals() == []
+
+
+async def test_changed_entity_types_warn_until_everything_is_reextracted(make_app, docs):
+    app = make_app()
+    report = await app.pipeline.ingest([docs], build_wiki=False)
+    assert report.types_warning is None
+    old_sig = entity_types_signature(app.settings.extract.entity_types)
+    assert app.registry.get_meta(TYPES_META) == old_sig
+
+    new_types = {"Person": "A human.", "Other": "Anything else."}
+    changed = make_app(entity_types=new_types)
+    with capture_logs() as logs:
+        skipped = await changed.pipeline.ingest([docs], build_wiki=False)
+    assert len(skipped.skipped) == 2  # unchanged documents keep their old types
+    assert skipped.types_warning is not None and "mnogobase reset" in skipped.types_warning
+    assert any(e["event"] == "entity_types_changed" for e in logs)
+    assert changed.registry.get_meta(TYPES_META) == old_sig
+
+    # a new document is extracted with the new types: the graph now mixes both sets
+    (docs / "extra.md").write_text("# Extra\n\nSoftmax and attention again.\n", encoding="utf-8")
+    mixed = await changed.pipeline.ingest([docs], build_wiki=False)
+    assert len(mixed.processed) == 1 and mixed.types_warning is not None
+    assert changed.registry.get_meta(TYPES_META) == MIXED_TYPES
+    assert changed.graph.get_entity(entity_id("Other", "Softmax")) is not None
+
+    reset(changed)
+    fresh = await changed.pipeline.ingest([docs], build_wiki=False)
+    assert len(fresh.processed) == 3 and fresh.types_warning is None
+    assert changed.registry.get_meta(TYPES_META) == entity_types_signature(new_types)
+    assert changed.graph.get_entity(entity_id("Method", "Attention Mechanism")) is None
+    assert changed.graph.get_entity(entity_id("Other", "Attention Mechanism")) is not None

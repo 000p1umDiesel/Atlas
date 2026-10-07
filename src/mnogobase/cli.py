@@ -15,7 +15,8 @@ from rich.table import Table
 
 from mnogobase.app import App, build_app
 from mnogobase.config import Settings, load_settings
-from mnogobase.doctor import run_checks
+from mnogobase.doctor import Check, run_checks
+from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.log import configure_logging, new_run_id
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
@@ -140,13 +141,19 @@ def _print_wiki_report(report: WikiReport) -> None:
         console.print(f"[red]✗[/red] wiki page {escape(name)} (retried on the next build)")
 
 
+def _check_status(check: Check) -> str:
+    if not check.ok:
+        return "[red]fail[/red]"
+    return "[yellow]warn[/yellow]" if check.warn else "[green]ok[/green]"
+
+
 @app.command()
 def doctor() -> None:
-    """Check device, Ollama, the LLM endpoint, Qdrant, Neo4j and the index signature."""
+    """Check device, Ollama, the LLM endpoint, Qdrant, Neo4j, the index and entity types."""
     checks = run_checks(_settings())
     table = Table("check", "status", "detail")
     for c in checks:
-        table.add_row(c.name, "[green]ok[/green]" if c.ok else "[red]fail[/red]", escape(c.detail))
+        table.add_row(c.name, _check_status(c), escape(c.detail))
     console.print(table)
     if not all(c.ok for c in checks):
         raise typer.Exit(1)
@@ -181,6 +188,8 @@ def status() -> None:
                 "them first",
                 soft_wrap=True,
             )
+        if stale_entity_types(registry, settings.extract.entity_types):
+            console.print(f"[yellow]warning:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True)
         errors = registry.stage_errors()
         if errors:
             err_table = Table("doc_id", "stage", "error")
@@ -235,6 +244,8 @@ def ingest(
     )
     if report.wiki:
         _print_wiki_report(report.wiki)
+    if report.types_warning:
+        console.print(f"[yellow]warning:[/yellow] {escape(report.types_warning)}", soft_wrap=True)
     for path, error in report.failed.items():
         console.print(f"[red]✗[/red] {escape(path)}: {escape(error)}")
     if report.failed or (report.wiki and report.wiki.failed):

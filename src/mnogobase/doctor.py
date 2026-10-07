@@ -10,11 +10,12 @@ from mnogobase.config import Settings
 from mnogobase.device import detect_device
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.embedding.ollama import OllamaEmbedder
+from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 
-CHECKS: tuple[str, ...] = ("device", "ollama", "llm", "qdrant", "neo4j", "index")
+CHECKS: tuple[str, ...] = ("device", "ollama", "llm", "qdrant", "neo4j", "index", "types")
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Check:
     name: str
     ok: bool
     detail: str
+    warn: bool = False  # worth attention, but not a failure (doctor still exits 0)
 
 
 def _guard(name: str, fn: Callable[[], Check]) -> Check:
@@ -111,6 +113,19 @@ def run_checks(
             f"index built with {stored}, config uses {expected}: run `mnogobase reindex`",
         )
 
+    def types() -> Check:
+        db = settings.data_dir / "state.db"
+        if not db.exists():
+            return Check("types", True, "no index yet")
+        registry = Registry(db)
+        try:
+            stale = stale_entity_types(registry, settings.extract.entity_types)
+        finally:
+            registry.close()
+        if stale:
+            return Check("types", True, TYPES_CHANGED, warn=True)
+        return Check("types", True, f"{len(settings.extract.entity_types)} entity types")
+
     checks = {
         "device": device,
         "ollama": ollama,
@@ -118,5 +133,6 @@ def run_checks(
         "qdrant": qdrant,
         "neo4j": neo4j,
         "index": index,
+        "types": types,
     }
     return [_guard(name, checks[name]) for name in CHECKS if only is None or name in only]
