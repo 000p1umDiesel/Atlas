@@ -1,125 +1,352 @@
 # mnogobase
 
-Core of the **LLM Wiki** project: turns a folder of documents (PDF, DOCX, PPTX, XLSX, HTML, Markdown, …) into
+Ядро проекта **LLM Wiki**. Берёт папку с документами (PDF, DOCX, PPTX, XLSX, HTML, Markdown, TXT, CSV…) и строит из неё:
 
-- a **vector index** in Qdrant (EmbeddingGemma 2 dense vectors + BM25 sparse vectors),
-- a **knowledge graph** in Neo4j (entities, relations, provenance for every fact),
-- a **persistent wiki** of Markdown pages (Obsidian-compatible) that is updated incrementally,
+- **векторный индекс** в Qdrant: плотные векторы EmbeddingGemma 2 + разреженные BM25;
+- **граф знаний** в Neo4j: сущности, связи между ними и источник (чанк) для каждого факта;
+- **wiki** из Markdown-страниц в стиле Karpathy LLM Wiki — открывается в Obsidian и дописывается при каждом новом документе.
 
-and answers questions with citations in four retrieval modes: `rag`, `wiki`, `graph`, `all`.
+По этим трём слоям можно задавать вопросы и получать ответы со ссылками на источники в четырёх режимах: `rag`, `wiki`, `graph`, `all`.
 
 ```
-files ─► Docling parse ─► HybridChunker ─► EmbeddingGemma 2 + BM25 ─► Qdrant
-                                     └──► LLM extraction ─► entity resolution ─► Neo4j
-                                                                    └──► wiki/*.md (+ Qdrant wiki_pages)
-question ─► rag | wiki | graph | all ─► cited answer (+ runs/compare.jsonl)
+документы ─► Docling (разбор) ─► HybridChunker (чанки) ─► EmbeddingGemma 2 + BM25 ─► Qdrant
+                                              └──► LLM: сущности и связи ─► слияние дублей ─► Neo4j
+                                                                                   └──► wiki/*.md
+вопрос ─► rag | wiki | graph | all ─► ответ с цитатами (+ runs/compare.jsonl)
 ```
 
-## Quick start
+---
+
+## 1. Что нужно установить
+
+| Что | Зачем | Проверка |
+|---|---|---|
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Qdrant и Neo4j | `docker info` |
+| [Ollama](https://ollama.com) | эмбеддер EmbeddingGemma 2 | `ollama --version` |
+| [uv](https://docs.astral.sh/uv/) | Python 3.12 и зависимости | `uv --version` |
+| [Obsidian](https://obsidian.md) (по желанию) | смотреть wiki и её граф | — |
+
+## 2. Первый запуск (один раз)
+
+Все команды выполняются **из корня репозитория**: оттуда читаются `config.yaml` и `.env`.
 
 ```bash
-cp .env.example .env               # then set LLM_API_KEY=... in .env
-docker compose up -d               # Qdrant :6333, Neo4j :7474/:7687
+# 1. Секреты
+cp .env.example .env
+#    откройте .env и впишите LLM_API_KEY=<ваш ключ>
+#    NEO4J_PASSWORD оставьте mnogobase-dev (так же он задан в docker-compose.yml)
+
+# 2. Базы данных: Qdrant (:6333) и Neo4j (:7474, :7687)
+docker compose up -d
+
+# 3. Модель эмбеддингов (~1.3 ГБ)
 ollama pull embeddinggemma-2:740m
+
+# 4. Python-зависимости
 uv sync
+
+# 5. Проверка: всё должно быть зелёным
 uv run mnogobase doctor
-uv run mnogobase ingest ./docs
-uv run mnogobase ask "What is attention?" --mode graph
-uv run mnogobase compare "What is attention?"
 ```
 
-`.env` holds the secrets and is git-ignored; mnogobase reads it from the current directory, so
-run commands from the project root:
+`doctor` проверяет устройство (CUDA / MPS / CPU), модель в Ollama, LLM-эндпоинт, Qdrant, Neo4j и совместимость индекса. Если что-то красное, в строке будет написано, что именно не так.
 
-- `LLM_API_KEY` — key for the LLM endpoint (not needed for a local Ollama LLM).
-- `NEO4J_PASSWORD` — must match the password Docker Compose gave Neo4j. Both default to
-  `mnogobase-dev` (`.env.example` and `docker-compose.yml`). Without `.env` the client sends an
-  empty password and Neo4j authentication fails. If you change it after Neo4j was first started,
-  recreate the `neo4j_data` volume — Neo4j keeps the password it was initialized with.
+> **Первый запуск `ingest` дольше обычного.** Docling скачивает свои модели разметки и OCR, а чанкер — токенайзер `google/embeddinggemma-2` с Hugging Face. Если Hugging Face откажет в доступе (репозитории Gemma бывают закрыты), примите лицензию Gemma на странице модели и выполните `hf auth login` (или задайте `HF_TOKEN`).
 
-Neo4j Browser: http://localhost:7474 (user `neo4j`, password from `.env`). Wiki: open `wiki/` in Obsidian.
+> **Конфиденциальность.** По умолчанию LLM — `gpt-6-luna` на `https://codex.sale/v1`, то есть **текст документов уходит на сторонний сервер**. Для закрытых документов переключитесь на локальную модель Ollama (раздел «Настройка»).
 
-## Commands
+---
 
-All commands take a global `--config/-c PATH` (default `./config.yaml`, or `$MNOGOBASE_CONFIG`),
-placed before the command: `uv run mnogobase -c other.yaml status`.
+## 3. Куда класть документы
 
-| Command | What it does |
+Кладите файлы в папку **`documents/`** в корне репозитория (она в `.gitignore`, в git ничего не попадёт):
+
+```bash
+mkdir -p documents
+cp ~/Downloads/*.pdf documents/
+```
+
+- Подпапки можно любые: `ingest` обходит папку рекурсивно.
+- Скрытые файлы и папки (начинаются с `.`) пропускаются.
+- Поддерживаемые расширения задаются в `config.yaml` → `parsing.extensions`: `pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt`.
+- Документы могут быть на русском и на английском вперемешку. Страницы wiki пишутся на языке из `wiki.language` (по умолчанию `en`).
+
+Папка может быть любой: `documents/` — просто соглашение. `ingest` принимает и отдельные файлы, и несколько путей сразу.
+
+---
+
+## 4. Загрузка документов: чанкирование, эмбеддинги, граф, wiki
+
+Весь процесс запускает одна команда:
+
+```bash
+uv run mnogobase ingest documents/
+```
+
+Для каждого файла по очереди выполняются этапы:
+
+| Этап | Что происходит | Где результат |
+|---|---|---|
+| `parse` | Docling разбирает файл: текст, заголовки, таблицы, OCR для сканов | `.mnogobase/cache/<doc_id>.json`, картинки в `.mnogobase/cache/<doc_id>/images/` |
+| `chunk` | HybridChunker режет на чанки до 512 токенов по структуре документа | `.mnogobase/cache/<doc_id>.chunks.json` |
+| `embed` | каждый чанк → плотный вектор (EmbeddingGemma 2) + BM25 | Qdrant, коллекция `mb_chunks`; узлы `Document`/`Chunk` в Neo4j |
+| `extract` | LLM достаёт из каждого чанка сущности и связи | кэш в `.mnogobase/state.db` |
+| `graph` | сущности сливаются с уже известными (в том числе RU↔EN), связи пишутся в граф | Neo4j: `Entity`, `RELATED`, `MENTIONS`; Qdrant `mb_entities` |
+| wiki | страницы сущностей, у которых появились новые упоминания, создаются или дописываются | `wiki/entities/*.md`, `wiki/index.md`, `wiki/log.md` |
+
+Как это работает:
+
+- **Инкрементально.** Повторный `ingest` той же папки пропускает неизменённые файлы. Изменённый файл заменяет свою старую версию в Qdrant, Neo4j и wiki без дублей.
+- **Возобновляемо.** Если процесс прервался (Ctrl+C, упал сервис), следующий `ingest` продолжит с того этапа, на котором остановился.
+- **Ошибки изолированы.** Один сломанный файл не останавливает остальные. В конце выводится сводка; упавшие файлы можно перезапустить командой `uv run mnogobase ingest --retry-failed`.
+
+Полезные варианты:
+
+```bash
+uv run mnogobase ingest documents/statya.pdf        # один файл
+uv run mnogobase ingest documents/ --no-wiki        # без обновления wiki (быстрее; wiki можно собрать потом)
+uv run mnogobase wiki build                         # дописать wiki по накопившимся изменениям
+uv run mnogobase wiki build --all                   # перегенерировать все страницы
+uv run mnogobase status                             # сколько файлов, этапов, ошибок
+```
+
+> Отдельной команды «только чанкирование» нет: чанки получаются на этапе `chunk` внутри `ingest`. Посмотреть их можно в `.mnogobase/cache/<doc_id>.chunks.json`, в Qdrant (раздел 7) или в Neo4j (раздел 6).
+
+---
+
+## 5. Вопросы и сравнение режимов
+
+```bash
+uv run mnogobase ask "Что такое механизм внимания?"               # режим all (по умолчанию)
+uv run mnogobase ask "Что такое механизм внимания?" --mode graph
+uv run mnogobase compare "Что такое механизм внимания?"           # все 4 режима рядом
+```
+
+| Режим | Откуда берётся контекст |
 |---|---|
-| `doctor` | checks device, Ollama model, LLM endpoint, Qdrant, Neo4j, index signature (exit 1 on any failure) |
-| `status` | files by status, stage states, entities waiting for a wiki update, failed stages with errors |
-| `ingest PATH... [--no-wiki] [--retry-failed]` | incremental ingest; unchanged files are skipped, changed files replace their old version. `--retry-failed` without paths retries every failed file. The summary lists failed files and failed wiki pages (exit 1 if any) |
-| `wiki build [--all]` | regenerate pages of entities with new mentions (or all) |
-| `ask "Q" [--mode/-m rag\|wiki\|graph\|all] [--k N]` | cited answer from one mode (default `all`) |
-| `compare "Q" [--k N]` | all four modes side by side, appended to `runs/compare.jsonl` |
-| `reindex` | re-embed everything after changing the embedder (graph and wiki are kept) |
-| `reset [--yes]` | delete all data of this project (see below) |
+| `rag` | ближайшие чанки из Qdrant (гибридный поиск dense + BM25) |
+| `wiki` | разделы wiki-страниц и чанки, на которые они ссылаются |
+| `graph` | сущности из вопроса, их соседи в графе и чанки-доказательства |
+| `all` | всё вместе, в общем бюджете токенов |
 
-`ingest`, `ask`, `compare`, `reindex` and `reset` first check the services they need and stop
-with a hint to run `doctor` if one is down. Only one `ingest` / `wiki build` / `reindex` / `reset`
-runs at a time per project (file lock in `.mnogobase/`).
+В ответе есть таблица источников: файл, страница, `ref` (id чанка или раздела wiki). `compare` дописывает каждый прогон в `runs/compare.jsonl`; на этих данных потом можно сравнивать качество RAG, Wiki и Graph.
 
-**`reset` safety.** It refuses to run outside a mnogobase project (no `state.db` in the
-configured `data_dir`, default `.mnogobase/`), even with `--yes`. Before asking for confirmation it lists exactly what will
-be deleted: all nodes in the Neo4j database (use a dedicated Neo4j per project), the Qdrant
-collections with this project's prefix, the state and caches in `.mnogobase/`, and only the wiki
-files mnogobase owns — `wiki/entities/`, `wiki/index.md`, `wiki/log.md`. Your own notes in
-`wiki/` are kept.
+---
 
-## Configuration
+## 6. Как посмотреть граф в Neo4j (красиво)
 
-`config.yaml` holds all non-secret settings; secrets go to `.env`. Any value can be overridden
-with env vars, e.g. `MNOGOBASE_LLM__MODEL=gemma4:26b-a4b`, `MNOGOBASE_EMBEDDER__DIM=512`.
+1. Откройте **http://localhost:7474**.
+2. Подключение: `neo4j://localhost:7687`, пользователь `neo4j`, пароль из `.env` (по умолчанию `mnogobase-dev`).
+3. **Стиль (один раз).** Выполните в строке запроса `:style`, затем перетащите в открывшуюся панель файл [`docs/neo4j/mnogobase.grass`](docs/neo4j/mnogobase.grass). У сущностей появятся имена, у связей — предикаты, у документов и чанков — свои цвета.
+4. **Цвет по типу сущности (по желанию).** Тип хранится в свойстве `type`; чтобы раскрасить узлы, добавьте его как метку (стиль выше уже содержит цвета для `Person`, `Concept`, `Method` и других):
 
-- **LLM** — any OpenAI-compatible endpoint (default `https://codex.sale/v1`, model `gpt-6-luna`).
-  Local: `llm.base_url: http://localhost:11434/v1`, `llm.model: gemma4:26b-a4b`.
-  Per-task models: `llm.overrides.{extract,resolve,wiki,answer}`.
-- **Embedder** — Ollama `embeddinggemma-2:740m` (`ollama pull embeddinggemma-2:740m`), 768d
-  (Matryoshka: 512/256 also work). Fallback if EmbeddingGemma 2 is unavailable:
-  `ollama pull qwen3-embedding:0.6b` and in `config.yaml` set `embedder.model: qwen3-embedding:0.6b`,
-  `embedder.dim: 1024`, `embedder.doc_template: "{text}"`,
-  `embedder.query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"`
-  (the commented block in `config.yaml`). After changing model or dim run `mnogobase reindex` —
-  `ingest`/`ask` refuse to mix vectors from different embedders.
-- **Wiki** — `wiki.language` (default `en`), `wiki.min_mentions` (entities with fewer mentions get no page).
+   ```cypher
+   MATCH (e:Entity) CALL apoc.create.addLabels(e, [e.type]) YIELD node RETURN count(node);
+   ```
 
-## GPU / CUDA
+   Повторяйте после новых `ingest`. mnogobase эти метки не использует и не мешает им.
 
-`device: auto` picks CUDA → MPS → CPU for Docling layout/OCR models. On Linux with NVIDIA
-(NVIDIA Container Toolkit installed):
+Готовые запросы (вставлять в строку запроса Neo4j Browser):
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d   # GPU Qdrant indexing + Ollama in Docker
-uv pip uninstall onnxruntime && uv pip install onnxruntime-gpu          # GPU BM25 in fastembed
+```cypher
+// Весь граф знаний: сущности и связи между ними (самые сильные связи)
+MATCH (a:Entity)-[r:RELATED]->(b:Entity)
+RETURN a, r, b ORDER BY r.weight DESC LIMIT 300;
 ```
 
-With the CUDA override Ollama runs in Docker on port 11434, so pull the embedder there:
-`docker compose exec ollama ollama pull embeddinggemma-2:740m`.
-For a faster LLM on CUDA, serve a model with vLLM and point `llm.base_url` at it.
-
-## Tests
-
-```bash
-uv run pytest                    # unit tests
-uv run pytest -m integration     # needs Docker (testcontainers: Neo4j, Qdrant)
-uv run pytest -m e2e -s          # needs Docker + Ollama (embeddinggemma-2:740m) + LLM endpoint (LLM_API_KEY in .env)
+```cypher
+// Окрестность одной сущности на 2 шага (замените имя)
+MATCH (e:Entity) WHERE toLower(e.name) CONTAINS 'transformer'
+MATCH p = (e)-[:RELATED*1..2]-(:Entity)
+RETURN p LIMIT 150;
 ```
 
-The first run that chunks documents (the e2e test, or the first `ingest`) downloads the
-`google/embeddinggemma-2` tokenizer from Hugging Face. Gemma repositories may be gated: if the
-download is refused, accept the Gemma license on the model's Hugging Face page and log in with
-`hf auth login` (or set `HF_TOKEN`). Docling also downloads its layout/OCR models on first use.
+```cypher
+// Самые упоминаемые сущности
+MATCH (e:Entity)
+RETURN e.name AS name, e.type AS type, e.mention_count AS mentions, e.aliases AS aliases
+ORDER BY mentions DESC LIMIT 30;
+```
 
-## Layout
+```cypher
+// Документ → его чанки → сущности, которые в них упоминаются
+MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(e:Entity)
+WHERE d.path CONTAINS 'statya'          // часть имени файла
+RETURN d, c, e LIMIT 200;
+```
 
-`src/mnogobase/`: `parsing/` (Docling), `chunking/`, `embedding/`, `llm/` (client + prompts),
-`extraction/` (extractor, entity resolver), `stores/` (Qdrant, Neo4j), `wiki/`, `retrieval/`,
-`registry.py` (SQLite state), `pipeline.py`, `app.py` (wiring), `doctor.py`, `maintenance.py`
-(reindex, reset), `cli.py`. Design: `docs/superpowers/specs/2026-10-07-mnogobase-ingest-design.md`.
+```cypher
+// Чанки одного документа по порядку (как его порезал чанкер)
+MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
+WHERE d.path CONTAINS 'statya'
+RETURN c.idx AS idx, c.headings AS headings, c.n_tokens AS tokens, left(c.text, 200) AS text
+ORDER BY idx;
+```
 
-## Next steps (out of scope here)
+```cypher
+// Откуда взят факт: связь и тексты чанков-доказательств
+MATCH (a:Entity)-[r:RELATED]->(b:Entity)
+WHERE toLower(a.name) CONTAINS 'transformer'
+UNWIND r.evidence AS cid
+MATCH (c:Chunk {chunk_id: cid})<-[:HAS_CHUNK]-(d:Document)
+RETURN a.name, r.predicate, b.name, d.path, c.page_start, left(c.text, 200) LIMIT 50;
+```
 
-Desktop UI, FastAPI/MCP server, Deep Research agent, knowledge-gap and contradiction detection,
-image/audio embedding (Docling already saves pictures to `.mnogobase/cache/<doc_id>/images/`),
-Grafana/Loki dashboards, Langfuse tracing, automatic RAG vs Wiki vs Graph evaluation on
-`runs/compare.jsonl`.
+```cypher
+// Wiki-страницы и ссылки между ними
+MATCH (p:WikiPage)-[l:LINKS_TO]->(q:WikiPage) RETURN p, l, q LIMIT 200;
+```
+
+Схема графа: `(:Document)-[:HAS_CHUNK]->(:Chunk)-[:NEXT]->(:Chunk)`, `(:Chunk)-[:MENTIONS]->(:Entity)`, `(:Entity)-[:RELATED {predicate, weight, evidence}]->(:Entity)`, `(:WikiPage)-[:ABOUT]->(:Entity)`, `(:WikiPage)-[:LINKS_TO]->(:WikiPage)`, `(:WikiPage)-[:CITES]->(:Chunk)`.
+
+---
+
+## 7. Как посмотреть векторы и чанки в Qdrant
+
+Откройте **http://localhost:6333/dashboard** → **Collections**:
+
+- `mb_chunks` — чанки документов (payload: `text`, `path`, `page`, `headings`, `entity_ids`);
+- `mb_entities` — сущности (для слияния дублей);
+- `mb_wiki_pages` — разделы wiki-страниц.
+
+В коллекции есть вкладка **Points** (содержимое и payload) и **Visualize** (2D-проекция векторов: видно, как чанки группируются по темам).
+
+---
+
+## 8. Как смотреть wiki в Obsidian
+
+1. В Obsidian: **Open folder as vault** → выберите папку **`wiki/`** в корне репозитория. Она появится после первого `ingest`.
+2. Начните с **`index.md`**: это оглавление всех страниц по типам сущностей. В **`log.md`** — журнал: какие документы обработаны и какие страницы созданы, обновлены или удалены.
+3. Страницы сущностей лежат в `entities/`. Каждая страница содержит:
+   - свойства (frontmatter): `type`, `aliases`, `sources`, `updated`, `version`. `aliases` Obsidian использует при поиске и в подсказках ссылок, поэтому русские и английские названия находят одну страницу;
+   - текст со сносками `[^chunk_id]`: каждое утверждение ссылается на чанк-источник, а внизу в разделе **Sources** указаны файл и страница;
+   - раздел **Related**: связи из графа с wiki-ссылками `[[slug|Имя]]`.
+4. **Граф:** `Cmd/Ctrl+G` открывает общий граф, «Open local graph» в меню страницы — окрестность текущей страницы.
+5. **Раскраска по типам:** в настройках графа → **Groups** → «New group» и запрос по свойству, например:
+   - `[type:Person]` — люди,
+   - `[type:Concept]` — понятия,
+   - `[type:Method]` — методы,
+   - `[type:Technology]` — технологии.
+
+   Чтобы скрыть служебные страницы, в **Filters** укажите `-file:index -file:log`.
+
+Что важно знать:
+
+- **Не редактируйте `entities/*.md` вручную:** при следующем обновлении страницы LLM перепишет её на основе прежнего текста и новых фактов, ручные правки могут потеряться. Свои заметки кладите рядом, например в `wiki/notes/`. Их не трогает ни `wiki build`, ни `reset`. В заметках можно ссылаться на страницы сущностей: `[[transformer]]`.
+- Ссылка на страницу ставится только если страница существует. Страница создаётся для сущностей, у которых не меньше `wiki.min_mentions` упоминаний (по умолчанию 2).
+- Папка `wiki/` в `.gitignore` (это производные данные). Если команде нужно хранить wiki в git, уберите её оттуда.
+
+---
+
+## 9. Как потестить
+
+**Быстрая ручная проверка на встроенных примерах** (небольшой английский и русский тексты про механизм внимания):
+
+```bash
+docker compose up -d
+uv run mnogobase doctor
+uv run mnogobase ingest tests/fixtures/
+uv run mnogobase status
+uv run mnogobase compare "What is multi-head attention?"
+```
+
+Потом откройте граф (раздел 6) и `wiki/` в Obsidian (раздел 8). Сущности из русского и английского текстов должны слиться в общие: у них появятся алиасы на обоих языках (точный результат зависит от ответа LLM).
+
+Чтобы начать с чистого листа:
+
+```bash
+uv run mnogobase reset            # покажет, что удалит, и спросит подтверждение
+```
+
+**Автотесты:**
+
+```bash
+uv run pytest                    # модульные (~10 с, без сервисов)
+uv run pytest -m integration     # интеграционные: сами поднимают Neo4j и Qdrant в Docker (testcontainers)
+uv run pytest -m e2e -s          # сквозной: Docker + Ollama (embeddinggemma-2:740m) + LLM (LLM_API_KEY в .env); тратит запросы к LLM
+uv run ruff check . && uv run ruff format --check .
+```
+
+Интеграционные и e2e-тесты используют **свои временные контейнеры**: ваши данные в `docker compose` они не трогают.
+
+---
+
+## 10. Все команды
+
+Глобальная опция `--config/-c PATH` ставится **перед** командой: `uv run mnogobase -c other.yaml status`. По умолчанию используется `./config.yaml` или путь из `$MNOGOBASE_CONFIG`.
+
+| Команда | Что делает |
+|---|---|
+| `doctor` | проверяет устройство, модель Ollama, LLM, Qdrant, Neo4j, совместимость индекса (код выхода 1 при ошибке) |
+| `status` | файлы по статусам, состояние этапов, сущности в очереди на обновление wiki, незавершённые удаления, ошибки |
+| `ingest PATH... [--no-wiki] [--retry-failed]` | загрузка документов (раздел 4) |
+| `wiki build [--all]` | обновить страницы сущностей с новыми упоминаниями (или все) |
+| `ask "ВОПРОС" [--mode/-m rag\|wiki\|graph\|all] [--k N]` | ответ с цитатами из одного режима |
+| `compare "ВОПРОС" [--k N]` | все 4 режима рядом + запись в `runs/compare.jsonl` |
+| `reindex` | пересчитать все векторы после смены эмбеддера (граф и wiki сохраняются) |
+| `reset [--yes]` | удалить все данные проекта (см. ниже) |
+
+`ingest`, `wiki build`, `ask`, `compare`, `reindex` и `reset` сначала проверяют нужные сервисы. Если сервис недоступен, команда останавливается и предлагает запустить `doctor`. Одновременно работает только одна из команд `ingest` / `wiki build` / `reindex` / `reset` (блокировка в `.mnogobase/`).
+
+**`reset` безопасен:**
+
+- вне проекта (нет `.mnogobase/state.db`) он отказывается работать даже с `--yes`;
+- перед подтверждением показывает, что именно удалит: все узлы в базе Neo4j (держите отдельный Neo4j на проект), коллекции Qdrant с префиксом `mb_`, состояние и кэши в `.mnogobase/`, а из wiki — только то, что создал сам: `entities/`, `index.md`, `log.md`.
+
+---
+
+## 11. Настройка
+
+Все несекретные параметры — в `config.yaml`, секреты — в `.env`. Любой параметр можно переопределить переменной окружения: `MNOGOBASE_LLM__MODEL=gemma4:26b-a4b`, `MNOGOBASE_EMBEDDER__DIM=512`.
+
+- **LLM** — любой OpenAI-совместимый эндпоинт. По умолчанию `https://codex.sale/v1`, модель `gpt-6-luna`.
+  - Локально через Ollama: `llm.base_url: http://localhost:11434/v1`, `llm.model: gemma4:26b-a4b`. Ключ тогда не нужен.
+  - Отдельные модели под задачи: `llm.overrides.{extract,resolve,wiki,answer}`.
+- **Эмбеддер** — Ollama `embeddinggemma-2:740m`, 768 измерений (Matryoshka: можно 512/256).
+  - Запасной вариант: `ollama pull qwen3-embedding:0.6b` и раскомментировать блок в `config.yaml` (`dim: 1024` и свои шаблоны).
+  - После смены модели или размерности выполните `uv run mnogobase reindex`. `ingest` и `ask` не дают смешивать векторы разных эмбеддеров.
+- **Чанкирование** — `chunking.max_tokens` (по умолчанию 512).
+- **Wiki** — `wiki.language` (`en`), `wiki.min_mentions` (2), `wiki.evidence_k` (12 чанков-доказательств на страницу).
+- **Поиск** — `retrieval.k`, `retrieval.context_tokens`, доли бюджета для режима `all` в `retrieval.budget`.
+- **Сущности** — список типов в `extract.entity_types`.
+
+Логи в формате JSON по строкам пишутся в `logs/mnogobase.jsonl` (поля `run_id`, `doc_id`, `stage`, `duration_ms` и др.).
+
+## 12. GPU / CUDA
+
+`device: auto` выбирает CUDA → MPS (Apple Silicon) → CPU для моделей Docling. На Linux с NVIDIA (нужен NVIDIA Container Toolkit):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d   # Qdrant с GPU-индексацией + Ollama в Docker
+docker compose exec ollama ollama pull embeddinggemma-2:740m
+uv pip uninstall onnxruntime && uv pip install onnxruntime-gpu          # BM25 на GPU
+```
+
+После замены на `onnxruntime-gpu` запускайте команды через `uv run --no-sync ...`: иначе `uv` вернёт CPU-версию из lock-файла.
+
+## 13. Структура кода
+
+`src/mnogobase/`:
+
+- `parsing/` — Docling;
+- `chunking/` — HybridChunker;
+- `embedding/` — Ollama и BM25;
+- `llm/` — клиент и промпты;
+- `extraction/` — извлечение сущностей и их слияние;
+- `stores/` — Qdrant и Neo4j;
+- `wiki/` — сборка и рендер страниц;
+- `retrieval/` — 4 режима поиска;
+- `registry.py` — состояние в SQLite;
+- `pipeline.py` — этапы `ingest`;
+- `app.py` — сборка компонентов;
+- `doctor.py`, `maintenance.py` (`reindex`, `reset`), `cli.py`.
+
+Дизайн: [`docs/superpowers/specs/2026-10-07-mnogobase-ingest-design.md`](docs/superpowers/specs/2026-10-07-mnogobase-ingest-design.md).
+
+## 14. Что дальше (вне этого этапа)
+
+- Desktop UI, сервер FastAPI/MCP, агент Deep Research.
+- Поиск пробелов и противоречий в знаниях.
+- Эмбеддинги картинок и аудио (Docling уже сохраняет картинки в `.mnogobase/cache/<doc_id>/images/`).
+- Langfuse-трейсинг, автоматическое сравнение RAG / Wiki / Graph по `runs/compare.jsonl`.
+- Команда удаления из индекса файлов, удалённых с диска.

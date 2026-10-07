@@ -1,0 +1,66 @@
+node {
+  diameter: 40px;
+  color: #A5ABB6;
+  border-color: #9AA1AC;
+  text-color-internal: #FFFFFF;
+  font-size: 10px;
+  caption: "<id>";
+}
+
+node.Entity {
+  diameter: 55px;
+  color: #4C8EDA;
+  border-color: #2870C2;
+  text-color-internal: #FFFFFF;
+  caption: "{name}";
+}
+
+node.Document {
+  diameter: 70px;
+  color: #F79767;
+  border-color: #F36924;
+  text-color-internal: #FFFFFF;
+  caption: "{title}";
+}
+
+node.Chunk {
+  diameter: 30px;
+  color: #C990C0;
+  border-color: #B261A5;
+  text-color-internal: #FFFFFF;
+  caption: "{idx}";
+}
+
+node.WikiPage {
+  diameter: 45px;
+  color: #57C7E3;
+  border-color: #23B3D7;
+  text-color-internal: #2A2C34;
+  caption: "{title}";
+}
+
+node.Person { color: #F16667; border-color: #EB2728; }
+node.Organization { color: #D9C8AE; border-color: #C0A378; text-color-internal: #2A2C34; }
+node.Concept { color: #4C8EDA; border-color: #2870C2; }
+node.Method { color: #8DCC93; border-color: #5DB665; text-color-internal: #2A2C34; }
+node.Technology { color: #FFC454; border-color: #D7A013; text-color-internal: #2A2C34; }
+node.Dataset { color: #DA7194; border-color: #CC3C6C; }
+node.Work { color: #569480; border-color: #447666; }
+node.Event { color: #ECB5C9; border-color: #DA7298; text-color-internal: #2A2C34; }
+node.Location { color: #6DCE9E; border-color: #60B58B; text-color-internal: #2A2C34; }
+
+relationship {
+  color: #A5ABB6;
+  shaft-width: 1px;
+  font-size: 8px;
+  padding: 3px;
+  text-color-external: #000000;
+  text-color-internal: #FFFFFF;
+  caption: "<type>";
+}
+
+relationship.RELATED {
+  color: #4C8EDA;
+  shaft-width: 2px;
+  caption: "{predicate}";
+}
