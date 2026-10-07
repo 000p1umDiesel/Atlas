@@ -151,7 +151,11 @@ class Settings(BaseSettings):
 def load_settings(config_path: Path | None = None) -> Settings:
     """Load `.env` secrets from the CWD, then settings from YAML + env."""
     load_dotenv(Path.cwd() / ".env", override=False)
-    path = Path(config_path or os.environ.get("MNOGOBASE_CONFIG", "config.yaml"))
+    explicit = config_path or os.environ.get("MNOGOBASE_CONFIG")
+    path = Path(explicit or "config.yaml")
+    # A missing implicit ./config.yaml means "use defaults"; a missing explicit path is a typo.
+    if explicit and not path.is_file():
+        raise FileNotFoundError(f"Config file not found: {path}")
 
     class _FileSettings(Settings):
         model_config = {**Settings.model_config, "yaml_file": path}

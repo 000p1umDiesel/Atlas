@@ -27,6 +27,7 @@ def test_defaults_without_config_file(tmp_path, clean_env):
 
 
 def test_yaml_then_env_override(tmp_path, clean_env):
+    clean_env.chdir(tmp_path)
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
         "llm:\n  model: m1\n  overrides:\n    wiki: m2\nembedder:\n  dim: 512\n",
@@ -51,3 +52,25 @@ def test_secrets_from_dotenv(tmp_path, clean_env):
 def test_api_key_placeholder_for_ollama(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     assert load_settings().llm.api_key() == "ollama"
+
+
+def test_explicit_missing_config_raises(tmp_path, clean_env):
+    clean_env.chdir(tmp_path)
+    missing = tmp_path / "nope.yaml"
+    with pytest.raises(FileNotFoundError, match="nope.yaml"):
+        load_settings(missing)
+
+
+def test_env_config_missing_raises(tmp_path, clean_env):
+    clean_env.chdir(tmp_path)
+    clean_env.setenv("MNOGOBASE_CONFIG", str(tmp_path / "typo.yaml"))
+    with pytest.raises(FileNotFoundError, match="typo.yaml"):
+        load_settings()
+
+
+def test_env_config_existing_is_used(tmp_path, clean_env):
+    clean_env.chdir(tmp_path)
+    cfg = tmp_path / "other.yaml"
+    cfg.write_text("llm:\n  model: from-env-config\n", encoding="utf-8")
+    clean_env.setenv("MNOGOBASE_CONFIG", str(cfg))
+    assert load_settings().llm.model == "from-env-config"
