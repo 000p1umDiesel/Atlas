@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import contextlib
+import shutil
+
+from mnogobase.app import App
+from mnogobase.embedding.base import embedder_signature
+from mnogobase.extraction.resolver import entity_embed_input
+from mnogobase.log import get_logger
+from mnogobase.progress import NULL_PROGRESS, ProgressSink
+
+ENTITY_BATCH = 64
+WIKI_FILES = ("index.md", "log.md")
+# Stored while a reindex runs: an interrupted reindex leaves a partial index behind, and
+# `Pipeline.prepare` then refuses to use it until `mnogobase reindex` completes.
+REINDEX_IN_PROGRESS = "reindex-in-progress"
+
+
+class ReindexError(RuntimeError):
+    """`reindex` refused to start; the existing index is untouched."""
+
+
+def _check_embedder(app: App) -> None:
+    """Make sure the embedder produces `dim` values before the old index is dropped."""
+    expected = app.embedder.dim
+    try:
+        got = len(app.embedder.embed_query("dimension check"))
+    except ValueError as exc:  # e.g. truncate_normalize: the model returns fewer dims
+        raise ReindexError(f"embedder check failed: {exc}; nothing was changed") from exc
+    if got != expected:
+        raise ReindexError(
+            f"embedder check failed: it returns {got} dims, config expects {expected}; "
+            "nothing was changed"
+        )
+
+
+def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
+    """Recompute all vectors with the current embedder; graph and wiki files stay untouched.
+
+    The collections are dropped and recreated with the embedder's dimension, so this also
+    moves an index to another dimension."""
+    log = get_logger(__name__)
+    _check_embedder(app)
+    app.registry.set_meta("embedder", REINDEX_IN_PROGRESS)
+    app.vectors.drop_collections()
+    app.vectors.ensure_collections()
+    app.graph.ensure_schema()
+    stats = {"chunks": 0, "entities": 0, "wiki_sections": 0}
+
+    # every document whose chunks were embedded once, whatever happened in later stages
+    doc_ids = sorted({f.doc_id for f in app.registry.files()})
+    doc_ids = [d for d in doc_ids if app.registry.stage_status(d, "embed") == "done"]
+    progress.step("reindex chunks", len(doc_ids))
+    for doc_id in doc_ids:
+        if app.pipeline.chunks_path(doc_id).exists():
+            doc, chunks = app.pipeline.load_chunks(doc_id)
+        else:
+            stored = app.graph.doc_chunks(doc_id)
+            if stored is None:
+                log.warning("reindex_document_missing", doc_id=doc_id)
+                progress.advance(failed=True)
+                continue
+            doc, chunks = stored
+        app.pipeline.index_chunks(doc, chunks)
+        for chunk_id, entity_ids in app.graph.chunk_entity_ids(doc_id).items():
+            if entity_ids:
+                app.vectors.set_chunk_entities(chunk_id, entity_ids)
+        stats["chunks"] += len(chunks)
+        progress.advance()
+
+    entities = app.graph.entities()
+    progress.step("reindex entities", len(entities))
+    for start in range(0, len(entities), ENTITY_BATCH):
+        batch = entities[start : start + ENTITY_BATCH]
+        dense = app.embedder.embed_documents([entity_embed_input(e) for e in batch])
+        app.vectors.upsert_entities(batch, dense)
+        progress.advance(len(batch))
+    stats["entities"] = len(entities)
+
+    pages = app.graph.wiki_pages()
+    progress.step("reindex wiki", len(pages))
+    for row in pages:
+        file = app.settings.wiki.dir / row.path
+        if not file.exists():
+            log.warning("reindex_wiki_page_missing", page_id=row.page_id, path=row.path)
+            progress.advance(failed=True)
+            continue
+        # page_id == entity_id: one page per entity
+        text = file.read_text(encoding="utf-8")
+        stats["wiki_sections"] += app.wiki.index_page(row.page_id, row.page_id, row.path, text)
+        progress.advance()
+
+    app.registry.set_meta("embedder", embedder_signature(app.embedder))
+    log.info("reindex_done", **stats)
+    return stats
+
+
+def reset(app: App) -> None:
+    """Delete every vector, graph node, registry row, cache file and wiki page.
+
+    Only the wiki files mnogobase writes are removed (`entities/`, `index.md`, `log.md`); the
+    wiki directory itself goes only if nothing else is left in it."""
+    app.vectors.drop_collections()
+    app.graph.wipe()
+    app.registry.wipe()
+    shutil.rmtree(app.settings.data_dir / "cache", ignore_errors=True)
+    wiki_dir = app.settings.wiki.dir
+    shutil.rmtree(wiki_dir / "entities", ignore_errors=True)
+    for name in WIKI_FILES:
+        (wiki_dir / name).unlink(missing_ok=True)
+    with contextlib.suppress(OSError):  # missing, or holds files mnogobase does not own
+        wiki_dir.rmdir()
+    get_logger(__name__).info("reset_done")

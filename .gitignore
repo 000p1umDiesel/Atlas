@@ -1,0 +1,15 @@
+.omc/
+.mnogobase/
+logs/
+runs/
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+documents/
+wiki/
+*.superpowers
+docs/superpowers
+.pytest_cache
+.ruff_cache
