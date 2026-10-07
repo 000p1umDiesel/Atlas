@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from mnogobase import cli
 from mnogobase.doctor import Check
 from mnogobase.extraction.extractor import PROMPT_VERSION
+from mnogobase.maintenance import ReindexError
 from mnogobase.models import Answer, Source
 from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
@@ -118,7 +119,7 @@ def test_reset_and_reindex_preflight(tmp_path, monkeypatch, args, expected):
     make_project(tmp_path)
     asked: list[tuple[str, ...]] = []
 
-    def failing(settings, only=None):
+    def failing(settings, only=None, **kwargs):
         asked.append(tuple(only or ()))
         return [Check("neo4j", False, "ServiceUnavailable: down")]
 
@@ -168,7 +169,7 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args):
     make_project(tmp_path)
     asked: list[tuple[str, ...]] = []
 
-    def failing(settings, only=None):
+    def failing(settings, only=None, **kwargs):
         asked.append(tuple(only or ()))
         return [Check("qdrant", True, "ok"), Check("ollama", False, "ConnectError: refused")]
 
@@ -187,7 +188,7 @@ def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     asked: list[tuple[str, ...]] = []
 
-    def failing(settings, only=None):
+    def failing(settings, only=None, **kwargs):
         asked.append(tuple(only or ()))
         return [Check("neo4j", False, "ServiceUnavailable: down")]
 
@@ -378,3 +379,39 @@ def test_ingest_prints_the_entity_types_warning(tmp_path, monkeypatch):
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 0, result.output
     assert "TYPES CHANGED" in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "check_dim"),
+    [(["reindex"], False), (["ingest", "docs"], True), (["wiki", "build"], True)],
+)
+def test_only_reindex_accepts_a_collection_of_another_dimension(
+    tmp_path, monkeypatch, args, check_dim
+):
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+    seen: list[bool] = []
+
+    def checks(settings, only=None, check_dim=True):
+        seen.append(check_dim)
+        return [Check("qdrant", False, "stop here")]
+
+    monkeypatch.setattr(cli, "run_checks", checks)
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2, result.output
+    assert seen == [check_dim]
+
+
+def test_reindex_with_a_wrong_embedder_dimension_is_a_clear_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+
+    def failing(application):
+        raise ReindexError("embedder check failed: model returned 768 dims; nothing was changed")
+
+    monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(cli, "do_reindex", failing)
+    result = runner.invoke(cli.app, ["reindex"])
+    assert result.exit_code == 2, result.output
+    assert "model returned 768 dims" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

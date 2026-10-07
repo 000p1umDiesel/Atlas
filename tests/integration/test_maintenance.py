@@ -1,8 +1,10 @@
 import shutil
+import uuid
 from pathlib import Path
 
 import pytest
 from qdrant_client import QdrantClient
+from typer.testing import CliRunner
 
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
@@ -127,3 +129,78 @@ async def test_interrupted_reindex_must_be_rerun(graph, docs, settings):
     assert reindex(healed)["chunks"] > 0
     healed.pipeline.prepare()  # a completed reindex records the signature again
     healed.registry.close()
+
+
+@pytest.fixture
+def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs):
+    """A project driven through the CLI: real Qdrant server and Neo4j, fake models.
+
+    Yields `write_config(dim)`; the preflight runs the real `qdrant` check (the services the
+    fakes replace are reported as ok)."""
+    from mnogobase import cli
+    from mnogobase.doctor import Check, run_checks
+    from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "configure_logging", lambda *args, **kwargs: None)
+    prefix = f"it_{uuid.uuid4().hex[:8]}_"
+
+    def write_config(dim: int) -> None:
+        (tmp_path / "config.yaml").write_text(
+            f"data_dir: .mb\nqdrant:\n  url: {qdrant_url}\n  prefix: {prefix}\n"
+            f"embedder:\n  dim: {dim}\nwiki:\n  dir: wiki\n  min_mentions: 1\n"
+            "chunking:\n  max_tokens: 128\n",
+            encoding="utf-8",
+        )
+
+    def preflight(settings, only=None, **kwargs):
+        real = run_checks(settings, only=[n for n in only if n == "qdrant"], **kwargs)
+        return real + [Check(n, True, "stub") for n in only if n != "qdrant"]
+
+    def app_with_fakes(settings):
+        return build_app(
+            settings,
+            embedder=FakeEmbedder(settings.embedder.dim),
+            sparse=FakeSparse(),
+            llm=FakeLLM(scripted_llm_handler),
+            graph=GraphStore(neo4j_container.get_driver(**DRIVER_OPTIONS)),
+        )
+
+    monkeypatch.setattr(cli, "run_checks", preflight)
+    monkeypatch.setattr(cli, "build_app", app_with_fakes)
+    yield write_config
+    QdrantStore(QdrantClient(url=qdrant_url), prefix, 1).drop_collections()
+
+
+def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tmp_path):
+    from mnogobase import cli
+
+    runner = CliRunner()
+    cli_project(64)
+    built = runner.invoke(cli.app, ["ingest", "docs"])
+    assert built.exit_code == 0, built.output
+
+    cli_project(32)  # e.g. MRL truncation: embedder.dim 768 -> 512
+    refused = runner.invoke(cli.app, ["ingest", "docs"])
+    assert refused.exit_code == 2, refused.output
+    assert "has dim 64, config 32" in refused.output and "mnogobase reindex" in refused.output
+
+    result = runner.invoke(cli.app, ["reindex"])
+    assert result.exit_code == 0, result.output
+    assert "reindexed:" in result.output
+
+    settings = load_settings(tmp_path / "config.yaml")
+    app = cli.build_app(settings)
+    try:
+        for name in (app.vectors.chunks, app.vectors.entities, app.vectors.wiki):
+            assert app.vectors.collection_dim(name) == 32
+        app.pipeline.prepare()  # the stored signature is the new embedder's
+        hits = app.vectors.search_chunks(
+            app.embedder.embed_query("attention"), app.sparse.encode_query("attention"), k=3
+        )
+        assert hits
+    finally:
+        app.close()
+    again = runner.invoke(cli.app, ["ingest", "docs"])
+    assert again.exit_code == 0, again.output
+    assert "skipped 2" in again.output

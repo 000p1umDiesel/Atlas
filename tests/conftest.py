@@ -8,6 +8,7 @@ from qdrant_client import QdrantClient
 
 if TYPE_CHECKING:
     from testcontainers.community.neo4j import Neo4jContainer
+    from testcontainers.community.qdrant import QdrantContainer
 
     from mnogobase.stores.graph_store import GraphStore
 
@@ -15,16 +16,27 @@ QDRANT_IMAGE = "qdrant/qdrant:v1.19.2"
 
 
 @pytest.fixture(scope="session")
-def qdrant_client() -> Iterator[QdrantClient]:
+def qdrant_container() -> Iterator[QdrantContainer]:
     """Real Qdrant server in Docker. Integration tests only (`-m integration`)."""
     from testcontainers.community.qdrant import QdrantContainer
 
     with QdrantContainer(QDRANT_IMAGE) as container:
-        client = container.get_client()
-        try:
-            yield client
-        finally:
-            client.close()
+        yield container
+
+
+@pytest.fixture(scope="session")
+def qdrant_url(qdrant_container: QdrantContainer) -> str:
+    """REST URL of the Qdrant container, for code that connects from settings."""
+    return f"http://{qdrant_container.rest_host_address}"
+
+
+@pytest.fixture(scope="session")
+def qdrant_client(qdrant_container: QdrantContainer) -> Iterator[QdrantClient]:
+    client = qdrant_container.get_client()
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 NEO4J_IMAGE = "neo4j:5.26-community"

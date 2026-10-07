@@ -15,9 +15,31 @@ WIKI_FILES = ("index.md", "log.md")
 REINDEX_IN_PROGRESS = "reindex-in-progress"
 
 
+class ReindexError(RuntimeError):
+    """`reindex` refused to start; the existing index is untouched."""
+
+
+def _check_embedder(app: App) -> None:
+    """Make sure the embedder produces `dim` values before the old index is dropped."""
+    expected = app.embedder.dim
+    try:
+        got = len(app.embedder.embed_query("dimension check"))
+    except ValueError as exc:  # e.g. truncate_normalize: the model returns fewer dims
+        raise ReindexError(f"embedder check failed: {exc}; nothing was changed") from exc
+    if got != expected:
+        raise ReindexError(
+            f"embedder check failed: it returns {got} dims, config expects {expected}; "
+            "nothing was changed"
+        )
+
+
 def reindex(app: App) -> dict[str, int]:
-    """Recompute all vectors with the current embedder; graph and wiki files stay untouched."""
+    """Recompute all vectors with the current embedder; graph and wiki files stay untouched.
+
+    The collections are dropped and recreated with the embedder's dimension, so this also
+    moves an index to another dimension."""
     log = get_logger(__name__)
+    _check_embedder(app)
     app.registry.set_meta("embedder", REINDEX_IN_PROGRESS)
     app.vectors.drop_collections()
     app.vectors.ensure_collections()

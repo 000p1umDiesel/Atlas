@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from mnogobase.config import Settings, WikiSettings
-from mnogobase.maintenance import reset
+from mnogobase.maintenance import ReindexError, reindex, reset
 
 
 def make_app(tmp_path, calls: list[str]):
@@ -45,3 +47,36 @@ def test_reset_removes_the_wiki_dir_once_it_is_empty(tmp_path):
     reset(make_app(tmp_path, []))
     assert not (tmp_path / "wiki").exists()
     reset(make_app(tmp_path, []))  # nothing left to delete: still fine
+
+
+class _Embedder:
+    model_id = "fake"
+    dim = 4
+
+    def __init__(self, reply):
+        self.reply = reply
+
+    def embed_query(self, query):
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+@pytest.mark.parametrize(
+    ("reply", "message"),
+    [
+        ([1.0, 0.0], "returns 2 dims, config expects 4"),  # a provider that does not truncate
+        (ValueError("model returned 2 dims, config expects 4"), "model returned 2 dims"),
+    ],
+)
+def test_reindex_checks_the_embedder_dimension_before_touching_the_index(tmp_path, reply, message):
+    calls: list[str] = []
+    app = make_app(tmp_path, calls)
+    app.embedder = _Embedder(reply)
+    app.vectors.drop_collections = lambda: calls.append("drop")
+    app.registry.set_meta = lambda key, value: calls.append(f"meta {value}")
+
+    with pytest.raises(ReindexError, match=message) as info:
+        reindex(app)
+    assert "nothing was changed" in str(info.value)
+    assert calls == []  # the old index is still usable

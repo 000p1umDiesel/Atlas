@@ -18,6 +18,7 @@ from mnogobase.config import Settings, load_settings
 from mnogobase.doctor import Check, run_checks
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.log import configure_logging, new_run_id
+from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
 from mnogobase.models import Answer
@@ -69,9 +70,12 @@ def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
     return settings
 
 
-def _preflight(settings: Settings, checks: tuple[str, ...] = PREFLIGHT_CHECKS) -> None:
-    """Stop early (exit 2) when a service the command depends on is unreachable."""
-    failed = [c for c in run_checks(settings, only=checks) if not c.ok]
+def _preflight(
+    settings: Settings, checks: tuple[str, ...] = PREFLIGHT_CHECKS, *, check_dim: bool = True
+) -> None:
+    """Stop early (exit 2) when a service the command depends on is unreachable (or, with
+    `check_dim`, when the Qdrant collections have another dimension than the config)."""
+    failed = [c for c in run_checks(settings, only=checks, check_dim=check_dim) if not c.ok]
     if failed:
         for check in failed:
             console.print(f"[red]✗ {check.name}[/red]: {escape(check.detail)}")
@@ -361,13 +365,17 @@ def compare(
 def reindex() -> None:
     """Recompute every vector after changing the embedder (graph and wiki are kept)."""
     settings = _settings()
-    _preflight(settings, REINDEX_CHECKS)
+    # reindex rebuilds the collections: a dimension change is what it is for
+    _preflight(settings, REINDEX_CHECKS, check_dim=False)
     lock = _lock(settings)
     try:
         application = build_app(settings)
         try:
             with console.status("Re-embedding…"):
-                stats = do_reindex(application)
+                try:
+                    stats = do_reindex(application)
+                except ReindexError as exc:
+                    _fail_cleanly(exc)
         finally:
             application.close()
     finally:

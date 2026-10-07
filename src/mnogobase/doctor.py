@@ -34,9 +34,16 @@ def _guard(name: str, fn: Callable[[], Check]) -> Check:
 
 
 def run_checks(
-    settings: Settings, timeout: float = 5.0, only: Collection[str] | None = None
+    settings: Settings,
+    timeout: float = 5.0,
+    only: Collection[str] | None = None,
+    *,
+    check_dim: bool = True,
 ) -> list[Check]:
-    """Run the environment checks in `CHECKS` order (only those named in `only`, if given)."""
+    """Run the environment checks in `CHECKS` order (only those named in `only`, if given).
+
+    `check_dim=False` accepts collections of another dimension than the config: for
+    `reindex`, which drops and recreates them."""
 
     def device() -> Check:
         return Check("device", True, detect_device(settings.device))
@@ -78,12 +85,10 @@ def run_checks(
         finally:
             client.close()
         if dim is not None and dim != settings.embedder.dim:
-            return Check(
-                "qdrant",
-                False,
-                f"{store.chunks} has dim {dim}, config {settings.embedder.dim}: "
-                "run `mnogobase reindex`",
-            )
+            mismatch = f"{store.chunks} has dim {dim}, config {settings.embedder.dim}"
+            if check_dim:
+                return Check("qdrant", False, f"{mismatch}: run `mnogobase reindex`")
+            return Check("qdrant", True, f"{settings.qdrant.url} ({mismatch}: rebuilt)")
         state = "no index yet" if dim is None else f"dim {dim}"
         return Check("qdrant", True, f"{settings.qdrant.url} ({state})")
 

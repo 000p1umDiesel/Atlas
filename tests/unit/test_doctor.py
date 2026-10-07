@@ -1,11 +1,13 @@
 import httpx
 import pytest
+from qdrant_client import QdrantClient
 
 from mnogobase import doctor
 from mnogobase.config import EmbedderSettings, Settings
 from mnogobase.doctor import run_checks
 from mnogobase.extraction.extractor import PROMPT_VERSION, entity_types_signature
 from mnogobase.registry import Registry
+from mnogobase.stores.qdrant_store import QdrantStore
 
 
 def make_settings(tmp_path, **update) -> Settings:
@@ -94,3 +96,22 @@ def test_types_check_warns_without_failing_when_the_types_changed(tmp_path):
     [changed] = run_checks(settings, only=["types"])
     assert changed.ok and changed.warn  # a warning, never a failure
     assert "mnogobase reset" in changed.detail and "ingest" in changed.detail
+
+
+@pytest.mark.filterwarnings("ignore:Payload indexes have no effect in the local Qdrant:UserWarning")
+def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
+    tmp_path, monkeypatch
+):
+    client = QdrantClient(":memory:")
+    QdrantStore(client, "mb_", 64).ensure_collections()
+    monkeypatch.setattr(client, "close", lambda: None)  # run_checks closes its client
+    monkeypatch.setattr(doctor, "QdrantClient", lambda **kwargs: client)
+    settings = make_settings(tmp_path)  # embedder.dim 768
+
+    [strict] = run_checks(settings, only=["qdrant"])
+    assert not strict.ok
+    assert "mb_chunks has dim 64, config 768" in strict.detail and "reindex" in strict.detail
+
+    [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # what reindex runs
+    assert lenient.ok, lenient.detail
+    assert "dim 64" in lenient.detail and "768" in lenient.detail
