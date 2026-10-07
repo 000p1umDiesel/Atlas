@@ -10,6 +10,7 @@ from mnogobase.embedding.base import (
     embedder_signature,
     format_document,
     format_query,
+    signature_mismatch,
     truncate_normalize,
 )
 from mnogobase.embedding.ollama import OllamaEmbedder
@@ -56,7 +57,25 @@ def test_ollama_batches_and_applies_templates():
     assert bodies[0]["model"] == "embeddinggemma-2:740m"
     emb.embed_query("hi")
     assert bodies[-1]["input"] == ["task: search result | query: hi"]
-    assert embedder_signature(emb) == "ollama:embeddinggemma-2:740m:2"
+    assert embedder_signature(emb) == "ollama:embeddinggemma-2:740m:2:tpl-dd6dd8c7"
+
+
+def test_signature_covers_the_templates_and_accepts_legacy_signatures():
+    def sig(**update):
+        return embedder_signature(OllamaEmbedder(EmbedderSettings(**update)))
+
+    default = sig()
+    assert sig() == default  # stable
+    assert sig(doc_template="{text}") != default
+    assert sig(query_template="{query}") != default
+    emb = OllamaEmbedder(EmbedderSettings())
+    for accepted in (None, default, "ollama:embeddinggemma-2:740m:768"):
+        assert signature_mismatch(accepted, emb) is None, accepted
+    templates = signature_mismatch(sig(doc_template="{text}"), emb)
+    assert templates is not None and "templates changed" in templates
+    model = signature_mismatch("ollama:qwen3-embedding:0.6b:1024", emb)
+    assert model is not None and "templates" not in model
+    assert "ollama:qwen3-embedding:0.6b:1024" in model and default in model
 
 
 def test_ollama_retries_server_errors():

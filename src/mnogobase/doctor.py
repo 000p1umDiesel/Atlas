@@ -8,7 +8,7 @@ from qdrant_client import QdrantClient
 
 from mnogobase.config import Settings
 from mnogobase.device import detect_device
-from mnogobase.embedding.base import embedder_signature
+from mnogobase.embedding.base import embedder_signature, signature_mismatch
 from mnogobase.embedding.ollama import OllamaEmbedder
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.registry import Registry
@@ -102,7 +102,8 @@ def run_checks(
 
     def index() -> Check:
         db = settings.data_dir / "state.db"
-        expected = embedder_signature(OllamaEmbedder(settings.embedder))
+        embedder = OllamaEmbedder(settings.embedder)
+        expected = embedder_signature(embedder)
         if not db.exists():
             return Check("index", True, "no index yet")
         registry = Registry(db)
@@ -110,13 +111,10 @@ def run_checks(
             stored = registry.get_meta("embedder")
         finally:
             registry.close()
-        if stored in (None, expected):
-            return Check("index", True, f"embedder {expected}")
-        return Check(
-            "index",
-            False,
-            f"index built with {stored}, config uses {expected}: run `mnogobase reindex`",
-        )
+        mismatch = signature_mismatch(stored, embedder)
+        if mismatch:
+            return Check("index", False, f"{mismatch}: run `mnogobase reindex`")
+        return Check("index", True, f"embedder {expected}")
 
     def types() -> Check:
         db = settings.data_dir / "state.db"

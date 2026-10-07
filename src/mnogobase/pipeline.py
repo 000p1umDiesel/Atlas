@@ -9,7 +9,12 @@ from pydantic import BaseModel
 
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
-from mnogobase.embedding.base import Embedder, SparseEncoder, embedder_signature
+from mnogobase.embedding.base import (
+    Embedder,
+    SparseEncoder,
+    embedder_signature,
+    signature_mismatch,
+)
 from mnogobase.extraction.extractor import TYPES_CHANGED, Extractor, stale_entity_types
 from mnogobase.extraction.resolver import EntityResolver
 from mnogobase.ids import file_doc_id, normalize_name
@@ -102,14 +107,15 @@ class Pipeline:
     def prepare(self, check_embedder: bool = True, resume: bool = True) -> None:
         signature = embedder_signature(self._embedder)
         stored = self._registry.get_meta("embedder")
-        if check_embedder and stored is not None and stored != signature:
-            raise EmbedderMismatchError(
-                f"index was built with {stored}, config now uses {signature}; "
-                "run `mnogobase reindex`"
-            )
+        mismatch = signature_mismatch(stored, self._embedder)
+        if check_embedder and mismatch:
+            raise EmbedderMismatchError(f"{mismatch}; run `mnogobase reindex`")
         self._vectors.ensure_collections()
         self._graph.ensure_schema()
-        if stored is None:
+        if stored != signature and not mismatch:
+            # a new index, or a legacy signature (without the templates) of the same embedder
+            if stored is not None:
+                self._log.info("embedder_signature_upgraded", old=stored, new=signature)
             self._registry.set_meta("embedder", signature)
         if resume:
             resumed = self._registry.reset_running()

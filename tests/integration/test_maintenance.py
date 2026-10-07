@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
+from mnogobase.embedding.base import embedder_signature
 from mnogobase.maintenance import reindex, reset
 from mnogobase.pipeline import EmbedderMismatchError
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -81,6 +82,9 @@ async def test_reindex_after_embedder_change_then_reset(graph, tmp_path, docs, s
         second.embedder.embed_query("attention"), second.sparse.encode_query("attention"), k=3
     )
 
+    assert second.registry.get_meta("embedder") == embedder_signature(embedder)
+    assert ":tpl-" in second.registry.get_meta("embedder")  # the new format, templates signed
+
     reset(second)
     assert graph.counts()["Entity"] == 0
     assert not (tmp_path / "wiki").exists()
@@ -145,11 +149,11 @@ def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs)
     monkeypatch.setattr(cli, "configure_logging", lambda *args, **kwargs: None)
     prefix = f"it_{uuid.uuid4().hex[:8]}_"
 
-    def write_config(dim: int) -> None:
+    def write_config(dim: int, doc_template: str = "{text}") -> None:
         (tmp_path / "config.yaml").write_text(
             f"data_dir: .mb\nqdrant:\n  url: {qdrant_url}\n  prefix: {prefix}\n"
-            f"embedder:\n  dim: {dim}\nwiki:\n  dir: wiki\n  min_mentions: 1\n"
-            "chunking:\n  max_tokens: 128\n",
+            f"embedder:\n  dim: {dim}\n  doc_template: '{doc_template}'\n"
+            "wiki:\n  dir: wiki\n  min_mentions: 1\nchunking:\n  max_tokens: 128\n",
             encoding="utf-8",
         )
 
@@ -160,7 +164,10 @@ def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs)
     def app_with_fakes(settings):
         return build_app(
             settings,
-            embedder=FakeEmbedder(settings.embedder.dim),
+            embedder=FakeEmbedder(
+                settings.embedder.dim,
+                (settings.embedder.doc_template, settings.embedder.query_template),
+            ),
             sparse=FakeSparse(),
             llm=FakeLLM(scripted_llm_handler),
             graph=GraphStore(neo4j_container.get_driver(**DRIVER_OPTIONS)),
@@ -204,3 +211,30 @@ def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tm
     again = runner.invoke(cli.app, ["ingest", "docs"])
     assert again.exit_code == 0, again.output
     assert "skipped 2" in again.output
+
+
+def test_cli_template_change_requires_reindex(cli_project, tmp_path):
+    from mnogobase import cli
+
+    runner = CliRunner()
+    cli_project(64)
+    built = runner.invoke(cli.app, ["ingest", "docs"])
+    assert built.exit_code == 0, built.output
+
+    cli_project(64, doc_template="passage: {text}")  # same model and dim, new template
+    for args in (["ingest", "docs"], ["ask", "what is attention?"]):
+        refused = runner.invoke(cli.app, args)
+        assert refused.exit_code == 2, refused.output
+        assert "templates changed" in refused.output, refused.output
+        assert "mnogobase reindex" in refused.output
+
+    result = runner.invoke(cli.app, ["reindex"])
+    assert result.exit_code == 0, result.output
+    settings = load_settings(tmp_path / "config.yaml")
+    app = cli.build_app(settings)
+    try:
+        assert app.registry.get_meta("embedder") == embedder_signature(app.embedder)
+    finally:
+        app.close()
+    answered = runner.invoke(cli.app, ["ask", "what is attention?"])
+    assert answered.exit_code == 0, answered.output

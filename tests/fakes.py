@@ -113,9 +113,10 @@ def _bucket(token: str, size: int) -> int:
 class FakeEmbedder:
     """Hashed bag-of-words: texts sharing words get high cosine similarity."""
 
-    def __init__(self, dim: int = 64):
+    def __init__(self, dim: int = 64, templates: tuple[str, str] = ("{text}", "{query}")):
         self.dim = dim
         self.model_id = "fake-embed"
+        self.templates = templates  # only signed (the index signature), never applied
 
     def _vec(self, text: str) -> list[float]:
         vec = [0.0] * self.dim

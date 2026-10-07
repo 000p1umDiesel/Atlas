@@ -9,6 +9,7 @@ from structlog.testing import capture_logs
 
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, ExtractSettings, WikiSettings, load_settings
+from mnogobase.embedding.base import embedder_signature
 from mnogobase.ids import entity_id, file_doc_id
 from mnogobase.maintenance import reset
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
@@ -298,6 +299,25 @@ async def test_removed_page_leaves_no_dangling_links(make_app, tmp_path):
 async def test_embedder_mismatch_is_refused(make_app):
     app = make_app()
     app.registry.set_meta("embedder", "other-model:1024")
+    with pytest.raises(EmbedderMismatchError, match="reindex"):
+        app.pipeline.prepare()
+
+
+async def test_embedder_template_change_is_refused(make_app, docs):
+    app = make_app()
+    await app.pipeline.ingest([docs], build_wiki=False)
+    app.embedder.templates = ("passage: {text}", app.embedder.templates[1])
+    with pytest.raises(EmbedderMismatchError, match="templates changed.*reindex"):
+        await app.pipeline.ingest([docs], build_wiki=False)
+
+
+async def test_legacy_signature_of_the_same_model_is_accepted_and_upgraded(make_app):
+    app = make_app()
+    app.registry.set_meta("embedder", "fake-embed:64")  # written before templates were signed
+    app.pipeline.prepare()
+    assert app.registry.get_meta("embedder") == embedder_signature(app.embedder)
+
+    app.registry.set_meta("embedder", "fake-embed:32")  # legacy, but another dimension
     with pytest.raises(EmbedderMismatchError, match="reindex"):
         app.pipeline.prepare()
 

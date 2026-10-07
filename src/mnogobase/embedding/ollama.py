@@ -32,6 +32,7 @@ class OllamaEmbedder:
         self._retry_wait = retry_wait
         self.model_id = f"ollama:{settings.model}"
         self.dim = settings.dim
+        self.templates = (settings.doc_template, settings.query_template)
         self._log = get_logger(__name__)
 
     def _embed(self, inputs: list[str]) -> list[list[float]]:

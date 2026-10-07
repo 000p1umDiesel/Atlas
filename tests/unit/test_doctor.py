@@ -5,6 +5,8 @@ from qdrant_client import QdrantClient
 from mnogobase import doctor
 from mnogobase.config import EmbedderSettings, Settings
 from mnogobase.doctor import run_checks
+from mnogobase.embedding.base import embedder_signature
+from mnogobase.embedding.ollama import OllamaEmbedder
 from mnogobase.extraction.extractor import PROMPT_VERSION, entity_types_signature
 from mnogobase.registry import Registry
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -26,7 +28,7 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     assert fresh.ok and fresh.detail == "no index yet"
     assert not (tmp_path / ".mb" / "state.db").exists()
 
-    store_signature(tmp_path, "ollama:embeddinggemma-2:740m:768")
+    store_signature(tmp_path, "ollama:embeddinggemma-2:740m:768")  # legacy: no templates
     [same] = run_checks(settings, only=["index"])
     assert same.ok
 
@@ -36,6 +38,18 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     assert "qwen3-embedding:0.6b:1024" in changed.detail
     assert "ollama:embeddinggemma-2:740m:768" in changed.detail
     assert "mnogobase reindex" in changed.detail
+
+
+def test_index_check_fails_when_only_the_templates_changed(tmp_path):
+    settings = make_settings(tmp_path)
+    store_signature(tmp_path, embedder_signature(OllamaEmbedder(settings.embedder)))
+    [same] = run_checks(settings, only=["index"])
+    assert same.ok, same.detail
+
+    edited = make_settings(tmp_path, embedder=EmbedderSettings(doc_template="passage: {text}"))
+    [changed] = run_checks(edited, only=["index"])
+    assert not changed.ok
+    assert "templates changed" in changed.detail and "mnogobase reindex" in changed.detail
 
 
 def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path):
