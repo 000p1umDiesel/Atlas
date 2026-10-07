@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from itertools import pairwise
 
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver, GraphDatabase, ManagedTransaction, NotificationDisabledClassification
 
 from mnogobase.config import Neo4jSettings
 from mnogobase.models import (
@@ -17,6 +17,12 @@ from mnogobase.models import (
     RelationView,
     WikiPageRecord,
 )
+
+# Driver config for every GraphStore driver. UNRECOGNIZED notifications ("relationship type X
+# does not exist") are normal on a fresh database and would otherwise be logged as WARNINGs.
+DRIVER_OPTIONS: dict[str, object] = {
+    "notifications_disabled_classifications": [NotificationDisabledClassification.UNRECOGNIZED],
+}
 
 _SCHEMA = [
     "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.doc_id IS UNIQUE",
@@ -51,7 +57,10 @@ class GraphStore:
 
     @classmethod
     def from_settings(cls, settings: Neo4jSettings) -> GraphStore:
-        return cls(GraphDatabase.driver(settings.uri, auth=(settings.user, settings.password())))
+        driver = GraphDatabase.driver(
+            settings.uri, auth=(settings.user, settings.password()), **DRIVER_OPTIONS
+        )
+        return cls(driver)
 
     def close(self) -> None:
         self._driver.close()
@@ -109,53 +118,10 @@ class GraphStore:
             )
 
     def delete_document(self, doc_id: str) -> DeleteResult:
-        found = self._run(
-            "MATCH (d:Document {doc_id: $doc_id}) "
-            "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
-            "OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity) "
-            "RETURN collect(DISTINCT c.chunk_id) AS cids, collect(DISTINCT e.entity_id) AS eids",
-            doc_id=doc_id,
-        )
-        cids = found[0]["cids"] if found else []
-        eids = found[0]["eids"] if found else []
-        if cids:
-            # drop evidence coming from the deleted chunks; edges left without evidence disappear
-            self._run(
-                "MATCH ()-[r:RELATED]->() WHERE any(x IN r.evidence WHERE x IN $cids) "
-                "WITH r, [i IN range(0, size(r.evidence) - 1) WHERE NOT r.evidence[i] IN $cids] AS keep "
-                "SET r.evidence = [i IN keep | r.evidence[i]], "
-                "    r.strengths = [i IN keep | r.strengths[i]] "
-                "SET r.weight = reduce(s = 0.0, x IN r.strengths | s + x) "
-                "WITH r WHERE size(r.evidence) = 0 DELETE r",
-                cids=cids,
-            )
-        self._run(
-            "MATCH (d:Document {doc_id: $doc_id}) "
-            "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
-            "WITH d, collect(c) AS cs "
-            "FOREACH (x IN cs | DETACH DELETE x) "
-            "DETACH DELETE d",
-            doc_id=doc_id,
-        )
-        removed = self._run(
-            "UNWIND $eids AS eid "
-            "MATCH (e:Entity {entity_id: eid}) "
-            "SET e.mention_count = COUNT { (e)<-[:MENTIONS]-(:Chunk) } "
-            "WITH e WHERE e.mention_count = 0 "
-            "OPTIONAL MATCH (p:WikiPage)-[:ABOUT]->(e) "
-            "WITH e, e.entity_id AS eid, e.name AS name, collect(p) AS pages "
-            "WITH e, eid, name, pages, [x IN pages | [x.page_id, x.path]] AS page_refs "
-            "FOREACH (x IN pages | DETACH DELETE x) "
-            "DETACH DELETE e "
-            "RETURN eid, name, page_refs",
-            eids=eids,
-        )
-        return DeleteResult(
-            affected=eids,
-            removed_entity_ids=[r["eid"] for r in removed],
-            removed_names=[r["name"] for r in removed],
-            removed_pages=[(p[0], p[1]) for r in removed for p in r["page_refs"]],
-        )
+        # one write transaction: a crash mid-cascade must not leave the Document gone while
+        # its entities keep stale mention counts / orphaned wiki pages (a retry would be a no-op)
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(_delete_document_tx, doc_id)
 
     def chunks_by_ids(self, chunk_ids: list[str]) -> list[ChunkView]:
         rows = self._run(
@@ -337,3 +303,53 @@ class GraphStore:
             "ORDER BY entity_type, title"
         )
         return [PageIndexRow(**r) for r in rows]
+
+
+def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
+    found = tx.run(
+        "MATCH (d:Document {doc_id: $doc_id}) "
+        "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
+        "OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity) "
+        "RETURN collect(DISTINCT c.chunk_id) AS cids, collect(DISTINCT e.entity_id) AS eids",
+        doc_id=doc_id,
+    ).data()
+    cids = found[0]["cids"] if found else []
+    eids = found[0]["eids"] if found else []
+    if cids:
+        # drop evidence coming from the deleted chunks; edges left without evidence disappear
+        tx.run(
+            "MATCH ()-[r:RELATED]->() WHERE any(x IN r.evidence WHERE x IN $cids) "
+            "WITH r, [i IN range(0, size(r.evidence) - 1) WHERE NOT r.evidence[i] IN $cids] AS keep "
+            "SET r.evidence = [i IN keep | r.evidence[i]], "
+            "    r.strengths = [i IN keep | r.strengths[i]] "
+            "SET r.weight = reduce(s = 0.0, x IN r.strengths | s + x) "
+            "WITH r WHERE size(r.evidence) = 0 DELETE r",
+            cids=cids,
+        ).consume()
+    tx.run(
+        "MATCH (d:Document {doc_id: $doc_id}) "
+        "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
+        "WITH d, collect(c) AS cs "
+        "FOREACH (x IN cs | DETACH DELETE x) "
+        "DETACH DELETE d",
+        doc_id=doc_id,
+    ).consume()
+    removed = tx.run(
+        "UNWIND $eids AS eid "
+        "MATCH (e:Entity {entity_id: eid}) "
+        "SET e.mention_count = COUNT { (e)<-[:MENTIONS]-(:Chunk) } "
+        "WITH e WHERE e.mention_count = 0 "
+        "OPTIONAL MATCH (p:WikiPage)-[:ABOUT]->(e) "
+        "WITH e, e.entity_id AS eid, e.name AS name, collect(p) AS pages "
+        "WITH e, eid, name, pages, [x IN pages | [x.page_id, x.path]] AS page_refs "
+        "FOREACH (x IN pages | DETACH DELETE x) "
+        "DETACH DELETE e "
+        "RETURN eid, name, page_refs",
+        eids=eids,
+    ).data()
+    return DeleteResult(
+        affected=eids,
+        removed_entity_ids=[r["eid"] for r in removed],
+        removed_names=[r["name"] for r in removed],
+        removed_pages=[(p[0], p[1]) for r in removed for p in r["page_refs"]],
+    )

@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
@@ -78,6 +80,8 @@ def test_delete_document_cascade(graph):
     graph.add_mentions(a[0].chunk_id, ["e1", "e2"])
     graph.add_mentions(b[0].chunk_id, ["e1", "e3"])
     graph.merge_relation("e1", "e2", "uses", "", 4, a[0].chunk_id)
+    # e1-uses->e3 carries evidence from both documents: a's entry first, then b's
+    graph.merge_relation("e1", "e3", "uses", "", 3, a[0].chunk_id)
     graph.merge_relation("e1", "e3", "uses", "", 4, b[0].chunk_id)
     graph.merge_relation("e1", "e3", "cites", "", 2, a[1].chunk_id)
     graph.upsert_wiki_page(
@@ -97,8 +101,21 @@ def test_delete_document_cascade(graph):
     assert graph.get_entity("e1").mention_count == 1
     rels = graph.entity_context("e1", max_relations=10).relations
     assert [(r.predicate, r.dst_id) for r in rels] == [("uses", "e3")]
+    assert rels[0].evidence == [b[0].chunk_id]
+    assert rels[0].weight == 4
+    strengths = graph._run(
+        "MATCH (:Entity {entity_id:'e1'})-[r:RELATED {predicate:'uses'}]->(:Entity {entity_id:'e3'}) "
+        "RETURN r.strengths AS s"
+    )
+    assert strengths == [{"s": [4]}]
     assert graph.counts()["Document"] == 1
     assert graph.wiki_page("e2") is None
+
+
+def test_unknown_type_notifications_are_not_logged(graph, caplog):
+    with caplog.at_level(logging.DEBUG, logger="neo4j.notifications"):
+        graph._run("MATCH ()-[r:NEVER_CREATED_TYPE]->() RETURN count(r) AS n")
+    assert not [r for r in caplog.records if r.name.startswith("neo4j.notifications")]
 
 
 def test_fulltext_special_characters(graph):

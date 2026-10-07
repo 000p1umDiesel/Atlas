@@ -42,9 +42,9 @@ def neo4j_container() -> Iterator[Neo4jContainer]:
 @pytest.fixture
 def graph(neo4j_container: Neo4jContainer) -> Iterator[GraphStore]:
     """Fresh `GraphStore` on the shared container: wiped, schema ensured."""
-    from mnogobase.stores.graph_store import GraphStore
+    from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
 
-    store = GraphStore(neo4j_container.get_driver())
+    store = GraphStore(neo4j_container.get_driver(**DRIVER_OPTIONS))
     store.wipe()
     store.ensure_schema()
     try:
