@@ -49,15 +49,15 @@ node.Work { color: #569480; border-color: #447666; }
 node.Event { color: #ECB5C9; border-color: #DA7298; text-color-internal: #2A2C34; }
 node.Location { color: #6DCE9E; border-color: #60B58B; text-color-internal: #2A2C34; }
 node.Project { color: #AF7AC5; border-color: #884EA0; }
-node.Product { color: #FFE081; border-color: #9F8C4C; text-color-internal: #2A2C34; }
+node.Product { color: #C2185B; border-color: #880E4F; }
 node.Software { color: #68BDF6; border-color: #5CA8DB; text-color-internal: #2A2C34; }
 node.AIModel { color: #17A589; border-color: #117864; }
 node.Field { color: #A3E4D7; border-color: #48C9B0; text-color-internal: #2A2C34; }
 node.Metric { color: #E8DAEF; border-color: #BB8FCE; text-color-internal: #2A2C34; }
 node.Regulation { color: #5D6D7E; border-color: #34495E; }
-node.Substance { color: #F5B041; border-color: #CA6F1E; text-color-internal: #2A2C34; }
+node.Substance { color: #827717; border-color: #524C0F; }
 node.Condition { color: #C0392B; border-color: #922B21; }
-node.Organism { color: #58D68D; border-color: #239B56; text-color-internal: #2A2C34; }
+node.Organism { color: #8D6E63; border-color: #5D4037; }
 node.Other { color: #A5ABB6; border-color: #9AA1AC; }
 
 relationship {
