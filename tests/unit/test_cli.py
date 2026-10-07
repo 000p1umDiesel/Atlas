@@ -21,11 +21,34 @@ def offline(monkeypatch):
     monkeypatch.setattr(cli, "run_checks", lambda settings, **kwargs: [Check("qdrant", True, "ok")])
 
 
+def make_project(root: Path) -> None:
+    Registry(root / ".mnogobase" / "state.db").close()
+
+
 def test_status_on_empty_project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
     assert "files: 0" in result.output
+
+
+def test_status_outside_a_project_creates_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "No mnogobase project here" in result.output and "state.db" in result.output
+    assert not (tmp_path / ".mnogobase").exists()
+
+
+@pytest.mark.parametrize("args", [["ask", "what is attention?"], ["compare", "what?"]])
+def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
+    monkeypatch.chdir(tmp_path)  # no .mnogobase/state.db here
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2, result.output
+    assert "No mnogobase project here" in result.output and "state.db" in result.output
+    assert not (tmp_path / ".mnogobase").exists()
 
 
 def test_doctor_exit_code_reflects_failures(tmp_path, monkeypatch):
@@ -41,10 +64,6 @@ def test_doctor_exit_code_reflects_failures(tmp_path, monkeypatch):
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
     assert "neo4j" in result.output and "fail" in result.output
-
-
-def make_project(root: Path) -> None:
-    Registry(root / ".mnogobase" / "state.db").close()
 
 
 def test_reset_requires_confirmation(tmp_path, monkeypatch):
@@ -144,6 +163,7 @@ def test_missing_config_file_is_a_clear_error(tmp_path, monkeypatch):
 )
 def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
     asked: list[tuple[str, ...]] = []
 
     def failing(settings, only=None):
@@ -158,6 +178,23 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args):
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "ollama" in result.output and "ConnectError: refused" in result.output
+    assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"}
+
+
+def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    asked: list[tuple[str, ...]] = []
+
+    def failing(settings, only=None):
+        asked.append(tuple(only or ()))
+        return [Check("neo4j", False, "ServiceUnavailable: down")]
+
+    monkeypatch.setattr(cli, "run_checks", failing)
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    result = runner.invoke(cli.app, ["wiki", "build"])
+    assert result.exit_code == 2, result.output
+    assert "ServiceUnavailable: down" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
     assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"}
 
 
@@ -205,3 +242,14 @@ def test_print_answer_shows_document_text_verbatim(monkeypatch):
     cli._print_answer(answer)  # Rich would raise MarkupError on unescaped "[/foo]"
     output = recorder.export_text()
     assert text in output and "[b]raw[/b]" in output
+
+
+@pytest.mark.parametrize("args", [["status"], ["ask", "q?"], ["compare", "q?"]])
+def test_read_only_commands_outside_a_project_do_not_start_file_logging(
+    tmp_path, monkeypatch, args
+):
+    monkeypatch.chdir(tmp_path)
+    started: list[Path] = []
+    monkeypatch.setattr(cli, "configure_logging", lambda logs_dir, **kw: started.append(logs_dir))
+    runner.invoke(cli.app, args)
+    assert started == []  # configure_logging would create logs/ in this directory

@@ -50,7 +50,10 @@ def main(
     _state["config"] = config
 
 
-def _settings() -> Settings:
+def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
+    """Load settings and start file logging. `project=True` first requires an existing
+    project (else exit `missing_exit`), so a command run in the wrong directory creates
+    neither state.db nor logs/."""
     try:
         settings = load_settings(_state["config"])
     except FileNotFoundError as exc:
@@ -59,6 +62,8 @@ def _settings() -> Settings:
     except (yaml.YAMLError, ValueError) as exc:  # bad YAML, or a pydantic ValidationError
         console.print(f"[red]Invalid configuration:[/red] {escape(str(exc))}")
         raise typer.Exit(2) from None
+    if project:
+        _require_project(settings, missing_exit)
     configure_logging(settings.logs_dir)
     return settings
 
@@ -71,6 +76,21 @@ def _preflight(settings: Settings, checks: tuple[str, ...] = PREFLIGHT_CHECKS) -
             console.print(f"[red]✗ {check.name}[/red]: {escape(check.detail)}")
         console.print("Run `mnogobase doctor` for a full report.")
         raise typer.Exit(2)
+
+
+def _state_db(settings: Settings) -> Path:
+    return settings.data_dir / "state.db"
+
+
+def _require_project(settings: Settings, code: int = 2) -> None:
+    """Exit with `code` outside a project: commands that only read must not create state.db."""
+    if not _state_db(settings).is_file():
+        console.print(
+            f"No mnogobase project here (no {escape(str(_state_db(settings).resolve()))}). "
+            "Run `mnogobase ingest` first, or pass the project's --config.",
+            soft_wrap=True,
+        )
+        raise typer.Exit(code)
 
 
 def _lock(settings: Settings) -> filelock.FileLock:
@@ -134,8 +154,9 @@ def doctor() -> None:
 @app.command()
 def status() -> None:
     """Summarize ingested files, stage states, pending wiki updates and errors."""
-    settings = _settings()
-    registry = Registry(settings.data_dir / "state.db")
+    # status only reads: outside a project it says so and succeeds
+    settings = _settings(project=True, missing_exit=0)
+    registry = Registry(_state_db(settings))
     try:
         files = registry.files()
         counts = Counter(f.status for f in files)
@@ -217,6 +238,7 @@ def wiki_build(
 ) -> None:
     """Regenerate wiki pages for entities with new mentions (or all with --all)."""
     settings = _settings()
+    _preflight(settings)
     lock = _lock(settings)
     try:
         application = build_app(settings)
@@ -256,7 +278,7 @@ def ask(
     k: Annotated[int | None, typer.Option("--k", help="Results per retriever.")] = None,
 ) -> None:
     """Answer a question with citations using one retrieval mode."""
-    settings = _settings()
+    settings = _settings(project=True)
     _preflight(settings)
     application = build_app(settings)
     try:
@@ -277,7 +299,7 @@ def compare(
     k: Annotated[int | None, typer.Option("--k", help="Results per retriever.")] = None,
 ) -> None:
     """Answer in rag / wiki / graph / all and log the comparison to runs/compare.jsonl."""
-    settings = _settings()
+    settings = _settings(project=True)
     _preflight(settings)
     application = build_app(settings)
     try:
@@ -345,7 +367,7 @@ def reset(
 ) -> None:
     """Delete ALL vectors, graph data, registry state, caches and wiki pages."""
     settings = _settings()
-    state_db = settings.data_dir / "state.db"
+    state_db = _state_db(settings)
     if not state_db.is_file():
         # --yes never bypasses this: a wrong CWD or config must not wipe someone else's data
         console.print(
