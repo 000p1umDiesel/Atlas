@@ -40,3 +40,26 @@ def test_file_doc_id_depends_on_content_only(tmp_path):
     assert ids.file_doc_id(a) == ids.file_doc_id(b)
     b.write_text("different", encoding="utf-8")
     assert ids.file_doc_id(a) != ids.file_doc_id(b)
+
+
+def test_slugify_never_contains_hash():
+    assert "#" not in ids.slugify("C#")
+    assert ids.slugify("C#") == "csharp"
+    assert ids.slugify("C++") == "c++"
+    assert "#" not in ids.slugify("a # b")
+
+
+def test_slugify_caps_length_with_stable_hash():
+    long_name = "Механизм " * 30  # ~270 chars of Cyrillic
+    slug = ids.slugify(long_name)
+    assert len(slug) <= 80
+    assert len((slug + ".md").encode("utf-8")) <= 255
+    assert slug == ids.slugify(long_name)
+    other = ids.slugify(long_name + " внимания")
+    assert len(other) <= 80
+    assert slug != other
+
+
+def test_slugify_caps_bytes_for_wide_scripts():
+    slug = ids.slugify("𠀀" * 100)  # 4-byte UTF-8 word characters
+    assert len((slug + ".md").encode("utf-8")) <= 255
