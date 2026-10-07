@@ -87,3 +87,15 @@ async def test_extract_many_isolates_failures(tmp_path):
     results = await ex.extract_many([ok, bad], "Doc")
     assert list(results) == [ok.chunk_id]
     assert reg.chunk_extract_counts(DOC) == {"done": 1, "failed": 1}
+
+
+async def test_cached_falls_back_to_another_model(tmp_path):
+    reg = Registry(tmp_path / "s.db")
+    llm = FakeLLM(scripted_llm_handler)
+    ex = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
+    c = chunk("The Transformer uses softmax.")
+    first = await ex.extract(c, "Doc")
+    llm.model_for = lambda task: "another-model"
+    assert ex.cached(c) is None  # exact key: model changed
+    assert ex.cached(c, any_version=True) == first
+    assert ex.cached(chunk("never extracted", idx=1), any_version=True) is None

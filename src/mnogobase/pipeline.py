@@ -301,9 +301,20 @@ class Pipeline:
 
     async def _build_graph(self, doc_id: str) -> None:
         _doc, chunks = self.load_chunks(doc_id)
+        # the extract stage may have run with another model / prompt version (changed before
+        # a retry of this stage): its results are still this document's knowledge
+        results = {c.chunk_id: self._extractor.cached(c, any_version=True) for c in chunks}
+        missing = sum(1 for r in results.values() if r is None)
+        if chunks and missing / len(chunks) > self._s.extract.max_failed_ratio:
+            # never mark the graph done without the knowledge; a retry re-runs extract first
+            self._registry.set_stage(doc_id, "extract", "pending")
+            raise ExtractionFailedError(
+                f"{missing}/{len(chunks)} chunks have no cached extraction; "
+                "rerun with --retry-failed to extract them again"
+            )
         touched: set[str] = set()
         for chunk in chunks:
-            result = self._extractor.cached(chunk)
+            result = results[chunk.chunk_id]
             if result is None:
                 continue
             ids_by_name: dict[str, str] = {}

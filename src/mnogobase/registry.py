@@ -158,6 +158,14 @@ class Registry:
         ).fetchone()
         return row[0] if row else None
 
+    def get_latest_extraction(self, chunk_id: str) -> str | None:
+        """The most recently written extraction of a chunk, whatever its model or prompt."""
+        row = self._db.execute(
+            "SELECT result_json FROM extraction_cache WHERE chunk_id=? ORDER BY rowid DESC LIMIT 1",
+            (chunk_id,),
+        ).fetchone()
+        return row[0] if row else None
+
     def put_extraction(
         self, chunk_id: str, prompt_version: str, model: str, result_json: str
     ) -> None:

@@ -74,3 +74,13 @@ def test_extraction_cache_dirty_meta(reg):
 def test_ingest_lock_is_exclusive(tmp_path):
     with ingest_lock(tmp_path), pytest.raises(filelock.Timeout):
         ingest_lock(tmp_path).acquire()
+
+
+def test_latest_extraction_ignores_model_and_prompt_version(reg):
+    assert reg.get_latest_extraction("c1") is None
+    reg.put_extraction("c1", "v1", "model-a", '{"a": 1}')
+    reg.put_extraction("c1", "v2", "model-b", '{"b": 2}')
+    reg.put_extraction("c2", "v1", "model-a", '{"c": 3}')
+    assert reg.get_latest_extraction("c1") == '{"b": 2}'
+    reg.put_extraction("c1", "v1", "model-a", '{"a": 4}')  # rewritten: now the latest
+    assert reg.get_latest_extraction("c1") == '{"a": 4}'

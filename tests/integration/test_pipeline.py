@@ -248,3 +248,45 @@ async def test_embedder_mismatch_is_refused(make_app):
     app.registry.set_meta("embedder", "other-model:1024")
     with pytest.raises(EmbedderMismatchError, match="reindex"):
         app.pipeline.prepare()
+
+
+async def test_graph_stage_uses_extractions_of_a_previous_model(make_app, docs, monkeypatch):
+    app = make_app()
+
+    async def graph_down(doc_id):
+        raise RuntimeError("neo4j down")
+
+    monkeypatch.setattr(app.pipeline, "_build_graph", graph_down)
+    first = await app.pipeline.ingest([docs], build_wiki=False)
+    assert len(first.failed) == 2
+    assert app.graph.counts()["Entity"] == 0
+    monkeypatch.undo()
+    calls = len(app.llm.calls_for("extract"))
+
+    # the extraction model changes before the failed graph stage is retried
+    app.llm.model_for = lambda task: f"other-{task}"
+    retried = await app.pipeline.ingest([docs], build_wiki=False, retry_failed=True)
+    assert retried.failed == {} and len(retried.processed) == 2
+    assert len(app.llm.calls_for("extract")) == calls  # cached results reused, no new calls
+    attention = app.graph.get_entity(entity_id("Method", "Attention Mechanism"))
+    assert attention is not None and attention.mention_count >= 2
+
+
+async def test_graph_stage_fails_when_extractions_are_missing(make_app, docs):
+    app = make_app()
+    await app.pipeline.ingest([docs], build_wiki=False)
+    path = docs / "attention_en.md"
+    doc_id = file_doc_id(path)
+    app.registry._db.execute("DELETE FROM extraction_cache WHERE chunk_id LIKE ?", (f"{doc_id}:%",))
+    app.registry.set_stage(doc_id, "graph", "pending")  # e.g. interrupted before it finished
+
+    report = await app.pipeline.ingest([docs], build_wiki=False)
+    assert list(report.failed) == [str(path.resolve())]
+    assert "ExtractionFailedError" in report.failed[str(path.resolve())]
+    assert app.registry.stage_status(doc_id, "graph") == "failed"
+    assert app.registry.stage_status(doc_id, "extract") == "pending"  # retry re-extracts
+
+    calls = len(app.llm.calls_for("extract"))
+    fixed = await app.pipeline.ingest([docs], build_wiki=False, retry_failed=True)
+    assert fixed.failed == {} and fixed.processed == [str(path.resolve())]
+    assert len(app.llm.calls_for("extract")) > calls

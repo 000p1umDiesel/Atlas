@@ -71,8 +71,12 @@ class Extractor:
     def model(self) -> str:
         return self._llm.model_for("extract")
 
-    def cached(self, chunk: ChunkRecord) -> ExtractionResult | None:
+    def cached(self, chunk: ChunkRecord, any_version: bool = False) -> ExtractionResult | None:
+        """The cached extraction for the current model and prompt version; with
+        `any_version`, fall back to the latest one made by any model or prompt version."""
         raw = self._registry.get_extraction(chunk.chunk_id, PROMPT_VERSION, self.model)
+        if raw is None and any_version:
+            raw = self._registry.get_latest_extraction(chunk.chunk_id)
         return ExtractionResult.model_validate_json(raw) if raw is not None else None
 
     async def extract(self, chunk: ChunkRecord, title: str) -> ExtractionResult:
