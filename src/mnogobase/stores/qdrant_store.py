@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from qdrant_client import QdrantClient
@@ -12,6 +12,9 @@ from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait
 from mnogobase.config import QdrantSettings
 from mnogobase.ids import point_id
 from mnogobase.models import ChunkRecord, EntityRecord, SearchHit
+
+if TYPE_CHECKING:
+    from mnogobase.wiki.render import Section
 
 DENSE = "dense"
 SPARSE = "bm25"
@@ -210,13 +213,13 @@ class QdrantStore:
         page_id: str,
         entity_id: str,
         path: str,
-        sections: list[tuple[str, str]],
+        sections: list[Section],
         dense: list[list[float]],
         sparse: list[qm.SparseVector],
     ) -> None:
         self.delete_wiki_page(page_id)
         points = []
-        for i, ((title, text), d, s) in enumerate(zip(sections, dense, sparse, strict=True)):
+        for i, (section, d, s) in enumerate(zip(sections, dense, sparse, strict=True)):
             key = f"{page_id}#{i}"
             points.append(
                 qm.PointStruct(
@@ -227,8 +230,9 @@ class QdrantStore:
                         "page_id": page_id,
                         "entity_id": entity_id,
                         "path": path,
-                        "section": title,
-                        "text": text,
+                        "section": section.name,
+                        "text": section.text,
+                        "chunk_ids": section.chunk_ids,
                     },
                 )
             )

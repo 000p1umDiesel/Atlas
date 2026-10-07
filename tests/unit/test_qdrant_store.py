@@ -6,6 +6,7 @@ from tenacity import wait_none
 
 from mnogobase.models import ChunkRecord, EmbedInput, EntityRecord
 from mnogobase.stores.qdrant_store import DimensionMismatchError, QdrantStore
+from mnogobase.wiki.render import Section
 from tests.fakes import FakeEmbedder, FakeSparse
 
 pytestmark = pytest.mark.filterwarnings(
@@ -113,8 +114,11 @@ def test_entity_search_threshold_and_delete():
 
 def test_wiki_sections_replace_previous_version():
     store = make_store()
-    sections = [("Summary", "transformer summary"), ("Details", "attention details")]
-    texts = [t for _, t in sections]
+    sections = [
+        Section("Summary", "transformer summary", ["d:00001", "d:00002"]),
+        Section("Details", "attention details", []),
+    ]
+    texts = [s.text for s in sections]
     store.upsert_wiki_sections(
         "p1",
         "e1",
@@ -136,6 +140,8 @@ def test_wiki_sections_replace_previous_version():
     hits = store.search_wiki(EMB.embed_query("transformer"), SP.encode_query("transformer"), k=3)
     assert hits[0].key == "p1#0"
     assert hits[0].payload["path"] == "entities/transformer.md"
+    assert hits[0].payload["section"] == "Summary"
+    assert hits[0].payload["chunk_ids"] == ["d:00001", "d:00002"]
     store.delete_wiki_page("p1")
     assert store.client.count(store.wiki).count == 0
 

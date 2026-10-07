@@ -287,6 +287,10 @@ class GraphStore:
             cites=cites,
         )
 
+    def delete_wiki_page(self, page_id: str) -> None:
+        """Remove the page node and its edges; the entity it is about stays."""
+        self._run("MATCH (p:WikiPage {page_id: $id}) DETACH DELETE p", id=page_id)
+
     def wiki_page(self, page_id: str) -> WikiPageRecord | None:
         rows = self._run(f"MATCH (p:WikiPage {{page_id: $id}}) RETURN {_PAGE_FIELDS}", id=page_id)
         return WikiPageRecord(**rows[0]["page"]) if rows else None

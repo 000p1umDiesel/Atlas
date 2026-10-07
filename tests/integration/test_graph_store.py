@@ -165,3 +165,17 @@ def test_wiki_page_links_are_replaced(graph):
     rows = graph.wiki_pages()
     assert {r.page_id for r in rows} == {"e1", "e2", "e3"}
     assert all(r.entity_type == "Method" for r in rows)
+
+
+def test_delete_wiki_page_keeps_entity(graph):
+    make_doc(graph)
+    for eid, name in (("e1", "One"), ("e2", "Two")):
+        make_entity(graph, eid, name)
+        page = WikiPageRecord(page_id=eid, slug=name.lower(), title=name, path=f"{name}.md")
+        graph.upsert_wiki_page(page, eid, [], [])
+    graph.upsert_wiki_page(graph.wiki_page("e1"), "e1", ["e2"], [])
+    graph.delete_wiki_page("e2")
+    assert graph.wiki_page("e2") is None
+    assert graph.get_entity("e2") is not None
+    assert [r.page_id for r in graph.wiki_pages()] == ["e1"]
+    graph.delete_wiki_page("missing")  # no-op
