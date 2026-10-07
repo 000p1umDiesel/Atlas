@@ -238,3 +238,46 @@ def test_cli_template_change_requires_reindex(cli_project, tmp_path):
         app.close()
     answered = runner.invoke(cli.app, ["ask", "what is attention?"])
     assert answered.exit_code == 0, answered.output
+
+
+def test_cli_reindex_interrupted_at_a_new_dimension_can_be_rerun(
+    cli_project, tmp_path, monkeypatch
+):
+    from mnogobase import cli
+    from mnogobase.stores.graph_store import GraphStore
+
+    runner = CliRunner()
+    cli_project(64)
+    assert runner.invoke(cli.app, ["ingest", "docs"]).exit_code == 0
+    cli_project(32)
+
+    real = GraphStore.entities
+    state = {"failed": False}
+
+    def entities_once(self, *args, **kwargs):  # crash after the chunks were re-embedded
+        if not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("reindex interrupted")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(GraphStore, "entities", entities_once)
+    crashed = runner.invoke(cli.app, ["reindex"])
+    assert crashed.exit_code != 0 and state["failed"]
+
+    refused = runner.invoke(cli.app, ["ingest", "docs"])
+    assert refused.exit_code == 2, refused.output
+    assert "reindex-in-progress" in refused.output
+
+    result = runner.invoke(cli.app, ["reindex"])  # preflight passes, the rerun completes
+    assert result.exit_code == 0, result.output
+    assert "reindexed:" in result.output
+    settings = load_settings(tmp_path / "config.yaml")
+    app = cli.build_app(settings)
+    try:
+        for name in (app.vectors.chunks, app.vectors.entities, app.vectors.wiki):
+            assert app.vectors.collection_dim(name) == 32
+    finally:
+        app.close()
+    again = runner.invoke(cli.app, ["ingest", "docs"])
+    assert again.exit_code == 0, again.output
+    assert "skipped 2" in again.output
