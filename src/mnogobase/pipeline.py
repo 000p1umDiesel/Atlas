@@ -42,6 +42,9 @@ class _PreviouslyFailed(Exception):
     pass
 
 
+_UNREPORTED_REMOVALS = "unreported_removed_entities"  # registry meta key
+
+
 class PendingRemovalError(RuntimeError):
     """A journaled document removal from an earlier run still cannot be finished."""
 
@@ -185,6 +188,13 @@ class Pipeline:
         row = self._registry.get_file(key)
         if row is not None and row.doc_id != doc_id:
             removed_names.extend(self._remove_doc(row.doc_id, keep_path=key))
+        journaled = self._registry.get_removal(doc_id)
+        if journaled is not None:
+            # this content's removal failed earlier in this run: settle it first with this
+            # file as a live copy, so the content is neither deleted nor skipped as done
+            # while its data is gone
+            plan = _RemovalPlan.model_validate_json(journaled)
+            removed_names.extend(self._resume_removal(doc_id, plan, live=[key]))
         pending = self._registry.pending_stages(doc_id)
         if not pending:
             self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "done")
@@ -219,32 +229,38 @@ class Pipeline:
 
     def _remove_doc(self, doc_id: str, keep_path: str) -> list[str]:
         """Delete an old document version unless another path still has the same content."""
+        journaled = self._registry.get_removal(doc_id)
+        if journaled is not None:  # an interrupted earlier attempt
+            return self._resume_removal(doc_id, _RemovalPlan.model_validate_json(journaled))
         survivors = [p for p in self._registry.paths_for_doc(doc_id) if p != keep_path]
         if survivors:
             self._repoint_doc(doc_id, survivors)
             return []
-        journaled = self._registry.get_removal(doc_id)
-        if journaled is not None:  # an interrupted earlier attempt
-            return self._resume_removal(doc_id, _RemovalPlan.model_validate_json(journaled))
         return self._start_removal(doc_id)
 
     def finish_pending_removals(self) -> list[str]:
         """Finish document removals an earlier run started but did not complete (crash or a
         store error); returns the names of the removed entities."""
-        names: list[str] = []
-        pending = self._registry.pending_removals()
-        for doc_id, plan_json in pending:
+        # names of removals finished by an earlier call that then failed on another one
+        names: list[str] = json.loads(self._registry.get_meta(_UNREPORTED_REMOVALS) or "[]")
+        failed: dict[str, Exception] = {}
+        for doc_id, plan_json in self._registry.pending_removals():
             self._log.warning("resuming_document_removal", old_doc_id=doc_id)
             try:
                 names += self._resume_removal(doc_id, _RemovalPlan.model_validate_json(plan_json))
-            except Exception as exc:
-                ids = ", ".join(d for d, _ in pending)
-                raise PendingRemovalError(
-                    f"cannot finish removing old document version(s) {ids} "
-                    f"({type(exc).__name__}: {exc}). Fix the cause (see `mnogobase doctor`) "
-                    "and rerun: the removal is retried first, nothing else runs until it is "
-                    "done. `mnogobase reset` starts over instead."
-                ) from exc
+            except Exception as exc:  # the others are independent: finish them anyway
+                failed[doc_id] = exc
+        if failed:
+            # kept for the wiki report / log.md of the run that finally succeeds
+            self._registry.set_meta(_UNREPORTED_REMOVALS, json.dumps(names))
+            causes = "; ".join(f"{d}: {type(e).__name__}: {e}" for d, e in failed.items())
+            raise PendingRemovalError(
+                f"cannot finish removing old document version(s) {', '.join(failed)} "
+                f"({causes}). Fix the cause (see `mnogobase doctor`) and rerun: the removal "
+                "is retried first, nothing else runs until it is done. `mnogobase reset` "
+                "starts over instead."
+            ) from next(iter(failed.values()))
+        self._registry.set_meta(_UNREPORTED_REMOVALS, "[]")
         return names
 
     def _start_removal(self, doc_id: str) -> list[str]:
@@ -252,12 +268,29 @@ class Pipeline:
         self._registry.put_removal(doc_id, plan.model_dump_json())
         return self._apply_removal(doc_id, plan)
 
-    def _resume_removal(self, doc_id: str, plan: _RemovalPlan) -> list[str]:
+    def _resume_removal(
+        self, doc_id: str, plan: _RemovalPlan, live: Sequence[str] = ()
+    ) -> list[str]:
+        """Finish an interrupted removal, re-validated against what is true now.
+
+        A file with this content may exist again (another path, a new file, a revert): such
+        live copies must not lose the document. `live` names paths known to hold it."""
+        survivors = self._live_copies(doc_id, live)
         if self._graph.has_document(doc_id):
-            # the graph transaction never committed, so nothing was deleted yet; later work
-            # (other files of that run) may have changed what this removal implies
+            # the graph transaction never committed, so nothing was deleted yet
+            if survivors:
+                self._repoint_doc(doc_id, survivors)
+                self._registry.drop_removal(doc_id)
+                self._log.info("document_removal_dropped", old_doc_id=doc_id, kept_by=survivors)
+                return []
+            # later work (other files of that run) may have changed what removal implies
             return self._start_removal(doc_id)
-        return self._apply_removal(doc_id, plan)
+        return self._apply_removal(doc_id, plan, survivors)
+
+    def _live_copies(self, doc_id: str, live: Sequence[str]) -> list[str]:
+        """Paths whose file currently holds this content (registry rows can be stale)."""
+        candidates = dict.fromkeys([*self._registry.paths_for_doc(doc_id), *live])
+        return [p for p in candidates if Path(p).is_file() and file_doc_id(Path(p)) == doc_id]
 
     def _removal_plan(self, doc_id: str) -> _RemovalPlan:
         """Read-only: everything a removal must clean up, computed while the graph still has it."""
@@ -275,13 +308,18 @@ class Pipeline:
             relinked=len(stale_linkers - removed),
         )
 
-    def _apply_removal(self, doc_id: str, plan: _RemovalPlan) -> list[str]:
+    def _apply_removal(
+        self, doc_id: str, plan: _RemovalPlan, survivors: Sequence[str] = ()
+    ) -> list[str]:
         """Apply a journaled removal: graph transaction, then Qdrant, wiki files and registry.
 
         Idempotent, and safe to replay after other work: once the graph transaction has
         committed, the graph is the truth. An entity or page the plan lists but the graph
         has again (re-mentioned or recreated under the same id by a later file) is live
         data: its point, sections and file stay and it is regenerated (marked dirty).
+        `survivors` are live copies of the content found after the graph transaction had
+        committed: their data is gone, so their stages are reset (caches kept) and they are
+        ingested again instead of staying "done".
         Returns the names of the entities that are really gone."""
         self._graph.delete_document(doc_id)  # one transaction; a no-op once committed
         gone = {e: n for e, n in plan.removed_entities.items() if self._graph.get_entity(e) is None}
@@ -290,15 +328,22 @@ class Pipeline:
         self._registry.clear_dirty(gone)
         self._vectors.delete_doc(doc_id)
         self._vectors.delete_entities(sorted(gone))
+        # a freed slug may already belong to another entity's page written later
+        live_paths = {row.path for row in self._graph.wiki_pages()} if plan.removed_pages else set()
         for page_id, rel_path in plan.removed_pages:
-            current = self._graph.wiki_page(page_id)
-            if current is None:
+            if self._graph.wiki_page(page_id) is None:
                 self._vectors.delete_wiki_page(page_id)
-            if current is None or current.path != rel_path:
+            if rel_path not in live_paths:
                 (self._s.wiki.dir / rel_path).unlink(missing_ok=True)
-        self._registry.clear_doc(doc_id)
-        self._parser.drop_cache(doc_id)
-        self.chunks_path(doc_id).unlink(missing_ok=True)
+        if survivors:
+            self._registry.reset_stages(doc_id)
+            for path in survivors:
+                self._registry.set_file_status(path, "pending")
+            self._log.warning("document_needs_reingest", doc_id=doc_id, paths=list(survivors))
+        else:
+            self._registry.clear_doc(doc_id)
+            self._parser.drop_cache(doc_id)
+            self.chunks_path(doc_id).unlink(missing_ok=True)
         self._registry.drop_removal(doc_id)
         self._log.info(
             "document_removed",

@@ -129,6 +129,10 @@ class Registry:
             out.setdefault(stage, {})[status] = n
         return out
 
+    def reset_stages(self, doc_id: str) -> None:
+        """Forget a document's stage states (it is ingested again); caches are kept."""
+        self._db.execute("DELETE FROM stages WHERE doc_id=?", (doc_id,))
+
     def clear_doc(self, doc_id: str) -> None:
         prefix = f"{doc_id}:%"
         self._db.execute("DELETE FROM stages WHERE doc_id=?", (doc_id,))

@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from structlog.testing import capture_logs
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
 from mnogobase.ids import entity_id, file_doc_id
-from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
+from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
 
@@ -419,3 +420,106 @@ async def test_stuck_pending_removal_names_the_document(make_app, tmp_path, monk
         await app.pipeline.ingest([folder], build_wiki=False)
     assert "qdrant down" in str(info.value) and "mnogobase doctor" in str(info.value)
     assert [d for d, _ in app.registry.pending_removals()] == [old]
+
+
+@pytest.mark.parametrize("after_call", [False, True])  # before / after the graph commit
+async def test_removal_spares_a_document_a_later_file_shares(
+    make_app, tmp_path, monkeypatch, after_call
+):
+    folder = tmp_path / "shared"
+    folder.mkdir()
+    a = folder / "a.md"
+    text = "# Notes\n\nSoftmax turns scores into probabilities.\n"
+    a.write_text(text, encoding="utf-8")
+    app = make_app()
+    await app.pipeline.ingest([folder], build_wiki=False)
+    x = file_doc_id(a)
+    softmax = entity_id("Concept", "Softmax")
+    # one run: a.md changes and its removal fails; a new b.md has a's old content
+    b = folder / "b.md"
+    b.write_text(text, encoding="utf-8")
+    a.write_text("# Notes\n\nNothing here.\n", encoding="utf-8")
+    _fail_once(monkeypatch, app.graph, "delete_document", after_call)
+    broken = await app.pipeline.ingest([folder], build_wiki=False)
+    assert list(broken.failed) == [str(a.resolve())]
+
+    def b_is_live() -> None:
+        assert app.graph.has_document(x)
+        assert app.graph.get_entity(softmax) is not None
+        assert _points(app, app.vectors.chunks, "doc_id", x) > 0
+        assert _points(app, app.vectors.entities, "entity_id", softmax) == 1
+        assert app.registry.pending_stages(x) == []
+        assert app.registry.get_file(str(b.resolve())).status == "done"
+        assert document_path(app, x) == str(b.resolve())  # citations name a live path
+
+    b_is_live()
+    app.pipeline.finish_pending_removals()  # what `wiki build` / the next ingest do first
+    b_is_live()
+    report = await app.pipeline.ingest([folder])
+    assert report.failed == {}
+    b_is_live()
+    assert app.registry.pending_removals() == []
+    assert (tmp_path / "wiki" / "entities" / "softmax.md").exists()
+
+
+async def test_replay_keeps_a_page_file_another_entity_now_owns(make_app, tmp_path, monkeypatch):
+    def handler(task, prompt):
+        fragment = prompt.split("Fragment:", 1)[-1].casefold()
+        if task == "extract" and "softmax layer" in fragment:
+            layer = {"name": "Softmax", "type": "Method", "description": "A layer.", "aliases": []}
+            return json.dumps({"entities": [layer], "relations": []})
+        return scripted_llm_handler(task, prompt)
+
+    folder = tmp_path / "slug"
+    folder.mkdir()
+    gone = folder / "gone.md"
+    gone.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n", encoding="utf-8")
+    app = make_app(handler)
+    await app.pipeline.ingest([folder])
+    concept = entity_id("Concept", "Softmax")
+    page = tmp_path / "wiki" / "entities" / "softmax.md"
+    assert app.graph.wiki_page(concept).path == "entities/softmax.md"
+
+    # one run: gone.md's removal commits and then fails; a new file brings a different
+    # entity whose page takes over the now free slug "softmax"
+    gone.write_text("# Notes\n\nNothing here.\n", encoding="utf-8")
+    (folder / "layer.md").write_text("# Layers\n\nThe softmax layer.\n", encoding="utf-8")
+    _fail_once(monkeypatch, app.graph, "delete_document", after_call=True)
+    await app.pipeline.ingest([folder])
+    method = entity_id("Method", "Softmax")
+    assert app.graph.wiki_page(method).path == "entities/softmax.md"
+
+    await app.pipeline.ingest([folder])  # replays gone.md's removal
+    assert app.registry.pending_removals() == []
+    assert page.exists() and f"id: {method}" in page.read_text(encoding="utf-8")
+    assert _points(app, app.vectors.wiki, "page_id", method) > 0
+    assert _points(app, app.vectors.wiki, "page_id", concept) == 0
+
+
+async def test_failed_pending_removal_names_only_itself_and_keeps_finished_names(
+    make_app, monkeypatch
+):
+    app = make_app()
+    app.pipeline.prepare()
+    done, stuck = "a" * 16, "b" * 16
+    for doc_id, name in ((done, "Alpha"), (stuck, "Beta")):
+        plan = _RemovalPlan(
+            removed_entities={f"e-{name}": name}, removed_pages=[], dirty=[], relinked=0
+        )
+        app.registry.put_removal(doc_id, plan.model_dump_json())
+    real = app.vectors.delete_doc
+
+    def flaky(doc_id):
+        if doc_id == stuck:
+            raise RuntimeError("qdrant down")
+        real(doc_id)
+
+    monkeypatch.setattr(app.vectors, "delete_doc", flaky)
+    with pytest.raises(PendingRemovalError) as info:
+        app.pipeline.finish_pending_removals()
+    assert stuck in str(info.value) and done not in str(info.value)
+    assert [d for d, _ in app.registry.pending_removals()] == [stuck]
+
+    monkeypatch.setattr(app.vectors, "delete_doc", real)
+    assert app.pipeline.finish_pending_removals() == ["Alpha", "Beta"]  # Alpha not lost
+    assert app.pipeline.finish_pending_removals() == []
