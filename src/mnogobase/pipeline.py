@@ -5,6 +5,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
 from mnogobase.embedding.base import Embedder, SparseEncoder, embedder_signature
@@ -38,6 +40,16 @@ class IngestReport:
 
 class _PreviouslyFailed(Exception):
     pass
+
+
+class _RemovalPlan(BaseModel):
+    """What removing a document cleans up; journaled in the registry until it is done."""
+
+    removed_entity_ids: list[str]
+    removed_names: list[str]
+    removed_pages: list[tuple[str, str]]  # (page_id, wiki-relative path)
+    dirty: list[str]  # surviving entities whose pages must be regenerated
+    relinked: int  # how many of those only linked to a removed page
 
 
 class Pipeline:
@@ -128,7 +140,7 @@ class Pipeline:
     ) -> IngestReport:
         self.prepare()
         report = IngestReport()
-        removed_names: list[str] = []
+        removed_names = self.finish_pending_removals()
         for path in self.discover(paths):
             key = str(path)
             try:
@@ -205,28 +217,64 @@ class Pipeline:
         if survivors:
             self._repoint_doc(doc_id, survivors)
             return []
+        # an interrupted earlier attempt left its plan: the graph may already be gone, so
+        # recomputing it now would find nothing to clean up
+        journaled = self._registry.get_removal(doc_id)
+        if journaled is not None:
+            plan = _RemovalPlan.model_validate_json(journaled)
+        else:
+            plan = self._removal_plan(doc_id)
+            self._registry.put_removal(doc_id, plan.model_dump_json())
+        self._finish_removal(doc_id, plan)
+        return plan.removed_names
+
+    def finish_pending_removals(self) -> list[str]:
+        """Finish document removals an earlier run started but did not complete (crash or a
+        store error); returns the names of the removed entities."""
+        names: list[str] = []
+        for doc_id, plan_json in self._registry.pending_removals():
+            self._log.warning("resuming_document_removal", old_doc_id=doc_id)
+            plan = _RemovalPlan.model_validate_json(plan_json)
+            self._finish_removal(doc_id, plan)
+            names.extend(plan.removed_names)
+        return names
+
+    def _removal_plan(self, doc_id: str) -> _RemovalPlan:
+        """Read-only: everything a removal must clean up, computed while the graph still has it."""
         linkers = self._pages_linking_into(doc_id)
-        result = self._graph.delete_document(doc_id)
+        result = self._graph.document_deletion_plan(doc_id)
         removed = set(result.removed_entity_ids)
-        self._vectors.delete_doc(doc_id)
-        self._vectors.delete_entities(result.removed_entity_ids)
-        for page_id, rel_path in result.removed_pages:
-            self._vectors.delete_wiki_page(page_id)
-            (self._s.wiki.dir / rel_path).unlink(missing_ok=True)
         # pages linking to a removed page are rewritten so the stale link disappears
         stale_linkers = {p for target in removed for p in linkers.get(target, [])}
-        self._registry.mark_dirty((set(result.affected) | stale_linkers) - removed)
-        self._registry.clear_dirty(result.removed_entity_ids)
+        return _RemovalPlan(
+            removed_entity_ids=sorted(removed),
+            removed_names=result.removed_names,
+            removed_pages=result.removed_pages,
+            dirty=sorted((set(result.affected) | stale_linkers) - removed),
+            relinked=len(stale_linkers - removed),
+        )
+
+    def _finish_removal(self, doc_id: str, plan: _RemovalPlan) -> None:
+        """Apply a journaled removal. Every step is idempotent, so a retry after a failure at
+        any point completes it; the journal entry is dropped only at the very end."""
+        self._vectors.delete_doc(doc_id)
+        self._vectors.delete_entities(plan.removed_entity_ids)
+        for page_id, rel_path in plan.removed_pages:
+            self._vectors.delete_wiki_page(page_id)
+            (self._s.wiki.dir / rel_path).unlink(missing_ok=True)
+        self._graph.delete_document(doc_id)  # one transaction; a no-op once committed
+        self._registry.mark_dirty(plan.dirty)
+        self._registry.clear_dirty(plan.removed_entity_ids)
         self._registry.clear_doc(doc_id)
         self._parser.drop_cache(doc_id)
         self.chunks_path(doc_id).unlink(missing_ok=True)
+        self._registry.drop_removal(doc_id)
         self._log.info(
             "document_removed",
             old_doc_id=doc_id,
-            removed_entities=len(removed),
-            relinked_pages=len(stale_linkers - removed),
+            removed_entities=len(plan.removed_entity_ids),
+            relinked_pages=plan.relinked,
         )
-        return result.removed_names
 
     def _pages_linking_into(self, doc_id: str) -> dict[str, list[str]]:
         """Before a cascade delete: for each wiki page of an entity this document mentions,

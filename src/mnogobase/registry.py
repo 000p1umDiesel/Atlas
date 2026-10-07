@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS extraction_cache(
     PRIMARY KEY(chunk_id, prompt_version, model));
 CREATE TABLE IF NOT EXISTS dirty_entities(entity_id TEXT PRIMARY KEY, marked_at TEXT);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS pending_removals(doc_id TEXT PRIMARY KEY, plan_json TEXT NOT NULL);
 """
 
 
@@ -192,6 +193,26 @@ class Registry:
             "DELETE FROM dirty_entities WHERE entity_id=?", [(e,) for e in set(entity_ids)]
         )
 
+    # ---- document removals in progress (journal: finished after a crash) ----
+    def put_removal(self, doc_id: str, plan_json: str) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO pending_removals(doc_id, plan_json) VALUES(?, ?)",
+            (doc_id, plan_json),
+        )
+
+    def get_removal(self, doc_id: str) -> str | None:
+        row = self._db.execute(
+            "SELECT plan_json FROM pending_removals WHERE doc_id=?", (doc_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def pending_removals(self) -> list[tuple[str, str]]:
+        rows = self._db.execute("SELECT doc_id, plan_json FROM pending_removals ORDER BY doc_id")
+        return [(r[0], r[1]) for r in rows]
+
+    def drop_removal(self, doc_id: str) -> None:
+        self._db.execute("DELETE FROM pending_removals WHERE doc_id=?", (doc_id,))
+
     # ---- meta ----
     def get_meta(self, key: str) -> str | None:
         row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -208,6 +229,7 @@ class Registry:
             "extraction_cache",
             "dirty_entities",
             "meta",
+            "pending_removals",
         ):
             self._db.execute(f"DELETE FROM {table}")
 

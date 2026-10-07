@@ -290,3 +290,67 @@ async def test_graph_stage_fails_when_extractions_are_missing(make_app, docs):
     fixed = await app.pipeline.ingest([docs], build_wiki=False, retry_failed=True)
     assert fixed.failed == {} and fixed.processed == [str(path.resolve())]
     assert len(app.llm.calls_for("extract")) > calls
+
+
+def _points(app, collection: str, key: str, value: str) -> int:
+    flt = qm.Filter(must=[qm.FieldCondition(key=key, match=qm.MatchValue(value=value))])
+    return app.vectors.client.count(collection, count_filter=flt).count
+
+
+def _fail_once(monkeypatch, target, name: str, after_call: bool = False) -> None:
+    real = getattr(target, name)
+    state = {"failed": False}
+
+    def wrapper(*args, **kwargs):
+        if state["failed"]:
+            return real(*args, **kwargs)
+        state["failed"] = True
+        if after_call:
+            real(*args, **kwargs)
+        raise RuntimeError(f"{name} interrupted")
+
+    monkeypatch.setattr(target, name, wrapper)
+
+
+@pytest.mark.parametrize(
+    ("where", "name", "after_call"),
+    [
+        ("vectors", "delete_entities", False),  # Qdrant fails mid-cleanup
+        ("vectors", "delete_wiki_page", False),
+        ("graph", "delete_document", True),  # the graph transaction committed, then a crash
+        ("registry", "clear_doc", False),
+    ],
+)
+async def test_interrupted_document_removal_is_finished_on_retry(
+    make_app, tmp_path, monkeypatch, where, name, after_call
+):
+    folder = tmp_path / "linked"
+    folder.mkdir()
+    gone = folder / "gone.md"
+    gone.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n", encoding="utf-8")
+    (folder / "kept.md").write_text("# Models\n\nThe Transformer is a network.\n", encoding="utf-8")
+    app = make_app()
+    await app.pipeline.ingest([folder])
+    softmax = entity_id("Concept", "Softmax")
+    softmax_page = tmp_path / "wiki" / "entities" / "softmax.md"
+    transformer_page = tmp_path / "wiki" / "entities" / "transformer.md"
+    assert softmax_page.exists() and _points(app, app.vectors.wiki, "page_id", softmax) > 0
+    assert "[[softmax|Softmax]]" in transformer_page.read_text(encoding="utf-8")
+
+    gone.write_text("# Notes\n\nNothing to see here.\n", encoding="utf-8")
+    _fail_once(monkeypatch, getattr(app, where), name, after_call)
+    broken = await app.pipeline.ingest([folder], build_wiki=False)
+    assert list(broken.failed) == [str(gone.resolve())]
+
+    report = await app.pipeline.ingest([folder])
+    assert report.failed == {} and report.processed == [str(gone.resolve())]
+    assert app.graph.get_entity(softmax) is None
+    assert not softmax_page.exists()
+    assert _points(app, app.vectors.wiki, "page_id", softmax) == 0  # no orphan wiki sections
+    assert _points(app, app.vectors.entities, "entity_id", softmax) == 0
+    assert "Softmax" in report.wiki.deleted
+    # the page that linked to the removed one was marked dirty and rewritten
+    assert "Transformer" in report.wiki.updated
+    assert "[[softmax|" not in transformer_page.read_text(encoding="utf-8")
+    assert app.registry.dirty() == []
+    assert app.registry.pending_removals() == []

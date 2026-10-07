@@ -3,6 +3,7 @@ import logging
 import pytest
 
 from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
+from mnogobase.stores.graph_store import DeleteResult
 
 pytestmark = pytest.mark.integration
 
@@ -91,7 +92,13 @@ def test_delete_document_cascade(graph):
         [a[0].chunk_id],
     )
 
+    plan = graph.document_deletion_plan("a" * 16)
+    assert graph.counts()["Document"] == 2  # the plan is read-only
     result = graph.delete_document("a" * 16)
+    for field in ("affected", "removed_entity_ids", "removed_names", "removed_pages"):
+        # the plan predicts exactly what the cascade removes
+        assert sorted(getattr(plan, field)) == sorted(getattr(result, field)), field
+    assert graph.document_deletion_plan("a" * 16) == DeleteResult([], [], [], [])
 
     assert sorted(result.affected) == ["e1", "e2"]
     assert result.removed_entity_ids == ["e2"]

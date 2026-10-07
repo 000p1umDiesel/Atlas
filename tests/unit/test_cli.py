@@ -198,6 +198,32 @@ def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
     assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"}
 
 
+def test_wiki_build_finishes_pending_removals_first(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls: list[str] = []
+
+    async def build(**kwargs):
+        calls.append(f"build deleted={kwargs['deleted']}")
+        return SimpleNamespace(
+            created=[], updated=[], deleted=kwargs["deleted"], skipped=[], failed=[]
+        )
+
+    def finish():
+        calls.append("finish")
+        return ["Softmax"]
+
+    stub = SimpleNamespace(
+        pipeline=SimpleNamespace(prepare=lambda resume: None, finish_pending_removals=finish),
+        wiki=SimpleNamespace(build=build),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    result = runner.invoke(cli.app, ["wiki", "build"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["finish", "build deleted=['Softmax']"]
+    assert "deleted 1" in result.output
+
+
 def test_ingest_summary_reports_wiki_failures(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

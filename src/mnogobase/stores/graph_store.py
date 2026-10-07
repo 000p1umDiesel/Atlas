@@ -117,6 +117,28 @@ class GraphStore:
                 pairs=pairs,
             )
 
+    def document_deletion_plan(self, doc_id: str) -> DeleteResult:
+        """Read-only: what `delete_document(doc_id)` would remove (empty if the document is
+        unknown). Entities are removed when no chunk outside this document mentions them."""
+        rows = self._run(
+            "MATCH (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(e:Entity) "
+            "WITH DISTINCT e "
+            "OPTIONAL MATCH (p:WikiPage)-[:ABOUT]->(e) "
+            "WITH e, collect(p) AS pages "
+            "RETURN e.entity_id AS eid, e.name AS name, "
+            "[x IN pages | [x.page_id, x.path]] AS page_refs, "
+            "COUNT { (e)<-[:MENTIONS]-(x:Chunk) "
+            "WHERE NOT (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(x) } AS others",
+            doc_id=doc_id,
+        )
+        removed = [r for r in rows if r["others"] == 0]
+        return DeleteResult(
+            affected=[r["eid"] for r in rows],
+            removed_entity_ids=[r["eid"] for r in removed],
+            removed_names=[r["name"] for r in removed],
+            removed_pages=[(p[0], p[1]) for r in removed for p in r["page_refs"]],
+        )
+
     def delete_document(self, doc_id: str) -> DeleteResult:
         # one write transaction: a crash mid-cascade must not leave the Document gone while
         # its entities keep stale mention counts / orphaned wiki pages (a retry would be a no-op)

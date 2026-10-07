@@ -247,8 +247,12 @@ def wiki_build(
                 application.pipeline.prepare(resume=False)
             except (EmbedderMismatchError, DimensionMismatchError) as exc:
                 _fail_on_mismatch(exc)
+            # an interrupted ingest may have left a document removal half done (orphan pages)
+            deleted = application.pipeline.finish_pending_removals()
             report = asyncio.run(
-                application.wiki.build(rebuild_all=rebuild_all, run_id=new_run_id())
+                application.wiki.build(
+                    rebuild_all=rebuild_all, run_id=new_run_id(), deleted=deleted
+                )
             )
         finally:
             application.close()
