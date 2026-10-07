@@ -125,12 +125,12 @@ uv run mnogobase doctor
 | `device` | выбирает устройство для Docling: CUDA → MPS → CPU (или то, что задано в `device`) | — |
 | `ollama` | `GET {embedder.base_url}/api/tags`, ищет модель эмбеддера | `model embeddinggemma-2:740m missing: run ollama pull embeddinggemma-2:740m` |
 | `llm` | `GET {llm.base_url}/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <base_url>` |
-| `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` |
+| `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
 | `neo4j` | подключение с логином и паролем | `ServiceUnavailable`, `AuthError` |
-| `index` | совпадает ли эмбеддер, которым построен индекс, с текущим конфигом | `index built with ..., config uses ...: run mnogobase reindex` |
+| `index` | совпадает ли эмбеддер, которым построен индекс (модель, размерность, шаблоны), с текущим конфигом | `index was built with ..., config now uses ...: run mnogobase reindex` |
 | `types` | менялись ли типы сущностей после загрузки документов | только `warn`, см. раздел [6.3](#63-типы-сущностей) |
 
-Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`ollama`, `llm`, `qdrant`, `neo4j`), `reindex` — без `llm`, `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
+Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`ollama`, `llm`, `qdrant`, `neo4j`), `reindex` — без `llm` и без сверки размерности коллекций (он их пересоздаёт), `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
 
 ---
 
@@ -188,7 +188,7 @@ uv run mnogobase ingest documents/
 
 Как это работает:
 
-- **Инкрементально.** Документ опознаётся по хешу содержимого (`doc_id`). Повторный `ingest` той же папки пропускает неизменённые файлы. Изменённый файл сначала удаляет свою старую версию из Qdrant, Neo4j и wiki, затем загружается как новый — без дублей.
+- **Инкрементально.** Документ опознаётся по хешу содержимого (`doc_id`). Повторный `ingest` той же папки пропускает неизменённые файлы. Изменённый файл сначала удаляет свою старую версию из Qdrant, Neo4j и wiki, затем загружается как новый — без дублей. Переименованный или перемещённый файл без изменений не загружается заново: ссылки в источниках переводятся на новый путь.
 - **Возобновляемо.** Если процесс прервался (Ctrl+C, упал сервис), следующий `ingest` продолжит каждый файл с первого незавершённого этапа. Результаты LLM кэшируются, поэтому повторно оплачивать извлечение не нужно.
 - **Ошибки изолированы.** Один сломанный файл не останавливает остальные. Внутри `extract` неудачные чанки допускаются, пока их доля не больше `extract.max_failed_ratio` (0.2). Упавший файл при следующих запусках пропускается с сообщением `stage <этап> failed earlier; rerun with --retry-failed`.
 
@@ -250,9 +250,9 @@ uv run mnogobase status
 uv run mnogobase reindex
 ```
 
-Нужен после смены эмбеддера (модель, размерность, шаблоны). Удаляет и заново создаёт три коллекции Qdrant и пересчитывает векторы: чанки — из кэша `.mnogobase/cache/<doc_id>.chunks.json` (если кэша нет, текст берётся из Neo4j), сущности — из Neo4j, разделы wiki — из файлов `wiki/entities/*.md`. Граф, wiki-файлы и кэш извлечения не меняются, LLM не вызывается. Печатает `reindexed: N chunks, N entities, N wiki sections`.
+Нужен после смены эмбеддера (модель, размерность, шаблоны): `ingest`, `wiki build`, `ask` и `compare` сами замечают такую смену и останавливаются с просьбой запустить `reindex`. Сначала проверяет, что эмбеддер выдаёт вектор размерности `embedder.dim` (иначе останавливается, ничего не тронув), затем удаляет и заново создаёт три коллекции Qdrant с новой размерностью и пересчитывает векторы: чанки — из кэша `.mnogobase/cache/<doc_id>.chunks.json` (если кэша нет, текст берётся из Neo4j), сущности — из Neo4j, разделы wiki — из файлов `wiki/entities/*.md`. Граф, wiki-файлы и кэш извлечения не меняются, LLM не вызывается. Печатает `reindexed: N chunks, N entities, N wiki sections`.
 
-Пока `reindex` идёт, индекс помечен как незавершённый: если его прервать, `ingest` и `ask` откажутся работать, пока `reindex` не будет запущен снова и не дойдёт до конца. Про смену **размерности** см. рецепт [7.4](#74-сменить-эмбеддер-или-размерность).
+Пока `reindex` идёт, индекс помечен как незавершённый: если его прервать, `ingest` и `ask` откажутся работать, пока `reindex` не будет запущен снова и не дойдёт до конца. Пример смены модели и размерности — рецепт [7.4](#74-сменить-эмбеддер-или-размерность).
 
 ### 3.7 Полный сброс (reset)
 
@@ -291,7 +291,7 @@ uv run mnogobase reset --yes      # без вопроса
 |---|---|
 | 0 | успех; `status` вне проекта |
 | 1 | `doctor` нашёл проблему; в `ingest` упал файл или wiki-страница; в `wiki build` упала страница; отказ в подтверждении `reset` |
-| 2 | ошибка конфига; сервис недоступен на предварительной проверке; блокировка занята; нет проекта (`ask`, `compare`, `reset`); индекс построен другим эмбеддером или другой размерности; не удаётся завершить удаление старой версии документа |
+| 2 | ошибка конфига; сервис недоступен на предварительной проверке; блокировка занята; нет проекта (`ask`, `compare`, `reset`); индекс построен другим эмбеддером, другой размерности или с другими шаблонами; `reindex`: эмбеддер выдаёт не ту размерность; не удаётся завершить удаление старой версии документа |
 
 ---
 
@@ -444,9 +444,10 @@ jq 'select(.question | test("внимани")) | {mode, answer}' runs/compare.js
 | `entity_merged` | `name`, `into`, `score`, `method` (`vector` или `llm`) | слияние сущностей |
 | `wiki_built` / `wiki_page_failed` | счётчики / `entity_id`, `error` | сборка wiki |
 | `ingest_done`, `ingest_file_failed` | счётчики / `path`, `error` | итог `ingest` |
-| `resuming_interrupted_stages`, `resuming_document_removal`, `document_removed`, `document_repointed`, `document_needs_reingest` | | восстановление и удаление старых версий |
+| `resuming_interrupted_stages`, `resuming_document_removal`, `document_removed`, `document_repointed`, `document_needs_reingest` | | восстановление, удаление старых версий, переименование |
 | `entity_types_changed` | `detail` | типы сущностей поменялись |
 | `reindex_done`, `reset_done` | счётчики | обслуживание |
+| `embedder_signature_upgraded` | `old`, `new` | старая подпись индекса `model_id:dim` переписана в формате с хешем шаблонов |
 
 Примеры с `jq`:
 
@@ -482,7 +483,7 @@ flowchart TD
     PREP["prepare: проверка эмбеддера,<br/>коллекции и схема, running в pending"] --> FIN["доделать незавершённые удаления"]
     FIN --> DISC["discover: обход путей,<br/>фильтр расширений, doc_id"]
     DISC --> KNOWN{"что с файлом?"}
-    KNOWN -->|"все этапы done"| SKIP["skipped"]
+    KNOWN -->|"все этапы done"| SKIP["skipped; после переименования<br/>ссылки на новый путь"]
     KNOWN -->|"путь известен, содержимое новое"| RM["удалить старую версию<br/>через журнал pending_removals"]
     KNOWN -->|"есть failed, нет флага"| FAILED["failed: нужен --retry-failed"]
     KNOWN -->|"новый или незавершённый"| NEXT["первый этап не в done"]
@@ -654,7 +655,7 @@ erDiagram
 | `chunk_extract` | `chunk_id` PK, `status`, `attempts`, `error` | результат извлечения по чанкам |
 | `extraction_cache` | `chunk_id`, `prompt_version`, `model`, `result_json` | кэш ответов LLM на этапе `extract` |
 | `dirty_entities` | `entity_id` PK, `marked_at` | очередь сущностей на обновление wiki |
-| `meta` | `key` PK, `value` | подпись эмбеддера индекса (`embedder` = `ollama:<model>:<dim>`) и служебные значения |
+| `meta` | `key` PK, `value` | подпись эмбеддера индекса (`embedder` = `ollama:<model>:<dim>:tpl-<хеш шаблонов>`) и служебные значения |
 | `pending_removals` | `doc_id` PK, `plan_json` | журнал незавершённых удалений старых версий документов |
 
 ### 5.5 Слияние сущностей (entity resolution)
@@ -742,10 +743,12 @@ flowchart TD
 - **Идемпотентность.** Все записи — upsert/`MERGE` по детерминированным ID, поэтому повтор этапа после падения даёт тот же результат. `merge_relation` не добавляет `evidence` из того же чанка дважды (вес не удваивается), `mention_count` пересчитывается подсчётом связей.
 - **Порядок записи.** Этап отмечается `done` только после всех записей. На `embed`: узел `Document` → точки Qdrant → узлы `Chunk`. При слиянии сущности: вектор → Qdrant → Neo4j, чтобы сбой эмбеддера или Qdrant не оставил граф «впереди».
 - **Изменённый файл.** План удаления старой версии вычисляется только чтением и записывается в журнал `pending_removals`. Затем: одна транзакция Neo4j (чанки, документ, `evidence` из его чанков, связи без `evidence`, сущности без упоминаний и их страницы) → очередь wiki → Qdrant и файлы wiki → registry → запись журнала удаляется последней. Граф чистится первым намеренно: если шаг Qdrant не удался, режимы `rag`/`wiki`/`all` до следующего `ingest` или `wiki build` (они доводят журнал) могут вернуть текст удалённой версии, режим `graph` уже чист. Незавершённое удаление перепроверяется по графу, а если довести его не удаётся, `ingest` и `wiki build` завершаются с кодом 2.
-- **Одинаковое содержимое по двум путям** — один документ. Второй путь пропускается; изменение одного из файлов не удаляет данные, пока другой путь хранит то же содержимое (ссылки в источниках переводятся на живой путь).
+- **Одинаковое содержимое по двум путям** — один документ. Второй путь пропускается; изменение одного из файлов не удаляет данные, пока другой путь хранит то же содержимое (ссылки в источниках переводятся на живой путь). Живой путь — тот, где файл существует и его хеш совпадает с `doc_id`: строка registry для переименованного или удалённого файла копией не считается.
+- **Переименование.** Файл с новым путём и прежним содержимым пропускается, а если записанный путь документа (`Document.path` в Neo4j, `path` в payload чанков Qdrant, кэш чанков) больше не хранит это содержимое, документ переводится на новый путь. Если после этого `ingest` изменить переименованный файл, старая версия удаляется как обычно. Переименование и правка между двумя запусками `ingest` выглядят как удалённый старый файл плюс новый: старая версия остаётся (см. ограничения).
 - **Блокировка.** Файловая блокировка `.mnogobase/ingest.lock` не даёт параллельно запускать пишущие команды; блокировка снимается автоматически при завершении процесса.
 - **Повторы сетевых вызовов.** LLM: до 5 попыток при ошибках соединения и таймаутах, 429 и 5xx (экспоненциальная пауза до 30 с); невалидный JSON — ещё до 2 попыток с текстом ошибки валидации. Ollama: до 5 попыток при сетевых ошибках и 5xx. Qdrant: до 5 попыток при сетевых ошибках. Neo4j — средствами драйвера.
-- **Ограничения.** Удалённые с диска файлы из индекса не убираются. Переименованный файл без изменений считается тем же документом, и в цитатах остаётся старый путь.
+- **Подпись эмбеддера.** В `meta` хранится `model_id:dim:tpl-<хеш>`, где хеш (8 hex-символов sha256) покрывает `embedder.doc_template` и `query_template`. Смена модели, размерности или любого из шаблонов останавливает `ingest`, `wiki build`, `ask` и `compare` до `reindex`. Старая подпись без хеша (`model_id:dim`) принимается, если модель и размерность совпадают, и переписывается в новом формате при следующем запуске.
+- **Ограничения.** Удалённые с диска файлы из индекса не убираются (строки registry для них остаются). Также остаётся старая версия файла, который переименовали и изменили без `ingest` между этими шагами.
 
 ---
 
@@ -775,8 +778,8 @@ flowchart TD
 | `embedder.model` | `embeddinggemma-2:740m` | модель эмбеддингов | `reindex` |
 | `embedder.dim` | `768` | размерность: вектор модели обрезается до неё и нормируется (Matryoshka) | `reindex`, см. 7.4 |
 | `embedder.batch_size` | `32` | текстов в одном запросе к Ollama | сразу |
-| `embedder.doc_template` | `title: {title} \| text: {text}` | шаблон документа; `{title}` — заголовок документа, имя сущности или страницы (`none`, если нет) | вручную `reindex` |
-| `embedder.query_template` | `task: search result \| query: {query}` | шаблон запроса | сразу (согласуйте с doc_template) |
+| `embedder.doc_template` | `title: {title} \| text: {text}` | шаблон документа; `{title}` — заголовок документа, имя сущности или страницы (`none`, если нет) | `reindex` |
+| `embedder.query_template` | `task: search result \| query: {query}` | шаблон запроса (согласуйте с doc_template) | `reindex` |
 | `sparse.model` | `Qdrant/bm25` | модель fastembed для BM25 | `reindex` |
 | `parsing.ocr` | `true` | OCR в PDF | новые и изменённые файлы |
 | `parsing.extensions` | `[pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]` | какие файлы берёт `ingest` | сразу |
@@ -918,17 +921,11 @@ llm:
      query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
    ```
 
-3. **Если размерность изменилась** (как здесь, 768 → 1024, или 768 → 512): сначала удалите коллекции Qdrant. Предварительная проверка `reindex` сверяет размерность `mb_chunks` с конфигом и иначе остановится с `mb_chunks has dim 768, config 1024: run mnogobase reindex`. Данные в коллекциях не нужны: `reindex` всё равно пересоздаёт их из кэша, графа и файлов wiki.
+3. `uv run mnogobase reindex` — он удалит коллекции Qdrant, создаст их заново с новой размерностью и пересчитает все векторы. Ничего удалять вручную не нужно.
 
-   ```bash
-   for c in chunks entities wiki_pages; do curl -s -X DELETE "http://localhost:6333/collections/mb_$c"; echo; done
-   ```
+Пока `reindex` не выполнен, `ingest`, `wiki build`, `ask` и `compare` отказываются работать: при новой размерности предварительная проверка пишет `mb_chunks has dim 768, config 1024: run mnogobase reindex`, при другой модели или шаблонах — `index was built with ollama:embeddinggemma-2:740m:768:tpl-..., config now uses ...; run mnogobase reindex`. Подпись индекса учитывает и шаблоны: после правки одних `doc_template`/`query_template` команды тоже остановятся (в сообщении будет `embedder templates changed`), достаточно `reindex`.
 
-4. `uv run mnogobase reindex`
-
-Пока `reindex` не выполнен, `ingest`, `wiki build`, `ask` и `compare` отказываются работать: `index was built with ollama:embeddinggemma-2:740m:768, config now uses ...; run mnogobase reindex`. Подпись индекса — только `модель:размерность`: **после правки одних шаблонов** `doc_template`/`query_template` проверка не сработает, `reindex` нужно запустить самому.
-
-**Matryoshka (MRL):** EmbeddingGemma 2 можно использовать в 512 или 256 измерениях — поставьте `embedder.dim: 512` (или 256) и выполните шаги 3–4. Векторы меньше, поиск быстрее, качество немного ниже. Размерность больше той, что выдаёт модель, даст ошибку `model returned N dims, config expects M`.
+**Matryoshka (MRL):** EmbeddingGemma 2 можно использовать в 512 или 256 измерениях — поставьте `embedder.dim: 512` (или 256) и выполните шаг 3. Векторы меньше, поиск быстрее, качество немного ниже. Если размерность больше той, что выдаёт модель, `reindex` остановится до изменения индекса: `embedder check failed: model returned N dims, config expects M; nothing was changed`.
 
 `chunking.tokenizer` можно поменять на HF-токенайзер новой модели, но это влияет только на чанкинг новых и изменённых файлов.
 
@@ -1076,6 +1073,7 @@ flowchart TD
 class Embedder(Protocol):
     model_id: str
     dim: int
+    templates: tuple[str, str]  # (document, query) templates the embedder applies
 
     def embed_documents(self, items: Sequence[EmbedInput]) -> list[list[float]]: ...
     def embed_query(self, query: str) -> list[float]: ...
@@ -1118,8 +1116,8 @@ def build_app(settings, *, embedder=None, sparse=None, llm=None, vectors=None, g
 
 **Новый эмбеддер** (например, sentence-transformers или облачный API):
 
-1. Класс в `src/mnogobase/embedding/<name>.py` с атрибутами `model_id`, `dim` и методами `embed_documents`, `embed_query`. Используйте помощники из `embedding/base.py`: `format_document(item, template)`, `format_query(query, template)` и `truncate_normalize(vec, dim)` (обрезка Matryoshka и L2-нормировка).
-2. `model_id` должен быть уникальным с префиксом провайдера (как `ollama:<model>`): подпись `model_id:dim` сохраняется в `meta` и защищает индекс от смешивания векторов.
+1. Класс в `src/mnogobase/embedding/<name>.py` с атрибутами `model_id`, `dim`, `templates` и методами `embed_documents`, `embed_query`. Используйте помощники из `embedding/base.py`: `format_document(item, template)`, `format_query(query, template)` и `truncate_normalize(vec, dim)` (обрезка Matryoshka и L2-нормировка).
+2. `model_id` должен быть уникальным с префиксом провайдера (как `ollama:<model>`): подпись `model_id:dim:tpl-<хеш templates>` (`embedder_signature`) сохраняется в `meta` и защищает индекс от смешивания векторов. Если провайдер не использует шаблоны, задайте `templates` постоянными.
 3. `config.py`: расширьте `EmbedderSettings.provider: Literal["ollama", "<name>"]` и добавьте нужные поля.
 4. `app.py`: в `build_app` выбирайте класс по `settings.embedder.provider` вместо безусловного `OllamaEmbedder`.
 5. `doctor.py`: проверка `ollama` обращается к `/api/tags`, а проверка `index` строит `OllamaEmbedder` для подписи — сделайте обе зависимыми от провайдера. Набор проверок команд задан в `cli.py` (`PREFLIGHT_CHECKS`, `REINDEX_CHECKS`).
@@ -1201,8 +1199,9 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `graph` упал: `N/M chunks have no cached extraction; rerun with --retry-failed ...` | кэш извлечения неполный | `uv run mnogobase ingest --retry-failed` |
 | файл пропускается: `stage <этап> failed earlier; rerun with --retry-failed` | этап упал в прошлый раз | исправьте причину (`status` показывает ошибку), затем `ingest --retry-failed` |
 | `chunk` упал с ошибкой доступа к `google/embeddinggemma-2` (gated repo, 401) | токенайзер на Hugging Face закрыт лицензией | примите лицензию Gemma на странице модели, `hf auth login` или `HF_TOKEN` в `.env`, затем `ingest --retry-failed` |
-| `index was built with ..., config now uses ...; run mnogobase reindex` | эмбеддер в конфиге не тот, которым строился индекс | `uv run mnogobase reindex`; при смене размерности — рецепт 7.4 |
-| `mb_chunks has dim 768, config 512: run mnogobase reindex`, а `reindex` останавливается с тем же текстом | предварительная проверка `reindex` сверяет размерность | удалите коллекции (7.4, шаг 3) и запустите `reindex` |
+| `index was built with ..., config now uses ...; run mnogobase reindex` | эмбеддер в конфиге (модель, размерность или шаблоны — тогда в сообщении `embedder templates changed`) не тот, которым строился индекс | `uv run mnogobase reindex` |
+| `mb_chunks has dim 768, config 512: run mnogobase reindex` | `embedder.dim` изменился, коллекции Qdrant ещё старой размерности | `uv run mnogobase reindex` (пересоздаёт коллекции, рецепт 7.4) |
+| `reindex`: `embedder check failed: model returned N dims, config expects M; nothing was changed` | модель выдаёт меньше измерений, чем `embedder.dim` | уменьшите `embedder.dim` или смените модель; индекс не тронут |
 | `index was built with reindex-in-progress, ...` | `reindex` был прерван | запустите `uv run mnogobase reindex` ещё раз |
 | `cannot finish removing old document version(s) ...` (код 2), `status` показывает `pending document removals` | удаление старой версии изменённого файла не завершилось (обычно недоступен Qdrant или Neo4j) | почините сервис (`doctor`) и повторите `ingest` или `wiki build`: удаление доводится первым. Начать заново — `reset` |
 | `Another ingest / wiki / reindex / reset run is in progress.` | идёт другая пишущая команда | дождитесь её. Блокировка снимается сама при завершении процесса; файл `.mnogobase/ingest.lock` может остаться — это нормально |
@@ -1212,7 +1211,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | PDF разбирается очень долго | OCR и модели разметки Docling на CPU, большие сканы | `doctor` покажет устройство; для цифровых PDF `parsing.ocr: false`; на NVIDIA — раздел 11 |
 | у сущности нет wiki-страницы | меньше `wiki.min_mentions` упоминаний, нет evidence (`skipped` в отчёте), `ingest --no-wiki` или страница упала | проверьте `mention_count` (запрос в 4.1), `wiki build`; порог — 7.9 |
 | ответ `The knowledge base has no relevant sources for this question.` | поиск ничего не вернул: в `wiki` — wiki ещё не собрана, в `graph` — не нашлось seed-сущностей | `wiki build`; для `graph` понизьте `graph.seed_threshold`; попробуйте `rag` |
-| удалённый или переименованный файл всё ещё находится и цитируется | удаление файлов из индекса не реализовано; переименование без изменений — тот же документ со старым путём | `reset` и `ingest` |
+| удалённый с диска файл (или старая версия файла, переименованного и изменённого без `ingest` между этими шагами) всё ещё находится и цитируется | удаление из индекса файлов, которых больше нет на диске, не реализовано (переименование без правки обрабатывается: ссылки переходят на новый путь) | `reset` и `ingest` |
 | `ingest` завершился с кодом 1 | упал хотя бы один файл или wiki-страница | список ошибок в конце вывода и в `status` |
 
 ---
