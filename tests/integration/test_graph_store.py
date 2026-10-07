@@ -194,3 +194,36 @@ def test_pages_linking_to(graph):
     assert graph.pages_linking_to(["e2", "e3"]) == ["e1"]
     assert graph.pages_linking_to(["e4"]) == []
     assert graph.pages_linking_to([]) == []
+
+
+def test_doc_chunks_rebuilds_records_from_the_graph(graph):
+    doc_id = "e" * 16
+    graph.upsert_document(
+        DocumentRecord(doc_id=doc_id, path="/docs/e.md", title="E", mime="text/markdown")
+    )
+    chunks = [
+        ChunkRecord(
+            chunk_id=f"{doc_id}:{i:05d}",
+            doc_id=doc_id,
+            idx=i,
+            text=f"body {i}",
+            context_text=f"Intro\nbody {i}" if i else f"body {i}",
+            headings=["Intro"] if i else [],
+            page_start=i + 1,
+            page_end=i + 2,
+            n_tokens=7,
+        )
+        for i in range(12)  # idx 10/11 sort after 9, not after 1
+    ]
+    graph.upsert_chunks(list(reversed(chunks)))
+    make_doc(graph)  # another document's chunks stay out
+
+    doc, rebuilt = graph.doc_chunks(doc_id)
+    assert doc == DocumentRecord(doc_id=doc_id, path="/docs/e.md", title="E", mime="text/markdown")
+    expected = [c.model_copy(update={"path": "/docs/e.md"}) for c in chunks]
+    assert rebuilt == expected
+    assert graph.doc_chunks("0" * 16) is None
+    graph.upsert_document(
+        DocumentRecord(doc_id="f" * 16, path="/f.md", title="F", mime="text/markdown")
+    )
+    assert graph.doc_chunks("f" * 16)[1] == []

@@ -133,6 +133,31 @@ class GraphStore:
         )
         return [ChunkView(**r) for r in rows]
 
+    def doc_chunks(self, doc_id: str) -> tuple[DocumentRecord, list[ChunkRecord]] | None:
+        """A document and its chunks as stored in the graph (None if the document is unknown).
+
+        `context_text` is not stored; it is rebuilt as headings + text, one per line, like the
+        chunker's `contextualize` (other chunk metadata it may add, e.g. captions, is lost)."""
+        rows = self._run(
+            "MATCH (d:Document {doc_id: $doc_id}) "
+            "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
+            "WITH d, c ORDER BY c.idx "
+            "RETURN d {.doc_id, .path, .title, .mime, .n_pages} AS doc, collect(c {.*}) AS chunks",
+            doc_id=doc_id,
+        )
+        if not rows:
+            return None
+        doc = DocumentRecord(**rows[0]["doc"])
+        chunks = [
+            ChunkRecord(
+                **c,
+                context_text="\n".join([*(c.get("headings") or []), c["text"]]),
+                path=doc.path,
+            )
+            for c in rows[0]["chunks"]
+        ]
+        return doc, chunks
+
     def chunk_entity_ids(self, doc_id: str) -> dict[str, list[str]]:
         rows = self._run(
             "MATCH (c:Chunk {doc_id: $doc_id}) "
