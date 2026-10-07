@@ -506,7 +506,7 @@ LLM_API_KEY=
 NEO4J_PASSWORD=mnogobase-dev
 ```
 
-Create `.env` (git-ignored) with `LLM_API_KEY=<the key the user gave in chat>` and `NEO4J_PASSWORD=mnogobase-dev`. Confirm with `git check-ignore .env` (prints `.env`).
+`.env` already exists (created by the controller with the real secrets). Do NOT create, overwrite, read aloud or print it. Only confirm with `git check-ignore .env` (prints `.env`).
 
 `docker-compose.yml`:
 
