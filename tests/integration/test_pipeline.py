@@ -311,6 +311,16 @@ async def test_embedder_template_change_is_refused(make_app, docs):
         await app.pipeline.ingest([docs], build_wiki=False)
 
 
+async def test_signature_upgrade_never_overwrites_a_concurrent_reindex(make_app, monkeypatch):
+    app = make_app()
+    app.registry.set_meta("embedder", "reindex-in-progress")  # reindex started meanwhile
+    read = {"embedder": "fake-embed:64"}  # what this process read before that
+    monkeypatch.setattr(app.registry, "get_meta", lambda key: read[key])
+    app.pipeline.prepare(resume=False)
+    monkeypatch.undo()
+    assert app.registry.get_meta("embedder") == "reindex-in-progress"
+
+
 async def test_legacy_signature_of_the_same_model_is_accepted_and_upgraded(make_app):
     app = make_app()
     app.registry.set_meta("embedder", "fake-embed:64")  # written before templates were signed

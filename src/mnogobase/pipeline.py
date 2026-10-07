@@ -113,10 +113,12 @@ class Pipeline:
         self._vectors.ensure_collections()
         self._graph.ensure_schema()
         if stored != signature and not mismatch:
-            # a new index, or a legacy signature (without the templates) of the same embedder
-            if stored is not None:
+            # a new index, or a legacy signature (without the templates) of the same embedder;
+            # compare-and-set: ask / compare run without the lock and must never overwrite
+            # what a concurrent reindex wrote meanwhile (e.g. reindex-in-progress)
+            upgraded = self._registry.replace_meta("embedder", stored, signature)
+            if upgraded and stored is not None:
                 self._log.info("embedder_signature_upgraded", old=stored, new=signature)
-            self._registry.set_meta("embedder", signature)
         if resume:
             resumed = self._registry.reset_running()
             if resumed:

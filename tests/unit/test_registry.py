@@ -71,6 +71,15 @@ def test_extraction_cache_dirty_meta(reg):
     assert reg.dirty() == [] and reg.get_meta("embedder") is None
 
 
+def test_replace_meta_only_swaps_the_expected_value(reg):
+    assert reg.replace_meta("embedder", None, "a:1:tpl-x")  # no value yet: set
+    assert not reg.replace_meta("embedder", None, "b")  # a value appeared meanwhile
+    assert not reg.replace_meta("embedder", "a:1", "a:1:tpl-y")  # not the value read
+    assert reg.get_meta("embedder") == "a:1:tpl-x"
+    assert reg.replace_meta("embedder", "a:1:tpl-x", "a:1:tpl-y")
+    assert reg.get_meta("embedder") == "a:1:tpl-y"
+
+
 def test_ingest_lock_is_exclusive(tmp_path):
     with ingest_lock(tmp_path), pytest.raises(filelock.Timeout):
         ingest_lock(tmp_path).acquire()

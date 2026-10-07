@@ -233,6 +233,19 @@ class Registry:
     def set_meta(self, key: str, value: str) -> None:
         self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, value))
 
+    def replace_meta(self, key: str, expected: str | None, value: str) -> bool:
+        """Set `key` to `value` only if it still holds `expected` (None: no value yet), so a
+        value another process wrote meanwhile is never overwritten. Whether it was set."""
+        if expected is None:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)", (key, value)
+            )
+        else:
+            cursor = self._db.execute(
+                "UPDATE meta SET value=? WHERE key=? AND value=?", (value, key, expected)
+            )
+        return cursor.rowcount == 1
+
     def wipe(self) -> None:
         for table in (
             "files",
