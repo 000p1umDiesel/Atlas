@@ -109,7 +109,7 @@ TYPE_NAMES = [
 def test_default_entity_types_have_descriptions(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     s = load_settings()
-    assert s.extract.type_names == TYPE_NAMES
+    assert list(s.extract.entity_types) == TYPE_NAMES
     assert list(DEFAULT_ENTITY_TYPES) == TYPE_NAMES
     assert all(s.extract.entity_types[name].strip() for name in TYPE_NAMES)
 
@@ -129,7 +129,7 @@ def test_entity_types_as_yaml_mapping_keep_order(tmp_path, clean_env):
         encoding="utf-8",
     )
     s = load_settings(cfg)
-    assert s.extract.type_names == ["Gene", "Drug", "Bare", "Other"]
+    assert list(s.extract.entity_types) == ["Gene", "Drug", "Bare", "Other"]
     assert s.extract.entity_types["Drug"] == "A medicine."
     assert s.extract.entity_types["Bare"] == ""
 
@@ -140,7 +140,6 @@ def test_entity_types_as_plain_list(tmp_path, clean_env):
     cfg.write_text("extract:\n  entity_types: [Person, Concept, Other]\n", encoding="utf-8")
     s = load_settings(cfg)
     assert s.extract.entity_types == {"Person": "", "Concept": "", "Other": ""}
-    assert s.extract.type_names == ["Person", "Concept", "Other"]
 
 
 def test_entity_types_env_override_as_list(tmp_path, clean_env):
@@ -152,4 +151,58 @@ def test_entity_types_env_override_as_list(tmp_path, clean_env):
 @pytest.mark.parametrize("value", [[], {}])
 def test_entity_types_must_not_be_empty(value):
     with pytest.raises(ValueError, match="entity_types"):
+        ExtractSettings(entity_types=value)
+
+
+YAML_TYPES = "extract:\n  entity_types:\n    Person: A human.\n    Other: Anything else.\n"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ('{"Gene": "A gene.", "Other": "Else."}', {"Gene": "A gene.", "Other": "Else."}),
+        ('["Gene", "Other"]', {"Gene": "", "Other": ""}),
+    ],
+)
+def test_env_entity_types_replace_the_yaml_mapping(tmp_path, clean_env, env, expected):
+    clean_env.chdir(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(YAML_TYPES + "  max_failed_ratio: 0.5\n", encoding="utf-8")
+    clean_env.setenv("MNOGOBASE_EXTRACT__ENTITY_TYPES", env)
+    s = load_settings(cfg)
+    assert s.extract.entity_types == expected
+    assert list(s.extract.entity_types) == list(expected)  # env order, Other last
+    assert s.extract.max_failed_ratio == 0.5  # the rest of the YAML section still applies
+
+
+def test_yaml_list_of_one_key_mappings(tmp_path, clean_env):
+    clean_env.chdir(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "extract:\n  entity_types:\n    - Person: A human.\n    - Concept\n"
+        "    - Other: Anything else.\n",
+        encoding="utf-8",
+    )
+    s = load_settings(cfg)
+    assert s.extract.entity_types == {
+        "Person": "A human.",
+        "Concept": "",
+        "Other": "Anything else.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        (["Person", "person"], "duplicate"),
+        ({"Person": "a", "PERSON": "b"}, "duplicate"),
+        (["Person", "  "], "blank"),
+        ({"": "x", "Other": ""}, "blank"),
+        (["Per:son", "Other"], "':'"),
+        (["Per\nson", "Other"], "newline"),
+        ([{"Person": "a", "Other": "b"}], "one key"),
+    ],
+)
+def test_bad_entity_type_names_are_rejected(value, problem):
+    with pytest.raises(ValueError, match=problem):
         ExtractSettings(entity_types=value)

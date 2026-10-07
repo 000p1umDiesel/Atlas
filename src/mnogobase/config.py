@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -122,17 +122,39 @@ class ExtractSettings(BaseModel):
     @classmethod
     def _names_or_mapping(cls, value: object) -> object:
         if isinstance(value, list | tuple):
-            value = {name: "" for name in value}
-        if isinstance(value, dict):
-            # `Name:` without a description is null in YAML
-            value = {str(k).strip(): str(v or "").strip() for k, v in value.items()}
-            if not value:
-                raise ValueError("entity_types must list at least one type")
-        return value
+            value = dict(_list_entry(item) for item in value)
+        if not isinstance(value, dict):
+            return value  # pydantic reports the wrong type
+        # `Name:` without a description is null in YAML
+        types = {str(k).strip(): str(v or "").strip() for k, v in value.items()}
+        if not types:
+            raise ValueError("entity_types must list at least one type")
+        seen: dict[str, str] = {}
+        for name in [str(k) for k in value]:
+            if not name.strip():
+                raise ValueError("entity_types: a type name is blank")
+            if ":" in name or "\n" in name or "\r" in name:
+                problem = "':'" if ":" in name else "a newline"
+                raise ValueError(f"entity_types: type name {name!r} must not contain {problem}")
+            key = name.strip().casefold()
+            if key in seen:
+                raise ValueError(
+                    f"entity_types: duplicate type name {name.strip()!r} (same as {seen[key]!r}; "
+                    "names are compared case-insensitively)"
+                )
+            seen[key] = name.strip()
+        return types
 
-    @property
-    def type_names(self) -> list[str]:
-        return list(self.entity_types)
+
+def _list_entry(item: object) -> tuple[str, object]:
+    """One entry of a YAML list of types: `- Name` or `- Name: description`."""
+    if isinstance(item, dict):
+        if len(item) != 1:
+            raise ValueError(
+                f"entity_types: a list entry must be a name or a mapping with one key, got {item!r}"
+            )
+        return next(iter(item.items()))
+    return str(item), ""
 
 
 class ResolveSettings(BaseModel):
@@ -177,6 +199,19 @@ class Neo4jSettings(BaseModel):
         return os.environ.get(self.password_env, "")
 
 
+class _YamlSource(YamlConfigSettingsSource):
+    """config.yaml, except that an entity type set given by init or env replaces the YAML
+    one as a whole: sources are deep-merged, which would add the YAML types to it."""
+
+    def __call__(self) -> dict[str, Any]:
+        data = super().__call__()
+        higher = self.current_state.get("extract")
+        own = data.get("extract")
+        if isinstance(higher, dict) and "entity_types" in higher and isinstance(own, dict):
+            data = {**data, "extract": {k: v for k, v in own.items() if k != "entity_types"}}
+        return data
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MNOGOBASE_", env_nested_delimiter="__", extra="ignore"
@@ -207,7 +242,7 @@ class Settings(BaseSettings):
         return (
             init_settings,
             env_settings,
-            YamlConfigSettingsSource(settings_cls),
+            _YamlSource(settings_cls),
             file_secret_settings,
         )
 
