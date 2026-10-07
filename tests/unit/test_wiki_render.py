@@ -20,6 +20,12 @@ def test_validate_citations():
     assert cited == ["x:1", "x:2"]
 
 
+def test_validate_citations_keeps_newline_before_rejected_citation():
+    text, cited = validate_citations("Line one.\n[^bad]Line two. [^x:1]", {"x:1"})
+    assert text == "Line one.\nLine two. [^x:1]"
+    assert cited == ["x:1"]
+
+
 def test_resolve_links():
     pages = {
         "softmax": ("e2", "softmax", "Softmax"),
@@ -44,6 +50,11 @@ def test_strip_reserved_sections():
     body = "# Title\nText [^a]\n\n## Details\nX\n\n## Related\n- foo\n\n## Sources\n[^a]: f"
     assert strip_reserved_sections(body) == "Text [^a]\n\n## Details\nX"
     assert strip_reserved_sections("Text\n[^a]: definition\nMore") == "Text\n\nMore"
+
+
+def test_strip_reserved_sections_only_matches_exact_headings():
+    body = "Text\n\n## Related work\nY\n\n## Sources of error\nZ\n\n## related  \n- foo"
+    assert strip_reserved_sections(body) == "Text\n\n## Related work\nY\n\n## Sources of error\nZ"
 
 
 def _page() -> str:
