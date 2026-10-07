@@ -1,3 +1,4 @@
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -5,6 +6,7 @@ from qdrant_client import QdrantClient
 from qdrant_client import models as qm
 
 from mnogobase.config import WikiSettings
+from mnogobase.ids import point_id
 from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput, EntityRecord
 from mnogobase.registry import Registry
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -22,7 +24,7 @@ DOC = "d" * 16
 
 @pytest.fixture
 def world(graph, tmp_path):
-    def factory(min_mentions: int = 2, handler=scripted_llm_handler):
+    def factory(min_mentions: int = 2, handler=scripted_llm_handler, evidence_k: int = 12):
         vectors = QdrantStore(QdrantClient(":memory:"), "t_", 64)
         vectors.ensure_collections()
         emb, sparse = FakeEmbedder(), FakeSparse()
@@ -82,7 +84,7 @@ def world(graph, tmp_path):
         llm = FakeLLM(handler)
         wiki_dir = tmp_path / "wiki"
         builder = WikiBuilder(
-            WikiSettings(dir=wiki_dir, min_mentions=min_mentions),
+            WikiSettings(dir=wiki_dir, min_mentions=min_mentions, evidence_k=evidence_k),
             graph,
             vectors,
             emb,
@@ -284,3 +286,53 @@ async def test_index_page_stores_cited_chunk_ids(world):
     assert sorted(p["key"] for p in wiki_points(w.vectors, "e1")) == sorted(
         p["key"] for p in payloads
     )
+
+
+def _cited(text: str) -> set[str]:
+    return set(re.findall(r"\[\^([^\]]+)\]:", text))  # the Sources footnote definitions
+
+
+async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, graph):
+    extra = ChunkRecord(
+        chunk_id=f"{DOC}:00003",
+        doc_id=DOC,
+        idx=3,
+        text="A Transformer appendix.",
+        context_text="A Transformer appendix.",
+        page_start=9,
+        path="/docs/attention.pdf",
+    )
+    ids = [f"{DOC}:00000", f"{DOC}:00002", extra.chunk_id]  # every chunk mentioning e1
+    body = "Fact one. [^{}] Fact two. [^{}] Fact three. [^{}]".format(*ids)
+
+    def handler(task, prompt):
+        # an LLM that keeps every citation of the existing page, as the prompt asks it to
+        return body if task == "wiki" else scripted_llm_handler(task, prompt)
+
+    w = world(min_mentions=1, handler=handler, evidence_k=3)
+    graph.upsert_chunks([extra])
+    w.vectors.upsert_chunks(
+        [extra],
+        FakeEmbedder().embed_documents([EmbedInput(text=extra.text)]),
+        FakeSparse().encode_documents([extra.text]),
+    )
+    graph.add_mentions(extra.chunk_id, ["e1"])
+    w.vectors.set_chunk_entities(extra.chunk_id, ["e1"])
+    await w.builder.build()
+    page = w.wiki / "entities" / "transformer.md"
+    assert _cited(page.read_text(encoding="utf-8")) == set(ids)
+
+    # the extra chunk disappears; the evidence window shrinks to one fresh hit
+    graph._run("MATCH (c:Chunk {chunk_id: $id}) DETACH DELETE c", id=extra.chunk_id)
+    w.vectors.client.delete(
+        w.vectors.chunks, points_selector=qm.PointIdsList(points=[point_id(extra.chunk_id)])
+    )
+    w.builder._s = w.builder._s.model_copy(update={"evidence_k": 1})
+    w.registry.mark_dirty(["e1"])
+    report = await w.builder.build()
+    assert report.updated == ["Transformer"]
+    # both still-valid citations survive although only one is a fresh top-1 hit
+    assert _cited(page.read_text(encoding="utf-8")) == set(ids[:2])
+    prompt = [p for p in w.llm.calls_for("wiki") if '"Transformer"' in p][-1]
+    assert all(f"[{cid}]" in prompt for cid in ids[:2])  # carried evidence is shown to the LLM
+    assert f"[{extra.chunk_id}]" not in prompt

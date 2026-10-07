@@ -234,3 +234,15 @@ def test_doc_chunks_rebuilds_records_from_the_graph(graph):
         DocumentRecord(doc_id="f" * 16, path="/f.md", title="F", mime="text/markdown")
     )
     assert graph.doc_chunks("f" * 16)[1] == []
+
+
+def test_chunks_mentioning_keeps_existing_mentioning_chunks_in_order(graph):
+    chunks = make_doc(graph, n=3)
+    make_entity(graph, "e1", "Transformer")
+    graph.add_mentions(chunks[0].chunk_id, ["e1"])
+    graph.add_mentions(chunks[2].chunk_id, ["e1"])
+    asked = [chunks[2].chunk_id, chunks[1].chunk_id, "gone:00000", chunks[0].chunk_id]
+    views = graph.chunks_mentioning("e1", asked)
+    assert [v.chunk_id for v in views] == [chunks[2].chunk_id, chunks[0].chunk_id]
+    assert views[0].path == f"/{'d' * 16}.md" and views[0].page == 3
+    assert graph.chunks_mentioning("e1", []) == []

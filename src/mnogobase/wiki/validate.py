@@ -24,6 +24,11 @@ def strip_reserved_sections(body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
+def cited_ids(body: str) -> list[str]:
+    """The `[^id]` citation ids of a page body, de-duplicated in first-seen order."""
+    return list(dict.fromkeys(m.group(1) for m in _CITE.finditer(body)))
+
+
 def validate_citations(body: str, allowed: set[str]) -> tuple[str, list[str]]:
     """Remove `[^id]` refs whose id is not allowed; return the kept ids in first-seen order."""
     cited: list[str] = []

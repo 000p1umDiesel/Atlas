@@ -155,6 +155,19 @@ class GraphStore:
         )
         return [ChunkView(**r) for r in rows]
 
+    def chunks_mentioning(self, entity_id: str, chunk_ids: list[str]) -> list[ChunkView]:
+        """Those of `chunk_ids` that still exist and still mention the entity, in input order."""
+        rows = self._run(
+            "UNWIND range(0, size($ids) - 1) AS i "
+            "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk {chunk_id: $ids[i]})"
+            "-[:MENTIONS]->(:Entity {entity_id: $eid}) "
+            "RETURN c.chunk_id AS chunk_id, c.doc_id AS doc_id, c.text AS text, d.path AS path, "
+            "c.page_start AS page, coalesce(c.headings, []) AS headings ORDER BY i",
+            ids=chunk_ids,
+            eid=entity_id,
+        )
+        return [ChunkView(**r) for r in rows]
+
     def doc_chunks(self, doc_id: str) -> tuple[DocumentRecord, list[ChunkRecord]] | None:
         """A document and its chunks as stored in the graph (None if the document is unknown).
 

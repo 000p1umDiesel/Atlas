@@ -10,7 +10,12 @@ from mnogobase.wiki.render import (
     render_page,
     split_sections,
 )
-from mnogobase.wiki.validate import resolve_links, strip_reserved_sections, validate_citations
+from mnogobase.wiki.validate import (
+    cited_ids,
+    resolve_links,
+    strip_reserved_sections,
+    validate_citations,
+)
 
 
 def test_validate_citations():
@@ -155,3 +160,9 @@ def test_index_and_log(tmp_path):
     assert "- updated (1): Transformer" in text and "- deleted (1): Cat" in text
     assert text.count("- documents") == 1
     assert text.endswith("run r3\n- no changes\n")
+
+
+def test_cited_ids_in_first_seen_order():
+    body = "A [^d:00002] b [^d:00001]. Again [^d:00002].\n\nNo cite [x]."
+    assert cited_ids(body) == ["d:00002", "d:00001"]
+    assert cited_ids("plain") == []

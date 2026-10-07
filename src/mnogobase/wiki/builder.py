@@ -31,7 +31,12 @@ from mnogobase.wiki.render import (
     render_page,
     split_sections,
 )
-from mnogobase.wiki.validate import resolve_links, strip_reserved_sections, validate_citations
+from mnogobase.wiki.validate import (
+    cited_ids,
+    resolve_links,
+    strip_reserved_sections,
+    validate_citations,
+)
 
 PageLookup = dict[str, tuple[str, str, str]]  # normalized name/alias -> (entity_id, slug, title)
 _TITLE = re.compile(r"^# (.+)$", re.MULTILINE)
@@ -227,6 +232,26 @@ class WikiBuilder:
         query = self._embedder.embed_query(f"{entity.name}: {entity.description}")
         return self._vectors.search_chunks_for_entity(query, entity.entity_id, self._s.evidence_k)
 
+    def _carried_evidence(
+        self, entity: EntityRecord, existing_body: str, hits: list[SearchHit]
+    ) -> list[SearchHit]:
+        """Chunks the existing page cites that fell out of the fresh top-k: kept as evidence
+        (so their citations survive the update) while they exist and still mention the
+        entity; at most `evidence_k` of them."""
+        fresh = {h.key for h in hits}
+        previous = [c for c in cited_ids(existing_body) if c not in fresh]
+        if not previous:
+            return []
+        chunks = self._graph.chunks_mentioning(entity.entity_id, previous)
+        return [
+            SearchHit(
+                key=c.chunk_id,
+                score=0.0,
+                payload={"chunk_id": c.chunk_id, "text": c.text, "path": c.path, "page": c.page},
+            )
+            for c in chunks[: self._s.evidence_k]
+        ]
+
     def _assign_slugs(self, candidates: list[EntityRecord]) -> dict[str, str]:
         taken = {row.slug: row.page_id for row in self._graph.wiki_pages()}
         slugs: dict[str, str] = {}
@@ -263,6 +288,7 @@ class WikiBuilder:
         file = self._s.dir / rel_path
         previous = self._graph.wiki_page(entity.entity_id)
         existing_body = parse_page(file.read_text(encoding="utf-8"))[1] if file.exists() else ""
+        hits = hits + self._carried_evidence(entity, existing_body, hits)
         prompt = render(
             "wiki_page",
             language=LANGUAGE_NAMES.get(self._s.language, self._s.language),
