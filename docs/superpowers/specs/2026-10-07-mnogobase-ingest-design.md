@@ -224,6 +224,7 @@ chunk_extract(chunk_id PK, status, attempts, error)
 extraction_cache(chunk_id, prompt_version, model, result_json, PK(chunk_id, prompt_version, model))
 dirty_entities(entity_id PK, marked_at)
 meta(key PK, value)          # embedder model_id/dim, schema_version
+pending_removals(doc_id PK, plan_json)   # журнал незавершённых cascade delete (§5.1)
 ```
 
 Файловый lock на `state.db` запрещает параллельный ingest.
@@ -234,7 +235,7 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 
 1. **discover** — обход путей, фильтр по поддерживаемым расширениям, `sha256`. По registry:
    - путь+хеш известны и все этапы `done` → skip;
-   - путь известен, хеш другой → **cascade delete** старого doc (Qdrant points по `doc_id`; Neo4j Chunk, MENTIONS; удаление `doc`-чанков из `evidence` рёбер; рёбра с пустым `evidence` и сущности с `mention_count = 0` удаляются вместе с wiki-страницами; затронутые сущности → dirty), затем как новый;
+   - путь известен, хеш другой → **cascade delete** старого doc (Qdrant points по `doc_id`; Neo4j Chunk, MENTIONS; удаление `doc`-чанков из `evidence` рёбер; рёбра с пустым `evidence` и сущности с `mention_count = 0` удаляются вместе с wiki-страницами; затронутые сущности → dirty), затем как новый. План удаления (удаляемые сущности, их страницы, страницы для перегенерации) сначала вычисляется только чтением и пишется в `pending_removals`; затем идемпотентно: Qdrant + wiki-файлы → транзакция Neo4j → registry; запись журнала удаляется последней. Незавершённые удаления доводятся в начале следующего `ingest` / `wiki build`;
    - иначе — продолжить с первого не-`done` этапа.
 2. **parse** — Docling `DocumentConverter` (accelerator из `device`, OCR `true|false`). `DoclingDocument` → `.mnogobase/cache/<doc_id>.json`; изображения/рисунки → `.mnogobase/cache/<doc_id>/images/` с подписью и страницей (задел на мультимодальность, не эмбеддятся).
 3. **chunk** — `HybridChunker(tokenizer=HF google/embeddinggemma-2, max_tokens=512, merge_peers=True)`. Для эмбеддинга — `contextualize(chunk)`, в payload — чистый текст + headings + страницы.
@@ -250,7 +251,8 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
    - иначе поиск в `mb_entities`: cosine ≥ `resolve.auto_merge` (0.92) → merge; в `[resolve.llm_check, auto_merge)` (0.80) → LLM-вопрос «одна ли это сущность?»; ниже → новая;
    - описания аккумулируются; при > `resolve.max_descriptions` (5) LLM сжимает в одно;
    - `MERGE` Entity, `MENTIONS`, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`; upsert `mb_entities`; обновление `entity_ids[]` в payload чанков;
-   - затронутые сущности → `dirty_entities`.
+   - затронутые сущности → `dirty_entities`;
+   - результаты extract берутся из кэша по текущим `(prompt_version, model)`, а при их отсутствии — последний кэшированный результат чанка любой модели/версии промпта (модель могла смениться между этапами). Если без результата остаётся больше `extract.max_failed_ratio` чанков, этап `graph` получает `failed`, а `extract` — снова `pending` (`--retry-failed` переизвлечёт).
 7. Если не `--no-wiki` — запуск `wiki build`.
 
 ### 5.2 `mnogobase wiki build [--all]`
@@ -258,7 +260,7 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 1. Кандидаты: `dirty_entities` (или все при `--all`) с `mention_count ≥ wiki.min_mentions` (2).
 2. Контекст на сущность: описание, aliases, связи (predicate + сосед + описание), top-K (`wiki.evidence_k`, 12) evidence-чанков, ранжированных по близости к эмбеддингу сущности, **текущий текст страницы** (если есть) — LLM дополняет и правит, а не переписывает.
 3. LLM возвращает markdown-тело с `[^chunk_id]` и `[[Name]]`; при записи ссылки переписываются в `[[slug|Name]]` (файлы названы по slug, поэтому в Obsidian ссылка ведёт на нужную страницу, а отображается имя).
-4. Валидация: цитаты на несуществующие или не входившие в контекст чанки удаляются; `[[Name]]` остаётся ссылкой (`[[slug|Name]]`), только если у Name есть страница (или она создаётся в этом же прогоне), иначе превращается в текст.
+4. Валидация: цитаты на несуществующие или не входившие в контекст чанки удаляются. При обновлении в контекст (и в разрешённые цитаты) добавляются чанки, которые уже цитирует текущая страница, если они всё ещё существуют и упоминают сущность (без дублей, не больше `evidence_k`), — валидные цитаты не теряются, когда чанк выпал из свежего top-K; `[[Name]]` остаётся ссылкой (`[[slug|Name]]`), только если у Name есть страница (или она создаётся в этом же прогоне), иначе превращается в текст.
 5. Запись `.md`, upsert `WikiPage` (`version += 1`, `content_hash`), `ABOUT`, `LINKS_TO`, `CITES`; секции → `mb_wiki_pages`.
 6. Пересборка `index.md`, запись в `log.md` (run_id, дата, новые/обновлённые/удалённые страницы, обработанные документы), очистка обработанных `dirty_entities`.
 
@@ -278,10 +280,10 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 
 ### 5.4 Прочие команды
 
-- `mnogobase doctor` — device, доступность Ollama/Qdrant/Neo4j, наличие моделей (подсказка `ollama pull`), совпадение dim коллекций.
-- `mnogobase status` — сводка по registry: файлы по статусам, документы по этапам, сущности, ждущие обновления wiki, ошибки. Длительность каждого этапа пишется в `logs/mnogobase.jsonl` (событие `stage_done`, поле `duration_ms`); учёт токенов на этапах ingest отложен до трейсинга в Langfuse (токены ответов — в `compare`).
+- `mnogobase doctor` — device, доступность Ollama/LLM/Qdrant/Neo4j, наличие моделей (подсказка `ollama pull`), совпадение dim коллекций и подписи эмбеддера индекса. LLM-проверка: `GET {base_url}/models`; 404/405 — ok («models endpoint not available»), 401/403 и прочие ошибки — fail.
+- `mnogobase status` — вне проекта (нет `<data_dir>/state.db`) сообщает об этом и завершается с кодом 0, ничего не создавая; иначе сводка по registry: файлы по статусам, документы по этапам, сущности, ждущие обновления wiki, ошибки. Длительность каждого этапа пишется в `logs/mnogobase.jsonl` (событие `stage_done`, поле `duration_ms`); учёт токенов на этапах ingest отложен до трейсинга в Langfuse (токены ответов — в `compare`).
 - `mnogobase reindex` — пересчёт dense/sparse по текстам из Neo4j (чанки, сущности, wiki-секции) при смене эмбеддера; пересоздаёт коллекции. Граф и wiki не трогает.
-- `mnogobase reset [--yes]` — удаление коллекций с префиксом, очистка Neo4j, registry, cache и wiki (с подтверждением).
+- `mnogobase reset [--yes]` — полный сброс проекта. Отказывается работать (exit 2, даже с `--yes`) вне проекта — если нет `<data_dir>/state.db` (неверный CWD или `--config` не должен стирать чужие данные). Перед подтверждением печатает конкретные цели: Neo4j (URI, все узлы базы по умолчанию), Qdrant (URL и коллекции с префиксом), каталог state/cache (`data_dir`) и wiki-каталог. Удаляет коллекции с префиксом и все узлы Neo4j, очищает таблицы registry (сам `state.db` остаётся) и `<data_dir>/cache`; из wiki — только файлы, которые создаёт mnogobase: `entities/`, `index.md`, `log.md` (прочие файлы не трогает; сам каталог удаляется, только если опустел). Pre-flight: Qdrant и Neo4j.
 
 ## 6. Устройства и ускорение
 
@@ -303,7 +305,7 @@ meta(key PK, value)          # embedder model_id/dim, schema_version
 - Изоляция: ошибка документа не останавливает батч; итог прогона показывает упавшие файлы; `--retry-failed` перезапускает только их.
 - Порядок записи: Qdrant → Neo4j → `stages.done`. Все записи — upsert по детерминированным ID, поэтому повтор этапа после падения безопасен.
 - Ctrl+C / kill: этапы в `running` при следующем запуске считаются `pending`.
-- Pre-flight: `ingest` и `ask` вызывают облегчённый `doctor` и падают с понятным сообщением, если сервис недоступен или dim не совпадает.
+- Pre-flight: `ingest`, `wiki build`, `ask` и `compare` вызывают облегчённый `doctor` (Ollama, LLM, Qdrant, Neo4j; `reindex` — без LLM, `reset` — Qdrant и Neo4j) и падают с понятным сообщением (exit 2), если сервис недоступен или dim не совпадает. `ask`/`compare` вне проекта (нет `state.db`) отказываются (exit 2) и ничего не создают.
 
 ## 8. Логирование
 
