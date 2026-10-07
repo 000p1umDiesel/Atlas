@@ -13,7 +13,13 @@ from mnogobase.ids import normalize_name, slugify
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render
 from mnogobase.log import get_logger
-from mnogobase.models import EmbedInput, EntityRecord, SearchHit, WikiPageRecord
+from mnogobase.models import (
+    EmbedInput,
+    EntityRecord,
+    RelationView,
+    SearchHit,
+    WikiPageRecord,
+)
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -38,6 +44,17 @@ class WikiReport:
     deleted: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _Draft:
+    entity: EntityRecord
+    hits: list[SearchHit]
+    rel_path: str
+    slug: str
+    relations: list[RelationView]
+    previous: WikiPageRecord | None
+    body: str  # raw LLM reply
 
 
 @dataclass
@@ -86,9 +103,22 @@ class WikiBuilder:
     ) -> WikiReport:
         dirty = set(self._registry.dirty())
         eligible = self._graph.entities(min_mentions=self._s.min_mentions)
-        candidates = [e for e in eligible if rebuild_all or e.entity_id in dirty]
+        eligible_ids = {e.entity_id for e in eligible}
         report = WikiReport(deleted=list(deleted or []))
-        report.deleted += self._delete_dropped_pages(dirty - {e.entity_id for e in eligible})
+        dropped = [
+            page
+            for page in (self._graph.wiki_page(eid) for eid in sorted(dirty - eligible_ids))
+            if page is not None
+        ]
+        if dropped:
+            # pages linking to a dropped page are regenerated so the stale link disappears;
+            # marked dirty so a failed regeneration is retried by the next build
+            linking = set(self._graph.pages_linking_to([p.page_id for p in dropped]))
+            linking &= eligible_ids
+            self._registry.mark_dirty(linking)
+            dirty |= linking
+            report.deleted += self._delete_pages(dropped)
+        candidates = [e for e in eligible if rebuild_all or e.entity_id in dirty]
 
         # evidence first: a candidate without evidence gets no page, so nothing may link to it
         evidence: dict[str, list[SearchHit]] = {}
@@ -102,19 +132,26 @@ class WikiBuilder:
         report.skipped = [e.name for e in candidates if evidence.get(e.entity_id) == []]
 
         slugs = self._assign_slugs(writable)
-        lookup = self._page_lookup(writable, slugs)
 
-        async def build_safely(entity: EntityRecord) -> _Built | None:
+        async def draft_safely(entity: EntityRecord) -> _Draft | None:
             try:
-                return await self._build_one(
-                    entity, evidence[entity.entity_id], slugs[entity.entity_id], lookup
+                return await self._draft(
+                    entity, evidence[entity.entity_id], slugs[entity.entity_id]
                 )
             except Exception as exc:  # one bad entity must not fail the whole build
                 self._record_failure(report, failed_ids, entity, exc)
                 return None
 
-        results = await asyncio.gather(*(build_safely(e) for e in writable))
-        built = [b for b in results if b is not None]
+        drafts = [d for d in await asyncio.gather(*map(draft_safely, writable)) if d is not None]
+        # links may only target pages that exist or are written in this run
+        drafted = {d.entity.entity_id for d in drafts}
+        lookup = self._page_lookup([e for e in writable if e.entity_id in drafted], slugs)
+        built: list[_Built] = []
+        for draft in drafts:
+            try:
+                built.append(self._write(draft, lookup))
+            except Exception as exc:  # one bad entity must not fail the whole build
+                self._record_failure(report, failed_ids, draft.entity, exc)
         # two passes so LINKS_TO can target pages created in this same run
         for b in built:
             self._graph.upsert_wiki_page(b.record, b.entity.entity_id, [], b.cited)
@@ -136,6 +173,7 @@ class WikiBuilder:
                 updated=sorted(report.updated),
                 deleted=sorted(report.deleted),
             )
+        report.failed.sort()
         self._log.info(
             "wiki_built",
             created=len(report.created),
@@ -177,18 +215,13 @@ class WikiBuilder:
             error=str(exc),
         )
 
-    def _delete_dropped_pages(self, entity_ids: set[str]) -> list[str]:
-        """Remove pages of entities that fell below min_mentions or no longer exist."""
-        removed: list[str] = []
-        for entity_id in sorted(entity_ids):
-            page = self._graph.wiki_page(entity_id)
-            if page is None:
-                continue
+    def _delete_pages(self, pages: list[WikiPageRecord]) -> list[str]:
+        """Remove page files, Qdrant sections and graph nodes; returns the page titles."""
+        for page in pages:
             (self._s.dir / page.path).unlink(missing_ok=True)
             self._vectors.delete_wiki_page(page.page_id)
             self._graph.delete_wiki_page(page.page_id)
-            removed.append(page.title)
-        return removed
+        return [page.title for page in pages]
 
     def _evidence(self, entity: EntityRecord) -> list[SearchHit]:
         query = self._embedder.embed_query(f"{entity.name}: {entity.description}")
@@ -223,9 +256,8 @@ class WikiBuilder:
                 )
         return lookup
 
-    async def _build_one(
-        self, entity: EntityRecord, hits: list[SearchHit], slug: str, lookup: PageLookup
-    ) -> _Built:
+    async def _draft(self, entity: EntityRecord, hits: list[SearchHit], slug: str) -> _Draft:
+        """Gather the page inputs and ask the LLM for the body."""
         context = self._graph.entity_context(entity.entity_id, max_relations=30)
         rel_path = f"entities/{slug}.md"
         file = self._s.dir / rel_path
@@ -248,12 +280,17 @@ class WikiBuilder:
             existing=existing_body,
         )
         body = await self._llm.complete([{"role": "user", "content": prompt}], task="wiki")
-        body = strip_reserved_sections(body)
+        return _Draft(entity, hits, rel_path, slug, context.relations, previous, body)
+
+    def _write(self, draft: _Draft, lookup: PageLookup) -> _Built:
+        """Validate and render the LLM body, write the page file and index it."""
+        entity, hits = draft.entity, draft.hits
+        body = strip_reserved_sections(draft.body)
         body, cited = validate_citations(body, {h.key for h in hits})
         body, linked_ids = resolve_links(body, lookup)
 
         page_slugs = {eid: s for eid, s, _ in lookup.values()}
-        neighbours = {r.src_id for r in context.relations} | {r.dst_id for r in context.relations}
+        neighbours = {r.src_id for r in draft.relations} | {r.dst_id for r in draft.relations}
         linked = {
             eid: page_slugs[eid]
             for eid in neighbours
@@ -261,19 +298,20 @@ class WikiBuilder:
         }
         payloads = {h.key: h.payload for h in hits}
         sources = [SourceRef(c, payloads[c].get("path"), payloads[c].get("page")) for c in cited]
-        version = previous.version + 1 if previous else 1
-        text = render_page(entity, body, context.relations, linked, sources, version, date.today())
+        version = draft.previous.version + 1 if draft.previous else 1
+        text = render_page(entity, body, draft.relations, linked, sources, version, date.today())
+        file = self._s.dir / draft.rel_path
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(text, encoding="utf-8")
-        self.index_page(entity.entity_id, entity.entity_id, rel_path, text)
+        self.index_page(entity.entity_id, entity.entity_id, draft.rel_path, text)
 
         record = WikiPageRecord(
             page_id=entity.entity_id,
-            slug=slug,
+            slug=draft.slug,
             title=entity.name,
-            path=rel_path,
+            path=draft.rel_path,
             content_hash=hashlib.sha1(text.encode("utf-8")).hexdigest(),
             version=version,
         )
         links_to = sorted((set(linked_ids) | set(linked)) - {entity.entity_id})
-        return _Built(entity, record, links_to, cited, created=previous is None)
+        return _Built(entity, record, links_to, cited, created=draft.previous is None)

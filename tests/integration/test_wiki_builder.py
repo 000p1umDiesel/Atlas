@@ -167,6 +167,45 @@ async def test_failed_entity_does_not_stop_the_build(world, graph):
     assert not (w.wiki / "entities" / "softmax.md").exists()
     assert graph.wiki_page("e2") is None
     assert w.registry.dirty() == ["e2"]
+    # the failed page was never written, so nothing links to it
+    text = (w.wiki / "entities" / "transformer.md").read_text(encoding="utf-8")
+    assert "[[softmax|" not in text
+    assert "See Softmax and" in text and "- uses → Softmax" in text
+    links = graph._run("MATCH (:WikiPage {page_id:'e1'})-[:LINKS_TO]->(p) RETURN p.page_id AS id")
+    assert links == []
+
+
+async def test_failed_entity_with_existing_page_keeps_links(world, graph):
+    fail = {"Softmax": False}
+
+    def handler(task: str, prompt: str) -> str:
+        if task == "wiki" and fail["Softmax"] and '"Softmax"' in prompt:
+            raise RuntimeError("llm down")
+        return scripted_llm_handler(task, prompt)
+
+    w = world(handler=handler)
+    await w.builder.build(run_id="r1")
+    fail["Softmax"] = True
+    w.registry.mark_dirty(["e1", "e2"])
+    report = await w.builder.build(run_id="r2")
+    assert report.updated == ["Transformer"] and report.failed == ["Softmax"]
+    assert (w.wiki / "entities" / "softmax.md").exists()  # the old page stays
+    assert "[[softmax|Softmax]]" in (w.wiki / "entities" / "transformer.md").read_text(
+        encoding="utf-8"
+    )
+    assert w.registry.dirty() == ["e2"]
+
+
+async def test_failed_list_is_sorted(world):
+    def handler(task: str, prompt: str) -> str:
+        if task == "wiki":
+            raise RuntimeError("llm down")
+        return scripted_llm_handler(task, prompt)
+
+    w = world(handler=handler)
+    report = await w.builder.build()
+    assert report.failed == ["Softmax", "Transformer"]
+    assert report.created == [] and sorted(w.registry.dirty()) == ["e1", "e2"]
 
 
 async def test_entity_without_evidence_is_not_linked(world, graph):
@@ -197,7 +236,12 @@ async def test_page_of_dropped_entity_is_deleted(world, graph, change):
     w.registry.mark_dirty(["e2"])
     report = await w.builder.build(run_id="r2", deleted=["Gone Elsewhere"])
     assert report.deleted == ["Gone Elsewhere", "Softmax"]
-    assert report.created == [] and report.updated == []
+    # Transformer linked to Softmax, so it is regenerated without that link
+    assert report.created == [] and report.updated == ["Transformer"]
+    text = (w.wiki / "entities" / "transformer.md").read_text(encoding="utf-8")
+    assert "[[softmax|" not in text
+    links = graph._run("MATCH (:WikiPage {page_id:'e1'})-[:LINKS_TO]->(p) RETURN p.page_id AS id")
+    assert links == []
     assert not (w.wiki / "entities" / "softmax.md").exists()
     assert graph.wiki_page("e2") is None
     assert wiki_points(w.vectors, "e2") == []

@@ -291,6 +291,16 @@ class GraphStore:
         """Remove the page node and its edges; the entity it is about stays."""
         self._run("MATCH (p:WikiPage {page_id: $id}) DETACH DELETE p", id=page_id)
 
+    def pages_linking_to(self, page_ids: list[str]) -> list[str]:
+        """Ids of pages with LINKS_TO into any of `page_ids`, excluding `page_ids` themselves."""
+        rows = self._run(
+            "MATCH (p:WikiPage)-[:LINKS_TO]->(q:WikiPage) "
+            "WHERE q.page_id IN $ids AND NOT p.page_id IN $ids "
+            "RETURN DISTINCT p.page_id AS id ORDER BY id",
+            ids=page_ids,
+        )
+        return [r["id"] for r in rows]
+
     def wiki_page(self, page_id: str) -> WikiPageRecord | None:
         rows = self._run(f"MATCH (p:WikiPage {{page_id: $id}}) RETURN {_PAGE_FIELDS}", id=page_id)
         return WikiPageRecord(**rows[0]["page"]) if rows else None

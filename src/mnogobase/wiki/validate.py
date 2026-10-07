@@ -8,7 +8,7 @@ _CITE = re.compile(r"[ \t]?\[\^([^\]\s]+)\]")
 # "#" is allowed in the target: entity names such as "C#" keep it after normalize_name
 _LINK = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 # only the exact generated headings: an LLM section such as "## Related work" is kept
-_RESERVED = re.compile(r"^##\s+(Related|Sources)\s*$", re.IGNORECASE | re.MULTILINE)
+_RESERVED = re.compile(r"^##[ \t]+(Related|Sources)[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _FOOTNOTE_DEF = re.compile(r"^\[\^[^\]]+\]:.*$", re.MULTILINE)
 
 

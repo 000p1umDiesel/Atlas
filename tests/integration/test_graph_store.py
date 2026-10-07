@@ -179,3 +179,18 @@ def test_delete_wiki_page_keeps_entity(graph):
     assert graph.get_entity("e2") is not None
     assert [r.page_id for r in graph.wiki_pages()] == ["e1"]
     graph.delete_wiki_page("missing")  # no-op
+
+
+def test_pages_linking_to(graph):
+    make_doc(graph)
+    for eid, name in (("e1", "One"), ("e2", "Two"), ("e3", "Three"), ("e4", "Four")):
+        make_entity(graph, eid, name)
+        page = WikiPageRecord(page_id=eid, slug=name.lower(), title=name, path=f"{name}.md")
+        graph.upsert_wiki_page(page, eid, [], [])
+    for src, targets in (("e1", ["e2", "e3"]), ("e2", ["e3"]), ("e3", ["e2"])):
+        graph.upsert_wiki_page(graph.wiki_page(src), src, targets, [])
+    assert graph.pages_linking_to(["e3"]) == ["e1", "e2"]
+    # the queried pages themselves are excluded: they are the ones going away
+    assert graph.pages_linking_to(["e2", "e3"]) == ["e1"]
+    assert graph.pages_linking_to(["e4"]) == []
+    assert graph.pages_linking_to([]) == []
