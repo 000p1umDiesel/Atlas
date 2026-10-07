@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from mnogobase import cli
 from mnogobase.doctor import Check
 from mnogobase.models import Answer, Source
+from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
 
 runner = CliRunner()
@@ -279,3 +280,48 @@ def test_read_only_commands_outside_a_project_do_not_start_file_logging(
     monkeypatch.setattr(cli, "configure_logging", lambda logs_dir, **kw: started.append(logs_dir))
     runner.invoke(cli.app, args)
     assert started == []  # configure_logging would create logs/ in this directory
+
+
+STUCK = PendingRemovalError("cannot finish removing old document version(s) abcd1234abcd1234 (x)")
+
+
+def test_ingest_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    async def ingest(targets, **kwargs):
+        raise STUCK
+
+    stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
+    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    result = runner.invoke(cli.app, ["ingest", "docs"])
+    assert result.exit_code == 2, result.output
+    assert "abcd1234abcd1234" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_wiki_build_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def finish():
+        raise STUCK
+
+    stub = SimpleNamespace(
+        pipeline=SimpleNamespace(prepare=lambda resume: None, finish_pending_removals=finish),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    result = runner.invoke(cli.app, ["wiki", "build"])
+    assert result.exit_code == 2, result.output
+    assert "abcd1234abcd1234" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_status_shows_pending_removals(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    registry = Registry(tmp_path / ".mnogobase" / "state.db")
+    registry.put_removal("abcd1234abcd1234", "{}")
+    registry.close()
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "pending document removals: 1" in result.output
+    assert "abcd1234abcd1234" in result.output

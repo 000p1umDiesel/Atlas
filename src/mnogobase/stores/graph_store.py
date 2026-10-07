@@ -117,6 +117,9 @@ class GraphStore:
                 pairs=pairs,
             )
 
+    def has_document(self, doc_id: str) -> bool:
+        return bool(self._run("MATCH (d:Document {doc_id: $id}) RETURN 1 AS x LIMIT 1", id=doc_id))
+
     def document_deletion_plan(self, doc_id: str) -> DeleteResult:
         """Read-only: what `delete_document(doc_id)` would remove (empty if the document is
         unknown). Entities are removed when no chunk outside this document mentions them."""

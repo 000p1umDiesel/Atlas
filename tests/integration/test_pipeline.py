@@ -9,7 +9,7 @@ from structlog.testing import capture_logs
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
 from mnogobase.ids import entity_id, file_doc_id
-from mnogobase.pipeline import EmbedderMismatchError
+from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
 
@@ -354,3 +354,68 @@ async def test_interrupted_document_removal_is_finished_on_retry(
     assert "[[softmax|" not in transformer_page.read_text(encoding="utf-8")
     assert app.registry.dirty() == []
     assert app.registry.pending_removals() == []
+
+
+@pytest.mark.parametrize(
+    ("where", "name", "after_call"),
+    [
+        ("vectors", "delete_entities", False),  # after the graph transaction committed
+        ("graph", "delete_document", True),  # the graph transaction committed, then a crash
+        ("graph", "delete_document", False),  # before the graph transaction
+    ],
+)
+async def test_replayed_removal_spares_entities_revived_later_in_the_run(
+    make_app, tmp_path, monkeypatch, where, name, after_call
+):
+    folder = tmp_path / "moved"
+    folder.mkdir()
+    gone = folder / "gone.md"
+    kept = folder / "kept.md"
+    paragraph = "Softmax turns scores into probabilities."
+    gone.write_text(f"# Notes\n\n{paragraph}\n", encoding="utf-8")
+    kept.write_text("# Models\n\nThe Transformer is a network.\n", encoding="utf-8")
+    app = make_app()
+    await app.pipeline.ingest([folder])
+    softmax = entity_id("Concept", "Softmax")
+    page = tmp_path / "wiki" / "entities" / "softmax.md"
+
+    # one run: the paragraph moves from gone.md to kept.md, and gone.md's removal fails;
+    # kept.md (processed later in the same run) mentions Softmax again
+    gone.write_text("# Notes\n\nNothing to see here.\n", encoding="utf-8")
+    kept.write_text(f"# Models\n\nThe Transformer is a network.\n\n{paragraph}\n", encoding="utf-8")
+    _fail_once(monkeypatch, getattr(app, where), name, after_call)
+    broken = await app.pipeline.ingest([folder])
+    assert list(broken.failed) == [str(gone.resolve())]
+
+    report = await app.pipeline.ingest([folder])
+    assert report.failed == {}
+    entity = app.graph.get_entity(softmax)
+    assert entity is not None and entity.mention_count == 1
+    assert _points(app, app.vectors.entities, "entity_id", softmax) == 1
+    assert _points(app, app.vectors.wiki, "page_id", softmax) > 0
+    assert page.exists() and app.graph.wiki_page(softmax) is not None
+    assert "Softmax" not in report.wiki.deleted
+    assert app.registry.dirty() == []
+    assert app.registry.pending_removals() == []
+
+
+async def test_stuck_pending_removal_names_the_document(make_app, tmp_path, monkeypatch):
+    folder = tmp_path / "stuck"
+    folder.mkdir()
+    doc = folder / "a.md"
+    doc.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n", encoding="utf-8")
+    app = make_app()
+    await app.pipeline.ingest([folder], build_wiki=False)
+    old = file_doc_id(doc)
+    doc.write_text("# Notes\n\nNothing here.\n", encoding="utf-8")
+
+    def down(*args, **kwargs):
+        raise RuntimeError("qdrant down")
+
+    monkeypatch.setattr(app.vectors, "delete_entities", down)
+    first = await app.pipeline.ingest([folder], build_wiki=False)
+    assert list(first.failed) == [str(doc.resolve())]
+    with pytest.raises(PendingRemovalError, match=old) as info:
+        await app.pipeline.ingest([folder], build_wiki=False)
+    assert "qdrant down" in str(info.value) and "mnogobase doctor" in str(info.value)
+    assert [d for d, _ in app.registry.pending_removals()] == [old]

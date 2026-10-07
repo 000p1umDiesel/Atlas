@@ -20,7 +20,7 @@ from mnogobase.log import configure_logging, new_run_id
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
 from mnogobase.models import Answer
-from mnogobase.pipeline import EmbedderMismatchError
+from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
 from mnogobase.registry import STAGES, Registry, ingest_lock
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import Answerer
@@ -103,7 +103,8 @@ def _lock(settings: Settings) -> filelock.FileLock:
     return lock
 
 
-def _fail_on_mismatch(exc: Exception) -> None:
+def _fail_cleanly(exc: Exception) -> None:
+    """A known, actionable failure: its message, exit 2, no traceback."""
     console.print(f"[red]{escape(str(exc))}[/red]")
     raise typer.Exit(2) from exc
 
@@ -172,6 +173,14 @@ def status() -> None:
             )
         console.print(table)
         console.print(f"entities waiting for wiki update: {len(registry.dirty())}")
+        removals = [doc_id for doc_id, _ in registry.pending_removals()]
+        console.print(f"pending document removals: {len(removals)}")
+        if removals:
+            console.print(
+                f"  unfinished: {', '.join(removals)} — the next ingest / wiki build retries "
+                "them first",
+                soft_wrap=True,
+            )
         errors = registry.stage_errors()
         if errors:
             err_table = Table("doc_id", "stage", "error")
@@ -214,8 +223,8 @@ def ingest(
                             run_id=run_id,
                         )
                     )
-                except (EmbedderMismatchError, DimensionMismatchError) as exc:
-                    _fail_on_mismatch(exc)
+                except (EmbedderMismatchError, DimensionMismatchError, PendingRemovalError) as exc:
+                    _fail_cleanly(exc)
         finally:
             application.close()
     finally:
@@ -246,9 +255,12 @@ def wiki_build(
             try:
                 application.pipeline.prepare(resume=False)
             except (EmbedderMismatchError, DimensionMismatchError) as exc:
-                _fail_on_mismatch(exc)
+                _fail_cleanly(exc)
             # an interrupted ingest may have left a document removal half done (orphan pages)
-            deleted = application.pipeline.finish_pending_removals()
+            try:
+                deleted = application.pipeline.finish_pending_removals()
+            except PendingRemovalError as exc:
+                _fail_cleanly(exc)
             report = asyncio.run(
                 application.wiki.build(
                     rebuild_all=rebuild_all, run_id=new_run_id(), deleted=deleted
@@ -267,7 +279,7 @@ def _answer_setup(application: App) -> tuple[dict[str, Retriever], Answerer]:
     try:
         application.pipeline.prepare(resume=False)
     except (EmbedderMismatchError, DimensionMismatchError) as exc:
-        _fail_on_mismatch(exc)
+        _fail_cleanly(exc)
     s = application.settings
     retrievers = build_retrievers(
         application.vectors, application.graph, application.embedder, application.sparse, s
