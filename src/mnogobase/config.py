@@ -69,7 +69,18 @@ DEFAULT_ENTITY_TYPES: dict[str, str] = {
     "Organism": "A species, organism, cell type or other living thing.",
     "Other": "Anything meaningful that fits none of the types above.",
 }
-DEFAULT_EXTENSIONS = ["pdf", "docx", "pptx", "xlsx", "html", "htm", "md", "adoc", "csv", "txt"]
+DEFAULT_EXTENSIONS = [
+    "pdf",
+    "docx",
+    "pptx",
+    "xlsx",
+    "html",
+    "htm",
+    "md",
+    "adoc",
+    "csv",
+    "txt",
+]
 
 
 class LLMSettings(BaseModel):
@@ -79,7 +90,9 @@ class LLMSettings(BaseModel):
     concurrency: int = 4
     temperature: float = 0.0
     timeout_s: float = 120.0
-    overrides: dict[str, str | None] = Field(default_factory=lambda: dict.fromkeys(LLM_TASKS))
+    overrides: dict[str, str | None] = Field(
+        default_factory=lambda: dict.fromkeys(LLM_TASKS)
+    )
 
     def model_for(self, task: str) -> str:
         return self.overrides.get(task) or self.model
@@ -115,7 +128,9 @@ class ChunkingSettings(BaseModel):
 
 class ExtractSettings(BaseModel):
     # name -> description (YAML mapping, order kept); a plain list of names also works
-    entity_types: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ENTITY_TYPES))
+    entity_types: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_ENTITY_TYPES)
+    )
     max_failed_ratio: float = 0.2
 
     @field_validator("entity_types", mode="before")
@@ -135,7 +150,9 @@ class ExtractSettings(BaseModel):
                 raise ValueError("entity_types: a type name is blank")
             if ":" in name or "\n" in name or "\r" in name:
                 problem = "':'" if ":" in name else "a newline"
-                raise ValueError(f"entity_types: type name {name!r} must not contain {problem}")
+                raise ValueError(
+                    f"entity_types: type name {name!r} must not contain {problem}"
+                )
             key = name.strip().casefold()
             if key in seen:
                 raise ValueError(
@@ -207,8 +224,15 @@ class _YamlSource(YamlConfigSettingsSource):
         data = super().__call__()
         higher = self.current_state.get("extract")
         own = data.get("extract")
-        if isinstance(higher, dict) and "entity_types" in higher and isinstance(own, dict):
-            data = {**data, "extract": {k: v for k, v in own.items() if k != "entity_types"}}
+        if (
+            isinstance(higher, dict)
+            and "entity_types" in higher
+            and isinstance(own, dict)
+        ):
+            data = {
+                **data,
+                "extract": {k: v for k, v in own.items() if k != "entity_types"},
+            }
         return data
 
 
@@ -236,7 +260,12 @@ class Settings(BaseSettings):
 
     @classmethod
     def settings_customise_sources(
-        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
     ):
         # priority: explicit init > MNOGOBASE_* env > config.yaml > defaults
         return (
