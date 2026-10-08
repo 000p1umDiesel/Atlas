@@ -78,6 +78,19 @@ def test_signature_covers_the_templates_and_accepts_legacy_signatures():
     assert "ollama:qwen3-embedding:0.6b:1024" in model and default in model
 
 
+def test_ollama_num_ctx_is_sent_only_when_set():
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"embeddings": [[1.0, 0.0]]})
+
+    OllamaEmbedder(EmbedderSettings(dim=2), client=_client(handler)).embed_query("x")
+    OllamaEmbedder(EmbedderSettings(dim=2, num_ctx=2048), client=_client(handler)).embed_query("x")
+    assert "options" not in bodies[0]
+    assert bodies[1]["options"] == {"num_ctx": 2048}
+
+
 def test_ollama_retries_server_errors():
     calls = {"n": 0}
 

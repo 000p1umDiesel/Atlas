@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from mnogobase.config import GraphSettings
 from mnogobase.embedding.base import Embedder
 from mnogobase.models import ContextItem
@@ -18,16 +20,21 @@ class GraphRetriever:
         self._embedder = embedder
         self._s = settings
 
-    def retrieve(self, query: str, k: int) -> list[ContextItem]:
-        vector_seeds = [
-            h.key
+    def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
+        queries = [query, *alt_queries]
+        vector_hits = [
+            h
+            for q in queries
             for h in self._vectors.search_entities(
-                self._embedder.embed_query(query),
+                self._embedder.embed_query(q),
                 k=self._s.seeds,
                 score_threshold=self._s.seed_threshold,
             )
         ]
-        text_seeds = [eid for eid, _ in self._graph.fulltext_entities(query, self._s.seeds)]
+        vector_seeds = [h.key for h in sorted(vector_hits, key=lambda h: -h.score)]
+        text_seeds = [
+            eid for q in queries for eid, _ in self._graph.fulltext_entities(q, self._s.seeds)
+        ]
         seeds = list(dict.fromkeys(vector_seeds + text_seeds))[: self._s.seeds * 2]
         if not seeds:
             return []

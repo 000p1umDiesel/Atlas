@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-LLM_TASKS = ("extract", "resolve", "wiki", "answer")
+LLM_TASKS = ("extract", "resolve", "wiki", "answer", "query")
 LANGUAGE_NAMES = {"en": "English", "ru": "Russian"}
 # Entity types: name -> one-line description for the extraction prompt. The type is part
 # of entity_id, so the types must not overlap; `Other` stays last (the fallback).
@@ -90,9 +90,7 @@ class LLMSettings(BaseModel):
     concurrency: int = 4
     temperature: float = 0.0
     timeout_s: float = 120.0
-    overrides: dict[str, str | None] = Field(
-        default_factory=lambda: dict.fromkeys(LLM_TASKS)
-    )
+    overrides: dict[str, str | None] = Field(default_factory=lambda: dict.fromkeys(LLM_TASKS))
 
     def model_for(self, task: str) -> str:
         return self.overrides.get(task) or self.model
@@ -110,6 +108,9 @@ class EmbedderSettings(BaseModel):
     batch_size: int = 32
     doc_template: str = "title: {title} | text: {text}"
     query_template: str = "task: search result | query: {query}"
+    # Ollama context window; None keeps the model's default (Qwen3 loads with ~40k tokens,
+    # whose KV cache can push another model out of VRAM). Longer inputs are truncated.
+    num_ctx: int | None = Field(default=None, ge=256)
 
 
 class SparseSettings(BaseModel):
@@ -128,9 +129,7 @@ class ChunkingSettings(BaseModel):
 
 class ExtractSettings(BaseModel):
     # name -> description (YAML mapping, order kept); a plain list of names also works
-    entity_types: dict[str, str] = Field(
-        default_factory=lambda: dict(DEFAULT_ENTITY_TYPES)
-    )
+    entity_types: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ENTITY_TYPES))
     max_failed_ratio: float = 0.2
 
     @field_validator("entity_types", mode="before")
@@ -150,9 +149,7 @@ class ExtractSettings(BaseModel):
                 raise ValueError("entity_types: a type name is blank")
             if ":" in name or "\n" in name or "\r" in name:
                 problem = "':'" if ":" in name else "a newline"
-                raise ValueError(
-                    f"entity_types: type name {name!r} must not contain {problem}"
-                )
+                raise ValueError(f"entity_types: type name {name!r} must not contain {problem}")
             key = name.strip().casefold()
             if key in seen:
                 raise ValueError(
@@ -190,9 +187,26 @@ class WikiSettings(BaseModel):
 class RetrievalSettings(BaseModel):
     k: int = 8
     context_tokens: int = 6000
+    neighbors: int = Field(default=0, ge=0)  # rag: same-section chunks added each side of a hit
+    translate: bool = True  # also search with an English translation of a non-English question
+    answer_language: str = "auto"  # language code (en, ru, ...) or auto: that of the question
     budget: dict[str, float] = Field(
         default_factory=lambda: {"rag": 0.4, "wiki": 0.3, "graph": 0.3}
     )
+
+
+class RerankSettings(BaseModel):
+    """Cross-encoder reranking of rag hits (Qwen3-Reranker served by Ollama)."""
+
+    enabled: bool = False
+    provider: Literal["ollama"] = "ollama"
+    base_url: str = "http://localhost:11434"
+    model: str = "dengcao/Qwen3-Reranker-4B:Q4_K_M"
+    candidates: int = Field(default=30, ge=1)  # hybrid hits scored per question; best k are kept
+    concurrency: int = Field(default=4, ge=1)  # parallel scoring requests
+    max_chars: int = Field(default=4000, ge=100)  # document text cut for the reranker prompt
+    num_ctx: int = Field(default=4096, ge=512)  # Ollama context window (prompt + max_chars)
+    instruction: str = "Given a question, retrieve passages that answer it"
 
 
 class GraphSettings(BaseModel):
@@ -224,11 +238,7 @@ class _YamlSource(YamlConfigSettingsSource):
         data = super().__call__()
         higher = self.current_state.get("extract")
         own = data.get("extract")
-        if (
-            isinstance(higher, dict)
-            and "entity_types" in higher
-            and isinstance(own, dict)
-        ):
+        if isinstance(higher, dict) and "entity_types" in higher and isinstance(own, dict):
             data = {
                 **data,
                 "extract": {k: v for k, v in own.items() if k != "entity_types"},
@@ -254,6 +264,7 @@ class Settings(BaseSettings):
     resolve: ResolveSettings = Field(default_factory=ResolveSettings)
     wiki: WikiSettings = Field(default_factory=WikiSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    rerank: RerankSettings = Field(default_factory=RerankSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     neo4j: Neo4jSettings = Field(default_factory=Neo4jSettings)

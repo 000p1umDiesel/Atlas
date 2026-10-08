@@ -32,7 +32,7 @@ Any config key can be overridden with `MNOGOBASE_<SECTION>__<KEY>` env vars (lis
 
 **Wiring.** `cli.py` → `app.py:build_app(settings, *, embedder, sparse, llm, vectors, graph)` builds and connects every component. Anything not passed in is created from settings. This is the single injection point that tests use to pass in fakes. Retrieval modes come from `retrieval/__init__.py:build_retrievers` as `{mode: Retriever}`.
 
-**Swappable parts are `typing.Protocol`s:** `Embedder` / `SparseEncoder` (`embedding/base.py`), `LLMClient` (`llm/client.py`, with `task` ∈ extract/resolve/wiki/answer selecting the model via `llm.overrides`) and `Retriever` (`retrieval/base.py`). Stores, `Registry`, `DoclingParser` and `Chunker` are concrete classes. All Qdrant code lives in `stores/qdrant_store.py`, and all Cypher in `stores/graph_store.py`.
+**Swappable parts are `typing.Protocol`s:** `Embedder` / `SparseEncoder` (`embedding/base.py`), `Reranker` (`retrieval/rerank.py`, optional, used by `RagRetriever`), `LLMClient` (`llm/client.py`, with `task` ∈ extract/resolve/wiki/answer/query selecting the model via `llm.overrides`) and `Retriever` (`retrieval/base.py`; `alt_queries` carries the English translation of a non-English question from `retrieval/translate.py`). Stores, `Registry`, `DoclingParser` and `Chunker` are concrete classes. All Qdrant code lives in `stores/qdrant_store.py`, and all Cypher in `stores/graph_store.py`.
 
 **Ingest pipeline** (`pipeline.py`): runs per document through `parse → chunk → embed → extract → graph`, then an incremental `wiki build`. Per-stage status lives in the SQLite registry (`.mnogobase/state.db`, `registry.py`). A stage is marked `done` only after all of its writes. `running` stages left by a crash reset to `pending` on the next run, and `failed` stages only rerun with `--retry-failed`. Writing commands share a file lock (`.mnogobase/ingest.lock`).
 
@@ -59,5 +59,5 @@ Any config key can be overridden with `MNOGOBASE_<SECTION>__<KEY>` env vars (lis
 ## Environment notes
 
 - On Windows with a system proxy (registry), httpx routes even `localhost` through it, which shows up as 503 from Ollama/Qdrant. `config.load_settings` adds local hosts to `NO_PROXY` to prevent this. Code paths that build `Settings` without `load_settings` (some tests) are not covered.
-- `config.yaml` currently uses the `qwen3-embedding:0.6b` (dim 1024) fallback embedder and the `Qwen/Qwen3-Embedding-0.6B` tokenizer, while the README describes `embeddinggemma-2`.
+- `config.yaml` currently uses the `qwen3-embedding:4b` (dim 2560) embedder with the `Qwen/Qwen3-Embedding-4B` tokenizer and enables the `dengcao/Qwen3-Reranker-4B:Q4_K_M` reranker (both in Ollama), while the README's defaults describe `embeddinggemma-2`. The reranker uses `/api/generate` logprobs, as Ollama has no rerank endpoint.
 - Commit prefixes: `feat:`, `fix:`, `docs:`. Derived data (`.mnogobase/`, `logs/`, `runs/`, `wiki/`, `documents/`) is gitignored.

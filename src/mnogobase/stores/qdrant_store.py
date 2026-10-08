@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -21,6 +21,7 @@ SPARSE = "bm25"
 _KEYWORD = qm.PayloadSchemaType.KEYWORD
 _TRANSPORT_ERRORS = (ResponseHandlingException, httpx.TransportError)
 _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=0.5, max=10)
+QueryVectors = tuple[list[float], qm.SparseVector]  # (dense, sparse) of one query
 
 
 class DimensionMismatchError(RuntimeError):
@@ -105,15 +106,27 @@ class QdrantStore:
         ]
 
     def _hybrid(
-        self, name: str, dense: list[float], sparse: qm.SparseVector, k: int, key: str
+        self,
+        name: str,
+        dense: list[float],
+        sparse: qm.SparseVector,
+        k: int,
+        key: str,
+        extra: Sequence[QueryVectors] = (),
     ) -> list[SearchHit]:
+        """Dense + BM25 prefetch per query (the main one and `extra`), all fused by RRF."""
+        prefetch = [
+            p
+            for d, s in [(dense, sparse), *extra]
+            for p in (
+                qm.Prefetch(query=d, using=DENSE, limit=k * 4),
+                qm.Prefetch(query=s, using=SPARSE, limit=k * 4),
+            )
+        ]
         return self._query(
             name,
             key=key,
-            prefetch=[
-                qm.Prefetch(query=dense, using=DENSE, limit=k * 4),
-                qm.Prefetch(query=sparse, using=SPARSE, limit=k * 4),
-            ],
+            prefetch=prefetch,
             query=qm.FusionQuery(fusion=qm.Fusion.RRF),
             limit=k,
         )
@@ -149,6 +162,19 @@ class QdrantStore:
         ]
         self._upsert(self.chunks, points)
 
+    def get_chunks(self, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Payloads of those of `chunk_ids` that exist, keyed by chunk id."""
+        if not chunk_ids:
+            return {}
+        points = self._call(
+            self.client.retrieve,
+            self.chunks,
+            ids=[point_id(c) for c in chunk_ids],
+            with_payload=True,
+            with_vectors=False,
+        )
+        return {p.payload["chunk_id"]: p.payload for p in points}
+
     def set_chunk_entities(self, chunk_id: str, entity_ids: list[str]) -> None:
         self._call(
             self.client.set_payload,
@@ -166,8 +192,14 @@ class QdrantStore:
     def delete_doc(self, doc_id: str) -> None:
         self._delete_where(self.chunks, "doc_id", doc_id)
 
-    def search_chunks(self, dense: list[float], sparse: qm.SparseVector, k: int) -> list[SearchHit]:
-        return self._hybrid(self.chunks, dense, sparse, k, key="chunk_id")
+    def search_chunks(
+        self,
+        dense: list[float],
+        sparse: qm.SparseVector,
+        k: int,
+        extra: Sequence[QueryVectors] = (),
+    ) -> list[SearchHit]:
+        return self._hybrid(self.chunks, dense, sparse, k, key="chunk_id", extra=extra)
 
     def search_chunks_for_entity(
         self, dense: list[float], entity_id: str, k: int
@@ -247,5 +279,11 @@ class QdrantStore:
     def delete_wiki_page(self, page_id: str) -> None:
         self._delete_where(self.wiki, "page_id", page_id)
 
-    def search_wiki(self, dense: list[float], sparse: qm.SparseVector, k: int) -> list[SearchHit]:
-        return self._hybrid(self.wiki, dense, sparse, k, key="key")
+    def search_wiki(
+        self,
+        dense: list[float],
+        sparse: qm.SparseVector,
+        k: int,
+        extra: Sequence[QueryVectors] = (),
+    ) -> list[SearchHit]:
+        return self._hybrid(self.wiki, dense, sparse, k, key="key", extra=extra)

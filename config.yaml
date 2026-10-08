@@ -10,7 +10,7 @@ llm:
   concurrency: 16
   temperature: 0
   timeout_s: 120
-  overrides: {extract: null, resolve: null, wiki: null, answer: null}
+  overrides: {extract: null, resolve: null, wiki: null, answer: null, query: null}
 
 embedder:
   provider: ollama
@@ -20,9 +20,10 @@ embedder:
   # batch_size: 32
   # doc_template: "title: {title} | text: {text}"
   # query_template: "task: search result | query: {query}"
-  # Fallback if EmbeddingGemma 2 is unavailable (requires `mnogobase reindex` after switching):
-  model: qwen3-embedding:0.6b
-  dim: 1024
+  # Qwen3-Embedding 4B instead of EmbeddingGemma 2 (switching models requires `mnogobase reindex`):
+  model: qwen3-embedding:4b
+  dim: 2560
+  num_ctx: 2048                      # chunks are <= 512 tokens; the default ~40k context takes ~9 GB of VRAM
   doc_template: "{text}"
   query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
 
@@ -35,7 +36,7 @@ parsing:
 
 chunking:
   # tokenizer: google/embeddinggemma-2
-  tokenizer: Qwen/Qwen3-Embedding-0.6B
+  tokenizer: Qwen/Qwen3-Embedding-4B
   max_tokens: 512
 
 extract:
@@ -77,7 +78,18 @@ wiki:
 retrieval:
   k: 8
   context_tokens: 6000
+  neighbors: 0                       # rag: same-section chunks added each side of a hit
+  translate: true                    # also search with an English translation of a non-English question
+  answer_language: ru                # ru | en | ... | auto (the language of the question)
   budget: {rag: 0.4, wiki: 0.3, graph: 0.3}
+
+rerank:
+  enabled: true                      # rag: rescore hybrid hits with a cross-encoder
+  base_url: http://localhost:11434
+  model: dengcao/Qwen3-Reranker-4B:Q4_K_M
+  candidates: 30                     # hybrid hits scored per question; best retrieval.k kept
+  concurrency: 4
+  num_ctx: 4096                      # prompt + up to max_chars of chunk text
 
 graph:
   hops: 2

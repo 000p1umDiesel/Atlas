@@ -35,6 +35,12 @@ class OllamaEmbedder:
         self.templates = (settings.doc_template, settings.query_template)
         self._log = get_logger(__name__)
 
+    def _payload(self, inputs: list[str]) -> dict:
+        payload = {"model": self._s.model, "input": inputs, "truncate": True}
+        if self._s.num_ctx:
+            payload["options"] = {"num_ctx": self._s.num_ctx}
+        return payload
+
     def _embed(self, inputs: list[str]) -> list[list[float]]:
         start = time.perf_counter()
         for attempt in Retrying(
@@ -44,9 +50,7 @@ class OllamaEmbedder:
             reraise=True,
         ):
             with attempt:
-                response = self._client.post(
-                    "/api/embed", json={"model": self._s.model, "input": inputs, "truncate": True}
-                )
+                response = self._client.post("/api/embed", json=self._payload(inputs))
                 response.raise_for_status()
         vectors = response.json()["embeddings"]
         self._log.debug(

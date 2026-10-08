@@ -158,6 +158,7 @@ class Answer(BaseModel):
     mode: str
     text: str
     sources: list[Source] = Field(default_factory=list)
+    alt_queries: list[str] = Field(default_factory=list)  # e.g. the English search translation
     latency_ms: int = 0
     tokens_in: int = 0
     tokens_out: int = 0

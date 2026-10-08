@@ -26,7 +26,8 @@ CASES = {
         example_id="VAL_EXAMPLE_ID",
         existing="VAL_EXISTING",
     ),
-    "answer": dict(question="VAL_QUESTION", context="VAL_CONTEXT"),
+    "answer": dict(question="VAL_QUESTION", context="VAL_CONTEXT", language="VAL_LANGUAGE"),
+    "translate_query": dict(question="VAL_QUESTION"),
 }
 
 

@@ -14,6 +14,7 @@ from mnogobase.llm.client import LLMClient, OpenAICompatLLM
 from mnogobase.parsing.docling_parser import DoclingParser
 from mnogobase.pipeline import Pipeline
 from mnogobase.registry import Registry
+from mnogobase.retrieval.rerank import OllamaReranker, Reranker
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.builder import WikiBuilder
@@ -35,6 +36,7 @@ class App:
     resolver: EntityResolver
     wiki: WikiBuilder
     pipeline: Pipeline
+    reranker: Reranker | None = None  # rerank.enabled
 
     def close(self) -> None:
         self.graph.close()
@@ -47,6 +49,7 @@ def build_app(
     embedder: Embedder | None = None,
     sparse: SparseEncoder | None = None,
     llm: LLMClient | None = None,
+    reranker: Reranker | None = None,
     vectors: QdrantStore | None = None,
     graph: GraphStore | None = None,
 ) -> App:
@@ -57,6 +60,8 @@ def build_app(
     vectors = vectors or QdrantStore.from_settings(settings.qdrant, embedder.dim)
     graph = graph or GraphStore.from_settings(settings.neo4j)
     llm = llm or OpenAICompatLLM(settings.llm)
+    if reranker is None and settings.rerank.enabled:
+        reranker = OllamaReranker(settings.rerank)
     parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache")
     chunker = Chunker(settings.chunking)
     extractor = Extractor(llm, registry, settings.extract.entity_types)
@@ -90,4 +95,5 @@ def build_app(
         resolver,
         wiki,
         pipeline,
+        reranker,
     )

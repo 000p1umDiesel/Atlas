@@ -3,7 +3,7 @@ import pytest
 from qdrant_client import QdrantClient
 
 from mnogobase import doctor
-from mnogobase.config import EmbedderSettings, Settings
+from mnogobase.config import EmbedderSettings, RerankSettings, Settings
 from mnogobase.doctor import run_checks
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.embedding.ollama import OllamaEmbedder
@@ -52,11 +52,41 @@ def test_index_check_fails_when_only_the_templates_changed(tmp_path):
     assert "templates changed" in changed.detail and "mnogobase reindex" in changed.detail
 
 
-def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path):
-    settings = make_settings(tmp_path, embedder=EmbedderSettings(base_url="http://127.0.0.1:9"))
+def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path, monkeypatch):
+    # a refused connection is simulated: on Windows a closed port can time out instead
+    def refuse(url, **kwargs):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(doctor.httpx, "get", refuse)
+    settings = make_settings(tmp_path)
     checks = run_checks(settings, timeout=1.0, only=["index", "ollama"])
     assert [c.name for c in checks] == ["ollama", "index"]  # doctor order, not request order
     assert not checks[0].ok and "ConnectError" in checks[0].detail
+
+
+def _tags(monkeypatch, models: list[str]) -> None:
+    def fake_get(url, **kwargs):
+        payload = {"models": [{"name": m} for m in models]}
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(doctor.httpx, "get", fake_get)
+
+
+def test_ollama_check_requires_the_reranker_only_when_enabled(tmp_path, monkeypatch):
+    _tags(monkeypatch, ["qwen3-embedding:4b"])
+    embedder = EmbedderSettings(model="qwen3-embedding:4b")
+    [plain] = run_checks(make_settings(tmp_path, embedder=embedder), only=["ollama"])
+    assert plain.ok and plain.detail == "embedder qwen3-embedding:4b available"
+
+    rerank = RerankSettings(enabled=True, model="rr:4b")
+    [missing] = run_checks(
+        make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["ollama"]
+    )
+    assert not missing.ok and "`ollama pull rr:4b`" in missing.detail
+
+    _tags(monkeypatch, ["qwen3-embedding:4b", "rr:4b"])
+    [both] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["ollama"])
+    assert both.ok and "reranker rr:4b" in both.detail
 
 
 def _models_endpoint(monkeypatch, status: int, payload: dict | None = None) -> list[str]:

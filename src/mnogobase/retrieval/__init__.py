@@ -8,6 +8,7 @@ from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.combined import CombinedRetriever
 from mnogobase.retrieval.graph import GraphRetriever
 from mnogobase.retrieval.rag import RagRetriever
+from mnogobase.retrieval.rerank import Reranker
 from mnogobase.retrieval.wiki import WikiRetriever
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -26,9 +27,17 @@ def build_retrievers(
     embedder: Embedder,
     sparse: SparseEncoder,
     settings: Settings,
+    reranker: Reranker | None = None,
 ) -> dict[str, Retriever]:
     """One retriever per `Mode`, keyed by the mode value (`rag`, `wiki`, `graph`, `all`)."""
-    rag = RagRetriever(vectors, embedder, sparse)
+    rag = RagRetriever(
+        vectors,
+        embedder,
+        sparse,
+        settings.retrieval.neighbors,
+        reranker,
+        settings.rerank.candidates,
+    )
     wiki = WikiRetriever(vectors, embedder, sparse, graph)
     graph_retriever = GraphRetriever(graph, vectors, embedder, settings.graph)
     combined = CombinedRetriever(

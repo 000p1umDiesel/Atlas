@@ -52,10 +52,18 @@ def run_checks(
         resp = httpx.get(f"{settings.embedder.base_url}/api/tags", timeout=timeout)
         resp.raise_for_status()
         names = {m["name"] for m in resp.json().get("models", [])}
-        wanted = settings.embedder.model
-        if wanted in names or f"{wanted}:latest" in names:
-            return Check("ollama", True, f"embedder {wanted} available")
-        return Check("ollama", False, f"model {wanted} missing: run `ollama pull {wanted}`")
+        wanted = {"embedder": settings.embedder.model}
+        # the reranker may be served by another Ollama; only a shared one is checked here
+        same_host = settings.rerank.base_url.rstrip("/") == settings.embedder.base_url.rstrip("/")
+        if settings.rerank.enabled and same_host:
+            wanted["reranker"] = settings.rerank.model
+        missing = [m for m in wanted.values() if m not in names and f"{m}:latest" not in names]
+        if missing:
+            pulls = "; ".join(f"`ollama pull {m}`" for m in missing)
+            return Check("ollama", False, f"missing {', '.join(missing)}: run {pulls}")
+        return Check(
+            "ollama", True, ", ".join(f"{r} {m}" for r, m in wanted.items()) + " available"
+        )
 
     def llm() -> Check:
         resp = httpx.get(

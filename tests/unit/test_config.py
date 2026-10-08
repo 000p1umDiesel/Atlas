@@ -50,9 +50,7 @@ def test_yaml_then_env_override(tmp_path, clean_env):
 
 def test_secrets_from_dotenv(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
-    (tmp_path / ".env").write_text(
-        "LLM_API_KEY=sk-test\nNEO4J_PASSWORD=pw\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_text("LLM_API_KEY=sk-test\nNEO4J_PASSWORD=pw\n", encoding="utf-8")
     s = load_settings()
     assert s.llm.api_key() == "sk-test"
     assert s.neo4j.password() == "pw"
@@ -140,9 +138,7 @@ def test_entity_types_as_yaml_mapping_keep_order(tmp_path, clean_env):
 def test_entity_types_as_plain_list(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     cfg = tmp_path / "c.yaml"
-    cfg.write_text(
-        "extract:\n  entity_types: [Person, Concept, Other]\n", encoding="utf-8"
-    )
+    cfg.write_text("extract:\n  entity_types: [Person, Concept, Other]\n", encoding="utf-8")
     s = load_settings(cfg)
     assert s.extract.entity_types == {"Person": "", "Concept": "", "Other": ""}
 
@@ -159,9 +155,7 @@ def test_entity_types_must_not_be_empty(value):
         ExtractSettings(entity_types=value)
 
 
-YAML_TYPES = (
-    "extract:\n  entity_types:\n    Person: A human.\n    Other: Anything else.\n"
-)
+YAML_TYPES = "extract:\n  entity_types:\n    Person: A human.\n    Other: Anything else.\n"
 
 
 @pytest.mark.parametrize(
@@ -182,9 +176,7 @@ def test_env_entity_types_replace_the_yaml_mapping(tmp_path, clean_env, env, exp
     s = load_settings(cfg)
     assert s.extract.entity_types == expected
     assert list(s.extract.entity_types) == list(expected)  # env order, Other last
-    assert (
-        s.extract.max_failed_ratio == 0.5
-    )  # the rest of the YAML section still applies
+    assert s.extract.max_failed_ratio == 0.5  # the rest of the YAML section still applies
 
 
 def test_yaml_list_of_one_key_mappings(tmp_path, clean_env):

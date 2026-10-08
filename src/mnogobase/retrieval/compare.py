@@ -10,6 +10,7 @@ from mnogobase.config import Settings
 from mnogobase.models import Answer
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
+from mnogobase.retrieval.translate import QueryTranslator
 
 
 def config_hash(settings: Settings) -> str:
@@ -20,12 +21,21 @@ def config_hash(settings: Settings) -> str:
 
 
 async def run_mode(
-    question: str, mode: str, retriever: Retriever, answerer: Answerer, k: int
+    question: str,
+    mode: str,
+    retriever: Retriever,
+    answerer: Answerer,
+    k: int,
+    translator: QueryTranslator | None = None,
 ) -> Answer:
-    """Retrieve and answer in one mode; `latency_ms` covers retrieval + generation."""
+    """Retrieve and answer in one mode; `latency_ms` covers translation + retrieval + generation.
+
+    With a `translator`, a non-English question is also searched in English."""
     start = time.perf_counter()
-    items = retriever.retrieve(question, k)
+    alt = await translator.alt_queries(question) if translator else []
+    items = retriever.retrieve(question, k, alt)
     answer = await answerer.answer(question, mode, items)
+    answer.alt_queries = alt
     answer.latency_ms = int((time.perf_counter() - start) * 1000)
     return answer
 
@@ -36,6 +46,7 @@ def _row(answer: Answer, ts: str, config_hash: str) -> dict:
         "question": answer.question,
         "mode": answer.mode,
         "answer": answer.text,
+        "alt_queries": answer.alt_queries,
         "sources": [s.model_dump() for s in answer.sources],
         "latency_ms": answer.latency_ms,
         "tokens_in": answer.tokens_in,
@@ -52,10 +63,13 @@ async def compare(
     k: int,
     runs_dir: Path,
     config_hash: str = "",
+    translator: QueryTranslator | None = None,
 ) -> list[Answer]:
     """Answer `question` in every mode and append one row per mode to `runs_dir/compare.jsonl`."""
     # sequential on purpose: per-answer token accounting reads the shared usage counter
-    answers = [await run_mode(question, mode, r, answerer, k) for mode, r in retrievers.items()]
+    answers = [
+        await run_mode(question, mode, r, answerer, k, translator) for mode, r in retrievers.items()
+    ]
     runs_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(UTC).isoformat()
     with (runs_dir / "compare.jsonl").open("a", encoding="utf-8") as fh:

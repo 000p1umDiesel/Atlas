@@ -42,6 +42,7 @@ from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.compare import compare as do_compare
 from mnogobase.retrieval.compare import config_hash, run_mode
+from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.wiki.builder import WikiReport
 
@@ -384,16 +385,25 @@ def wiki_build(
         raise typer.Exit(1)
 
 
-def _answer_setup(application: App) -> tuple[dict[str, Retriever], Answerer]:
+def _answer_setup(
+    application: App,
+) -> tuple[dict[str, Retriever], Answerer, QueryTranslator | None]:
     try:
         application.pipeline.prepare(resume=False)
     except (EmbedderMismatchError, DimensionMismatchError) as exc:
         _fail_cleanly(exc)
     s = application.settings
     retrievers = build_retrievers(
-        application.vectors, application.graph, application.embedder, application.sparse, s
+        application.vectors,
+        application.graph,
+        application.embedder,
+        application.sparse,
+        s,
+        application.reranker,
     )
-    return retrievers, Answerer(application.llm, s.retrieval.context_tokens)
+    answerer = Answerer(application.llm, s.retrieval.context_tokens, s.retrieval.answer_language)
+    translator = QueryTranslator(application.llm) if s.retrieval.translate else None
+    return retrievers, answerer, translator
 
 
 @app.command()
@@ -407,10 +417,15 @@ def ask(
     _preflight(settings)
     application = build_app(settings)
     try:
-        retrievers, answerer = _answer_setup(application)
+        retrievers, answerer, translator = _answer_setup(application)
         answer = asyncio.run(
             run_mode(
-                question, mode.value, retrievers[mode.value], answerer, k or settings.retrieval.k
+                question,
+                mode.value,
+                retrievers[mode.value],
+                answerer,
+                k or settings.retrieval.k,
+                translator,
             )
         )
     finally:
@@ -428,7 +443,7 @@ def compare(
     _preflight(settings)
     application = build_app(settings)
     try:
-        retrievers, answerer = _answer_setup(application)
+        retrievers, answerer, translator = _answer_setup(application)
         answers = asyncio.run(
             do_compare(
                 question,
@@ -437,6 +452,7 @@ def compare(
                 k or settings.retrieval.k,
                 settings.runs_dir,
                 config_hash(settings),
+                translator,
             )
         )
     finally:

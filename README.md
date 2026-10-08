@@ -95,6 +95,8 @@ docker compose up -d
 
 # 3. Модель эмбеддингов (~1.3 ГБ)
 ollama pull embeddinggemma-2:740m
+# config.yaml в репозитории настроен на Qwen3-Embedding 4B и реранкер Qwen3-Reranker 4B (~2.5 ГБ каждая):
+#   ollama pull qwen3-embedding:4b && ollama pull dengcao/Qwen3-Reranker-4B:Q4_K_M
 
 # 4. Python-зависимости (пакет ставится в .venv в режиме редактирования)
 uv sync
@@ -123,7 +125,7 @@ uv run mnogobase doctor
 | Проверка | Что делает | Типичный провал |
 |---|---|---|
 | `device` | выбирает устройство для Docling: CUDA → MPS → CPU (или то, что задано в `device`) | — |
-| `ollama` | `GET {embedder.base_url}/api/tags`, ищет модель эмбеддера | `model embeddinggemma-2:740m missing: run ollama pull embeddinggemma-2:740m` |
+| `ollama` | `GET {embedder.base_url}/api/tags`, ищет модель эмбеддера и, при `rerank.enabled` и том же `base_url`, модель реранкера | `model embeddinggemma-2:740m missing: run ollama pull embeddinggemma-2:740m` |
 | `llm` | `GET {llm.base_url}/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <base_url>` |
 | `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
 | `neo4j` | подключение с логином и паролем | `ServiceUnavailable`, `AuthError` |
@@ -243,7 +245,7 @@ uv run mnogobase compare "Что такое механизм внимания?" 
 | `graph` | сущности, найденные по вопросу, их окрестность в графе на `graph.hops` шага и чанки-доказательства сильнейших связей |
 | `all` | всё вместе: каждый режим получает долю общего бюджета токенов (`retrieval.budget`), повторы убираются |
 
-Ответ печатается в рамке с режимом и временем, под ним — таблица источников: номер `[n]`, отметка `cited` (LLM сослалась на этот номер в тексте), вид (`chunk`, `wiki`, `entity`, `relation`), файл и страница, `ref` (id чанка, раздела wiki или связи) и начало текста. LLM отвечает на языке вопроса; если источников нет, печатается `The knowledge base has no relevant sources for this question.`
+Ответ печатается в рамке с режимом и временем, под ним — таблица источников: номер `[n]`, отметка `cited` (LLM сослалась на этот номер в тексте), вид (`chunk`, `wiki`, `entity`, `relation`), файл и страница, `ref` (id чанка, раздела wiki или связи) и начало текста. Язык ответа задаёт `retrieval.answer_language` (в `config.yaml` — `ru`; `auto` — язык вопроса). Вопрос не на английском (больше 30% букв не латиница) перед поиском переводится на английский (задача LLM `query`), и поиск идёт по обеим формулировкам; отключается `retrieval.translate: false`. Если источников нет, печатается `The knowledge base has no relevant sources for this question.`
 
 `compare` печатает таблицу: режим, ответ, процитированные источники, задержка, токены LLM, размер контекста, и дописывает по строке на режим в `runs/compare.jsonl` (раздел 4.4).
 
@@ -425,8 +427,9 @@ RETURN e.name, e.type, e.aliases ORDER BY e.mention_count DESC LIMIT 50;
 |---|---|
 | `ts` | время прогона (UTC, одинаковое для 4 строк) |
 | `question`, `mode`, `answer` | вопрос, режим, текст ответа |
+| `alt_queries` | дополнительные формулировки для поиска (английский перевод вопроса; пусто, если перевод не нужен или не удался) |
 | `sources` | список источников: `n`, `kind`, `ref`, `path`, `page`, `snippet`, `cited` |
-| `latency_ms` | поиск и генерация вместе |
+| `latency_ms` | перевод запроса, поиск и генерация вместе |
 | `tokens_in`, `tokens_out` | токены LLM на ответ (по данным `usage` эндпоинта) |
 | `context_tokens` | оценка размера контекста (символы / 4) |
 | `config_hash` | хеш настроек `llm`, `embedder`, `chunking`, `retrieval`, `graph`: сравнивайте прогоны только с одинаковым хешем |
@@ -451,7 +454,7 @@ jq 'select(.question | test("внимани")) | {mode, answer}' runs/compare.js
 |---|---|---|
 | `stage_done` / `stage_failed` | `stage`, `duration_ms`, `path`; при ошибке `error_type`, `error`, `exception` | каждый этап каждого файла |
 | `parsed` | `title`, `n_pages`, `n_images` | после Docling |
-| `llm_call` | `task` (`extract`, `resolve`, `wiki`, `answer`), `model`, `tokens_in`, `tokens_out`, `retries`, `duration_ms` | каждый вызов LLM |
+| `llm_call` | `task` (`extract`, `resolve`, `wiki`, `answer`, `query`), `model`, `tokens_in`, `tokens_out`, `retries`, `duration_ms` | каждый вызов LLM |
 | `llm_invalid_json` | `task`, `error` | ответ LLM не прошёл схему, идёт повтор с текстом ошибки |
 | `extract_failed` / `extract_partial` | `chunk_id`, `error` / `failed`, `total` | неудачные чанки на этапе `extract` |
 | `entity_merged` | `name`, `into`, `score`, `method` (`vector` или `llm`) | слияние сущностей |
@@ -745,9 +748,11 @@ flowchart TD
     PROMPT --> OUT["ответ и таблица источников,<br/>cited по номерам в тексте"]
 ```
 
-- **rag** — гибридный запрос Qdrant: два prefetch по `k * 4` (`dense` и `bm25`), слияние RRF, `k` результатов.
+- **Перевод запроса.** Если вопрос не на английском и `retrieval.translate: true`, `QueryTranslator` (`retrieval/translate.py`, промпт `translate_query.md`, задача `query`) один раз переводит его на английский; все режимы ищут и по оригиналу, и по переводу (`alt_queries`). Источники, wiki и имена сущностей в основном английские, а BM25 не сопоставляет русский запрос с английским текстом. Ошибка перевода не прерывает ответ: поиск идёт по оригиналу.
+- **rag** — гибридный запрос Qdrant: по два prefetch по `k * 4` (`dense` и `bm25`) на каждую формулировку, слияние RRF, `k` результатов. Текст каждого чанка начинается с пути заголовков (`Глава > Раздел`). При `retrieval.neighbors: N > 0` попадание расширяется до N соседних чанков с каждой стороны, пока у них те же заголовки (тот же раздел); попадание, уже вошедшее в окно более сильного, пропускается. Цитата указывает на чанк-попадание.
+- **Реранкер** (`rerank.enabled`, `retrieval/rerank.py`). В режиме rag гибридный поиск отдаёт `rerank.candidates` попаданий, Qwen3-Reranker оценивает каждое (путь заголовков + текст) против исходного вопроса, и остаются лучшие `k`; `ContextItem.score` — оценка реранкера (0–1). В Ollama нет rerank-эндпоинта, поэтому это `/api/generate` с raw-промптом в формате Qwen3-Reranker и одним токеном: оценка = P(yes) / (P(yes) + P(no)) по `top_logprobs` (нужна Ollama с logprobs, 0.12+). `rerank.concurrency` запросов идут параллельно; 30 кандидатов — около 1.3 с на GPU (первый запрос после простоя дольше: модель загружается). Если реранкер недоступен, в лог пишется `rerank_failed` и используется порядок гибридного поиска.
 - **wiki** — то же по разделам wiki; после каждого раздела идут чанки из его `chunk_ids` (всего не больше `k`), чтобы ответ ссылался на файл и страницу.
-- **graph** — seeds: до `graph.seeds` сущностей по вектору вопроса с косинусом не ниже `graph.seed_threshold` плюс полнотекстовый поиск по именам и алиасам (всего не больше `2 * seeds`). Окрестность на `graph.hops` шагов (в коде ограничено 1–3), до `graph.max_relations` связей; контекст — описания seed-сущностей, тройки `A —predicate→ B` и до `k` чанков-доказательств.
+- **graph** — seeds: до `graph.seeds` сущностей по вектору вопроса с косинусом не ниже `graph.seed_threshold` плюс полнотекстовый поиск по именам и алиасам, по каждой формулировке вопроса (всего не больше `2 * seeds`; векторные seeds — по убыванию сходства). Окрестность на `graph.hops` шагов (в коде ограничено 1–3), до `graph.max_relations` связей; контекст — описания seed-сущностей, тройки `A —predicate→ B` и до `k` чанков-доказательств.
 - **all** — режимы по очереди заполняют свою долю `retrieval.context_tokens` (`retrieval.budget`), повторы по `(kind, ref)` пропускаются.
 - **Answerer** нумерует элементы `[1]..[n]`, пока не исчерпан `retrieval.context_tokens` (первый элемент берётся всегда; токены оцениваются как символы / 4), отправляет промпт `answer.md` и отмечает `cited` у источников, номера которых встречаются в ответе.
 
@@ -785,12 +790,13 @@ flowchart TD
 | `llm.concurrency` | `4` | максимум одновременных запросов к LLM | сразу |
 | `llm.temperature` | `0` | температура генерации | сразу |
 | `llm.timeout_s` | `120` | таймаут одного запроса, с | сразу |
-| `llm.overrides` | `{extract: null, resolve: null, wiki: null, answer: null}` | своя модель для задачи, `null` — `llm.model` | как `llm.model` |
+| `llm.overrides` | `{extract: null, resolve: null, wiki: null, answer: null, query: null}` | своя модель для задачи, `null` — `llm.model` | как `llm.model` |
 | `embedder.provider` | `ollama` | единственное поддерживаемое значение | — |
 | `embedder.base_url` | `http://localhost:11434` | адрес Ollama | сразу |
 | `embedder.model` | `embeddinggemma-2:740m` | модель эмбеддингов | `reindex` |
 | `embedder.dim` | `768` | размерность: вектор модели обрезается до неё и нормируется (Matryoshka) | `reindex`, см. 7.4 |
 | `embedder.batch_size` | `32` | текстов в одном запросе к Ollama | сразу |
+| `embedder.num_ctx` | не задан (в `config.yaml` — `2048`) | контекст модели в Ollama; более длинные тексты обрезаются. Qwen3 по умолчанию грузится с контекстом ~40k, его кэш занимает ~9 ГБ видеопамяти и вытесняет реранкер (каждое переключение моделей — ~3 с). На векторы не влияет, пока текст помещается | сразу |
 | `embedder.doc_template` | `title: {title} \| text: {text}` | шаблон документа; `{title}` — заголовок документа, имя сущности или страницы (`none`, если нет) | `reindex` |
 | `embedder.query_template` | `task: search result \| query: {query}` | шаблон запроса (согласуйте с doc_template) | `reindex` |
 | `sparse.model` | `Qdrant/bm25` | модель fastembed для BM25 | `reindex` |
@@ -809,7 +815,18 @@ flowchart TD
 | `wiki.evidence_k` | `12` | чанков-доказательств на страницу | `wiki build --all` |
 | `retrieval.k` | `8` | результатов на поиск (по умолчанию для `--k`) | сразу |
 | `retrieval.context_tokens` | `6000` | бюджет контекста ответа (символы / 4) | сразу |
+| `retrieval.translate` | `true` | искать и по английскому переводу вопроса не на английском (один вызов LLM `query` на вопрос) | сразу |
+| `retrieval.answer_language` | `auto` (в `config.yaml` — `ru`) | язык ответа: код (`ru`, `en`, …) или `auto` — язык вопроса | сразу |
+| `retrieval.neighbors` | `0` | соседних чанков того же раздела с каждой стороны попадания в режиме rag (и в его доле `all`) | сразу |
 | `retrieval.budget` | `{rag: 0.4, wiki: 0.3, graph: 0.3}` | доли бюджета в режиме `all` | сразу |
+| `rerank.enabled` | `false` (в `config.yaml` — `true`) | пересортировать попадания rag кросс-энкодером | сразу |
+| `rerank.base_url` | `http://localhost:11434` | Ollama с моделью реранкера | сразу |
+| `rerank.model` | `dengcao/Qwen3-Reranker-4B:Q4_K_M` | модель Qwen3-Reranker в Ollama | сразу |
+| `rerank.candidates` | `30` | сколько попаданий гибридного поиска оценивает реранкер; остаются лучшие `retrieval.k` | сразу |
+| `rerank.concurrency` | `4` | параллельных запросов к Ollama (выше `OLLAMA_NUM_PARALLEL` смысла нет) | сразу |
+| `rerank.max_chars` | `4000` | до скольких символов обрезается текст чанка в запросе к реранкеру | сразу |
+| `rerank.num_ctx` | `4096` | контекст модели реранкера в Ollama (промпт + до `max_chars` текста) | сразу |
+| `rerank.instruction` | `Given a question, retrieve passages that answer it` | строка `<Instruct>` промпта Qwen3-Reranker | сразу |
 | `graph.hops` | `2` | глубина обхода в режиме `graph` (1–3) | сразу |
 | `graph.max_relations` | `30` | максимум связей в контексте `graph` | сразу |
 | `graph.seeds` | `5` | число стартовых сущностей из каждого поиска | сразу |
@@ -921,18 +938,20 @@ llm:
 
 ### 7.4 Сменить эмбеддер или размерность
 
-Пример: запасная модель `qwen3-embedding:0.6b` (её блок закомментирован в `config.yaml`).
+Пример: `qwen3-embedding:4b` (так настроен `config.yaml` в репозитории).
 
-1. `ollama pull qwen3-embedding:0.6b`
+1. `ollama pull qwen3-embedding:4b`
 2. В `config.yaml`:
 
    ```yaml
    embedder:
-     model: qwen3-embedding:0.6b
-     dim: 1024
+     model: qwen3-embedding:4b
+     dim: 2560
      doc_template: "{text}"
      query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
    ```
+
+   `chunking.tokenizer` — токенизатор той же модели (`Qwen/Qwen3-Embedding-4B`). У всех Qwen3-Embedding он один и тот же (отличаются только служебные `<think>`/`<tool_response>`), так что границы чанков при переходе между размерами модели не меняются.
 
 3. `uv run mnogobase reindex` — он удалит коллекции Qdrant, создаст их заново с новой размерностью и пересчитает все векторы. Ничего удалять вручную не нужно.
 
@@ -997,7 +1016,8 @@ wiki:
 | `resolve_same.md` | одна ли это сущность | `$a_name`, `$a_type`, `$a_description`, `$b_name`, `$b_type`, `$b_description` | новые слияния |
 | `resolve_summarize.md` | сжать описания сущности | `$name`, `$type`, `$descriptions` | новые слияния |
 | `wiki_page.md` | тело wiki-страницы | `$language`, `$name`, `$type`, `$description`, `$aliases`, `$relations`, `$evidence`, `$example_id`, `$existing` | `wiki build --all` |
-| `answer.md` | ответ с цитатами `[n]` | `$question`, `$context` | сразу |
+| `answer.md` | ответ с цитатами `[n]` | `$question`, `$context`, `$language` | сразу |
+| `translate_query.md` | перевод вопроса на английский для поиска | `$question` | сразу |
 
 - **Кэш извлечения.** Ключ кэша — `(chunk_id, prompt_version, model)`, где `prompt_version` = `PROMPT_VERSION` из `src/mnogobase/extraction/extractor.py` (сейчас `extract-v2`) плюс подпись набора типов. **Меняете смысл `extract.md` — увеличьте `PROMPT_VERSION`**, иначе чанки с кэшем получат старые результаты. Уже загруженные документы сами не переизвлекаются; для всех — `reset` и `ingest`.
 - Новый плейсхолдер нужно передать из кода (`render(...)` в месте вызова) и добавить в `tests/unit/test_templates.py`: тест проверяет, что в промпте не осталось `$`.
@@ -1113,7 +1133,7 @@ class Retriever(Protocol):
     def retrieve(self, query: str, k: int) -> list[ContextItem]: ...
 ```
 
-`EmbedInput` (`models.py`) — `modality` (`text`; `image` и `audio` зарезервированы), `text`, `path`, `title`. `task` у LLM — одно из `extract`, `resolve`, `wiki`, `answer`: выбирает модель через `llm.overrides` и попадает в логи.
+`EmbedInput` (`models.py`) — `modality` (`text`; `image` и `audio` зарезервированы), `text`, `path`, `title`. `task` у LLM — одно из `extract`, `resolve`, `wiki`, `answer`, `query`: выбирает модель через `llm.overrides` и попадает в логи.
 
 Хранилища (`QdrantStore`, `GraphStore`), `Registry`, `DoclingParser` и `Chunker` — конкретные классы без протоколов.
 
@@ -1144,7 +1164,7 @@ def build_app(settings, *, embedder=None, sparse=None, llm=None, vectors=None, g
 
 **Новый режим поиска:**
 
-1. Класс с `retrieve(self, query: str, k: int) -> list[ContextItem]` в `src/mnogobase/retrieval/<name>.py`. `ContextItem.kind` — одно из `chunk`, `wiki`, `relation`, `entity` (`models.py`); для цитат с файлом и страницей отдавайте элементы `chunk` с `path` и `page`.
+1. Класс с `retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]` (`alt_queries` — другие формулировки вопроса, например английский перевод; ищите и по ним) в `src/mnogobase/retrieval/<name>.py`. `ContextItem.kind` — одно из `chunk`, `wiki`, `relation`, `entity` (`models.py`); для цитат с файлом и страницей отдавайте элементы `chunk` с `path` и `page`.
 2. Добавьте значение в `Mode` и в словарь `build_retrievers` (`retrieval/__init__.py`). `ask --mode` и `compare` подхватят режим автоматически (`compare` проходит по всем ретриверам).
 3. Чтобы режим участвовал в `all`, добавьте его в `parts` `CombinedRetriever` и долю в `retrieval.budget`.
 4. Тесты — по образцу `tests/unit/test_retrieval.py` (Qdrant `:memory:`) или интеграционные для графа.
@@ -1203,7 +1223,10 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 |---|---|---|
 | `doctor`: `neo4j` или `qdrant` — ошибка соединения (`ServiceUnavailable`, connection refused) | контейнеры не запущены или Neo4j ещё стартует | `docker compose up -d`, подождите ~30 с (у Neo4j есть healthcheck), `docker compose ps` |
 | `doctor`: `neo4j` — `AuthError` | пароль в `.env` не совпадает с паролем базы. `NEO4J_AUTH` применяется только при первом создании тома `neo4j_data` | верните прежний пароль в `.env` или войдите в Neo4j Browser со старым паролем и смените его: `:use system`, затем `ALTER CURRENT USER SET PASSWORD FROM 'старый' TO 'новый'` |
-| `doctor`: `model embeddinggemma-2:740m missing: run ollama pull ...` | модель не скачана | `ollama pull embeddinggemma-2:740m` |
+| `doctor`: `missing embeddinggemma-2:740m: run ollama pull ...` | модель эмбеддера или реранкера не скачана | `ollama pull <модель из сообщения>` |
+| `ask` в режимах rag/all медленный (+~3 с), `ollama ps` показывает то эмбеддер, то реранкер | обе модели не помещаются в видеопамять вместе, Ollama перегружает их на каждом вопросе | уменьшите `embedder.num_ctx` / `rerank.num_ctx` (по умолчанию у Qwen3 ~40k контекста); проверка — `ollama ps`: должны быть загружены обе |
+| в логе `rerank_failed` | Ollama с реранкером недоступна или модель не скачана; ответ строится без реранкинга | `uv run mnogobase doctor`, `ollama pull dengcao/Qwen3-Reranker-4B:Q4_K_M` |
+| `rerank_failed` с `Ollama returned no logprobs` | старая Ollama | обновите Ollama (нужна 0.12+) |
 | `doctor`: `ollama` — `ConnectError` | Ollama не запущена | запустите приложение Ollama или `ollama serve` |
 | `doctor`: `llm` — `HTTPStatusError: Client error '401 Unauthorized'` (или 403) | нет или неверный `LLM_API_KEY` | впишите ключ в `.env` |
 | `doctor`: `<model> is not served by <base_url>` | имя модели не совпадает со списком `/models` | исправьте `llm.model` |

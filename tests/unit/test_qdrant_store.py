@@ -214,3 +214,11 @@ def test_non_transport_errors_are_not_retried():
     with pytest.raises(ValueError, match="bad request"):
         store.delete_doc("aaaa")
     assert flaky.calls == 1
+
+
+def test_get_chunks_returns_existing_payloads_by_id():
+    store = make_store()
+    index(store, chunks("aaaa", ["one", "two"]))
+    got = store.get_chunks(["aaaa:00001", "aaaa:00009"])
+    assert list(got) == ["aaaa:00001"] and got["aaaa:00001"]["text"] == "two"
+    assert store.get_chunks([]) == {}

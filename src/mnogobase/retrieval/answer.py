@@ -4,6 +4,7 @@ import re
 import time
 from pathlib import Path
 
+from mnogobase.config import LANGUAGE_NAMES
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render
 from mnogobase.models import Answer, ContextItem, Source
@@ -52,9 +53,15 @@ def build_context(items: list[ContextItem], max_tokens: int) -> tuple[str, list[
 
 
 class Answerer:
-    def __init__(self, llm: LLMClient, max_context_tokens: int):
+    def __init__(self, llm: LLMClient, max_context_tokens: int, language: str = "auto"):
+        """`language`: a code such as `ru` / `en` (or a language name), `auto` for the question's."""
         self._llm = llm
         self._max = max_context_tokens
+        self._language = (
+            "the language of the question"
+            if language == "auto"
+            else LANGUAGE_NAMES.get(language, language)
+        )
 
     async def answer(self, question: str, mode: str, items: list[ContextItem]) -> Answer:
         start = time.perf_counter()
@@ -67,7 +74,7 @@ class Answerer:
                 latency_ms=int((time.perf_counter() - start) * 1000),
             )
         before_in, before_out = self._llm.usage.tokens_in, self._llm.usage.tokens_out
-        prompt = render("answer", question=question, context=context)
+        prompt = render("answer", question=question, context=context, language=self._language)
         text = await self._llm.complete([{"role": "user", "content": prompt}], task="answer")
         cited = {int(n) for n in _CITED.findall(text)}
         for source in sources:

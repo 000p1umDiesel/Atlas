@@ -4,13 +4,14 @@ import pytest
 from qdrant_client import QdrantClient
 
 from mnogobase.config import Settings
-from mnogobase.models import ChunkRecord, ChunkView, ContextItem, EmbedInput
+from mnogobase.models import ChunkRecord, ChunkView, ContextItem, EmbedInput, SearchHit
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import NO_SOURCES, Answerer, build_context
 from mnogobase.retrieval.combined import CombinedRetriever
 from mnogobase.retrieval.compare import compare
 from mnogobase.retrieval.graph import GraphRetriever
 from mnogobase.retrieval.rag import RagRetriever
+from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.retrieval.wiki import WikiRetriever
 from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.render import Section
@@ -24,8 +25,10 @@ pytestmark = pytest.mark.filterwarnings(
 class Stub:
     def __init__(self, items):
         self.items = items
+        self.alt: list[list[str]] = []
 
-    def retrieve(self, query, k):
+    def retrieve(self, query, k, alt_queries=()):
+        self.alt.append(list(alt_queries))
         return self.items[:k]
 
 
@@ -76,7 +79,9 @@ def test_combined_dedupes_and_respects_budget():
         ("entity", "e1"),
         ("relation", "r1"),
     ]
-    tight = CombinedRetriever(parts, budget, 20).retrieve("q", 5)
+    assert all(p.alt == [[]] for p in parts.values())
+    tight = CombinedRetriever(parts, budget, 20).retrieve("q", 5, ["en q"])
+    assert all(p.alt[-1] == ["en q"] for p in parts.values())
     assert [(i.kind, i.ref) for i in tight] == [("chunk", "c1")]
 
 
@@ -122,6 +127,7 @@ async def test_compare_writes_jsonl(tmp_path):
         "question",
         "mode",
         "answer",
+        "alt_queries",
         "sources",
         "latency_ms",
         "tokens_in",
@@ -132,6 +138,34 @@ async def test_compare_writes_jsonl(tmp_path):
     assert first["config_hash"] == "abc" and first["question"] == "Q?" and first["sources"]
     assert first["mode"] == "rag" and first["answer"] == answers[0].text
     assert first["sources"][0]["ref"] == "rag1" and first["sources"][0]["cited"] is True
+    assert first["alt_queries"] == []
+
+
+async def test_compare_translates_a_russian_question_once_for_every_mode(tmp_path):
+    def handler(task, prompt):
+        return "What is attention?" if task == "query" else "Ответ [1]."
+
+    llm = FakeLLM(handler)
+    retrievers = {m: Stub([item("chunk", f"{m}1")]) for m in ("rag", "wiki")}
+    answers = await compare(
+        "Что такое внимание?",
+        retrievers,
+        Answerer(llm, 1000),
+        k=3,
+        runs_dir=tmp_path,
+        translator=QueryTranslator(llm),
+    )
+    assert len(llm.calls_for("query")) == 1
+    assert all(r.alt == [["What is attention?"]] for r in retrievers.values())
+    assert all(a.alt_queries == ["What is attention?"] for a in answers)
+
+
+async def test_answerer_language():
+    llm = FakeLLM(lambda task, prompt: "Ответ [1].")
+    await Answerer(llm, 1000, "ru").answer("Why?", "rag", [item("chunk", "c1")])
+    await Answerer(llm, 1000).answer("Why?", "rag", [item("chunk", "c1")])
+    ru, auto = llm.calls_for("answer")
+    assert "Answer in Russian." in ru and "Answer in the language of the question." in auto
 
 
 def _stores():
@@ -173,6 +207,9 @@ def test_rag_and_wiki_retrievers():
     )
     rag = RagRetriever(vectors, emb, sparse).retrieve("transformer attention", 2)
     assert rag[0].kind == "chunk" and rag[0].ref == "aaaa:00000"
+    # the original matches nothing; its alternative phrasing (a translation) finds the chunk
+    alt = RagRetriever(vectors, emb, sparse).retrieve("кошки милые", 1, ["cats are cute"])
+    assert [i.ref for i in alt] == ["aaaa:00001"]
     assert rag[0].path == "/docs/a.pdf" and rag[0].page == 1
 
     graph = StubGraph(
@@ -186,6 +223,59 @@ def test_rag_and_wiki_retrievers():
     assert [(i.kind, i.ref, i.path, i.page, i.text) for i in wiki[1:]] == [
         ("chunk", "aaaa:00000", "/docs/a.pdf", 1, texts[0])
     ]
+
+
+class StubChunks:
+    """`search_chunks` returns `hits` (chunk ids, best first); `get_chunks` reads `chunks`."""
+
+    def __init__(self, chunks: dict[str, dict], hits: list[str]):
+        self.chunks = chunks
+        self.hits = hits
+
+    def search_chunks(self, dense, sparse, k, extra=()):
+        return [
+            SearchHit(key=c, score=1.0 - i / 10, payload=self.chunks[c])
+            for i, c in enumerate(self.hits[:k])
+        ]
+
+    def get_chunks(self, chunk_ids):
+        return {c: self.chunks[c] for c in chunk_ids if c in self.chunks}
+
+
+def _chunk(cid: str, text: str, headings: list[str], page: int) -> tuple[str, dict]:
+    payload = {"chunk_id": cid, "text": text, "headings": headings, "page": page, "path": "/a.pdf"}
+    return cid, payload
+
+
+def test_rag_prefixes_heading_path():
+    chunks = dict([_chunk("d:00000", "body", ["Intro", "Scope"], 1)])
+    rag = RagRetriever(StubChunks(chunks, ["d:00000"]), FakeEmbedder(), FakeSparse())
+    assert [i.text for i in rag.retrieve("q", 3)] == ["Intro > Scope\nbody"]
+
+
+def test_rag_neighbors_stay_in_section_and_merge_overlapping_hits():
+    chunks = dict(
+        [
+            _chunk("d:00000", "intro", ["Intro"], 1),
+            _chunk("d:00001", "m1", ["Method"], 2),
+            _chunk("d:00002", "m2", ["Method"], 2),
+            _chunk("d:00003", "m3", ["Method"], 3),
+            _chunk("d:00004", "m4", ["Method"], 3),
+            _chunk("d:00005", "res", ["Results"], 4),
+        ]
+    )
+    # d:00002 is covered by d:00001's window and is dropped; d:00004 keeps what is left
+    hits = ["d:00001", "d:00002", "d:00004"]
+    rag = RagRetriever(StubChunks(chunks, hits), FakeEmbedder(), FakeSparse(), neighbors=1)
+    items = rag.retrieve("q", 5)
+    assert [(i.ref, i.text, i.page) for i in items] == [
+        ("d:00001", "Method\nm1\nm2", 2),
+        ("d:00004", "Method\nm3\nm4", 3),
+    ]
+    assert items[0].score > items[1].score
+    # without neighbors every hit stays a single chunk
+    plain = RagRetriever(StubChunks(chunks, hits), FakeEmbedder(), FakeSparse())
+    assert [i.text for i in plain.retrieve("q", 5)] == ["Method\nm1", "Method\nm2", "Method\nm4"]
 
 
 def test_wiki_retriever_dedupes_and_caps_cited_chunks():

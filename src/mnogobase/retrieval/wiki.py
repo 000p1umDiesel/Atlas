@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.models import ContextItem
+from mnogobase.retrieval.base import query_vectors
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 
@@ -21,9 +24,12 @@ class WikiRetriever:
         self._sparse = sparse
         self._graph = graph
 
-    def retrieve(self, query: str, k: int) -> list[ContextItem]:
+    def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
         hits = self._vectors.search_wiki(
-            self._embedder.embed_query(query), self._sparse.encode_query(query), k
+            self._embedder.embed_query(query),
+            self._sparse.encode_query(query),
+            k,
+            extra=query_vectors(self._embedder, self._sparse, alt_queries),
         )
         cited = list(dict.fromkeys(c for h in hits for c in h.payload.get("chunk_ids") or []))[:k]
         chunks = {c.chunk_id: c for c in self._graph.chunks_by_ids(cited)} if cited else {}

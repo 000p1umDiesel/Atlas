@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from mnogobase.models import ContextItem
 from mnogobase.retrieval.base import Retriever, estimate_tokens
 
@@ -12,13 +14,13 @@ class CombinedRetriever:
         self._budget = budget
         self._max = max_tokens
 
-    def retrieve(self, query: str, k: int) -> list[ContextItem]:
+    def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
         out: list[ContextItem] = []
         seen: set[tuple[str, str]] = set()
         for name, retriever in self._parts.items():
             limit = int(self._max * self._budget.get(name, 0.0))
             used = 0
-            for item in retriever.retrieve(query, k):
+            for item in retriever.retrieve(query, k, alt_queries):
                 key = (item.kind, item.ref)
                 if key in seen:
                     continue
