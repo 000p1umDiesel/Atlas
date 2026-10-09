@@ -1,4 +1,4 @@
-device: cuda                         # auto | cuda | mps | cpu
+device: mps                         # auto | cuda | mps | cpu
 data_dir: .mnogobase
 logs_dir: logs
 runs_dir: runs
@@ -8,8 +8,8 @@ llm:
   model: gpt-6-luna                  # локально: gemma4:26b-a4b
   api_key_env: LLM_API_KEY
   concurrency: 16
-  temperature: 0
-  timeout_s: 120
+  temperature: 0.1
+  timeout_s: 360
   overrides: {extract: null, resolve: null, wiki: null, answer: null, query: null}
 
 embedder:
@@ -31,7 +31,7 @@ sparse:
   model: Qdrant/bm25
 
 parsing:
-  ocr: true
+  ocr: false
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
 
 chunking:
