@@ -31,7 +31,7 @@ sparse:
   model: Qdrant/bm25
 
 parsing:
-  ocr: false
+  ocr: true
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
 
 chunking:
@@ -77,8 +77,8 @@ wiki:
 
 retrieval:
   k: 8
-  context_tokens: 6000
-  neighbors: 0                       # rag: чанки той же секции, добавляемые с каждой стороны от попадания
+  context_tokens: 20000              # с neighbors: 2 попадание rag может занимать до ~2.5k токенов
+  neighbors: 2                       # rag: чанки той же секции, добавляемые с каждой стороны от попадания
   translate: true                    # искать также по английскому переводу неанглийского вопроса
   answer_language: ru                # ru | en | ... | auto (язык вопроса)
   budget: {rag: 0.4, wiki: 0.3, graph: 0.3}
