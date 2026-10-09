@@ -19,8 +19,8 @@ pytestmark = [
 
 VECTORS = {
     "Transformer": [1.0, 0.0, 0.0],
-    "Transformer Architecture": [0.97, 0.243, 0.0],  # cosine 0.97 -> auto merge
-    "Transformer Model": [0.85, 0.527, 0.0],  # cosine 0.85 -> ask the LLM
+    "Transformer Architecture": [0.97, 0.243, 0.0],  # косинус 0.97 -> автослияние
+    "Transformer Model": [0.85, 0.527, 0.0],  # косинус 0.85 -> спросить LLM
     "Cat": [0.0, 0.0, 1.0],
 }
 
@@ -111,7 +111,7 @@ async def test_descriptions_are_summarized(graph, make_resolver):
 
 
 class FlakyEmbedder(MapEmbedder):
-    """Fails `embed_documents` once `budget` successful calls are used up."""
+    """Падает в `embed_documents`, когда исчерпаны `budget` успешных вызовов."""
 
     def __init__(self, budget: int):
         self.budget = budget
@@ -125,13 +125,13 @@ class FlakyEmbedder(MapEmbedder):
 
 async def test_embedder_failure_leaves_no_graph_entity_without_vector(graph, make_resolver):
     resolver, vectors, _ = make_resolver()
-    resolver._embedder = FlakyEmbedder(budget=1)  # the candidate search works, the write fails
+    resolver._embedder = FlakyEmbedder(budget=1)  # поиск кандидатов работает, запись падает
     with pytest.raises(RuntimeError, match="embedder down"):
         await resolver.resolve(E("Transformer", description="attention model"))
     assert graph.get_entity(entity_id("Method", "Transformer")) is None
     assert vectors.client.count(vectors.entities).count == 0
 
-    resolver._embedder = MapEmbedder()  # a retry creates both
+    resolver._embedder = MapEmbedder()  # retry создаёт обе
     rec = await resolver.resolve(E("Transformer", description="attention model"))
     assert graph.get_entity(rec.entity_id) is not None
     assert vectors.client.count(vectors.entities).count == 1
@@ -143,7 +143,7 @@ async def test_embedder_failure_on_merge_keeps_graph_unchanged(graph, make_resol
     resolver._embedder = FlakyEmbedder(budget=0)
     with pytest.raises(RuntimeError, match="embedder down"):
         await resolver.resolve(E("Transformer", description="two"))
-    # the graph is not ahead of Qdrant, so the retry still sees a change and writes both
+    # граф не опережает Qdrant, поэтому retry всё ещё видит изменение и записывает обе
     assert graph.get_entity(first.entity_id).descriptions == ["one"]
     resolver._embedder = MapEmbedder()
     await resolver.resolve(E("Transformer", description="two"))

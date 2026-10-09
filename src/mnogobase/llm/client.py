@@ -21,7 +21,7 @@ Message = dict[str, str]
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
 _RETRYABLE = (
-    openai.APIConnectionError,  # includes APITimeoutError
+    openai.APIConnectionError,  # включает APITimeoutError
     openai.RateLimitError,
     openai.InternalServerError,
 )
@@ -29,7 +29,7 @@ _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=1, max=30)
 
 
 class StructuredOutputError(RuntimeError):
-    """The model did not return JSON matching the schema after all repair attempts."""
+    """Модель не вернула JSON, соответствующий схеме, после всех попыток исправления."""
 
 
 @dataclass
@@ -80,12 +80,12 @@ def _strictify(node: Any) -> Any:
 
 
 def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Pydantic schema → OpenAI strict structured-output schema."""
+    """Pydantic-схема → strict-схема structured output для OpenAI."""
     return _strictify(model.model_json_schema())
 
 
 class OpenAICompatLLM:
-    """Works with any OpenAI-compatible endpoint: OpenAI, Ollama /v1, vLLM, LM Studio, proxies."""
+    """Работает с любым OpenAI-совместимым endpoint: OpenAI, Ollama /v1, vLLM, LM Studio, прокси."""
 
     def __init__(
         self,
@@ -98,7 +98,7 @@ class OpenAICompatLLM:
             base_url=settings.base_url,
             api_key=settings.api_key(),
             timeout=settings.timeout_s,
-            max_retries=0,  # tenacity owns retries
+            max_retries=0,  # повторами управляет tenacity
             http_client=http_client,
         )
         self._sem = asyncio.Semaphore(settings.concurrency)
@@ -168,7 +168,7 @@ class OpenAICompatLLM:
             content = await self._chat(history, task=task, response_format=response_format)
             try:
                 return schema.model_validate_json(clean_json(content))
-            except ValidationError as exc:  # also raised for malformed JSON
+            except ValidationError as exc:  # возникает и для некорректного JSON
                 last_error = str(exc)
                 self._log.warning("llm_invalid_json", task=task, error=last_error[:300])
                 history = [

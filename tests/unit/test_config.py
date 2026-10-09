@@ -8,7 +8,7 @@ from mnogobase.config import DEFAULT_ENTITY_TYPES, ExtractSettings, load_setting
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    # setenv+delenv makes monkeypatch restore "absent" even if load_dotenv sets the var later
+    # setenv+delenv: monkeypatch вернёт "отсутствует", даже если load_dotenv задаст переменную позже
     for name in (
         "LLM_API_KEY",
         "NEO4J_PASSWORD",
@@ -175,8 +175,8 @@ def test_env_entity_types_replace_the_yaml_mapping(tmp_path, clean_env, env, exp
     clean_env.setenv("MNOGOBASE_EXTRACT__ENTITY_TYPES", env)
     s = load_settings(cfg)
     assert s.extract.entity_types == expected
-    assert list(s.extract.entity_types) == list(expected)  # env order, Other last
-    assert s.extract.max_failed_ratio == 0.5  # the rest of the YAML section still applies
+    assert list(s.extract.entity_types) == list(expected)  # порядок из env, Other последним
+    assert s.extract.max_failed_ratio == 0.5  # остальная часть секции YAML по-прежнему действует
 
 
 def test_yaml_list_of_one_key_mappings(tmp_path, clean_env):

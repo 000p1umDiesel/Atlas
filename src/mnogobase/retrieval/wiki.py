@@ -10,10 +10,11 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 
 class WikiRetriever:
-    """Persistent-wiki mode: hybrid search over wiki page sections.
+    """Режим persistent-wiki: гибридный поиск по секциям wiki-страниц.
 
-    Each hit's cited chunks (payload `chunk_ids`, at most k distinct in total) follow that
-    section as `chunk` items, so a wiki answer can cite the underlying file, page and chunk id.
+    За каждой найденной секцией идут её цитируемые чанки (payload `chunk_ids`, всего не
+    больше k различных) как элементы `chunk`, так что ответ по wiki может сослаться на
+    исходный файл, страницу и chunk id.
     """
 
     def __init__(
@@ -33,8 +34,8 @@ class WikiRetriever:
         )
         cited = list(dict.fromkeys(c for h in hits for c in h.payload.get("chunk_ids") or []))[:k]
         chunks = {c.chunk_id: c for c in self._graph.chunks_by_ids(cited)} if cited else {}
-        # each section is followed by its own cited chunks, so a token budget that cuts the
-        # tail of the list still keeps evidence for the sections it keeps
+        # за каждой секцией идут её собственные цитируемые чанки, так что бюджет токенов,
+        # обрезающий хвост списка, всё равно сохраняет подтверждения для оставшихся секций
         items: list[ContextItem] = []
         emitted: set[str] = set()
         for h in hits:

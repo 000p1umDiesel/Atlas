@@ -21,10 +21,10 @@ dependencies = [
   "filelock>=3.20",
   "pyyaml>=6.0",
   "transformers>=5.0",
-  # pinned here so [tool.uv.sources] can pull CUDA wheels on Windows (PyPI only ships CPU builds there)
+  # закреплено здесь, чтобы [tool.uv.sources] мог брать CUDA-колёса на Windows (PyPI там отдаёт только CPU-сборки)
   "torch>=2.14",
   "torchvision>=0.29",
-  # GPU OCR (RapidOCR) and BM25 on Windows; CUDA 13 build, matches torch cu130. Replaces the CPU onnxruntime there.
+  # GPU OCR (RapidOCR) и BM25 на Windows; сборка под CUDA 13, совпадает с torch cu130. Заменяет там CPU-onnxruntime.
   "onnxruntime-gpu[cuda,cudnn]>=1.30; sys_platform == 'win32'",
 ]
 
@@ -42,7 +42,7 @@ dev = [
 ]
 
 [tool.uv]
-# onnxruntime and onnxruntime-gpu install the same `onnxruntime` module: keep only the GPU one on Windows
+# onnxruntime и onnxruntime-gpu ставят один и тот же модуль `onnxruntime`: на Windows оставляем только GPU-версию
 override-dependencies = ["onnxruntime>=1.30; sys_platform != 'win32'"]
 
 [tool.uv.sources]
@@ -74,8 +74,8 @@ addopts = "-m 'not integration and not e2e'"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["docs"]  # ruff >=0.16 also formats Markdown; the plan/spec code samples are not project code
+extend-exclude = ["docs"]  # ruff >=0.16 форматирует и Markdown; примеры кода в plan/spec — не код проекта
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]  # long lines are handled by `ruff format`
+ignore = ["E501"]  # длинные строки берёт на себя `ruff format`

@@ -38,7 +38,7 @@ class DoclingParser:
         if self._converter is None:
             pdf_options = PdfPipelineOptions(
                 do_ocr=self._s.ocr,
-                generate_picture_images=True,  # kept for future multimodal embedding
+                generate_picture_images=True,  # оставлено для будущих мультимодальных эмбеддингов
                 images_scale=2.0,
                 accelerator_options=AcceleratorOptions(device=AcceleratorDevice(self._device)),
             )

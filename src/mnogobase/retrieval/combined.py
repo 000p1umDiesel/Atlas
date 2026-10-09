@@ -7,7 +7,7 @@ from mnogobase.retrieval.base import Retriever, estimate_tokens
 
 
 class CombinedRetriever:
-    """`all` mode: each part gets a share of the token budget; items are de-duplicated."""
+    """Режим `all`: каждая часть получает долю бюджета токенов; элементы дедуплицируются."""
 
     def __init__(self, parts: dict[str, Retriever], budget: dict[str, float], max_tokens: int):
         self._parts = parts
@@ -26,7 +26,7 @@ class CombinedRetriever:
                     continue
                 cost = estimate_tokens(item.text)
                 if used + cost > limit:
-                    continue  # a smaller later item may still fit
+                    continue  # следующий элемент поменьше ещё может поместиться
                 seen.add(key)
                 used += cost
                 out.append(item)

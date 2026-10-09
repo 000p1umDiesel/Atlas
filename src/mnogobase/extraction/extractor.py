@@ -22,21 +22,21 @@ TYPES_CHANGED = (
 
 
 def entity_types_signature(entity_types: Mapping[str, str]) -> str:
-    """Short stable hash of the type names, their order and descriptions."""
+    """Короткий стабильный хеш имён типов, их порядка и описаний."""
     payload = json.dumps(list(entity_types.items()), ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def _cache_version(entity_types: Mapping[str, str]) -> str:
-    # the cache key: a changed type set (names, order or descriptions) means extracting again
+    # ключ кэша: изменился набор типов (имена, порядок или описания) — извлекаем заново
     return f"{PROMPT_VERSION}:{entity_types_signature(entity_types)}"
 
 
 def stale_entity_types(registry: Registry, entity_types: Mapping[str, str]) -> bool:
-    """True when some chunk's latest extraction was made with another type set.
+    """True, если последнее извлечение какого-либо чанка сделано с другим набором типов.
 
-    Only the types part of the cache version counts (a new prompt version with the same
-    types is not a type change); a version without it predates typed keys."""
+    Учитывается только часть версии кэша, отвечающая за типы (новая версия промпта с теми же
+    типами — не смена типов); версия без неё появилась раньше ключей с типами."""
     signature = entity_types_signature(entity_types)
     for version in registry.latest_extraction_versions():
         prompt, sep, types = version.rpartition(":")
@@ -50,14 +50,14 @@ def format_entity_types(entity_types: Mapping[str, str]) -> str:
 
 
 def clean_extraction(result: ExtractionResult, entity_types: Iterable[str]) -> ExtractionResult:
-    """Normalize types, merge duplicate names, resolve aliases in relations, drop bad edges.
+    """Нормализует типы, сливает дубли имён, разрешает алиасы в связях, отбрасывает плохие рёбра.
 
-    An unknown type becomes `Other` if that type exists, else the last type."""
+    Неизвестный тип становится `Other`, если такой тип есть, иначе — последним типом."""
     names = list(entity_types)
     allowed = {t.casefold(): t for t in names}
     fallback = allowed.get("other", names[-1])
     entities: dict[str, ExtractedEntity] = {}
-    lookup: dict[str, str] = {}  # normalized name or alias -> entity key
+    lookup: dict[str, str] = {}  # нормализованное имя или алиас -> ключ сущности
     for e in result.entities:
         key = normalize_name(e.name)
         if not key:
@@ -113,11 +113,11 @@ class Extractor:
         return self._llm.model_for("extract")
 
     def cached(self, chunk: ChunkRecord, any_version: bool = False) -> ExtractionResult | None:
-        """The cached extraction for the current model, prompt version and entity types; with
-        `any_version`, fall back to the latest one made by any model, prompt or types.
+        """Закэшированное извлечение для текущей модели, версии промпта и типов сущностей; с
+        `any_version` — откат на последнее, сделанное любой моделью, промптом или типами.
 
-        Every hit is cleaned with the current types, so a type that is no longer configured
-        never reaches an entity_id (it becomes `Other`)."""
+        Каждое попадание чистится с текущими типами, так что тип, которого больше нет в
+        конфиге, никогда не попадает в entity_id (он становится `Other`)."""
         raw = self._registry.get_extraction(chunk.chunk_id, self._version, self.model)
         if raw is None and any_version:
             raw = self._registry.get_latest_extraction(chunk.chunk_id)
@@ -148,13 +148,13 @@ class Extractor:
     async def extract_many(
         self, chunks: list[ChunkRecord], title: str, progress: ProgressSink = NULL_PROGRESS
     ) -> dict[str, ExtractionResult]:
-        """Extract all chunks concurrently; `progress` advances as each one finishes (cache
-        hits and failures included)."""
+        """Извлекает все чанки параллельно; `progress` продвигается по завершении каждого
+        (включая попадания в кэш и ошибки)."""
 
         async def one(chunk: ChunkRecord) -> tuple[str, ExtractionResult | None]:
             try:
                 result = await self.extract(chunk, title)
-            except Exception as exc:  # one bad chunk must not fail the document
+            except Exception as exc:  # один плохой чанк не должен ронять документ
                 self._registry.set_chunk_extract(
                     chunk.chunk_id, "failed", f"{type(exc).__name__}: {exc}"
                 )

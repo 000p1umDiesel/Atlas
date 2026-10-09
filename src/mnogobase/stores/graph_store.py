@@ -18,8 +18,8 @@ from mnogobase.models import (
     WikiPageRecord,
 )
 
-# Driver config for every GraphStore driver. UNRECOGNIZED notifications ("relationship type X
-# does not exist") are normal on a fresh database and would otherwise be logged as WARNINGs.
+# Конфиг драйвера для всех драйверов GraphStore. Уведомления UNRECOGNIZED ("relationship
+# type X does not exist") нормальны для свежей базы, иначе они логировались бы как WARNING.
 DRIVER_OPTIONS: dict[str, object] = {
     "notifications_disabled_classifications": [NotificationDisabledClassification.UNRECOGNIZED],
 }
@@ -72,7 +72,7 @@ class GraphStore:
         records, _, _ = self._driver.execute_query(query, parameters_=params, database_=self._db)
         return [r.data() for r in records]
 
-    # ---- schema / maintenance ----
+    # ---- схема / обслуживание ----
     def ensure_schema(self) -> None:
         for statement in _SCHEMA:
             self._run(statement)
@@ -89,7 +89,7 @@ class GraphStore:
         out["RELATED"] = self._run("MATCH ()-[r:RELATED]->() RETURN count(r) AS n")[0]["n"]
         return out
 
-    # ---- documents / chunks ----
+    # ---- документы / чанки ----
     def upsert_document(self, doc: DocumentRecord) -> None:
         self._run(
             "MERGE (d:Document {doc_id: $doc_id}) "
@@ -118,7 +118,7 @@ class GraphStore:
             )
 
     def document_path(self, doc_id: str) -> str | None:
-        """The path recorded on the Document node (None if the document is unknown)."""
+        """Путь, записанный в узле Document (None, если документ неизвестен)."""
         rows = self._run("MATCH (d:Document {doc_id: $id}) RETURN d.path AS path", id=doc_id)
         return rows[0]["path"] if rows else None
 
@@ -126,7 +126,7 @@ class GraphStore:
         self._run("MATCH (d:Document {doc_id: $id}) SET d.path = $path", id=doc_id, path=path)
 
     def pages_citing_document(self, doc_id: str) -> list[str]:
-        """Wiki pages (page_id == entity_id) whose Sources cite a chunk of this document."""
+        """Wiki-страницы (page_id == entity_id), чьи Sources цитируют чанк этого документа."""
         rows = self._run(
             "MATCH (p:WikiPage)-[:CITES]->(:Chunk {doc_id: $id}) RETURN DISTINCT p.page_id AS pid",
             id=doc_id,
@@ -137,8 +137,9 @@ class GraphStore:
         return bool(self._run("MATCH (d:Document {doc_id: $id}) RETURN 1 AS x LIMIT 1", id=doc_id))
 
     def document_deletion_plan(self, doc_id: str) -> DeleteResult:
-        """Read-only: what `delete_document(doc_id)` would remove (empty if the document is
-        unknown). Entities are removed when no chunk outside this document mentions them."""
+        """Только чтение: что удалил бы `delete_document(doc_id)` (пусто, если документ
+        неизвестен). Сущности удаляются, если их не упоминает ни один чанк вне этого
+        документа."""
         rows = self._run(
             "MATCH (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(e:Entity) "
             "WITH DISTINCT e "
@@ -159,8 +160,9 @@ class GraphStore:
         )
 
     def delete_document(self, doc_id: str) -> DeleteResult:
-        # one write transaction: a crash mid-cascade must not leave the Document gone while
-        # its entities keep stale mention counts / orphaned wiki pages (a retry would be a no-op)
+        # одна write-транзакция: падение посреди каскада не должно оставить Document удалённым,
+        # а его сущности — с устаревшими счётчиками упоминаний / осиротевшими wiki-страницами
+        # (повтор ничего бы не сделал)
         with self._driver.session(database=self._db) as session:
             return session.execute_write(_delete_document_tx, doc_id)
 
@@ -175,7 +177,7 @@ class GraphStore:
         return [ChunkView(**r) for r in rows]
 
     def chunks_mentioning(self, entity_id: str, chunk_ids: list[str]) -> list[ChunkView]:
-        """Those of `chunk_ids` that still exist and still mention the entity, in input order."""
+        """Те из `chunk_ids`, что ещё существуют и всё ещё упоминают сущность, в порядке входа."""
         rows = self._run(
             "UNWIND range(0, size($ids) - 1) AS i "
             "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk {chunk_id: $ids[i]})"
@@ -188,10 +190,12 @@ class GraphStore:
         return [ChunkView(**r) for r in rows]
 
     def doc_chunks(self, doc_id: str) -> tuple[DocumentRecord, list[ChunkRecord]] | None:
-        """A document and its chunks as stored in the graph (None if the document is unknown).
+        """Документ и его чанки в том виде, как они хранятся в графе (None, если документ
+        неизвестен).
 
-        `context_text` is not stored; it is rebuilt as headings + text, one per line, like the
-        chunker's `contextualize` (other chunk metadata it may add, e.g. captions, is lost)."""
+        `context_text` не хранится; он собирается заново как заголовки + текст, по одному на
+        строку, как в `contextualize` чанкера (прочие метаданные чанка, которые тот может
+        добавить, например подписи, теряются)."""
         rows = self._run(
             "MATCH (d:Document {doc_id: $doc_id}) "
             "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
@@ -221,7 +225,7 @@ class GraphStore:
         )
         return {r["cid"]: r["eids"] for r in rows}
 
-    # ---- entities / relations ----
+    # ---- сущности / связи ----
     def get_entity(self, entity_id: str) -> EntityRecord | None:
         rows = self._run("MATCH (e:Entity {entity_id: $id}) RETURN e {.*} AS e", id=entity_id)
         return EntityRecord(**rows[0]["e"]) if rows else None
@@ -306,7 +310,7 @@ class GraphStore:
         )
 
     def fulltext_entities(self, query: str, k: int) -> list[tuple[str, float]]:
-        # plain lower-cased word tokens: no Lucene operators or special characters survive
+        # простые словесные токены в нижнем регистре: операторы Lucene и спецсимволы не проходят
         tokens = [t.casefold() for t in _WORD.findall(query)]
         if not tokens:
             return []
@@ -319,7 +323,7 @@ class GraphStore:
         return [(r["id"], r["score"]) for r in rows]
 
     def neighborhood(self, seed_ids: list[str], hops: int, limit: int) -> list[RelationView]:
-        hops = max(1, min(int(hops), 3))  # variable-length bounds cannot be parameters
+        hops = max(1, min(int(hops), 3))  # границы переменной длины не могут быть параметрами
         rows = self._run(
             "MATCH (s:Entity) WHERE s.entity_id IN $seeds "
             f"MATCH p = (s)-[:RELATED*1..{hops}]-(:Entity) "
@@ -337,7 +341,7 @@ class GraphStore:
         )
         return [RelationView(**r) for r in rows]
 
-    # ---- wiki pages ----
+    # ---- wiki-страницы ----
     def upsert_wiki_page(
         self, page: WikiPageRecord, entity_id: str, links_to: list[str], cites: list[str]
     ) -> None:
@@ -367,11 +371,11 @@ class GraphStore:
         )
 
     def delete_wiki_page(self, page_id: str) -> None:
-        """Remove the page node and its edges; the entity it is about stays."""
+        """Удаляет узел страницы и его рёбра; сущность, которой посвящена страница, остаётся."""
         self._run("MATCH (p:WikiPage {page_id: $id}) DETACH DELETE p", id=page_id)
 
     def pages_linking_to(self, page_ids: list[str]) -> list[str]:
-        """Ids of pages with LINKS_TO into any of `page_ids`, excluding `page_ids` themselves."""
+        """Id страниц с LINKS_TO на любую из `page_ids`, не считая самих `page_ids`."""
         rows = self._run(
             "MATCH (p:WikiPage)-[:LINKS_TO]->(q:WikiPage) "
             "WHERE q.page_id IN $ids AND NOT p.page_id IN $ids "
@@ -409,7 +413,7 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
     cids = found[0]["cids"] if found else []
     eids = found[0]["eids"] if found else []
     if cids:
-        # drop evidence coming from the deleted chunks; edges left without evidence disappear
+        # убираем подтверждения из удалённых чанков; рёбра, оставшиеся без подтверждений, исчезают
         tx.run(
             "MATCH ()-[r:RELATED]->() WHERE any(x IN r.evidence WHERE x IN $cids) "
             "WITH r, [i IN range(0, size(r.evidence) - 1) WHERE NOT r.evidence[i] IN $cids] AS keep "

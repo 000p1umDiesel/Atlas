@@ -33,7 +33,7 @@ _EVIDENCE_ID = re.compile(r"\[([0-9a-f]{16}:\d{5})\]")
 
 
 class FakeLLM:
-    """Deterministic LLMClient: `handler(task, prompt) -> reply text`."""
+    """Детерминированный LLMClient: `handler(task, prompt) -> reply text`."""
 
     def __init__(self, handler: Callable[[str, str], str]):
         self.handler = handler
@@ -62,7 +62,7 @@ class FakeLLM:
 
 
 def scripted_llm_handler(task: str, prompt: str) -> str:
-    """Keyword-driven fake used by pipeline/wiki/retrieval tests."""
+    """Фейк на ключевых словах для тестов pipeline/wiki/retrieval."""
     if task == "extract":
         fragment = prompt.split("Fragment:", 1)[-1].casefold()
         entities: dict[str, dict] = {}
@@ -111,12 +111,12 @@ def _bucket(token: str, size: int) -> int:
 
 
 class FakeEmbedder:
-    """Hashed bag-of-words: texts sharing words get high cosine similarity."""
+    """Хешированный bag-of-words: у текстов с общими словами высокое косинусное сходство."""
 
     def __init__(self, dim: int = 64, templates: tuple[str, str] = ("{text}", "{query}")):
         self.dim = dim
         self.model_id = "fake-embed"
-        self.templates = templates  # only signed (the index signature), never applied
+        self.templates = templates  # только входят в сигнатуру индекса, но не применяются
 
     def _vec(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
@@ -149,7 +149,7 @@ class FakeSparse:
 
 
 class RecordingProgress:
-    """ProgressSink that records every call as a tuple, for asserting the reported sequence."""
+    """ProgressSink, записывающий каждый вызов кортежем, чтобы проверять порядок событий."""
 
     def __init__(self):
         self.events: list[tuple] = []
@@ -173,7 +173,7 @@ class RecordingProgress:
         return [e for e in self.events if e[0] == "step"]
 
     def advanced(self, step: str) -> list[tuple]:
-        """The advances reported while the last `step(step, ...)` was current."""
+        """Вызовы advance, пришедшие, пока текущим был последний `step(step, ...)`."""
         current, out = None, []
         for event in self.events:
             if event[0] == "step":

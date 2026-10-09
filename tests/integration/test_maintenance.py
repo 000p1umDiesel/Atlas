@@ -83,13 +83,13 @@ async def test_reindex_after_embedder_change_then_reset(graph, tmp_path, docs, s
     stats = reindex(second)
     assert stats["chunks"] > 0 and stats["entities"] > 0 and stats["wiki_sections"] > 0
     assert second.vectors.collection_dim(second.vectors.chunks) == 32
-    second.pipeline.prepare()  # signature now matches
+    second.pipeline.prepare()  # теперь сигнатура совпадает
     assert second.vectors.search_chunks(
         second.embedder.embed_query("attention"), second.sparse.encode_query("attention"), k=3
     )
 
     assert second.registry.get_meta("embedder") == embedder_signature(embedder)
-    assert ":tpl-" in second.registry.get_meta("embedder")  # the new format, templates signed
+    assert ":tpl-" in second.registry.get_meta("embedder")  # новый формат, шаблоны в сигнатуре
 
     reset(second)
     assert graph.counts()["Entity"] == 0
@@ -105,7 +105,7 @@ async def test_reindex_without_chunk_cache_uses_graph_chunks(graph, docs, settin
     await app.pipeline.ingest([docs])
     before = chunk_payloads(app)
     assert any(p["entity_ids"] for p in before.values())
-    shutil.rmtree(settings.data_dir / "cache")  # chunk caches gone
+    shutil.rmtree(settings.data_dir / "cache")  # кэши чанков удалены
 
     stats = reindex(app)
 
@@ -125,7 +125,7 @@ async def test_reindex_reports_progress(graph, docs, settings):
     reindex(app, progress=progress)
     entities, pages = len(app.graph.entities()), len(app.graph.wiki_pages())
     assert progress.steps() == [
-        ("step", "reindex chunks", 2),  # documents
+        ("step", "reindex chunks", 2),  # документы
         ("step", "reindex entities", entities),
         ("step", "reindex wiki", pages),
     ]
@@ -148,23 +148,23 @@ async def test_interrupted_reindex_must_be_rerun(graph, docs, settings):
     broken = make_app(settings, graph, client, BrokenEmbedder(64))
     with pytest.raises(RuntimeError, match="embedder went away"):
         reindex(broken)
-    # same embedder, but the half-built index must not be silently accepted
+    # эмбеддер тот же, но недостроенный индекс нельзя молча принимать
     with pytest.raises(EmbedderMismatchError, match="reindex"):
         broken.pipeline.prepare()
     broken.registry.close()
 
     healed = make_app(settings, graph, client, FakeEmbedder(64))
     assert reindex(healed)["chunks"] > 0
-    healed.pipeline.prepare()  # a completed reindex records the signature again
+    healed.pipeline.prepare()  # завершённый reindex снова записывает сигнатуру
     healed.registry.close()
 
 
 @pytest.fixture
 def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs):
-    """A project driven through the CLI: real Qdrant server and Neo4j, fake models.
+    """Проект, управляемый через CLI: настоящие сервер Qdrant и Neo4j, фейковые модели.
 
-    Yields `write_config(dim)`; the preflight runs the real `qdrant` check (the services the
-    fakes replace are reported as ok)."""
+    Отдаёт `write_config(dim)`; preflight выполняет настоящую проверку `qdrant` (сервисы,
+    которые заменены фейками, помечаются как ok)."""
     from mnogobase import cli
     from mnogobase.doctor import Check, run_checks
     from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
@@ -211,7 +211,7 @@ def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tm
     built = runner.invoke(cli.app, ["ingest", "docs"])
     assert built.exit_code == 0, built.output
 
-    cli_project(32)  # e.g. MRL truncation: embedder.dim 768 -> 512
+    cli_project(32)  # например, MRL-усечение: embedder.dim 768 -> 512
     refused = runner.invoke(cli.app, ["ingest", "docs"])
     assert refused.exit_code == 2, refused.output
     assert "has dim 64, config 32" in refused.output and "mnogobase reindex" in refused.output
@@ -225,7 +225,7 @@ def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tm
     try:
         for name in (app.vectors.chunks, app.vectors.entities, app.vectors.wiki):
             assert app.vectors.collection_dim(name) == 32
-        app.pipeline.prepare()  # the stored signature is the new embedder's
+        app.pipeline.prepare()  # сохранённая сигнатура уже от нового эмбеддера
         hits = app.vectors.search_chunks(
             app.embedder.embed_query("attention"), app.sparse.encode_query("attention"), k=3
         )
@@ -245,7 +245,7 @@ def test_cli_template_change_requires_reindex(cli_project, tmp_path):
     built = runner.invoke(cli.app, ["ingest", "docs"])
     assert built.exit_code == 0, built.output
 
-    cli_project(64, doc_template="passage: {text}")  # same model and dim, new template
+    cli_project(64, doc_template="passage: {text}")  # та же модель и dim, новый шаблон
     for args in (["ingest", "docs"], ["ask", "what is attention?"]):
         refused = runner.invoke(cli.app, args)
         assert refused.exit_code == 2, refused.output
@@ -278,7 +278,7 @@ def test_cli_reindex_interrupted_at_a_new_dimension_can_be_rerun(
     real = GraphStore.entities
     state = {"failed": False}
 
-    def entities_once(self, *args, **kwargs):  # crash after the chunks were re-embedded
+    def entities_once(self, *args, **kwargs):  # падение после повторного эмбеддинга чанков
         if not state["failed"]:
             state["failed"] = True
             raise RuntimeError("reindex interrupted")
@@ -292,7 +292,7 @@ def test_cli_reindex_interrupted_at_a_new_dimension_can_be_rerun(
     assert refused.exit_code == 2, refused.output
     assert "reindex-in-progress" in refused.output
 
-    result = runner.invoke(cli.app, ["reindex"])  # preflight passes, the rerun completes
+    result = runner.invoke(cli.app, ["reindex"])  # preflight проходит, повторный запуск завершается
     assert result.exit_code == 0, result.output
     assert "reindexed:" in result.output
     settings = load_settings(tmp_path / "config.yaml")

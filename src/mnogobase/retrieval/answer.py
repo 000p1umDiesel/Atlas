@@ -24,10 +24,10 @@ def _label(item: ContextItem) -> str:
 
 
 def build_context(items: list[ContextItem], max_tokens: int) -> tuple[str, list[Source], int]:
-    """Number items as `[n] (label)\\ntext` blocks until the token budget is spent.
+    """Нумерует элементы блоками `[n] (label)\\ntext`, пока не исчерпан бюджет токенов.
 
-    The first item is always kept, even over budget, so a non-empty retrieval never yields
-    an empty context.
+    Первый элемент сохраняется всегда, даже сверх бюджета, чтобы непустой поиск никогда
+    не давал пустой контекст.
     """
     blocks: list[str] = []
     sources: list[Source] = []
@@ -54,7 +54,7 @@ def build_context(items: list[ContextItem], max_tokens: int) -> tuple[str, list[
 
 class Answerer:
     def __init__(self, llm: LLMClient, max_context_tokens: int, language: str = "auto"):
-        """`language`: a code such as `ru` / `en` (or a language name), `auto` for the question's."""
+        """`language`: код вроде `ru` / `en` (или название языка); `auto` — язык вопроса."""
         self._llm = llm
         self._max = max_context_tokens
         self._language = (

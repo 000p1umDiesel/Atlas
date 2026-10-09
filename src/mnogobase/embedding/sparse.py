@@ -10,7 +10,7 @@ def _to_qdrant(embedding) -> qm.SparseVector:
 
 
 class BM25Encoder:
-    """BM25 term weights via fastembed; IDF is applied by Qdrant (Modifier.IDF)."""
+    """Веса термов BM25 через fastembed; IDF применяет Qdrant (Modifier.IDF)."""
 
     def __init__(self, model: str = "Qdrant/bm25", device: str = "cpu"):
         self._model_name = model
@@ -21,7 +21,7 @@ class BM25Encoder:
         if self._model is None:
             from fastembed import SparseTextEmbedding
 
-            kwargs = {"cuda": True} if self._cuda else {}  # needs onnxruntime-gpu
+            kwargs = {"cuda": True} if self._cuda else {}  # нужен onnxruntime-gpu
             self._model = SparseTextEmbedding(self._model_name, **kwargs)
         return self._model
 

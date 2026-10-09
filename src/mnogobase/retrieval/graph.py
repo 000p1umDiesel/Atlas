@@ -10,7 +10,8 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 
 class GraphRetriever:
-    """Graph-RAG: link query to entities, expand k hops, return entities + triples + evidence."""
+    """Graph-RAG: связывает запрос с сущностями, расширяет на k шагов, возвращает сущности +
+    триплеты + подтверждения."""
 
     def __init__(
         self, graph: GraphStore, vectors: QdrantStore, embedder: Embedder, settings: GraphSettings

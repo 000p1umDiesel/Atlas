@@ -13,14 +13,14 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 
 class RagRetriever:
-    """Classic RAG: hybrid (dense + BM25, RRF) search over raw chunks.
+    """Классический RAG: гибридный (dense + BM25, RRF) поиск по исходным чанкам.
 
-    With a `reranker`, the best `candidates` hybrid hits are rescored by it and the top k
-    kept (if it fails, the hybrid order is used and a warning logged).
+    С `reranker` лучшие `candidates` гибридных попаданий переоцениваются им, и остаются top k
+    (если он падает, используется гибридный порядок и в лог пишется warning).
 
-    Each item starts with the chunk's heading path. With `neighbors > 0` a hit is widened by
-    up to that many adjacent chunks on each side, only while they share its headings (the
-    same section); a hit already covered by a stronger hit's window is dropped.
+    Каждый элемент начинается с пути заголовков чанка. При `neighbors > 0` попадание
+    расширяется максимум на столько же соседних чанков с каждой стороны, пока у них те же
+    заголовки (та же секция); попадание, уже покрытое окном более сильного, отбрасывается.
     """
 
     def __init__(
@@ -83,10 +83,11 @@ class RagRetriever:
         texts = [_item(h.key, [h.payload], h.score).text for h in hits]
         try:
             scores = self._reranker.score(query, texts)
-        except Exception as exc:  # answering still works on the hybrid order
+        except Exception as exc:  # ответ всё равно работает на гибридном порядке
             self._log.warning("rerank_failed", error_type=type(exc).__name__, error=str(exc))
             return hits
-        order = sorted(range(len(hits)), key=lambda i: -scores[i])  # stable: ties keep hybrid order
+        # стабильная сортировка: при равных score сохраняется гибридный порядок
+        order = sorted(range(len(hits)), key=lambda i: -scores[i])
         return [hits[i].model_copy(update={"score": scores[i]}) for i in order]
 
 
@@ -96,7 +97,7 @@ def _split(key: str) -> tuple[str, int]:
 
 
 def _item(ref: str, payloads: list[dict[str, Any]], score: float) -> ContextItem:
-    """One context item from consecutive chunks of a section; cited as the hit `ref`."""
+    """Один элемент контекста из подряд идущих чанков секции; цитируется как `ref` попадания."""
     first = payloads[0]
     headings = first.get("headings") or []
     texts = [p["text"] for p in payloads]

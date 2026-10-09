@@ -4,7 +4,7 @@ from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render
 from mnogobase.log import get_logger
 
-# a question is translated when more than this share of its letters is not ASCII (Latin)
+# вопрос переводится, если доля не-ASCII (не латинских) букв в нём больше этого порога
 NON_LATIN_SHARE = 0.3
 
 
@@ -16,11 +16,12 @@ def needs_translation(question: str) -> bool:
 
 
 class QueryTranslator:
-    """English phrasing of a non-English question, searched alongside the original.
+    """Английская формулировка неанглийского вопроса, по которой ищем вместе с оригиналом.
 
-    Sources, wiki pages and entity names are mostly English, and BM25 cannot match a Russian
-    query to English text. A failed translation is logged and the search runs on the original
-    alone. Results are memoized per question, so `compare` translates once for all modes.
+    Источники, wiki-страницы и имена сущностей в основном английские, а BM25 не сопоставит
+    русский запрос с английским текстом. Неудачный перевод логируется, и поиск идёт только
+    по оригиналу. Результаты мемоизируются по вопросу, так что `compare` переводит один раз
+    для всех режимов.
     """
 
     def __init__(self, llm: LLMClient):
@@ -39,7 +40,7 @@ class QueryTranslator:
         prompt = render("translate_query", question=question)
         try:
             text = await self._llm.complete([{"role": "user", "content": prompt}], task="query")
-        except Exception as exc:  # the search still works without it
+        except Exception as exc:  # поиск работает и без него
             self._log.warning(
                 "query_translation_failed", error_type=type(exc).__name__, error=str(exc)
             )

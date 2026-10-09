@@ -1,8 +1,8 @@
-"""End-to-end flow on real services.
+"""Сквозной сценарий на настоящих сервисах.
 
-Needs Docker (testcontainers: Neo4j + Qdrant from `tests/conftest.py`), a local Ollama with
-`embeddinggemma-2:740m`, and the LLM endpoint from `config.yaml` with `LLM_API_KEY` in `.env`.
-Run: `uv run pytest -m e2e -s`.
+Нужны Docker (testcontainers: Neo4j + Qdrant из `tests/conftest.py`), локальный Ollama с
+`embeddinggemma-2:740m` и LLM-эндпоинт из `config.yaml` с `LLM_API_KEY` в `.env`.
+Запуск: `uv run pytest -m e2e -s`.
 """
 
 import shutil
@@ -20,7 +20,7 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 pytestmark = [
     pytest.mark.e2e,
-    # raised inside Docling's own OCR option handling, not by mnogobase
+    # выбрасывается внутри обработки OCR-опций самого Docling, а не mnogobase
     pytest.mark.filterwarnings("ignore:`force_full_page_ocr` is deprecated:DeprecationWarning"),
     pytest.mark.filterwarnings(
         "ignore:deprecated:DeprecationWarning:docling.models.stages.ocr.rapid_ocr_model"
@@ -65,7 +65,7 @@ def entity_ids_of(graph, doc_id: str) -> set[str]:
 
 
 async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
-    monkeypatch.chdir(ROOT)  # load_settings reads `.env` (LLM_API_KEY) from the CWD
+    monkeypatch.chdir(ROOT)  # load_settings читает `.env` (LLM_API_KEY) из CWD
     corpus = tmp_path / "corpus"
     make_corpus(corpus)
     base = load_settings(ROOT / "config.yaml")
@@ -91,7 +91,7 @@ async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
         assert transformers, names
         assert max(e.mention_count for e in transformers) >= 2, names
 
-        # cross-language merge: RU and EN mentions resolve to the same entity
+        # межъязыковое слияние: упоминания на RU и EN сводятся к одной сущности
         en_ids = entity_ids_of(graph, file_doc_id(corpus / "attention_en.md"))
         ru_ids = entity_ids_of(graph, file_doc_id(corpus / "vnimanie_ru.md"))
         assert en_ids and ru_ids
@@ -121,4 +121,4 @@ async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
         assert again.processed == [] and len(again.skipped) == 4, again
         assert again.failed == {}
     finally:
-        app.registry.close()  # the `graph` fixture closes the Neo4j driver
+        app.registry.close()  # драйвер Neo4j закрывает фикстура `graph`

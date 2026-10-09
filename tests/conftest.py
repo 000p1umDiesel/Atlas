@@ -17,7 +17,7 @@ QDRANT_IMAGE = "qdrant/qdrant:v1.19.2"
 
 @pytest.fixture(scope="session")
 def qdrant_container() -> Iterator[QdrantContainer]:
-    """Real Qdrant server in Docker. Integration tests only (`-m integration`)."""
+    """Настоящий сервер Qdrant в Docker. Только для интеграционных тестов (`-m integration`)."""
     from testcontainers.community.qdrant import QdrantContainer
 
     with QdrantContainer(QDRANT_IMAGE) as container:
@@ -26,7 +26,7 @@ def qdrant_container() -> Iterator[QdrantContainer]:
 
 @pytest.fixture(scope="session")
 def qdrant_url(qdrant_container: QdrantContainer) -> str:
-    """REST URL of the Qdrant container, for code that connects from settings."""
+    """REST URL контейнера Qdrant для кода, который подключается по настройкам."""
     return f"http://{qdrant_container.rest_host_address}"
 
 
@@ -44,7 +44,7 @@ NEO4J_IMAGE = "neo4j:5.26-community"
 
 @pytest.fixture(scope="session")
 def neo4j_container() -> Iterator[Neo4jContainer]:
-    """Real Neo4j server in Docker. Integration tests only (`-m integration`)."""
+    """Настоящий сервер Neo4j в Docker. Только для интеграционных тестов (`-m integration`)."""
     from testcontainers.community.neo4j import Neo4jContainer
 
     with Neo4jContainer(NEO4J_IMAGE, password="testpassword") as container:
@@ -53,7 +53,7 @@ def neo4j_container() -> Iterator[Neo4jContainer]:
 
 @pytest.fixture
 def graph(neo4j_container: Neo4jContainer) -> Iterator[GraphStore]:
-    """Fresh `GraphStore` on the shared container: wiped, schema ensured."""
+    """Чистый `GraphStore` на общем контейнере: данные стёрты, схема создана."""
     from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
 
     store = GraphStore(neo4j_container.get_driver(**DRIVER_OPTIONS))

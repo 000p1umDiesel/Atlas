@@ -33,7 +33,7 @@ class Stub:
 
 
 class StubGraph:
-    """Only `chunks_by_ids`, the one GraphStore call the wiki retriever makes."""
+    """Только `chunks_by_ids` — единственный вызов GraphStore у wiki-ретривера."""
 
     def __init__(self, chunks: list[ChunkView]):
         self.chunks = {c.chunk_id: c for c in chunks}
@@ -60,7 +60,7 @@ def test_build_context_numbers_and_budget():
     assert "[3] (graph relation)\nA —uses→ B" in context
     assert [s.n for s in sources] == [1, 2, 3] and used > 0
     _, few, _ = build_context(items, 1)
-    assert len(few) == 1  # at least one source even if over budget
+    assert len(few) == 1  # хотя бы один источник, даже сверх бюджета
 
 
 def test_combined_dedupes_and_respects_budget():
@@ -207,7 +207,7 @@ def test_rag_and_wiki_retrievers():
     )
     rag = RagRetriever(vectors, emb, sparse).retrieve("transformer attention", 2)
     assert rag[0].kind == "chunk" and rag[0].ref == "aaaa:00000"
-    # the original matches nothing; its alternative phrasing (a translation) finds the chunk
+    # оригинал ничего не находит; альтернативная формулировка (перевод) находит чанк
     alt = RagRetriever(vectors, emb, sparse).retrieve("кошки милые", 1, ["cats are cute"])
     assert [i.ref for i in alt] == ["aaaa:00001"]
     assert rag[0].path == "/docs/a.pdf" and rag[0].page == 1
@@ -218,7 +218,7 @@ def test_rag_and_wiki_retrievers():
     wiki = WikiRetriever(vectors, emb, sparse, graph).retrieve("transformer", 2)
     assert wiki[0].kind == "wiki" and wiki[0].ref == "p1#0"
     assert wiki[0].path == "entities/transformer.md"
-    # the section's cited chunks follow as citable evidence (an unknown id is simply skipped)
+    # за секцией идут цитируемые в ней чанки как evidence для ссылок (неизвестный id пропускается)
     assert graph.requested == [["aaaa:00000", "aaaa:00099"]]
     assert [(i.kind, i.ref, i.path, i.page, i.text) for i in wiki[1:]] == [
         ("chunk", "aaaa:00000", "/docs/a.pdf", 1, texts[0])
@@ -226,7 +226,7 @@ def test_rag_and_wiki_retrievers():
 
 
 class StubChunks:
-    """`search_chunks` returns `hits` (chunk ids, best first); `get_chunks` reads `chunks`."""
+    """`search_chunks` отдаёт `hits` (id чанков, лучшие первыми); `get_chunks` читает `chunks`."""
 
     def __init__(self, chunks: dict[str, dict], hits: list[str]):
         self.chunks = chunks
@@ -264,7 +264,7 @@ def test_rag_neighbors_stay_in_section_and_merge_overlapping_hits():
             _chunk("d:00005", "res", ["Results"], 4),
         ]
     )
-    # d:00002 is covered by d:00001's window and is dropped; d:00004 keeps what is left
+    # d:00002 покрыт окном d:00001 и отбрасывается; d:00004 сохраняет то, что осталось
     hits = ["d:00001", "d:00002", "d:00004"]
     rag = RagRetriever(StubChunks(chunks, hits), FakeEmbedder(), FakeSparse(), neighbors=1)
     items = rag.retrieve("q", 5)
@@ -273,7 +273,7 @@ def test_rag_neighbors_stay_in_section_and_merge_overlapping_hits():
         ("d:00004", "Method\nm3\nm4", 3),
     ]
     assert items[0].score > items[1].score
-    # without neighbors every hit stays a single chunk
+    # без соседей каждое попадание остаётся одним чанком
     plain = RagRetriever(StubChunks(chunks, hits), FakeEmbedder(), FakeSparse())
     assert [i.text for i in plain.retrieve("q", 5)] == ["Method\nm1", "Method\nm2", "Method\nm4"]
 
@@ -298,8 +298,8 @@ def test_wiki_retriever_dedupes_and_caps_cited_chunks():
         [ChunkView(chunk_id=f"d:0000{i}", doc_id="d", text=f"c{i}") for i in (1, 2, 3)]
     )
     items = WikiRetriever(vectors, emb, sparse, graph).retrieve("transformer", 2)
-    # each section is followed by its own cited chunks: de-duplicated, at most k in total
-    # (the first section's two citations already use the cap of k=2)
+    # за каждой секцией идут её собственные цитируемые чанки: без дублей, всего не больше k
+    # (две цитаты первой секции уже исчерпывают лимит k=2)
     assert [i.kind for i in items] == ["wiki", "chunk", "chunk", "wiki"]
     assert {items[0].ref, items[3].ref} == {"p1#0", "p1#1"}
     cited = {"p1#0": ["d:00001", "d:00002"], "p1#1": ["d:00002", "d:00003"]}
@@ -331,7 +331,7 @@ def test_wiki_retriever_interleaves_cited_chunks_after_their_section():
     expected += [("wiki", second)]
     expected += [("chunk", c) for c in cited[second] if c not in cited[first]]
     assert [(i.kind, i.ref) for i in items] == expected
-    assert len(graph.requested) == 1  # still one graph round trip
+    assert len(graph.requested) == 1  # по-прежнему один round trip к графу
 
 
 def test_wiki_retriever_skips_graph_without_cited_chunks():

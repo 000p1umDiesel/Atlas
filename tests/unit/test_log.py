@@ -65,7 +65,7 @@ def test_tracebacks_do_not_include_frame_locals(tmp_path):
     configure_logging(tmp_path, console=False)
 
     def leaky():
-        api_key = "sk-very-secret-value"  # noqa: F841 — a local that must not be logged
+        api_key = "sk-very-secret-value"  # noqa: F841 — локальная переменная, её нельзя логировать
         raise RuntimeError("boom")
 
     try:
@@ -75,7 +75,7 @@ def test_tracebacks_do_not_include_frame_locals(tmp_path):
     raw = (tmp_path / "mnogobase.jsonl").read_text(encoding="utf-8")
     rec = _read(tmp_path)[-1]
     assert rec["event"] == "failed"
-    assert rec["exception"]  # the traceback itself is still structured in the record
+    assert rec["exception"]  # сам traceback в записи по-прежнему структурирован
     assert "sk-very-secret-value" not in raw
     assert "api_key" not in raw
 
@@ -86,7 +86,7 @@ def test_third_party_noise_is_quieted_but_warnings_pass(tmp_path):
 
     configure_logging(tmp_path, console=False)
     ocr = logging.getLogger("RapidOCR")
-    ocr.setLevel(logging.INFO)  # what rapidocr does when docling imports it later
+    ocr.setLevel(logging.INFO)  # так делает rapidocr, когда docling позже его импортирует
 
     def passes(level: int) -> bool:
         record = logging.LogRecord("RapidOCR", level, __file__, 1, "msg", None, None)
@@ -94,5 +94,5 @@ def test_third_party_noise_is_quieted_but_warnings_pass(tmp_path):
 
     assert not passes(logging.INFO)
     assert passes(logging.WARNING) and passes(logging.ERROR)
-    assert are_progress_bars_disabled()  # Hugging Face downloads
-    assert not hf_logging.is_progress_bar_enabled()  # transformers "Loading weights"
+    assert are_progress_bars_disabled()  # загрузки Hugging Face
+    assert not hf_logging.is_progress_bar_enabled()  # "Loading weights" из transformers

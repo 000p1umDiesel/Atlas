@@ -19,7 +19,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
-    """Unit tests never touch the network or reconfigure the process-wide logging."""
+    """Юнит-тесты не ходят в сеть и не перенастраивают логирование всего процесса."""
     monkeypatch.setattr(cli, "configure_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "run_checks", lambda settings, **kwargs: [Check("qdrant", True, "ok")])
 
@@ -46,7 +46,7 @@ def test_status_outside_a_project_creates_nothing(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("args", [["ask", "what is attention?"], ["compare", "what?"]])
 def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
-    monkeypatch.chdir(tmp_path)  # no .mnogobase/state.db here
+    monkeypatch.chdir(tmp_path)  # здесь нет .mnogobase/state.db
     monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
@@ -101,7 +101,7 @@ def test_reset_prompt_lists_the_resolved_targets(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("args", [["reset"], ["reset", "--yes"]])
 def test_reset_refuses_outside_a_project(tmp_path, monkeypatch, args):
-    monkeypatch.chdir(tmp_path)  # no .mnogobase/state.db here
+    monkeypatch.chdir(tmp_path)  # здесь нет .mnogobase/state.db
     monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
     monkeypatch.setattr(cli, "do_reset", lambda application: pytest.fail("reset ran"))
     result = runner.invoke(cli.app, args, input="y\n")
@@ -270,7 +270,7 @@ def test_print_answer_shows_document_text_verbatim(monkeypatch):
         text=text,
         sources=[Source(n=1, kind="chunk", ref="abc:00001", snippet="[b]raw[/b]", cited=True)],
     )
-    cli._print_answer(answer)  # Rich would raise MarkupError on unescaped "[/foo]"
+    cli._print_answer(answer)  # Rich выбросил бы MarkupError на неэкранированном "[/foo]"
     output = recorder.export_text()
     assert text in output and "[b]raw[/b]" in output
 
@@ -283,7 +283,7 @@ def test_read_only_commands_outside_a_project_do_not_start_file_logging(
     started: list[Path] = []
     monkeypatch.setattr(cli, "configure_logging", lambda logs_dir, **kw: started.append(logs_dir))
     runner.invoke(cli.app, args)
-    assert started == []  # configure_logging would create logs/ in this directory
+    assert started == []  # configure_logging создал бы logs/ в этом каталоге
 
 
 STUCK = PendingRemovalError("cannot finish removing old document version(s) abcd1234abcd1234 (x)")
@@ -418,7 +418,7 @@ def test_reindex_with_a_wrong_embedder_dimension_is_a_clear_error(tmp_path, monk
 
 
 def _drive(progress) -> None:
-    """What a one-file ingest with a wiki update reports."""
+    """Что выводит ingest одного файла с обновлением wiki."""
     progress.files_found(1)
     progress.file_started("/docs/statya.pdf")
     for stage in ("parse", "chunk", "embed"):
@@ -452,7 +452,7 @@ def test_ingest_reports_progress_and_prints_only_the_summary_off_a_terminal(tmp_
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 0, result.output
     assert len(seen) == 1
-    # CliRunner is not a terminal: no progress frames, just the summary as before
+    # CliRunner — не терминал: без кадров прогресса, только итоговая сводка, как раньше
     lines = result.output.splitlines()
     assert len(lines) == 1 and lines[0].startswith("run ")
     assert lines[0].endswith("processed 1, skipped 0, failed 0")

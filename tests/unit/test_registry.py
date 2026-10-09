@@ -72,9 +72,9 @@ def test_extraction_cache_dirty_meta(reg):
 
 
 def test_replace_meta_only_swaps_the_expected_value(reg):
-    assert reg.replace_meta("embedder", None, "a:1:tpl-x")  # no value yet: set
-    assert not reg.replace_meta("embedder", None, "b")  # a value appeared meanwhile
-    assert not reg.replace_meta("embedder", "a:1", "a:1:tpl-y")  # not the value read
+    assert reg.replace_meta("embedder", None, "a:1:tpl-x")  # значения ещё нет: устанавливаем
+    assert not reg.replace_meta("embedder", None, "b")  # тем временем значение появилось
+    assert not reg.replace_meta("embedder", "a:1", "a:1:tpl-y")  # не то значение, что прочитали
     assert reg.get_meta("embedder") == "a:1:tpl-x"
     assert reg.replace_meta("embedder", "a:1:tpl-x", "a:1:tpl-y")
     assert reg.get_meta("embedder") == "a:1:tpl-y"
@@ -99,7 +99,7 @@ def test_latest_extraction_ignores_model_and_prompt_version(reg):
     reg.put_extraction("c2", "v1", "model-a", '{"c": 3}')
     assert reg.get_latest_extraction("c1") == '{"b": 2}'
     assert reg.latest_extraction_versions() == {"v2", "v1"}  # c1 -> v2, c2 -> v1
-    reg.put_extraction("c1", "v1", "model-a", '{"a": 4}')  # rewritten: now the latest
+    reg.put_extraction("c1", "v1", "model-a", '{"a": 4}')  # перезаписано: теперь самое свежее
     assert reg.get_latest_extraction("c1") == '{"a": 4}'
     assert reg.latest_extraction_versions() == {"v1"}
     reg.wipe()

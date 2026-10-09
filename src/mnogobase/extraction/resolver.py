@@ -23,12 +23,12 @@ class MergedDescription(BaseModel):
 
 
 def entity_embed_input(record: EntityRecord | ExtractedEntity) -> EmbedInput:
-    """What gets embedded for an entity in the Qdrant `entities` collection."""
+    """Что эмбеддится для сущности в коллекции Qdrant `entities`."""
     return EmbedInput(text=f"{record.name}: {record.description}", title=record.name)
 
 
 class EntityResolver:
-    """Maps an extracted entity onto an existing graph entity or creates a new one."""
+    """Сопоставляет извлечённую сущность с существующей сущностью графа или создаёт новую."""
 
     def __init__(
         self,
@@ -43,7 +43,7 @@ class EntityResolver:
         self._embedder = embedder
         self._llm = llm
         self._s = settings
-        self._resolved: dict[str, str] = {}  # extracted id -> canonical id (per process)
+        self._resolved: dict[str, str] = {}  # извлечённый id -> канонический id (на процесс)
         self._log = get_logger(__name__)
 
     def _vector(self, record: EntityRecord | ExtractedEntity) -> list[float]:
@@ -67,8 +67,8 @@ class EntityResolver:
         else:
             record, changed = await self._merge(existing, entity)
         if changed:
-            # spec §7 order: vector first, then Qdrant, then Neo4j. An embedder or Qdrant
-            # failure must not leave the graph ahead (a retry would see "no change").
+            # порядок из spec §7: сначала вектор, затем Qdrant, затем Neo4j. Сбой эмбеддера
+            # или Qdrant не должен оставить граф впереди (повтор увидел бы "нет изменений").
             vector = self._vector(record)
             self._vectors.upsert_entities([record], [vector])
             self._graph.upsert_entity(record)

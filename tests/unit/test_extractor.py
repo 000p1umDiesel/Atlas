@@ -117,7 +117,7 @@ async def test_extract_many_advances_once_per_chunk_with_cache_hits_and_failures
         ("advance", 1, False),
         ("advance", 1, True),
     ]
-    assert len(llm.calls_for("extract")) == 3  # the cache hit made no call
+    assert len(llm.calls_for("extract")) == 3  # попадание в кэш обошлось без вызова
 
 
 async def test_cached_falls_back_to_another_model(tmp_path):
@@ -127,7 +127,7 @@ async def test_cached_falls_back_to_another_model(tmp_path):
     c = chunk("The Transformer uses softmax.")
     first = await ex.extract(c, "Doc")
     llm.model_for = lambda task: "another-model"
-    assert ex.cached(c) is None  # exact key: model changed
+    assert ex.cached(c) is None  # точный ключ: модель изменилась
     assert ex.cached(c, any_version=True) == first
     assert ex.cached(chunk("never extracted", idx=1), any_version=True) is None
 
@@ -163,12 +163,12 @@ async def test_cache_is_keyed_by_the_entity_types(tmp_path):
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
     await Extractor(llm, reg, dict(DEFAULT_ENTITY_TYPES)).extract(c, "Doc")
-    assert len(llm.calls_for("extract")) == 1  # same types: cache hit
+    assert len(llm.calls_for("extract")) == 1  # те же типы: попадание в кэш
     changed = {**DEFAULT_ENTITY_TYPES, "Method": "A changed description."}
     again = Extractor(llm, reg, changed)
     assert again.cached(c) is None
     await again.extract(c, "Doc")
-    assert len(llm.calls_for("extract")) == 2  # changed types: re-extracted
+    assert len(llm.calls_for("extract")) == 2  # типы изменились: извлечено заново
 
 
 async def test_cache_hits_are_recleaned_with_the_current_types(tmp_path):
@@ -177,10 +177,10 @@ async def test_cache_hits_are_recleaned_with_the_current_types(tmp_path):
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
     genes = Extractor(llm, reg, GENES)
-    fallback = genes.cached(c, any_version=True)  # extracted with other types
+    fallback = genes.cached(c, any_version=True)  # извлечено с другими типами
     assert [e.type for e in fallback.entities] == ["Other", "Other"]
     assert len(fallback.relations) == 1
-    # an exact-key hit is re-cleaned too
+    # попадание по точному ключу тоже очищается заново
     exact = ExtractionResult(entities=[E("Transformer", "Method")], relations=[])
     reg.put_extraction(c.chunk_id, genes._version, genes.model, exact.model_dump_json())
     assert [e.type for e in genes.cached(c).entities] == ["Other"]
@@ -198,14 +198,14 @@ async def test_stale_until_every_document_is_extracted_with_the_current_types(tm
     await old.extract(chunk("The Transformer uses softmax.", doc=doc_a), "A")
     await old.extract(chunk("Vaswani wrote it.", doc=doc_b), "B")
     assert not stale_entity_types(reg, DEFAULT_ENTITY_TYPES)
-    # config changed, nothing re-extracted yet: the old documents keep the old types
+    # конфиг изменён, заново ещё ничего не извлекали: у старых документов старые типы
     assert stale_entity_types(reg, GENES)
 
-    # both documents are edited (new doc_ids) and re-extracted with the new types
+    # оба документа изменены (новые doc_ids) и заново извлечены с новыми типами
     new = Extractor(llm, reg, GENES)
     reg.clear_doc(doc_a)
     await new.extract(chunk("The Transformer uses softmax again.", doc=doc_a2), "A")
-    assert stale_entity_types(reg, GENES)  # B still has the old types
+    assert stale_entity_types(reg, GENES)  # у B всё ещё старые типы
     reg.clear_doc(doc_b)
     await new.extract(chunk("Vaswani wrote it again.", doc=doc_b2), "B")
     assert not stale_entity_types(reg, GENES)
@@ -217,15 +217,15 @@ async def test_a_chunk_re_extracted_with_the_current_types_is_not_stale(tmp_path
     llm = FakeLLM(scripted_llm_handler)
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
-    await Extractor(llm, reg, GENES).extract(c, "Doc")  # e.g. --retry-failed of extract
-    assert not stale_entity_types(reg, GENES)  # only the latest row of a chunk counts
+    await Extractor(llm, reg, GENES).extract(c, "Doc")  # например, --retry-failed для extract
+    assert not stale_entity_types(reg, GENES)  # учитывается только последняя строка чанка
 
 
 def test_legacy_extractions_are_stale(tmp_path):
     reg = Registry(tmp_path / "s.db")
     empty = ExtractionResult(entities=[], relations=[]).model_dump_json()
     reg.put_extraction(f"{DOC}:00000", "extract-v1", "fake-extract", empty)
-    assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # made before types were in the key
+    assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # создано до того, как типы вошли в ключ
 
 
 def test_a_new_prompt_version_with_the_same_types_is_not_stale(tmp_path):

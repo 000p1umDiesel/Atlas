@@ -161,7 +161,7 @@ def test_wiki_sections_replace_previous_version():
 
 
 class FlakyClient:
-    """Proxy that fails the first `failures` calls of `method` with `exc`."""
+    """Прокси: первые `failures` вызовов `method` падают с `exc`."""
 
     def __init__(self, inner: QdrantClient, method: str, exc: Exception, failures: int):
         self._inner = inner

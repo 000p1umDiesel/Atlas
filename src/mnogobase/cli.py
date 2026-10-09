@@ -51,7 +51,7 @@ wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
 app.add_typer(wiki_app, name="wiki")
 console = Console()
 _state: dict[str, Path | None] = {"config": None}
-# services a command needs before it starts: embedder, LLM, vector store, graph
+# сервисы, нужные команде до старта: embedder, LLM, векторное хранилище, граф
 PREFLIGHT_CHECKS = ("ollama", "llm", "qdrant", "neo4j")
 REINDEX_CHECKS = ("ollama", "qdrant", "neo4j")
 RESET_CHECKS = ("qdrant", "neo4j")
@@ -67,15 +67,15 @@ def main(
 
 
 def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
-    """Load settings and start file logging. `project=True` first requires an existing
-    project (else exit `missing_exit`), so a command run in the wrong directory creates
-    neither state.db nor logs/."""
+    """Загружает настройки и включает логирование в файл. `project=True` сначала требует
+    существующий проект (иначе выход с `missing_exit`), чтобы команда, запущенная не в том
+    каталоге, не создала ни state.db, ни logs/."""
     try:
         settings = load_settings(_state["config"])
     except FileNotFoundError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2) from None
-    except (yaml.YAMLError, ValueError) as exc:  # bad YAML, or a pydantic ValidationError
+    except (yaml.YAMLError, ValueError) as exc:  # битый YAML или ValidationError от pydantic
         console.print(f"[red]Invalid configuration:[/red] {escape(str(exc))}")
         raise typer.Exit(2) from None
     if project:
@@ -87,8 +87,8 @@ def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
 def _preflight(
     settings: Settings, checks: tuple[str, ...] = PREFLIGHT_CHECKS, *, check_dim: bool = True
 ) -> None:
-    """Stop early (exit 2) when a service the command depends on is unreachable (or, with
-    `check_dim`, when the Qdrant collections have another dimension than the config)."""
+    """Завершается заранее (exit 2), если недоступен сервис, от которого зависит команда
+    (или, при `check_dim`, если размерность коллекций Qdrant не совпадает с конфигом)."""
     failed = [c for c in run_checks(settings, only=checks, check_dim=check_dim) if not c.ok]
     if failed:
         for check in failed:
@@ -102,7 +102,8 @@ def _state_db(settings: Settings) -> Path:
 
 
 def _require_project(settings: Settings, code: int = 2) -> None:
-    """Exit with `code` outside a project: commands that only read must not create state.db."""
+    """Выход с `code` вне проекта: команды, которые только читают, не должны создавать
+    state.db."""
     if not _state_db(settings).is_file():
         console.print(
             f"No mnogobase project here (no {escape(str(_state_db(settings).resolve()))}). "
@@ -123,7 +124,7 @@ def _lock(settings: Settings) -> filelock.FileLock:
 
 
 def _fail_cleanly(exc: Exception) -> None:
-    """A known, actionable failure: its message, exit 2, no traceback."""
+    """Известная ошибка, которую можно исправить: её сообщение, exit 2, без traceback."""
     console.print(f"[red]{escape(str(exc))}[/red]")
     raise typer.Exit(2) from exc
 
@@ -134,7 +135,7 @@ def _where(path: str | None, page: int | None, ref: str) -> str:
 
 
 def _print_answer(answer: Answer) -> None:
-    # document and LLM text is printed verbatim: `[x]` in it is not Rich markup
+    # текст документов и LLM печатается как есть: `[x]` в нём — не разметка Rich
     console.print(Panel(escape(answer.text), title=f"{answer.mode} · {answer.latency_ms} ms"))
     table = Table("#", "cited", "kind", "source", "ref", "snippet")
     for s in answer.sources:
@@ -160,7 +161,7 @@ def _print_wiki_report(report: WikiReport) -> None:
 
 
 class _Count(ProgressColumn):
-    """`done/total`, or nothing while the total is unknown (parse, chunk, embed)."""
+    """`done/total` или ничего, пока total неизвестен (parse, chunk, embed)."""
 
     def render(self, task: Task) -> Text:
         if task.total is None:
@@ -169,15 +170,15 @@ class _Count(ProgressColumn):
 
 
 class RichProgress:
-    """The library's ProgressSink drawn with rich.progress: a bar for the files of the run and
-    one for the current step (a stage of the current file, or a wiki / reindex step)."""
+    """ProgressSink библиотеки, отрисованный через rich.progress: один бар для файлов запуска,
+    другой для текущего шага (стадии текущего файла или шага wiki / reindex)."""
 
     def __init__(self, bars: Progress):
         self.bars = bars
         self._files: TaskID | None = None
         self._step: TaskID | None = None
-        self._file = ""  # short name of the file being ingested
-        self._failed = 0  # failed units of the current step
+        self._file = ""  # короткое имя файла, который сейчас ingest-ится
+        self._failed = 0  # упавшие единицы текущего шага
         self._outcomes: Counter[str] = Counter()
 
     def files_found(self, total: int) -> None:
@@ -196,7 +197,7 @@ class RichProgress:
         self._drop_step()
 
     def step(self, name: str, total: int | None = None) -> None:
-        self._drop_step()  # a new task: its bar, count and elapsed time start over
+        self._drop_step()  # новая задача: бар, счётчик и время начинаются заново
         label = f"{self._file} · {name}" if self._file else name
         self._step = self.bars.add_task(escape(label), total=total, note="")
         self._failed = 0
@@ -216,8 +217,8 @@ class RichProgress:
 
 @contextmanager
 def _progress() -> Iterator[RichProgress]:
-    """Live progress while a long command runs. Transient: the bars disappear when it ends
-    and the summary is printed instead. Off a terminal (pipe, CI) nothing is drawn."""
+    """Live-прогресс, пока идёт долгая команда. Transient: по окончании бары исчезают, а
+    вместо них печатается сводка. Вне терминала (pipe, CI) ничего не рисуется."""
     bars = Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -243,7 +244,7 @@ def _check_status(check: Check) -> str:
 
 @app.command()
 def doctor() -> None:
-    """Check device, Ollama, the LLM endpoint, Qdrant, Neo4j, the index and entity types."""
+    """Проверить device, Ollama, LLM endpoint, Qdrant, Neo4j, индекс и типы сущностей."""
     checks = run_checks(_settings())
     table = Table("check", "status", "detail")
     for c in checks:
@@ -255,8 +256,8 @@ def doctor() -> None:
 
 @app.command()
 def status() -> None:
-    """Summarize ingested files, stage states, pending wiki updates and errors."""
-    # status only reads: outside a project it says so and succeeds
+    """Сводка по загруженным файлам, статусам стадий, ожидающим обновлениям wiki и ошибкам."""
+    # status только читает: вне проекта он сообщает об этом и завершается успешно
     settings = _settings(project=True, missing_exit=0)
     registry = Registry(_state_db(settings))
     try:
@@ -302,7 +303,8 @@ def ingest(
         bool, typer.Option("--retry-failed", help="Re-run failed stages.")
     ] = False,
 ) -> None:
-    """Parse, chunk, embed and extract documents into Qdrant + Neo4j, then update the wiki."""
+    """Распарсить, разбить на чанки, заэмбеддить и извлечь документы в Qdrant + Neo4j,
+    затем обновить wiki."""
     settings = _settings()
     _preflight(settings)
     lock = _lock(settings)
@@ -351,7 +353,7 @@ def ingest(
 def wiki_build(
     rebuild_all: Annotated[bool, typer.Option("--all", help="Regenerate every page.")] = False,
 ) -> None:
-    """Regenerate wiki pages for entities with new mentions (or all with --all)."""
+    """Перегенерировать страницы wiki для сущностей с новыми упоминаниями (или все с --all)."""
     settings = _settings()
     _preflight(settings)
     lock = _lock(settings)
@@ -362,7 +364,7 @@ def wiki_build(
                 application.pipeline.prepare(resume=False)
             except (EmbedderMismatchError, DimensionMismatchError) as exc:
                 _fail_cleanly(exc)
-            # an interrupted ingest may have left a document removal half done (orphan pages)
+            # прерванный ingest мог оставить удаление документа недоделанным (страницы-сироты)
             try:
                 deleted = application.pipeline.finish_pending_removals()
             except PendingRemovalError as exc:
@@ -412,7 +414,7 @@ def ask(
     mode: Annotated[Mode, typer.Option("--mode", "-m", help="rag | wiki | graph | all")] = Mode.ALL,
     k: Annotated[int | None, typer.Option("--k", help="Results per retriever.")] = None,
 ) -> None:
-    """Answer a question with citations using one retrieval mode."""
+    """Ответить на вопрос со ссылками на источники в одном режиме retrieval."""
     settings = _settings(project=True)
     _preflight(settings)
     application = build_app(settings)
@@ -438,7 +440,7 @@ def compare(
     question: Annotated[str, typer.Argument(help="Question to answer in all four modes.")],
     k: Annotated[int | None, typer.Option("--k", help="Results per retriever.")] = None,
 ) -> None:
-    """Answer in rag / wiki / graph / all and log the comparison to runs/compare.jsonl."""
+    """Ответить в режимах rag / wiki / graph / all и записать сравнение в runs/compare.jsonl."""
     settings = _settings(project=True)
     _preflight(settings)
     application = build_app(settings)
@@ -473,9 +475,9 @@ def compare(
 
 @app.command()
 def reindex() -> None:
-    """Recompute every vector after changing the embedder (graph and wiki are kept)."""
+    """Пересчитать все векторы после смены embedder (граф и wiki сохраняются)."""
     settings = _settings()
-    # reindex rebuilds the collections: a dimension change is what it is for
+    # reindex пересоздаёт коллекции: смена размерности — ровно то, для чего он нужен
     _preflight(settings, REINDEX_CHECKS, check_dim=False)
     lock = _lock(settings)
     try:
@@ -510,11 +512,11 @@ def _reset_targets(settings: Settings) -> list[str]:
 def reset(
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask for confirmation.")] = False,
 ) -> None:
-    """Delete ALL vectors, graph data, registry state, caches and wiki pages."""
+    """Удалить ВСЕ векторы, данные графа, состояние registry, кэши и страницы wiki."""
     settings = _settings()
     state_db = _state_db(settings)
     if not state_db.is_file():
-        # --yes never bypasses this: a wrong CWD or config must not wipe someone else's data
+        # --yes это не обходит: неверный CWD или конфиг не должен стереть чужие данные
         console.print(
             f"[red]No mnogobase project here: {escape(str(state_db.resolve()))} does not exist.[/red] "
             "Run reset from the project directory or pass its --config.",

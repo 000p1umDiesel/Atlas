@@ -29,7 +29,8 @@ def build_retrievers(
     settings: Settings,
     reranker: Reranker | None = None,
 ) -> dict[str, Retriever]:
-    """One retriever per `Mode`, keyed by the mode value (`rag`, `wiki`, `graph`, `all`)."""
+    """По одному retriever на каждый `Mode`; ключ — значение режима (`rag`, `wiki`, `graph`,
+    `all`)."""
     rag = RagRetriever(
         vectors,
         embedder,

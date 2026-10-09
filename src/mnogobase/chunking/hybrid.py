@@ -10,7 +10,7 @@ from mnogobase.parsing.docling_parser import ParsedDocument
 
 
 class Chunker:
-    """Structure- and token-aware chunking with the embedder's own tokenizer."""
+    """Чанкинг с учётом структуры документа и токенов, на токенизаторе самого эмбеддера."""
 
     def __init__(self, settings: ChunkingSettings):
         self._s = settings

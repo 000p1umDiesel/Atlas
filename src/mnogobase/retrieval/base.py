@@ -9,8 +9,9 @@ from mnogobase.stores.qdrant_store import QueryVectors
 
 
 class Retriever(Protocol):
-    """`alt_queries` are other phrasings of the same question searched alongside it (e.g. its
-    English translation, so BM25 and English entity names still match English sources)."""
+    """`alt_queries` — другие формулировки того же вопроса, по которым ищем вместе с ним
+    (например, его английский перевод, чтобы BM25 и английские имена сущностей находили
+    английские источники)."""
 
     def retrieve(
         self, query: str, k: int, alt_queries: Sequence[str] = ()

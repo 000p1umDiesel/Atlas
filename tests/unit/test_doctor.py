@@ -28,7 +28,7 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     assert fresh.ok and fresh.detail == "no index yet"
     assert not (tmp_path / ".mb" / "state.db").exists()
 
-    store_signature(tmp_path, "ollama:embeddinggemma-2:740m:768")  # legacy: no templates
+    store_signature(tmp_path, "ollama:embeddinggemma-2:740m:768")  # старый формат: без шаблонов
     [same] = run_checks(settings, only=["index"])
     assert same.ok
 
@@ -53,14 +53,14 @@ def test_index_check_fails_when_only_the_templates_changed(tmp_path):
 
 
 def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path, monkeypatch):
-    # a refused connection is simulated: on Windows a closed port can time out instead
+    # имитируем отказ в соединении: на Windows закрытый порт может вместо этого дать таймаут
     def refuse(url, **kwargs):
         raise httpx.ConnectError("connection refused", request=httpx.Request("GET", url))
 
     monkeypatch.setattr(doctor.httpx, "get", refuse)
     settings = make_settings(tmp_path)
     checks = run_checks(settings, timeout=1.0, only=["index", "ollama"])
-    assert [c.name for c in checks] == ["ollama", "index"]  # doctor order, not request order
+    assert [c.name for c in checks] == ["ollama", "index"]  # порядок doctor, а не порядок запроса
     assert not checks[0].ok and "ConnectError" in checks[0].detail
 
 
@@ -138,7 +138,7 @@ def test_types_check_warns_without_failing_when_the_types_changed(tmp_path):
     registry.put_extraction("c2", f"{PROMPT_VERSION}:0123456789ab", "m", "{}")
     registry.close()
     [changed] = run_checks(settings, only=["types"])
-    assert changed.ok and changed.warn  # a warning, never a failure
+    assert changed.ok and changed.warn  # предупреждение, но никогда не ошибка
     assert "mnogobase reset" in changed.detail and "ingest" in changed.detail
 
 
@@ -148,7 +148,7 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
 ):
     client = QdrantClient(":memory:")
     QdrantStore(client, "mb_", 64).ensure_collections()
-    monkeypatch.setattr(client, "close", lambda: None)  # run_checks closes its client
+    monkeypatch.setattr(client, "close", lambda: None)  # run_checks закрывает свой клиент
     monkeypatch.setattr(doctor, "QdrantClient", lambda **kwargs: client)
     settings = make_settings(tmp_path)  # embedder.dim 768
 
@@ -156,6 +156,6 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
     assert not strict.ok
     assert "mb_chunks has dim 64, config 768" in strict.detail and "reindex" in strict.detail
 
-    [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # what reindex runs
+    [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # то, что запускает reindex
     assert lenient.ok, lenient.detail
     assert "dim 64" in lenient.detail and "768" in lenient.detail

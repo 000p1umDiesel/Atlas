@@ -144,7 +144,7 @@ async def test_rebuild_updates_existing_page(world, graph):
     assert report.updated == ["Transformer"] and report.created == []
     assert graph.wiki_page("e1").version == 2
     last_prompt = [p for p in w.llm.calls_for("wiki") if '"Transformer"' in p][-1]
-    assert "Summary sentence." in last_prompt  # existing body was passed back to the LLM
+    assert "Summary sentence." in last_prompt  # существующий текст страницы передан обратно в LLM
 
 
 async def test_entities_below_threshold_are_skipped(world):
@@ -169,7 +169,7 @@ async def test_failed_entity_does_not_stop_the_build(world, graph):
     assert not (w.wiki / "entities" / "softmax.md").exists()
     assert graph.wiki_page("e2") is None
     assert w.registry.dirty() == ["e2"]
-    # the failed page was never written, so nothing links to it
+    # упавшая страница так и не записана, поэтому на неё никто не ссылается
     text = (w.wiki / "entities" / "transformer.md").read_text(encoding="utf-8")
     assert "[[softmax|" not in text
     assert "See Softmax and" in text and "- uses → Softmax" in text
@@ -191,7 +191,7 @@ async def test_failed_entity_with_existing_page_keeps_links(world, graph):
     w.registry.mark_dirty(["e1", "e2"])
     report = await w.builder.build(run_id="r2")
     assert report.updated == ["Transformer"] and report.failed == ["Softmax"]
-    assert (w.wiki / "entities" / "softmax.md").exists()  # the old page stays
+    assert (w.wiki / "entities" / "softmax.md").exists()  # старая страница остаётся
     assert "[[softmax|Softmax]]" in (w.wiki / "entities" / "transformer.md").read_text(
         encoding="utf-8"
     )
@@ -212,15 +212,16 @@ async def test_failed_list_is_sorted(world):
 
 async def test_entity_without_evidence_is_not_linked(world, graph):
     w = world()
-    # Softmax is mentioned in the graph, but no chunk vector carries it -> no evidence, no page
+    # Softmax упоминается в графе, но ни один вектор чанка его не несёт -> нет evidence,
+    # нет страницы
     w.vectors.set_chunk_entities(w.chunks[1].chunk_id, [])
     w.vectors.set_chunk_entities(w.chunks[2].chunk_id, ["e1"])
     report = await w.builder.build()
     assert report.created == ["Transformer"] and report.skipped == ["Softmax"]
     text = (w.wiki / "entities" / "transformer.md").read_text(encoding="utf-8")
     assert "[[softmax|" not in text
-    assert "See Softmax and" in text  # the LLM link became plain text
-    assert "- uses → Softmax" in text  # Related lists it without a link
+    assert "See Softmax and" in text  # ссылка от LLM стала простым текстом
+    assert "- uses → Softmax" in text  # Related перечисляет её без ссылки
     links = graph._run("MATCH (:WikiPage {page_id:'e1'})-[:LINKS_TO]->(p) RETURN p.page_id AS id")
     assert links == []
     assert w.registry.dirty() == []
@@ -238,7 +239,7 @@ async def test_page_of_dropped_entity_is_deleted(world, graph, change):
     w.registry.mark_dirty(["e2"])
     report = await w.builder.build(run_id="r2", deleted=["Gone Elsewhere"])
     assert report.deleted == ["Gone Elsewhere", "Softmax"]
-    # Transformer linked to Softmax, so it is regenerated without that link
+    # Transformer ссылался на Softmax, поэтому перегенерируется без этой ссылки
     assert report.created == [] and report.updated == ["Transformer"]
     text = (w.wiki / "entities" / "transformer.md").read_text(encoding="utf-8")
     assert "[[softmax|" not in text
@@ -279,7 +280,7 @@ async def test_index_page_stores_cited_chunk_ids(world):
     summary = next(p for p in payloads if p["section"] == "Summary")
     assert summary["chunk_ids"] and set(summary["chunk_ids"]) <= {c.chunk_id for c in w.chunks}
     assert all(p["path"] == "entities/transformer.md" for p in payloads)
-    # reindex path: re-embed a page from its file
+    # путь reindex: заново эмбеддим страницу из её файла
     text = (w.wiki / "entities" / "transformer.md").read_text(encoding="utf-8")
     count = w.builder.index_page("e1", "e1", "entities/transformer.md", text)
     assert count == len(payloads)
@@ -289,7 +290,7 @@ async def test_index_page_stores_cited_chunk_ids(world):
 
 
 def _cited(text: str) -> set[str]:
-    return set(re.findall(r"\[\^([^\]]+)\]:", text))  # the Sources footnote definitions
+    return set(re.findall(r"\[\^([^\]]+)\]:", text))  # определения сносок из Sources
 
 
 async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, graph):
@@ -302,11 +303,11 @@ async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, grap
         page_start=9,
         path="/docs/attention.pdf",
     )
-    ids = [f"{DOC}:00000", f"{DOC}:00002", extra.chunk_id]  # every chunk mentioning e1
+    ids = [f"{DOC}:00000", f"{DOC}:00002", extra.chunk_id]  # все чанки, где упоминается e1
     body = "Fact one. [^{}] Fact two. [^{}] Fact three. [^{}]".format(*ids)
 
     def handler(task, prompt):
-        # an LLM that keeps every citation of the existing page, as the prompt asks it to
+        # LLM, сохраняющая все цитаты существующей страницы, как и просит промпт
         return body if task == "wiki" else scripted_llm_handler(task, prompt)
 
     w = world(min_mentions=1, handler=handler, evidence_k=3)
@@ -322,7 +323,7 @@ async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, grap
     page = w.wiki / "entities" / "transformer.md"
     assert _cited(page.read_text(encoding="utf-8")) == set(ids)
 
-    # the extra chunk disappears; the evidence window shrinks to one fresh hit
+    # лишний чанк исчезает; окно evidence сужается до одного свежего попадания
     graph._run("MATCH (c:Chunk {chunk_id: $id}) DETACH DELETE c", id=extra.chunk_id)
     w.vectors.client.delete(
         w.vectors.chunks, points_selector=qm.PointIdsList(points=[point_id(extra.chunk_id)])
@@ -331,8 +332,8 @@ async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, grap
     w.registry.mark_dirty(["e1"])
     report = await w.builder.build()
     assert report.updated == ["Transformer"]
-    # both still-valid citations survive although only one is a fresh top-1 hit
+    # обе ещё валидные цитаты сохраняются, хотя свежим top-1 попаданием является только одна
     assert _cited(page.read_text(encoding="utf-8")) == set(ids[:2])
     prompt = [p for p in w.llm.calls_for("wiki") if '"Transformer"' in p][-1]
-    assert all(f"[{cid}]" in prompt for cid in ids[:2])  # carried evidence is shown to the LLM
+    assert all(f"[{cid}]" in prompt for cid in ids[:2])  # перенесённое evidence показывается LLM
     assert f"[{extra.chunk_id}]" not in prompt

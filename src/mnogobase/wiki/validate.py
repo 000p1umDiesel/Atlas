@@ -5,15 +5,16 @@ import re
 from mnogobase.ids import normalize_name
 
 _CITE = re.compile(r"[ \t]?\[\^([^\]\s]+)\]")
-# "#" is allowed in the target: entity names such as "C#" keep it after normalize_name
+# "#" разрешён в цели ссылки: имена сущностей вроде "C#" сохраняют его после normalize_name
 _LINK = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
-# only the exact generated headings: an LLM section such as "## Related work" is kept
+# только точные сгенерированные заголовки: секция от LLM вроде "## Related work" остаётся
 _RESERVED = re.compile(r"^##[ \t]+(Related|Sources)[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _FOOTNOTE_DEF = re.compile(r"^\[\^[^\]]+\]:.*$", re.MULTILINE)
 
 
 def strip_reserved_sections(body: str) -> str:
-    """Drop a leading `# ` title, the generated Related/Sources sections and footnote definitions."""
+    """Убирает начальный заголовок `# `, сгенерированные секции Related/Sources и определения
+    сносок."""
     body = body.strip()
     if body.startswith("# "):
         body = body.split("\n", 1)[1] if "\n" in body else ""
@@ -25,12 +26,13 @@ def strip_reserved_sections(body: str) -> str:
 
 
 def cited_ids(body: str) -> list[str]:
-    """The `[^id]` citation ids of a page body, de-duplicated in first-seen order."""
+    """Id цитат `[^id]` из тела страницы без дублей, в порядке первого появления."""
     return list(dict.fromkeys(m.group(1) for m in _CITE.finditer(body)))
 
 
 def validate_citations(body: str, allowed: set[str]) -> tuple[str, list[str]]:
-    """Remove `[^id]` refs whose id is not allowed; return the kept ids in first-seen order."""
+    """Удаляет ссылки `[^id]` с неразрешёнными id; возвращает оставшиеся id в порядке первого
+    появления."""
     cited: list[str] = []
 
     def replace(match: re.Match[str]) -> str:
@@ -45,10 +47,10 @@ def validate_citations(body: str, allowed: set[str]) -> tuple[str, list[str]]:
 
 
 def resolve_links(body: str, pages: dict[str, tuple[str, str, str]]) -> tuple[str, list[str]]:
-    """Rewrite `[[Name|label]]` to `[[slug|label]]` for known pages, plain label otherwise.
+    """Переписывает `[[Name|label]]` в `[[slug|label]]` для известных страниц, иначе в просто label.
 
-    `pages` maps normalize_name(name or alias) -> (entity_id, slug, title).
-    Returns the linked entity ids in first-seen order.
+    `pages` отображает normalize_name(name or alias) -> (entity_id, slug, title).
+    Возвращает id связанных сущностей в порядке первого появления.
     """
     linked: list[str] = []
 

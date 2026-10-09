@@ -41,4 +41,4 @@ def test_chunker_records(tmp_path):
     first = chunks[0]
     assert first.headings and first.context_text.startswith(first.headings[0])
     assert all(c.path == "/x/vnimanie_ru.md" and c.doc_id == DOC for c in chunks)
-    assert all(c.page_start is None for c in chunks)  # markdown has no pages
+    assert all(c.page_start is None for c in chunks)  # у markdown нет страниц

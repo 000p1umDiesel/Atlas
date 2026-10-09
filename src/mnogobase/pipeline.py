@@ -41,8 +41,8 @@ class IngestReport:
     processed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)
-    wiki: WikiReport | None = None  # per-page wiki failures are in `wiki.failed`
-    # set when the graph holds entities typed with another entity type set than the config
+    wiki: WikiReport | None = None  # ошибки wiki по страницам лежат в `wiki.failed`
+    # задаётся, если в графе есть сущности, типизированные другим набором типов, чем в конфиге
     types_warning: str | None = None
 
 
@@ -50,28 +50,28 @@ class _PreviouslyFailed(Exception):
     pass
 
 
-_UNREPORTED_REMOVALS = "unreported_removed_entities"  # registry meta key
+_UNREPORTED_REMOVALS = "unreported_removed_entities"  # ключ meta в registry
 
 
 class PendingRemovalError(RuntimeError):
-    """A journaled document removal from an earlier run still cannot be finished."""
+    """Записанное в журнал удаление документа из прошлого запуска всё ещё не удаётся завершить."""
 
 
 class _RemovalPlan(BaseModel):
-    """What removing a document cleans up; journaled in the registry until it is done.
+    """Что подчищает удаление документа; хранится в журнале registry, пока не завершится.
 
-    Computed read-only right before the graph transaction, so it matches what that
-    transaction removes."""
+    Вычисляется в режиме только чтения прямо перед транзакцией графа, поэтому совпадает с
+    тем, что эта транзакция удаляет."""
 
-    removed_entities: dict[str, str]  # entity_id -> name
-    removed_pages: list[tuple[str, str]]  # (page_id, wiki-relative path)
-    dirty: list[str]  # surviving entities whose pages must be regenerated
-    relinked: int  # how many of those only linked to a removed page
+    removed_entities: dict[str, str]  # entity_id -> имя
+    removed_pages: list[tuple[str, str]]  # (page_id, путь относительно wiki)
+    dirty: list[str]  # оставшиеся сущности, чьи страницы нужно перегенерировать
+    relinked: int  # сколько из них лишь ссылались на удалённую страницу
 
 
 def _holds(path: str, doc_id: str) -> bool:
-    """Whether the file at `path` exists and currently has this content (registry rows and
-    recorded document paths can be stale: the file was renamed, deleted or edited)."""
+    """Существует ли файл по `path` и с этим ли он сейчас содержимым (строки registry и
+    записанные пути документов могут устареть: файл переименовали, удалили или изменили)."""
     file = Path(path)
     return file.is_file() and file_doc_id(file) == doc_id
 
@@ -104,7 +104,7 @@ class Pipeline:
         self._wiki = wiki
         self._log = get_logger(__name__)
 
-    # ---- setup ----
+    # ---- подготовка ----
     def prepare(self, check_embedder: bool = True, resume: bool = True) -> None:
         signature = embedder_signature(self._embedder)
         stored = self._registry.get_meta("embedder")
@@ -114,9 +114,9 @@ class Pipeline:
         self._vectors.ensure_collections()
         self._graph.ensure_schema()
         if stored != signature and not mismatch:
-            # a new index, or a legacy signature (without the templates) of the same embedder;
-            # compare-and-set: ask / compare run without the lock and must never overwrite
-            # what a concurrent reindex wrote meanwhile (e.g. reindex-in-progress)
+            # новый индекс или старая сигнатура (без шаблонов) того же embedder;
+            # compare-and-set: ask / compare работают без lock и не должны затирать то, что
+            # тем временем записал параллельный reindex (напр. reindex-in-progress)
             upgraded = self._registry.replace_meta("embedder", stored, signature)
             if upgraded and stored is not None:
                 self._log.info("embedder_signature_upgraded", old=stored, new=signature)
@@ -139,7 +139,7 @@ class Pipeline:
                 found.append(path)
         return list(dict.fromkeys(f.resolve() for f in found))
 
-    # ---- chunk cache ----
+    # ---- кэш чанков ----
     def chunks_path(self, doc_id: str) -> Path:
         return self._s.data_dir / "cache" / f"{doc_id}.chunks.json"
 
@@ -219,9 +219,9 @@ class Pipeline:
             removed_names.extend(self._remove_doc(row.doc_id, keep_path=key))
         journaled = self._registry.get_removal(doc_id)
         if journaled is not None:
-            # this content's removal failed earlier in this run: settle it first with this
-            # file as a live copy, so the content is neither deleted nor skipped as done
-            # while its data is gone
+            # удаление этого содержимого уже упало в этом запуске: сначала доводим его,
+            # считая этот файл живой копией, чтобы содержимое не удалилось и не было
+            # пропущено как done, когда его данных уже нет
             plan = _RemovalPlan.model_validate_json(journaled)
             removed_names.extend(self._resume_removal(doc_id, plan, live=[key]))
         pending = self._registry.pending_stages(doc_id)
@@ -259,11 +259,13 @@ class Pipeline:
         return "processed"
 
     def _remove_doc(self, doc_id: str, keep_path: str) -> list[str]:
-        """Delete an old document version unless another path still has the same content."""
+        """Удаляет старую версию документа, если ни по одному другому пути нет того же
+        содержимого."""
         journaled = self._registry.get_removal(doc_id)
-        if journaled is not None:  # an interrupted earlier attempt
+        if journaled is not None:  # прерванная прошлая попытка
             return self._resume_removal(doc_id, _RemovalPlan.model_validate_json(journaled))
-        # only a file that still has this content keeps it (not a renamed or edited one)
+        # сохраняет его только файл, у которого всё ещё это содержимое (не переименованный
+        # и не изменённый)
         survivors = [p for p in self._live_copies(doc_id) if p != keep_path]
         if survivors:
             self._repoint_doc(doc_id, survivors)
@@ -271,19 +273,19 @@ class Pipeline:
         return self._start_removal(doc_id)
 
     def finish_pending_removals(self) -> list[str]:
-        """Finish document removals an earlier run started but did not complete (crash or a
-        store error); returns the names of the removed entities."""
-        # names of removals finished by an earlier call that then failed on another one
+        """Доводит удаления документов, которые прошлый запуск начал, но не завершил (сбой
+        или ошибка хранилища); возвращает имена удалённых сущностей."""
+        # имена из удалений, завершённых прошлым вызовом, который затем упал на другом
         names: list[str] = json.loads(self._registry.get_meta(_UNREPORTED_REMOVALS) or "[]")
         failed: dict[str, Exception] = {}
         for doc_id, plan_json in self._registry.pending_removals():
             self._log.warning("resuming_document_removal", old_doc_id=doc_id)
             try:
                 names += self._resume_removal(doc_id, _RemovalPlan.model_validate_json(plan_json))
-            except Exception as exc:  # the others are independent: finish them anyway
+            except Exception as exc:  # остальные независимы: всё равно доводим их
                 failed[doc_id] = exc
         if failed:
-            # kept for the wiki report / log.md of the run that finally succeeds
+            # сохраняем для wiki-отчёта / log.md того запуска, который в итоге пройдёт успешно
             self._registry.set_meta(_UNREPORTED_REMOVALS, json.dumps(names))
             causes = "; ".join(f"{d}: {type(e).__name__}: {e}" for d, e in failed.items())
             raise PendingRemovalError(
@@ -303,33 +305,33 @@ class Pipeline:
     def _resume_removal(
         self, doc_id: str, plan: _RemovalPlan, live: Sequence[str] = ()
     ) -> list[str]:
-        """Finish an interrupted removal, re-validated against what is true now.
+        """Доводит прерванное удаление, заново сверяясь с текущим состоянием.
 
-        A file with this content may exist again (another path, a new file, a revert): such
-        live copies must not lose the document. `live` names paths known to hold it."""
+        Файл с этим содержимым мог появиться снова (другой путь, новый файл, откат): такие
+        живые копии не должны лишиться документа. `live` — пути, где оно точно есть."""
         survivors = self._live_copies(doc_id, live)
         if self._graph.has_document(doc_id):
-            # the graph transaction never committed, so nothing was deleted yet
+            # транзакция графа так и не закоммитилась, значит, ещё ничего не удалено
             if survivors:
                 self._repoint_doc(doc_id, survivors)
                 self._registry.drop_removal(doc_id)
                 self._log.info("document_removal_dropped", old_doc_id=doc_id, kept_by=survivors)
                 return []
-            # later work (other files of that run) may have changed what removal implies
+            # последующая работа (другие файлы того запуска) могла изменить состав удаления
             return self._start_removal(doc_id)
         return self._apply_removal(doc_id, plan, survivors)
 
     def _live_copies(self, doc_id: str, live: Sequence[str] = ()) -> list[str]:
-        """Paths whose file currently holds this content (registry rows can be stale)."""
+        """Пути, файл по которым сейчас с этим содержимым (строки registry могут устареть)."""
         candidates = dict.fromkeys([*self._registry.paths_for_doc(doc_id), *live])
         return [p for p in candidates if _holds(p, doc_id)]
 
     def _removal_plan(self, doc_id: str) -> _RemovalPlan:
-        """Read-only: everything a removal must clean up, computed while the graph still has it."""
+        """Только чтение: всё, что должно подчистить удаление, пока это ещё есть в графе."""
         linkers = self._pages_linking_into(doc_id)
         result = self._graph.document_deletion_plan(doc_id)
         removed = set(result.removed_entity_ids)
-        # pages linking to a removed page are rewritten so the stale link disappears
+        # страницы, ссылающиеся на удалённую, переписываются, чтобы устаревшая ссылка исчезла
         stale_linkers = {p for target in removed for p in linkers.get(target, [])}
         return _RemovalPlan(
             removed_entities=dict(
@@ -343,24 +345,24 @@ class Pipeline:
     def _apply_removal(
         self, doc_id: str, plan: _RemovalPlan, survivors: Sequence[str] = ()
     ) -> list[str]:
-        """Apply a journaled removal: graph transaction, then Qdrant, wiki files and registry.
+        """Применяет удаление из журнала: транзакция графа, затем Qdrant, файлы wiki и registry.
 
-        Idempotent, and safe to replay after other work: once the graph transaction has
-        committed, the graph is the truth. An entity or page the plan lists but the graph
-        has again (re-mentioned or recreated under the same id by a later file) is live
-        data: its point, sections and file stay and it is regenerated (marked dirty).
-        `survivors` are live copies of the content found after the graph transaction had
-        committed: their data is gone, so their stages are reset (caches kept) and they are
-        ingested again instead of staying "done".
-        Returns the names of the entities that are really gone."""
-        self._graph.delete_document(doc_id)  # one transaction; a no-op once committed
+        Идемпотентно и безопасно для повтора после другой работы: после коммита транзакции
+        графа источник истины — граф. Сущность или страница, которая есть в плане, но снова
+        есть в графе (заново упомянута или пересоздана с тем же id более поздним файлом), —
+        это живые данные: её point, секции и файл остаются, и она перегенерируется (помечается
+        dirty). `survivors` — живые копии содержимого, найденные после коммита транзакции
+        графа: их данных уже нет, поэтому их стадии сбрасываются (кэши сохраняются), и они
+        ingest-ятся заново, а не остаются "done".
+        Возвращает имена сущностей, которые действительно удалены."""
+        self._graph.delete_document(doc_id)  # одна транзакция; после коммита — no-op
         gone = {e: n for e, n in plan.removed_entities.items() if self._graph.get_entity(e) is None}
         revived = set(plan.removed_entities) - set(gone)
         self._registry.mark_dirty(set(plan.dirty) | revived)
         self._registry.clear_dirty(gone)
         self._vectors.delete_doc(doc_id)
         self._vectors.delete_entities(sorted(gone))
-        # a freed slug may already belong to another entity's page written later
+        # освободившийся slug может уже принадлежать странице другой сущности, записанной позже
         live_paths = {row.path for row in self._graph.wiki_pages()} if plan.removed_pages else set()
         for page_id, rel_path in plan.removed_pages:
             if self._graph.wiki_page(page_id) is None:
@@ -387,19 +389,20 @@ class Pipeline:
         return sorted(gone.values())
 
     def _pages_linking_into(self, doc_id: str) -> dict[str, list[str]]:
-        """Before a cascade delete: for each wiki page of an entity this document mentions,
-        the pages that link to it (page_id == entity_id). The edges vanish with the delete."""
+        """Перед каскадным удалением: для каждой wiki-страницы сущности, упомянутой в этом
+        документе, — страницы, ссылающиеся на неё (page_id == entity_id). Рёбра исчезнут
+        вместе с удалением."""
         mentioned = {e for ids in self._graph.chunk_entity_ids(doc_id).values() for e in ids}
         paged = [row.page_id for row in self._graph.wiki_pages() if row.page_id in mentioned]
         return {page_id: self._graph.pages_linking_to([page_id]) for page_id in paged}
 
     def _follow_moved_document(self, doc_id: str, path: str) -> None:
-        """`path` holds an already ingested document: if the path its citations name no
-        longer has it (the file was renamed, deleted or edited), point them at `path`.
-        Then forget registry rows of this content whose file is gone, so later runs need
-        not check again."""
+        """По `path` лежит уже загруженный документ: если по пути из его цитат документа
+        больше нет (файл переименовали, удалили или изменили), перенаправляет их на `path`.
+        Затем забывает строки registry этого содержимого, чьих файлов уже нет, чтобы
+        следующим запускам не проверять их снова."""
         if all(p == path for p in self._registry.paths_for_doc(doc_id)):
-            return  # no other file ever had this content: the citations already name `path`
+            return  # у других файлов этого содержимого не было: цитаты уже указывают на `path`
         if any(p != path and not _holds(p, doc_id) for p in self._recorded_paths(doc_id)):
             self._repoint_doc(doc_id, [path])
         for stale in self._registry.paths_for_doc(doc_id):
@@ -407,8 +410,8 @@ class Pipeline:
                 self._registry.drop_file(stale)
 
     def _recorded_paths(self, doc_id: str) -> set[str]:
-        """Paths the stored document names: the chunk cache and the graph's Document node
-        (either can be missing: the cache was deleted, or the document was never embedded)."""
+        """Пути, указанные в сохранённом документе: в кэше чанков и в узле Document графа
+        (любого может не быть: кэш удалили или документ так и не заэмбеддили)."""
         recorded = set()
         if self.chunks_path(doc_id).exists():
             recorded.add(self.load_chunks(doc_id)[0].path)
@@ -418,20 +421,20 @@ class Pipeline:
         return recorded
 
     def _repoint_doc(self, doc_id: str, survivors: list[str]) -> None:
-        """Shared content stays; make sure citations name a path that still has it.
+        """Общее содержимое остаётся; следит, чтобы цитаты указывали на путь, где оно ещё есть.
 
-        Qdrant is updated first and the chunk cache last: the next run decides from the
-        cache and the graph, so a failure part-way is retried instead of being forgotten."""
+        Qdrant обновляется первым, кэш чанков — последним: следующий запуск решает по кэшу и
+        графу, так что сбой на полпути будет повторён, а не забыт."""
         recorded = self._recorded_paths(doc_id)
         if not recorded:
-            return  # never chunked: nothing stored carries a path yet
+            return  # чанков не было: путь ещё нигде не сохранён
         if recorded <= set(survivors):
             return
         path = survivors[0]
         self._log.info("document_repointed", old_path=sorted(recorded - {path}), path=path)
         self._vectors.set_doc_path(doc_id, path)
         self._graph.set_document_path(doc_id, path)
-        # wiki pages citing this document name its file in their Sources
+        # wiki-страницы, цитирующие этот документ, указывают его файл в своих Sources
         self._registry.mark_dirty(self._graph.pages_citing_document(doc_id))
         if self.chunks_path(doc_id).exists():
             doc, chunks = self.load_chunks(doc_id)
@@ -464,7 +467,7 @@ class Pipeline:
             raise ValueError(f"unknown stage {stage}")
 
     def index_chunks(self, doc: DocumentRecord, chunks: list[ChunkRecord]) -> None:
-        """Embed chunks (dense + sparse) and upsert them into Qdrant."""
+        """Эмбеддит чанки (dense + sparse) и делает их upsert в Qdrant."""
         if not chunks:
             return
         texts = [c.context_text for c in chunks]
@@ -493,12 +496,12 @@ class Pipeline:
 
     async def _build_graph(self, doc_id: str, progress: ProgressSink) -> None:
         _doc, chunks = self.load_chunks(doc_id)
-        # the extract stage may have run with another model / prompt version (changed before
-        # a retry of this stage): its results are still this document's knowledge
+        # стадия extract могла отработать с другой моделью / версией промпта (их сменили
+        # перед повтором этой стадии): её результаты всё равно — знания этого документа
         results = {c.chunk_id: self._extractor.cached(c, any_version=True) for c in chunks}
         missing = sum(1 for r in results.values() if r is None)
         if chunks and missing / len(chunks) > self._s.extract.max_failed_ratio:
-            # never mark the graph done without the knowledge; a retry re-runs extract first
+            # никогда не помечаем graph как done без знаний; повтор сначала перезапустит extract
             self._registry.set_stage(doc_id, "extract", "pending")
             raise ExtractionFailedError(
                 f"{missing}/{len(chunks)} chunks have no cached extraction; "

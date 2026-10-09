@@ -52,7 +52,7 @@ class Registry:
     def close(self) -> None:
         self._db.close()
 
-    # ---- files ----
+    # ---- файлы ----
     def get_file(self, path: str) -> FileRow | None:
         row = self._db.execute(
             "SELECT path, doc_id, size, mtime, status FROM files WHERE path=?", (path,)
@@ -95,7 +95,7 @@ class Registry:
         )
         return [r[0] for r in rows]
 
-    # ---- stages ----
+    # ---- стадии ----
     def stage_status(self, doc_id: str, stage: str) -> str:
         row = self._db.execute(
             "SELECT status FROM stages WHERE doc_id=? AND stage=?", (doc_id, stage)
@@ -133,7 +133,7 @@ class Registry:
         return out
 
     def reset_stages(self, doc_id: str) -> None:
-        """Forget a document's stage states (it is ingested again); caches are kept."""
+        """Сбрасывает статусы стадий документа (он ingest-ится заново); кэши сохраняются."""
         self._db.execute("DELETE FROM stages WHERE doc_id=?", (doc_id,))
 
     def clear_doc(self, doc_id: str) -> None:
@@ -142,7 +142,7 @@ class Registry:
         self._db.execute("DELETE FROM chunk_extract WHERE chunk_id LIKE ?", (prefix,))
         self._db.execute("DELETE FROM extraction_cache WHERE chunk_id LIKE ?", (prefix,))
 
-    # ---- per-chunk extraction ----
+    # ---- извлечение по чанкам ----
     def set_chunk_extract(self, chunk_id: str, status: str, error: str | None = None) -> None:
         self._db.execute(
             "INSERT INTO chunk_extract(chunk_id, status, attempts, error) VALUES(?,?,1,?) "
@@ -167,7 +167,7 @@ class Registry:
         return row[0] if row else None
 
     def get_latest_extraction(self, chunk_id: str) -> str | None:
-        """The most recently written extraction of a chunk, whatever its model or prompt."""
+        """Последнее записанное извлечение для чанка, независимо от модели и промпта."""
         row = self._db.execute(
             "SELECT result_json FROM extraction_cache WHERE chunk_id=? ORDER BY rowid DESC LIMIT 1",
             (chunk_id,),
@@ -175,7 +175,7 @@ class Registry:
         return row[0] if row else None
 
     def latest_extraction_versions(self) -> set[str]:
-        """The prompt versions of each chunk's most recently written extraction."""
+        """Версии промпта последнего записанного извлечения для каждого чанка."""
         rows = self._db.execute(
             "SELECT DISTINCT prompt_version FROM extraction_cache WHERE rowid IN "
             "(SELECT MAX(rowid) FROM extraction_cache GROUP BY chunk_id)"
@@ -191,7 +191,7 @@ class Registry:
             (chunk_id, prompt_version, model, result_json),
         )
 
-    # ---- dirty entities ----
+    # ---- dirty-сущности ----
     def mark_dirty(self, entity_ids: Iterable[str]) -> None:
         now = _now()
         self._db.executemany(
@@ -208,7 +208,7 @@ class Registry:
             "DELETE FROM dirty_entities WHERE entity_id=?", [(e,) for e in set(entity_ids)]
         )
 
-    # ---- document removals in progress (journal: finished after a crash) ----
+    # ---- незавершённые удаления документов (журнал: доделываются после сбоя) ----
     def put_removal(self, doc_id: str, plan_json: str) -> None:
         self._db.execute(
             "INSERT OR REPLACE INTO pending_removals(doc_id, plan_json) VALUES(?, ?)",
@@ -237,8 +237,9 @@ class Registry:
         self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, value))
 
     def replace_meta(self, key: str, expected: str | None, value: str) -> bool:
-        """Set `key` to `value` only if it still holds `expected` (None: no value yet), so a
-        value another process wrote meanwhile is never overwritten. Whether it was set."""
+        """Записывает `value` в `key`, только если там всё ещё `expected` (None: значения
+        пока нет), чтобы не затереть значение, записанное тем временем другим процессом.
+        Возвращает, было ли значение записано."""
         if expected is None:
             cursor = self._db.execute(
                 "INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)", (key, value)

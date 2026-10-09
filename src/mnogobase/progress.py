@@ -1,15 +1,16 @@
-"""Progress reporting for long runs (ingest, wiki build, reindex).
+"""Отчёт о прогрессе долгих запусков (ingest, wiki build, reindex).
 
-The library only calls a `ProgressSink`; drawing it is the CLI's job. A run reports:
+Библиотека только вызывает `ProgressSink`; отрисовка — задача CLI. Запуск сообщает:
 
-- `files_found(total)` once, then per file `file_started(path)` ... `file_done(status)`;
-- `step(name, total)` when a step starts: a stage of the current file (parse, chunk, embed,
-  extract, graph) or a step of the whole run (wiki evidence / draft / write, reindex ...).
-  `total` is the number of units (chunks, entities, pages) when known; a step may be
-  announced again with its total once that is known;
-- `advance(n, failed=...)` as units of the current step finish, failed ones included.
+- `files_found(total)` один раз, затем для каждого файла `file_started(path)` ...
+  `file_done(status)`;
+- `step(name, total)` при старте шага: стадии текущего файла (parse, chunk, embed,
+  extract, graph) или шага всего запуска (wiki evidence / draft / write, reindex ...).
+  `total` — число единиц (чанков, сущностей, страниц), если оно известно; шаг можно
+  объявить повторно с total, когда оно станет известно;
+- `advance(n, failed=...)` по мере завершения единиц текущего шага, включая упавшие.
 
-All calls come from the thread running the event loop (or the only thread)."""
+Все вызовы приходят из потока, где крутится event loop (или из единственного потока)."""
 
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ class ProgressSink(Protocol):
 
 
 class NullProgress:
-    """Reports nothing: the default for library callers and tests."""
+    """Ничего не сообщает: вариант по умолчанию для вызовов из библиотеки и тестов."""
 
     def files_found(self, total: int) -> None:
         pass

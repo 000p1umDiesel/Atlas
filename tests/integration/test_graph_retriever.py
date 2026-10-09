@@ -47,7 +47,8 @@ def test_graph_retriever_returns_entities_relations_and_evidence(graph):
     graph.add_mentions(chunk.chunk_id, ["e1", "e2"])
     graph.merge_relation("e1", "e2", "uses", "Transformer uses softmax.", 5, chunk.chunk_id)
 
-    # threshold 0.9 switches off fuzzy vector seeds, so seeds come from the fulltext index only
+    # порог 0.9 отключает нечёткий векторный поиск стартовых узлов, они берутся
+    # только из fulltext-индекса
     retriever = GraphRetriever(graph, vectors, emb, GraphSettings(seed_threshold=0.9))
     items = retriever.retrieve("What is the Transformer?", 5)
     kinds = [i.kind for i in items]

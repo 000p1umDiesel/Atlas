@@ -23,13 +23,13 @@ class Check:
     name: str
     ok: bool
     detail: str
-    warn: bool = False  # worth attention, but not a failure (doctor still exits 0)
+    warn: bool = False  # стоит внимания, но не ошибка (doctor всё равно выходит с 0)
 
 
 def _guard(name: str, fn: Callable[[], Check]) -> Check:
     try:
         return fn()
-    except Exception as exc:  # doctor must report, never crash
+    except Exception as exc:  # doctor должен сообщать, а не падать
         return Check(name, False, f"{type(exc).__name__}: {exc}")
 
 
@@ -40,10 +40,11 @@ def run_checks(
     *,
     check_dim: bool = True,
 ) -> list[Check]:
-    """Run the environment checks in `CHECKS` order (only those named in `only`, if given).
+    """Запускает проверки окружения в порядке `CHECKS` (только перечисленные в `only`, если
+    он задан).
 
-    `check_dim=False` accepts collections of another dimension than the config: for
-    `reindex`, which drops and recreates them."""
+    `check_dim=False` допускает коллекции с размерностью, отличной от конфига: это нужно для
+    `reindex`, который удаляет и пересоздаёт их."""
 
     def device() -> Check:
         return Check("device", True, detect_device(settings.device))
@@ -53,7 +54,7 @@ def run_checks(
         resp.raise_for_status()
         names = {m["name"] for m in resp.json().get("models", [])}
         wanted = {"embedder": settings.embedder.model}
-        # the reranker may be served by another Ollama; only a shared one is checked here
+        # reranker может работать на другом Ollama; здесь проверяется только общий
         same_host = settings.rerank.base_url.rstrip("/") == settings.embedder.base_url.rstrip("/")
         if settings.rerank.enabled and same_host:
             wanted["reranker"] = settings.rerank.model
@@ -73,8 +74,8 @@ def run_checks(
         )
         where = f"{settings.llm.model} @ {settings.llm.base_url}"
         if resp.status_code in (404, 405):
-            # some OpenAI-compatible endpoints serve chat completions without a model list;
-            # 401/403 (bad key) and other errors still fail below
+            # некоторые OpenAI-совместимые endpoint'ы отдают chat completions без списка
+            # моделей; 401/403 (неверный ключ) и прочие ошибки всё равно падают ниже
             return Check("llm", True, f"{where} (models endpoint not available)")
         resp.raise_for_status()
         ids = {m["id"] for m in resp.json().get("data", [])}
@@ -83,7 +84,7 @@ def run_checks(
         return Check("llm", False, f"{settings.llm.model} is not served by {settings.llm.base_url}")
 
     def qdrant() -> Check:
-        # reachability is what this check reports; skip the client's own version probe warning
+        # проверка сообщает о доступности; warning клиента о проверке версии пропускаем
         client = QdrantClient(
             url=settings.qdrant.url, timeout=int(timeout), check_compatibility=False
         )

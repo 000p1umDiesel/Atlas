@@ -10,8 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettin
 
 LLM_TASKS = ("extract", "resolve", "wiki", "answer", "query")
 LANGUAGE_NAMES = {"en": "English", "ru": "Russian"}
-# Entity types: name -> one-line description for the extraction prompt. The type is part
-# of entity_id, so the types must not overlap; `Other` stays last (the fallback).
+# Типы сущностей: имя -> однострочное описание для промпта извлечения. Тип входит
+# в entity_id, поэтому типы не должны пересекаться; `Other` идёт последним (запасной).
 DEFAULT_ENTITY_TYPES: dict[str, str] = {
     "Person": "A real or fictional individual, named or clearly identified.",
     "Organization": (
@@ -96,7 +96,7 @@ class LLMSettings(BaseModel):
         return self.overrides.get(task) or self.model
 
     def api_key(self) -> str:
-        # Ollama ignores the key, but the OpenAI SDK refuses an empty one.
+        # Ollama игнорирует ключ, но OpenAI SDK не принимает пустой.
         return os.environ.get(self.api_key_env) or "ollama"
 
 
@@ -108,8 +108,9 @@ class EmbedderSettings(BaseModel):
     batch_size: int = 32
     doc_template: str = "title: {title} | text: {text}"
     query_template: str = "task: search result | query: {query}"
-    # Ollama context window; None keeps the model's default (Qwen3 loads with ~40k tokens,
-    # whose KV cache can push another model out of VRAM). Longer inputs are truncated.
+    # Контекстное окно Ollama; None оставляет значение модели по умолчанию (Qwen3 грузится
+    # с ~40k токенов, и её KV-кэш может вытеснить другую модель из VRAM). Более длинный
+    # вход обрезается.
     num_ctx: int | None = Field(default=None, ge=256)
 
 
@@ -128,7 +129,7 @@ class ChunkingSettings(BaseModel):
 
 
 class ExtractSettings(BaseModel):
-    # name -> description (YAML mapping, order kept); a plain list of names also works
+    # имя -> описание (YAML mapping, порядок сохраняется); подойдёт и простой список имён
     entity_types: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ENTITY_TYPES))
     max_failed_ratio: float = 0.2
 
@@ -138,8 +139,8 @@ class ExtractSettings(BaseModel):
         if isinstance(value, list | tuple):
             value = dict(_list_entry(item) for item in value)
         if not isinstance(value, dict):
-            return value  # pydantic reports the wrong type
-        # `Name:` without a description is null in YAML
+            return value  # о неверном типе сообщит pydantic
+        # `Name:` без описания в YAML — это null
         types = {str(k).strip(): str(v or "").strip() for k, v in value.items()}
         if not types:
             raise ValueError("entity_types must list at least one type")
@@ -161,7 +162,7 @@ class ExtractSettings(BaseModel):
 
 
 def _list_entry(item: object) -> tuple[str, object]:
-    """One entry of a YAML list of types: `- Name` or `- Name: description`."""
+    """Один элемент YAML-списка типов: `- Name` или `- Name: description`."""
     if isinstance(item, dict):
         if len(item) != 1:
             raise ValueError(
@@ -187,25 +188,25 @@ class WikiSettings(BaseModel):
 class RetrievalSettings(BaseModel):
     k: int = 8
     context_tokens: int = 6000
-    neighbors: int = Field(default=0, ge=0)  # rag: same-section chunks added each side of a hit
-    translate: bool = True  # also search with an English translation of a non-English question
-    answer_language: str = "auto"  # language code (en, ru, ...) or auto: that of the question
+    neighbors: int = Field(default=0, ge=0)  # rag: доп. чанки той же секции с каждой стороны хита
+    translate: bool = True  # искать ещё и по английскому переводу неанглийского вопроса
+    answer_language: str = "auto"  # код языка (en, ru, ...) или auto: язык вопроса
     budget: dict[str, float] = Field(
         default_factory=lambda: {"rag": 0.4, "wiki": 0.3, "graph": 0.3}
     )
 
 
 class RerankSettings(BaseModel):
-    """Cross-encoder reranking of rag hits (Qwen3-Reranker served by Ollama)."""
+    """Cross-encoder reranking хитов rag (Qwen3-Reranker через Ollama)."""
 
     enabled: bool = False
     provider: Literal["ollama"] = "ollama"
     base_url: str = "http://localhost:11434"
     model: str = "dengcao/Qwen3-Reranker-4B:Q4_K_M"
-    candidates: int = Field(default=30, ge=1)  # hybrid hits scored per question; best k are kept
-    concurrency: int = Field(default=4, ge=1)  # parallel scoring requests
-    max_chars: int = Field(default=4000, ge=100)  # document text cut for the reranker prompt
-    num_ctx: int = Field(default=4096, ge=512)  # Ollama context window (prompt + max_chars)
+    candidates: int = Field(default=30, ge=1)  # гибридных хитов на скоринг; остаются лучшие k
+    concurrency: int = Field(default=4, ge=1)  # параллельных запросов на скоринг
+    max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для промпта reranker
+    num_ctx: int = Field(default=4096, ge=512)  # контекстное окно Ollama (промпт + max_chars)
     instruction: str = "Given a question, retrieve passages that answer it"
 
 
@@ -213,7 +214,7 @@ class GraphSettings(BaseModel):
     hops: int = 2
     max_relations: int = 30
     seeds: int = 5
-    seed_threshold: float = 0.3  # min cosine for query -> entity seeds
+    seed_threshold: float = 0.3  # мин. косинус для seed-сущностей по запросу
 
 
 class QdrantSettings(BaseModel):
@@ -231,8 +232,8 @@ class Neo4jSettings(BaseModel):
 
 
 class _YamlSource(YamlConfigSettingsSource):
-    """config.yaml, except that an entity type set given by init or env replaces the YAML
-    one as a whole: sources are deep-merged, which would add the YAML types to it."""
+    """config.yaml, но набор типов сущностей из init или env заменяет YAML-набор целиком:
+    источники сливаются deep merge, и иначе к нему добавились бы типы из YAML."""
 
     def __call__(self) -> dict[str, Any]:
         data = super().__call__()
@@ -278,7 +279,7 @@ class Settings(BaseSettings):
         dotenv_settings,
         file_secret_settings,
     ):
-        # priority: explicit init > MNOGOBASE_* env > config.yaml > defaults
+        # приоритет: явный init > env MNOGOBASE_* > config.yaml > значения по умолчанию
         return (
             init_settings,
             env_settings,
@@ -291,10 +292,10 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def _bypass_proxy_for_local_hosts() -> None:
-    """Keep local services (Ollama, Qdrant) off any system proxy.
+    """Не пускает запросы к локальным сервисам (Ollama, Qdrant) через системный прокси.
 
-    On Windows, httpx falls back to the registry proxy when no *_PROXY env vars are set,
-    but ignores the registry bypass list, so localhost requests hit the proxy (503).
+    На Windows httpx при отсутствии env-переменных *_PROXY берёт прокси из реестра, но
+    игнорирует список исключений из реестра, поэтому запросы к localhost идут в прокси (503).
     """
     current = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
     hosts = [h.strip() for h in current.split(",") if h.strip()]
@@ -305,12 +306,13 @@ def _bypass_proxy_for_local_hosts() -> None:
 
 
 def load_settings(config_path: Path | None = None) -> Settings:
-    """Load `.env` secrets from the CWD, then settings from YAML + env."""
+    """Загружает секреты из `.env` в CWD, затем настройки из YAML + env."""
     load_dotenv(Path.cwd() / ".env", override=False)
     _bypass_proxy_for_local_hosts()
     explicit = config_path or os.environ.get("MNOGOBASE_CONFIG")
     path = Path(explicit or "config.yaml")
-    # A missing implicit ./config.yaml means "use defaults"; a missing explicit path is a typo.
+    # Отсутствие неявного ./config.yaml значит "берём умолчания"; отсутствие явно
+    # указанного пути — опечатка.
     if explicit and not path.is_file():
         raise FileNotFoundError(f"Config file not found: {path}")
 

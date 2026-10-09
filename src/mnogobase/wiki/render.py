@@ -25,7 +25,8 @@ class SourceRef:
 
 
 class Section(NamedTuple):
-    """One embeddable page section: citations stripped from `text`, their ids kept in `chunk_ids`."""
+    """Одна секция страницы для эмбеддинга: цитаты убраны из `text`, их id сохранены в
+    `chunk_ids`."""
 
     name: str
     text: str
@@ -46,13 +47,14 @@ def render_page(
     version: int,
     updated: date,
 ) -> str:
-    """Render a full wiki page; `linked` maps entity_id -> slug of pages that exist."""
+    """Рендерит полную wiki-страницу; `linked` отображает entity_id -> slug существующих страниц."""
     front = {
         "id": entity.entity_id,
         "type": entity.type,
         "aliases": entity.aliases,
         "sources": len({s.path for s in sources if s.path}),
-        "updated": updated.isoformat(),  # kept a string so parse_page round-trips it
+        # остаётся строкой, чтобы parse_page читал её обратно без изменений
+        "updated": updated.isoformat(),
         "version": version,
     }
     parts = [
@@ -85,7 +87,7 @@ def render_page(
 
 
 def parse_page(text: str) -> tuple[dict, str]:
-    """Page -> (front matter, LLM-authored body without title, Related, Sources)."""
+    """Страница -> (front matter, написанное LLM тело без заголовка, Related, Sources)."""
     meta: dict = {}
     match = _FRONTMATTER.match(text)
     if match:
@@ -95,7 +97,7 @@ def parse_page(text: str) -> tuple[dict, str]:
 
 
 def split_sections(text: str) -> list[Section]:
-    """Page -> sections to embed; Sources skipped, empty sections dropped."""
+    """Страница -> секции для эмбеддинга; Sources пропускается, пустые секции отбрасываются."""
     match = _FRONTMATTER.match(text)
     body = text[match.end() :] if match else text
     title = ""
@@ -145,7 +147,7 @@ def append_log(
     deleted: list[str],
     now: datetime | None = None,
 ) -> None:
-    """Append one run entry (processed documents, page changes) to the wiki log."""
+    """Дописывает в wiki-лог одну запись о запуске (обработанные документы, изменения страниц)."""
     now = (now or datetime.now(UTC)).astimezone(UTC)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():

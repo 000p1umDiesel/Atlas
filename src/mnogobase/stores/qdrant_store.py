@@ -21,7 +21,7 @@ SPARSE = "bm25"
 _KEYWORD = qm.PayloadSchemaType.KEYWORD
 _TRANSPORT_ERRORS = (ResponseHandlingException, httpx.TransportError)
 _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=0.5, max=10)
-QueryVectors = tuple[list[float], qm.SparseVector]  # (dense, sparse) of one query
+QueryVectors = tuple[list[float], qm.SparseVector]  # (dense, sparse) одного запроса
 
 
 class DimensionMismatchError(RuntimeError):
@@ -48,7 +48,7 @@ class QdrantStore:
         return cls(QdrantClient(url=settings.url, timeout=60), settings.prefix, dim)
 
     def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Run a Qdrant network call, retrying transport errors only."""
+        """Выполняет сетевой вызов Qdrant, повторяя только при транспортных ошибках."""
         retrying = Retrying(
             retry=retry_if_exception_type(_TRANSPORT_ERRORS),
             stop=stop_after_attempt(5),
@@ -57,7 +57,7 @@ class QdrantStore:
         )
         return retrying(fn, *args, **kwargs)
 
-    # ---- collections ----
+    # ---- коллекции ----
     def ensure_collections(self) -> None:
         self._ensure(
             self.chunks, sparse=True, indexes=("chunk_id", "doc_id", "entity_ids", "modality")
@@ -114,7 +114,7 @@ class QdrantStore:
         key: str,
         extra: Sequence[QueryVectors] = (),
     ) -> list[SearchHit]:
-        """Dense + BM25 prefetch per query (the main one and `extra`), all fused by RRF."""
+        """Prefetch dense + BM25 на каждый запрос (основной и `extra`), всё сливается через RRF."""
         prefetch = [
             p
             for d, s in [(dense, sparse), *extra]
@@ -136,7 +136,7 @@ class QdrantStore:
             self.client.delete, name, points_selector=qm.FilterSelector(filter=_match(key, value))
         )
 
-    # ---- chunks ----
+    # ---- чанки ----
     def upsert_chunks(
         self,
         chunks: list[ChunkRecord],
@@ -163,7 +163,7 @@ class QdrantStore:
         self._upsert(self.chunks, points)
 
     def get_chunks(self, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
-        """Payloads of those of `chunk_ids` that exist, keyed by chunk id."""
+        """Payload тех из `chunk_ids`, что существуют, с ключом по chunk id."""
         if not chunk_ids:
             return {}
         points = self._call(
@@ -184,7 +184,7 @@ class QdrantStore:
         )
 
     def set_doc_path(self, doc_id: str, path: str) -> None:
-        """Point every chunk of a document at another file path (used for citations)."""
+        """Перенаправляет все чанки документа на другой путь к файлу (используется для цитат)."""
         self._call(
             self.client.set_payload, self.chunks, {"path": path}, points=_match("doc_id", doc_id)
         )
@@ -213,7 +213,7 @@ class QdrantStore:
             limit=k,
         )
 
-    # ---- entities ----
+    # ---- сущности ----
     def upsert_entities(self, entities: list[EntityRecord], dense: list[list[float]]) -> None:
         points = [
             qm.PointStruct(

@@ -81,7 +81,7 @@ def test_delete_document_cascade(graph):
     graph.add_mentions(a[0].chunk_id, ["e1", "e2"])
     graph.add_mentions(b[0].chunk_id, ["e1", "e3"])
     graph.merge_relation("e1", "e2", "uses", "", 4, a[0].chunk_id)
-    # e1-uses->e3 carries evidence from both documents: a's entry first, then b's
+    # у e1-uses->e3 есть evidence из обоих документов: сначала запись a, затем b
     graph.merge_relation("e1", "e3", "uses", "", 3, a[0].chunk_id)
     graph.merge_relation("e1", "e3", "uses", "", 4, b[0].chunk_id)
     graph.merge_relation("e1", "e3", "cites", "", 2, a[1].chunk_id)
@@ -93,10 +93,10 @@ def test_delete_document_cascade(graph):
     )
 
     plan = graph.document_deletion_plan("a" * 16)
-    assert graph.counts()["Document"] == 2  # the plan is read-only
+    assert graph.counts()["Document"] == 2  # план только читает
     result = graph.delete_document("a" * 16)
     for field in ("affected", "removed_entity_ids", "removed_names", "removed_pages"):
-        # the plan predicts exactly what the cascade removes
+        # план предсказывает ровно то, что удаляет каскад
         assert sorted(getattr(plan, field)) == sorted(getattr(result, field)), field
     assert graph.document_deletion_plan("a" * 16) == DeleteResult([], [], [], [])
 
@@ -129,7 +129,7 @@ def test_fulltext_special_characters(graph):
     make_entity(graph, "e1", "C++", aliases=["cpp"])
     make_entity(graph, "e2", "Transformer")
     for query in ["C++ AND (foo)", 'what is "transformer"?', "a/b: c~ OR NOT", "***", ""]:
-        graph.fulltext_entities(query, k=5)  # must not raise
+        graph.fulltext_entities(query, k=5)  # не должно бросать исключение
     assert [eid for eid, _ in graph.fulltext_entities("tell me about the transformer", 5)] == ["e2"]
     assert "e1" in [eid for eid, _ in graph.fulltext_entities("cpp", 5)]
 
@@ -185,7 +185,7 @@ def test_delete_wiki_page_keeps_entity(graph):
     assert graph.wiki_page("e2") is None
     assert graph.get_entity("e2") is not None
     assert [r.page_id for r in graph.wiki_pages()] == ["e1"]
-    graph.delete_wiki_page("missing")  # no-op
+    graph.delete_wiki_page("missing")  # ничего не делает
 
 
 def test_pages_linking_to(graph):
@@ -197,7 +197,7 @@ def test_pages_linking_to(graph):
     for src, targets in (("e1", ["e2", "e3"]), ("e2", ["e3"]), ("e3", ["e2"])):
         graph.upsert_wiki_page(graph.wiki_page(src), src, targets, [])
     assert graph.pages_linking_to(["e3"]) == ["e1", "e2"]
-    # the queried pages themselves are excluded: they are the ones going away
+    # сами запрошенные страницы исключены: именно они и удаляются
     assert graph.pages_linking_to(["e2", "e3"]) == ["e1"]
     assert graph.pages_linking_to(["e4"]) == []
     assert graph.pages_linking_to([]) == []
@@ -220,10 +220,10 @@ def test_doc_chunks_rebuilds_records_from_the_graph(graph):
             page_end=i + 2,
             n_tokens=7,
         )
-        for i in range(12)  # idx 10/11 sort after 9, not after 1
+        for i in range(12)  # idx 10/11 сортируются после 9, а не после 1
     ]
     graph.upsert_chunks(list(reversed(chunks)))
-    make_doc(graph)  # another document's chunks stay out
+    make_doc(graph)  # чанки другого документа не попадают в выборку
 
     doc, rebuilt = graph.doc_chunks(doc_id)
     assert doc == DocumentRecord(doc_id=doc_id, path="/docs/e.md", title="E", mime="text/markdown")

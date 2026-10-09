@@ -14,7 +14,8 @@ from mnogobase.log import get_logger
 
 _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=1, max=20)
 
-# Qwen3-Reranker's own format: the score is P("yes") for the next token after the empty think.
+# Собственный формат Qwen3-Reranker: score — это P("yes") для следующего токена после пустого
+# think.
 _PREFIX = (
     "<|im_start|>system\nJudge whether the Document meets the requirements based on the Query "
     'and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n'
@@ -25,7 +26,7 @@ _SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
 class Reranker(Protocol):
     def score(self, query: str, documents: Sequence[str]) -> list[float]:
-        """Relevance of each document to `query` in [0, 1], in input order."""
+        """Релевантность каждого документа к `query` в [0, 1], в порядке входа."""
         ...
 
 
@@ -36,7 +37,7 @@ def _retryable(exc: BaseException) -> bool:
 
 
 def yes_probability(top_logprobs: list[dict]) -> float:
-    """P(yes) / (P(yes) + P(no)) over the candidate first tokens (any case, any spacing)."""
+    """P(yes) / (P(yes) + P(no)) по кандидатам первого токена (любой регистр, любые пробелы)."""
     p = {"yes": 0.0, "no": 0.0}
     for t in top_logprobs:
         word = t.get("token", "").strip().casefold()
@@ -47,10 +48,11 @@ def yes_probability(top_logprobs: list[dict]) -> float:
 
 
 class OllamaReranker:
-    """Qwen3-Reranker via Ollama `/api/generate` (raw prompt, one token, its logprobs).
+    """Qwen3-Reranker через Ollama `/api/generate` (raw-промпт, один токен, его logprobs).
 
-    Ollama has no rerank endpoint, so each document is one generate request; `concurrency`
-    of them run in parallel (Ollama serves up to `OLLAMA_NUM_PARALLEL` at once).
+    В Ollama нет rerank endpoint, поэтому каждый документ — отдельный generate-запрос;
+    `concurrency` из них идут параллельно (Ollama обслуживает до `OLLAMA_NUM_PARALLEL`
+    одновременно).
     """
 
     def __init__(

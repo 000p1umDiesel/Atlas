@@ -65,7 +65,7 @@ def test_signature_covers_the_templates_and_accepts_legacy_signatures():
         return embedder_signature(OllamaEmbedder(EmbedderSettings(**update)))
 
     default = sig()
-    assert sig() == default  # stable
+    assert sig() == default  # стабильна
     assert sig(doc_template="{text}") != default
     assert sig(query_template="{query}") != default
     emb = OllamaEmbedder(EmbedderSettings())

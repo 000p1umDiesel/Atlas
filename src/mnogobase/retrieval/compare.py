@@ -28,9 +28,9 @@ async def run_mode(
     k: int,
     translator: QueryTranslator | None = None,
 ) -> Answer:
-    """Retrieve and answer in one mode; `latency_ms` covers translation + retrieval + generation.
+    """Поиск и ответ в одном режиме; `latency_ms` включает перевод + поиск + генерацию.
 
-    With a `translator`, a non-English question is also searched in English."""
+    С `translator` неанглийский вопрос дополнительно ищется на английском."""
     start = time.perf_counter()
     alt = await translator.alt_queries(question) if translator else []
     items = retriever.retrieve(question, k, alt)
@@ -65,8 +65,9 @@ async def compare(
     config_hash: str = "",
     translator: QueryTranslator | None = None,
 ) -> list[Answer]:
-    """Answer `question` in every mode and append one row per mode to `runs_dir/compare.jsonl`."""
-    # sequential on purpose: per-answer token accounting reads the shared usage counter
+    """Отвечает на `question` во всех режимах и дописывает по строке на режим в
+    `runs_dir/compare.jsonl`."""
+    # последовательно намеренно: учёт токенов по ответам читает общий счётчик usage
     answers = [
         await run_mode(question, mode, r, answerer, k, translator) for mode, r in retrievers.items()
     ]

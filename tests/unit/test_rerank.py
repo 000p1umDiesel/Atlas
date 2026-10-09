@@ -53,7 +53,7 @@ def test_ollama_reranker_scores_each_document_in_input_order():
     assert body["options"]["num_predict"] == 1 and body["options"]["num_ctx"] == 4096
     assert "<Instruct>: INSTR\n<Query>: Q?\n<Document>: " in body["prompt"]
     assert body["prompt"].endswith("<think>\n\n</think>\n\n")
-    assert max(len(b["prompt"]) for b in seen) < 200 + 600  # the document was cut
+    assert max(len(b["prompt"]) for b in seen) < 200 + 600  # документ обрезан
     assert reranker.score("Q?", []) == []
 
 
@@ -103,7 +103,7 @@ def test_rag_reranks_candidates_and_keeps_top_k():
     )
     items = rag.retrieve("q", 2)
     assert [(i.ref, i.score) for i in items] == [("d:00002", 0.9), ("d:00000", 0.5)]
-    # every candidate was scored, with its heading path, for the original question
+    # каждый кандидат оценён вместе с путём заголовков по исходному вопросу
     assert reranker.calls == [("q", ["A\nalpha", "B\nbeta", "C\ngamma"])]
 
 

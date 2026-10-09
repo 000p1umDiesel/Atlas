@@ -14,7 +14,7 @@ from mnogobase.models import EmbedInput
 class Embedder(Protocol):
     model_id: str
     dim: int
-    templates: tuple[str, str]  # (document, query) templates the embedder applies
+    templates: tuple[str, str]  # шаблоны (документа, запроса), которые применяет эмбеддер
 
     def embed_documents(self, items: Sequence[EmbedInput]) -> list[list[float]]: ...
 
@@ -38,7 +38,7 @@ def format_query(query: str, template: str) -> str:
 
 
 def truncate_normalize(vec: Sequence[float], dim: int) -> list[float]:
-    """Matryoshka truncation: keep the first `dim` values and re-normalize."""
+    """Matryoshka-усечение: оставляет первые `dim` значений и заново нормирует вектор."""
     if len(vec) < dim:
         raise ValueError(f"model returned {len(vec)} dims, config expects {dim}")
     head = list(vec[:dim])
@@ -47,23 +47,23 @@ def truncate_normalize(vec: Sequence[float], dim: int) -> list[float]:
 
 
 def _legacy_signature(embedder: Embedder) -> str:
-    """The signature before the templates were part of it."""
+    """Сигнатура в старом формате, до того как в неё вошли шаблоны."""
     return f"{embedder.model_id}:{embedder.dim}"
 
 
 def embedder_signature(embedder: Embedder) -> str:
-    """What stored vectors depend on: `model_id:dim:tpl-<hash of both templates>`."""
+    """От чего зависят сохранённые векторы: `model_id:dim:tpl-<hash of both templates>`."""
     templates = json.dumps(list(embedder.templates), ensure_ascii=False)
     digest = hashlib.sha256(templates.encode("utf-8")).hexdigest()[:8]
     return f"{_legacy_signature(embedder)}:tpl-{digest}"
 
 
 def signature_mismatch(stored: str | None, embedder: Embedder) -> str | None:
-    """Why an index signed `stored` cannot be used with `embedder`; None if it can.
+    """Почему индекс с сигнатурой `stored` нельзя использовать с `embedder`; None, если можно.
 
-    No signature (no index yet) is fine, and so is a legacy `model_id:dim` one of the same
-    model and dimension: such an index was built with the templates of its time, and the
-    caller rewrites the signature in the current format."""
+    Отсутствие сигнатуры (индекса ещё нет) допустимо, как и старая сигнатура `model_id:dim`
+    той же модели и размерности: такой индекс построен с шаблонами своего времени, и
+    вызывающий код перезаписывает сигнатуру в текущем формате."""
     current = embedder_signature(embedder)
     if stored in (None, current, _legacy_signature(embedder)):
         return None

@@ -68,8 +68,8 @@ def test_strict_json_schema_is_strict_and_keeps_title_property():
     item = schema["$defs"]["Item"]
     assert item["additionalProperties"] is False
     assert item["required"] == ["title", "tags"]
-    assert "title" in item["properties"]  # a property literally named "title" survives
-    assert "title" not in item  # the schema keyword "title" is removed
+    assert "title" in item["properties"]  # свойство, буквально названное "title", сохраняется
+    assert "title" not in item  # ключевое слово схемы "title" удаляется
     assert "default" not in item["properties"]["tags"]
 
 

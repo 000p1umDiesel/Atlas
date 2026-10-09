@@ -46,7 +46,7 @@ def test_reset_removes_the_wiki_dir_once_it_is_empty(tmp_path):
         write(tmp_path / "wiki" / rel)
     reset(make_app(tmp_path, []))
     assert not (tmp_path / "wiki").exists()
-    reset(make_app(tmp_path, []))  # nothing left to delete: still fine
+    reset(make_app(tmp_path, []))  # удалять уже нечего: всё равно без ошибок
 
 
 class _Embedder:
@@ -65,7 +65,7 @@ class _Embedder:
 @pytest.mark.parametrize(
     ("reply", "message"),
     [
-        ([1.0, 0.0], "returns 2 dims, config expects 4"),  # a provider that does not truncate
+        ([1.0, 0.0], "returns 2 dims, config expects 4"),  # провайдер, который не обрезает
         (ValueError("model returned 2 dims, config expects 4"), "model returned 2 dims"),
     ],
 )
@@ -79,4 +79,4 @@ def test_reindex_checks_the_embedder_dimension_before_touching_the_index(tmp_pat
     with pytest.raises(ReindexError, match=message) as info:
         reindex(app)
     assert "nothing was changed" in str(info.value)
-    assert calls == []  # the old index is still usable
+    assert calls == []  # старым индексом ещё можно пользоваться

@@ -11,21 +11,21 @@ from mnogobase.progress import NULL_PROGRESS, ProgressSink
 
 ENTITY_BATCH = 64
 WIKI_FILES = ("index.md", "log.md")
-# Stored while a reindex runs: an interrupted reindex leaves a partial index behind, and
-# `Pipeline.prepare` then refuses to use it until `mnogobase reindex` completes.
+# Хранится, пока идёт reindex: прерванный reindex оставляет неполный индекс, и
+# `Pipeline.prepare` отказывается с ним работать, пока `mnogobase reindex` не завершится.
 REINDEX_IN_PROGRESS = "reindex-in-progress"
 
 
 class ReindexError(RuntimeError):
-    """`reindex` refused to start; the existing index is untouched."""
+    """`reindex` отказался запускаться; существующий индекс не тронут."""
 
 
 def _check_embedder(app: App) -> None:
-    """Make sure the embedder produces `dim` values before the old index is dropped."""
+    """Проверяет, что embedder выдаёт `dim` значений, до удаления старого индекса."""
     expected = app.embedder.dim
     try:
         got = len(app.embedder.embed_query("dimension check"))
-    except ValueError as exc:  # e.g. truncate_normalize: the model returns fewer dims
+    except ValueError as exc:  # напр. truncate_normalize: модель отдаёт меньше измерений
         raise ReindexError(f"embedder check failed: {exc}; nothing was changed") from exc
     if got != expected:
         raise ReindexError(
@@ -35,10 +35,10 @@ def _check_embedder(app: App) -> None:
 
 
 def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
-    """Recompute all vectors with the current embedder; graph and wiki files stay untouched.
+    """Пересчитывает все векторы текущим embedder; граф и файлы wiki не трогаются.
 
-    The collections are dropped and recreated with the embedder's dimension, so this also
-    moves an index to another dimension."""
+    Коллекции удаляются и создаются заново с размерностью embedder, так что это же переводит
+    индекс на другую размерность."""
     log = get_logger(__name__)
     _check_embedder(app)
     app.registry.set_meta("embedder", REINDEX_IN_PROGRESS)
@@ -47,7 +47,7 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     app.graph.ensure_schema()
     stats = {"chunks": 0, "entities": 0, "wiki_sections": 0}
 
-    # every document whose chunks were embedded once, whatever happened in later stages
+    # каждый документ, чанки которого хоть раз были заэмбеддены, что бы ни было на поздних стадиях
     doc_ids = sorted({f.doc_id for f in app.registry.files()})
     doc_ids = [d for d in doc_ids if app.registry.stage_status(d, "embed") == "done"]
     progress.step("reindex chunks", len(doc_ids))
@@ -85,7 +85,7 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
             log.warning("reindex_wiki_page_missing", page_id=row.page_id, path=row.path)
             progress.advance(failed=True)
             continue
-        # page_id == entity_id: one page per entity
+        # page_id == entity_id: одна страница на сущность
         text = file.read_text(encoding="utf-8")
         stats["wiki_sections"] += app.wiki.index_page(row.page_id, row.page_id, row.path, text)
         progress.advance()
@@ -96,10 +96,10 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
 
 
 def reset(app: App) -> None:
-    """Delete every vector, graph node, registry row, cache file and wiki page.
+    """Удаляет все векторы, узлы графа, строки registry, файлы кэша и страницы wiki.
 
-    Only the wiki files mnogobase writes are removed (`entities/`, `index.md`, `log.md`); the
-    wiki directory itself goes only if nothing else is left in it."""
+    Удаляются только файлы wiki, которые пишет mnogobase (`entities/`, `index.md`, `log.md`);
+    сам каталог wiki удаляется, только если в нём больше ничего не осталось."""
     app.vectors.drop_collections()
     app.graph.wipe()
     app.registry.wipe()
@@ -108,6 +108,6 @@ def reset(app: App) -> None:
     shutil.rmtree(wiki_dir / "entities", ignore_errors=True)
     for name in WIKI_FILES:
         (wiki_dir / name).unlink(missing_ok=True)
-    with contextlib.suppress(OSError):  # missing, or holds files mnogobase does not own
+    with contextlib.suppress(OSError):  # его нет, или в нём чужие для mnogobase файлы
         wiki_dir.rmdir()
     get_logger(__name__).info("reset_done")

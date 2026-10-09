@@ -8,7 +8,7 @@ def test_normalize_name():
     assert ids.normalize_name("Механизм  внимания") == "механизм внимания"
     assert ids.normalize_name("C++") == "c++"
     assert ids.normalize_name("C#") == "c#"
-    assert ids.normalize_name("ＴＲＡＮＳＦＯＲＭＥＲ") == "transformer"  # NFKC full-width
+    assert ids.normalize_name("ＴＲＡＮＳＦＯＲＭＥＲ") == "transformer"  # NFKC, полная ширина
 
 
 def test_entity_id_is_stable_case_insensitive_and_type_sensitive():
@@ -50,7 +50,7 @@ def test_slugify_never_contains_hash():
 
 
 def test_slugify_caps_length_with_stable_hash():
-    long_name = "Механизм " * 30  # ~270 chars of Cyrillic
+    long_name = "Механизм " * 30  # ~270 символов кириллицы
     slug = ids.slugify(long_name)
     assert len(slug) <= 80
     assert len((slug + ".md").encode("utf-8")) <= 255
@@ -61,12 +61,13 @@ def test_slugify_caps_length_with_stable_hash():
 
 
 def test_slugify_caps_bytes_for_wide_scripts():
-    slug = ids.slugify("𠀀" * 100)  # 4-byte UTF-8 word characters
+    slug = ids.slugify("𠀀" * 100)  # символы слова, занимающие 4 байта в UTF-8
     assert len((slug + ".md").encode("utf-8")) <= 255
 
 
-# Golden values: stored Qdrant points, graph ids and wiki pages are keyed by these hashes.
-# A change here silently orphans every existing index, so it must be deliberate.
+# Эталонные значения: по этим хешам адресуются сохранённые точки Qdrant, id в графе
+# и страницы wiki. Их изменение молча осиротит все существующие индексы, поэтому
+# оно должно быть осознанным.
 def test_namespace_is_pinned():
     assert str(ids.NAMESPACE) == "5b0c9a8e-3f61-4d2a-9b7e-0c1d2e3f4a5b"
 

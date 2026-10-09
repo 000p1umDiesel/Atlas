@@ -39,7 +39,8 @@ from mnogobase.wiki.validate import (
     validate_citations,
 )
 
-PageLookup = dict[str, tuple[str, str, str]]  # normalized name/alias -> (entity_id, slug, title)
+# нормализованное имя/алиас -> (entity_id, slug, title)
+PageLookup = dict[str, tuple[str, str, str]]
 _TITLE = re.compile(r"^# (.+)$", re.MULTILINE)
 
 
@@ -60,7 +61,7 @@ class _Draft:
     slug: str
     relations: list[RelationView]
     previous: WikiPageRecord | None
-    body: str  # raw LLM reply
+    body: str  # сырой ответ LLM
 
 
 @dataclass
@@ -118,8 +119,8 @@ class WikiBuilder:
             if page is not None
         ]
         if dropped:
-            # pages linking to a dropped page are regenerated so the stale link disappears;
-            # marked dirty so a failed regeneration is retried by the next build
+            # страницы, ссылающиеся на удалённую, пересобираются, чтобы устаревшая ссылка
+            # исчезла; они помечаются dirty, чтобы неудачную пересборку повторил следующий build
             linking = set(self._graph.pages_linking_to([p.page_id for p in dropped]))
             linking &= eligible_ids
             self._registry.mark_dirty(linking)
@@ -127,14 +128,14 @@ class WikiBuilder:
             report.deleted += self._delete_pages(dropped)
         candidates = [e for e in eligible if rebuild_all or e.entity_id in dirty]
 
-        # evidence first: a candidate without evidence gets no page, so nothing may link to it
+        # сначала подтверждения: кандидат без них не получает страницу, и ссылаться на него нельзя
         evidence: dict[str, list[SearchHit]] = {}
         failed_ids: set[str] = set()
         progress.step("wiki evidence", len(candidates))
         for entity in candidates:
             try:
                 evidence[entity.entity_id] = self._evidence(entity)
-            except Exception as exc:  # one bad entity must not fail the whole build
+            except Exception as exc:  # одна плохая сущность не должна ронять весь build
                 self._record_failure(report, failed_ids, entity, exc)
                 progress.advance(failed=True)
             else:
@@ -149,7 +150,7 @@ class WikiBuilder:
                 draft = await self._draft(
                     entity, evidence[entity.entity_id], slugs[entity.entity_id]
                 )
-            except Exception as exc:  # one bad entity must not fail the whole build
+            except Exception as exc:  # одна плохая сущность не должна ронять весь build
                 self._record_failure(report, failed_ids, entity, exc)
                 progress.advance(failed=True)
                 return None
@@ -158,7 +159,7 @@ class WikiBuilder:
 
         progress.step("wiki draft", len(writable))
         drafts = [d for d in await asyncio.gather(*map(draft_safely, writable)) if d is not None]
-        # links may only target pages that exist or are written in this run
+        # ссылки могут вести только на существующие страницы или записываемые в этом запуске
         drafted = {d.entity.entity_id for d in drafts}
         lookup = self._page_lookup([e for e in writable if e.entity_id in drafted], slugs)
         built: list[_Built] = []
@@ -166,18 +167,18 @@ class WikiBuilder:
         for draft in drafts:
             try:
                 built.append(self._write(draft, lookup))
-            except Exception as exc:  # one bad entity must not fail the whole build
+            except Exception as exc:  # одна плохая сущность не должна ронять весь build
                 self._record_failure(report, failed_ids, draft.entity, exc)
                 progress.advance(failed=True)
             else:
                 progress.advance()
-        # two passes so LINKS_TO can target pages created in this same run
+        # два прохода, чтобы LINKS_TO мог указывать на страницы, созданные в этом же запуске
         for b in built:
             self._graph.upsert_wiki_page(b.record, b.entity.entity_id, [], b.cited)
         for b in built:
             self._graph.upsert_wiki_page(b.record, b.entity.entity_id, b.links_to, b.cited)
             (report.created if b.created else report.updated).append(b.entity.name)
-        # failed entities stay dirty so the next build retries them
+        # упавшие сущности остаются dirty, чтобы следующий build их повторил
         self._registry.clear_dirty(dirty - failed_ids)
         self._s.dir.mkdir(parents=True, exist_ok=True)
         (self._s.dir / "index.md").write_text(
@@ -204,7 +205,7 @@ class WikiBuilder:
         return report
 
     def index_page(self, page_id: str, entity_id: str, rel_path: str, text: str) -> int:
-        """Embed a rendered page section by section into Qdrant; returns the section count."""
+        """Эмбеддит отрендеренную страницу в Qdrant по секциям; возвращает число секций."""
         sections = split_sections(text)
         if not sections:
             self._vectors.delete_wiki_page(page_id)
@@ -235,7 +236,7 @@ class WikiBuilder:
         )
 
     def _delete_pages(self, pages: list[WikiPageRecord]) -> list[str]:
-        """Remove page files, Qdrant sections and graph nodes; returns the page titles."""
+        """Удаляет файлы страниц, секции в Qdrant и узлы графа; возвращает заголовки страниц."""
         for page in pages:
             (self._s.dir / page.path).unlink(missing_ok=True)
             self._vectors.delete_wiki_page(page.page_id)
@@ -249,9 +250,9 @@ class WikiBuilder:
     def _carried_evidence(
         self, entity: EntityRecord, existing_body: str, hits: list[SearchHit]
     ) -> list[SearchHit]:
-        """Chunks the existing page cites that fell out of the fresh top-k: kept as evidence
-        (so their citations survive the update) while they exist and still mention the
-        entity; at most `evidence_k` of them."""
+        """Чанки, которые цитирует существующая страница, но которые выпали из свежего top-k:
+        остаются подтверждениями (чтобы их цитаты пережили обновление), пока существуют и всё
+        ещё упоминают сущность; не больше `evidence_k` штук."""
         fresh = {h.key for h in hits}
         previous = [c for c in cited_ids(existing_body) if c not in fresh]
         if not previous:
@@ -296,7 +297,7 @@ class WikiBuilder:
         return lookup
 
     async def _draft(self, entity: EntityRecord, hits: list[SearchHit], slug: str) -> _Draft:
-        """Gather the page inputs and ask the LLM for the body."""
+        """Собирает входные данные страницы и запрашивает у LLM её тело."""
         context = self._graph.entity_context(entity.entity_id, max_relations=30)
         rel_path = f"entities/{slug}.md"
         file = self._s.dir / rel_path
@@ -323,7 +324,7 @@ class WikiBuilder:
         return _Draft(entity, hits, rel_path, slug, context.relations, previous, body)
 
     def _write(self, draft: _Draft, lookup: PageLookup) -> _Built:
-        """Validate and render the LLM body, write the page file and index it."""
+        """Валидирует и рендерит тело от LLM, записывает файл страницы и индексирует её."""
         entity, hits = draft.entity, draft.hits
         body = strip_reserved_sections(draft.body)
         body, cited = validate_citations(body, {h.key for h in hits})

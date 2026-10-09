@@ -60,7 +60,7 @@ def test_strip_reserved_sections():
 def test_strip_reserved_sections_only_matches_exact_headings():
     body = "Text\n\n## Related work\nY\n\n## Sources of error\nZ\n\n## related  \n- foo"
     assert strip_reserved_sections(body) == "Text\n\n## Related work\nY\n\n## Sources of error\nZ"
-    # the heading must sit on one line: a bare "##" line followed by "Related" is not one
+    # заголовок должен быть в одной строке: голая строка "##", а за ней "Related", им не считается
     assert strip_reserved_sections("Text\n##\nRelated\nMore") == "Text\n##\nRelated\nMore"
 
 

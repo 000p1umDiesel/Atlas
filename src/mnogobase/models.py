@@ -10,7 +10,7 @@ ContextKind = Literal["chunk", "wiki", "relation", "entity"]
 
 
 class EmbedInput(BaseModel):
-    """One thing to embed. Only `text` is implemented; image/audio are reserved."""
+    """Один объект для эмбеддинга. Реализован только `text`; image/audio зарезервированы."""
 
     modality: Modality = "text"
     text: str | None = None
@@ -40,7 +40,7 @@ class ChunkRecord(BaseModel):
     path: str = ""
 
 
-# --- LLM extraction schemas (sent to the model as strict JSON Schema) ---
+# --- схемы LLM-извлечения (передаются модели как strict JSON Schema) ---
 
 
 class ExtractedEntity(BaseModel):
@@ -63,7 +63,7 @@ class ExtractionResult(BaseModel):
     relations: list[ExtractedRelation]
 
 
-# --- graph / wiki records ---
+# --- записи графа / wiki ---
 
 
 class EntityRecord(BaseModel):
@@ -111,7 +111,7 @@ class WikiPageRecord(BaseModel):
     page_id: str
     slug: str
     title: str
-    path: str  # relative to the wiki dir, e.g. "entities/transformer.md"
+    path: str  # относительно каталога wiki, например "entities/transformer.md"
     content_hash: str = ""
     version: int = 1
 
@@ -158,7 +158,7 @@ class Answer(BaseModel):
     mode: str
     text: str
     sources: list[Source] = Field(default_factory=list)
-    alt_queries: list[str] = Field(default_factory=list)  # e.g. the English search translation
+    alt_queries: list[str] = Field(default_factory=list)  # напр., английский перевод для поиска
     latency_ms: int = 0
     tokens_in: int = 0
     tokens_out: int = 0

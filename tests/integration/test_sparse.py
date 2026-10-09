@@ -2,7 +2,7 @@ import pytest
 
 from mnogobase.embedding.sparse import BM25Encoder
 
-pytestmark = pytest.mark.integration  # downloads the BM25 model from Hugging Face
+pytestmark = pytest.mark.integration  # скачивает модель BM25 с Hugging Face
 
 
 def test_bm25_query_overlaps_matching_document():

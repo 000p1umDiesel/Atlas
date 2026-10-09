@@ -100,7 +100,7 @@ async def test_ingest_builds_vectors_graph_and_wiki(make_app, docs, tmp_path):
     assert len(report.processed) == 2
     assert app.graph.counts()["Document"] == 2
     attention = app.graph.get_entity(entity_id("Method", "Attention Mechanism"))
-    assert attention is not None and attention.mention_count >= 2  # RU and EN merged
+    assert attention is not None and attention.mention_count >= 2  # RU и EN слились
     assert "механизм внимания" in attention.aliases
     assert (tmp_path / "wiki" / "entities" / "attention-mechanism.md").exists()
     assert report.wiki is not None and "Attention Mechanism" in report.wiki.created
@@ -129,7 +129,7 @@ async def test_ingest_reports_progress(make_app, tmp_path):
         ("step", "chunk", None),
         ("step", "embed", None),
         ("step", "extract", None),
-        ("step", "extract", len(chunks)),  # the total once the chunks are loaded
+        ("step", "extract", len(chunks)),  # total известен, когда чанки загружены
         ("step", "graph", None),
         ("step", "graph", graph_total),
         ("step", "wiki evidence", pages),
@@ -141,7 +141,7 @@ async def test_ingest_reports_progress(make_app, tmp_path):
     assert graph_total > 0 and progress.advanced("graph") == [("advance", 1, False)] * graph_total
     for step in ("wiki evidence", "wiki draft", "wiki write"):
         assert progress.advanced(step) == [("advance", 1, False)] * pages
-    # the file is done after its graph stage, before the wiki of the whole run
+    # файл завершён после своей стадии graph, до wiki всего прогона
     done = progress.events.index(("file_done", "processed"))
     assert progress.events[done - 1][0] == "advance"
     assert progress.events[done + 1] == ("step", "wiki evidence", pages)
@@ -163,7 +163,7 @@ async def test_failed_files_are_reported_done_as_failed(make_app, docs):
     assert [e for e in progress.events if e[0] == "file_done"] == [("file_done", "failed")] * 2
     assert all(failed for _, _, failed in progress.advanced("extract"))
 
-    again = RecordingProgress()  # previously failed: skipped with a message, still counted
+    again = RecordingProgress()  # ранее упал: пропущен с сообщением, но всё равно учтён
     await app.pipeline.ingest([docs], build_wiki=False, progress=again)
     assert [e for e in again.events if e[0] == "file_done"] == [("file_done", "failed")] * 2
 
@@ -194,7 +194,8 @@ async def test_changed_file_replaces_old_chunks(make_app, docs):
 
 async def test_duplicate_content_survives_change(make_app, docs):
     app = make_app()
-    # sorts before attention_en.md, so the shared document is first recorded under this path
+    # сортируется раньше attention_en.md, поэтому общий документ сначала записывается
+    # под этим путём
     copy = docs / "a_copy.md"
     shutil.copy(docs / "attention_en.md", copy)
     await app.pipeline.ingest([docs])
@@ -203,10 +204,10 @@ async def test_duplicate_content_survives_change(make_app, docs):
     copy.write_text("# Different\n\nSomething about softmax.\n", encoding="utf-8")
     report = await app.pipeline.ingest([docs])
     assert report.failed == {}
-    assert chunk_count(app, shared) > 0  # still referenced by attention_en.md
+    assert chunk_count(app, shared) > 0  # на него всё ещё ссылается attention_en.md
     assert app.graph.counts()["Document"] == 3
     survivor = str((docs / "attention_en.md").resolve())
-    assert document_path(app, shared) == survivor  # citations point at a file that has it
+    assert document_path(app, shared) == survivor  # цитаты указывают на файл, где он есть
     assert chunk_paths(app, shared) == {survivor}
     doc, chunks = app.pipeline.load_chunks(shared)
     assert doc.path == survivor and {c.path for c in chunks} == {survivor}
@@ -223,7 +224,7 @@ async def test_renamed_file_moves_citations_to_the_new_path(make_app, docs):
 
     report = await app.pipeline.ingest([docs])
     assert report.failed == {} and report.processed == []
-    assert str(new.resolve()) in report.skipped  # same content: nothing is redone
+    assert str(new.resolve()) in report.skipped  # то же содержимое: ничего не переделывается
     assert len(app.llm.calls_for("extract")) == calls
     path = str(new.resolve())
     assert document_path(app, doc_id) == path
@@ -245,14 +246,14 @@ async def test_renamed_then_edited_file_removes_the_old_version(make_app, tmp_pa
     assert page.exists()
 
     b = folder / "b.md"
-    a.rename(b)  # the registry still lists a.md with the old content
+    a.rename(b)  # в registry всё ещё числится a.md со старым содержимым
     renamed = await app.pipeline.ingest([folder])
     assert renamed.skipped == [str(b.resolve())]
     b.write_text("# Notes\n\nThe Transformer is a network.\n", encoding="utf-8")
     report = await app.pipeline.ingest([folder])
 
     assert report.failed == {} and report.processed == [str(b.resolve())]
-    assert not app.graph.has_document(old)  # a.md is gone: it does not keep the old version
+    assert not app.graph.has_document(old)  # a.md больше нет: старая версия не сохраняется
     assert chunk_count(app, old) == 0
     assert app.graph.counts()["Document"] == 1
     assert app.graph.get_entity(softmax) is None
@@ -335,7 +336,7 @@ async def test_renamed_file_without_a_chunk_cache_is_repointed_from_the_graph(ma
 
 async def test_repoint_drops_the_registry_row_of_the_missing_path(make_app, tmp_path, monkeypatch):
     a = _softmax_folder(tmp_path)
-    copy = a.parent / "c.md"  # same content under a path that stays
+    copy = a.parent / "c.md"  # то же содержимое по пути, который остаётся
     shutil.copy(a, copy)
     app = make_app()
     await app.pipeline.ingest([a.parent], build_wiki=False)
@@ -344,16 +345,16 @@ async def test_repoint_drops_the_registry_row_of_the_missing_path(make_app, tmp_
     a.rename(b)
 
     await app.pipeline.ingest([a.parent], build_wiki=False)
-    assert app.registry.get_file(str(a.resolve())) is None  # renamed away: row dropped
+    assert app.registry.get_file(str(a.resolve())) is None  # переименован: строка удалена
     assert sorted(app.registry.paths_for_doc(doc_id)) == sorted(
-        [str(b.resolve()), str(copy.resolve())]  # existing duplicates are kept
+        [str(b.resolve()), str(copy.resolve())]  # существующие дубликаты сохраняются
     )
     assert document_path(app, doc_id) == str(b.resolve())
 
     loads: list[str] = []
     real = app.pipeline.load_chunks
     monkeypatch.setattr(app.pipeline, "load_chunks", lambda d: loads.append(d) or real(d))
-    copy.unlink()  # one copy left: nothing to compare against once the stale row is gone
+    copy.unlink()  # осталась одна копия: после удаления устаревшей строки сравнивать не с чем
     await app.pipeline.ingest([a.parent], build_wiki=False)
     _assert_points_at(app, doc_id, str(b.resolve()))
     loads.clear()
@@ -416,7 +417,7 @@ async def test_partial_extraction_is_done_with_warning(make_app, tmp_path):
         report = await app.pipeline.ingest([folder], build_wiki=False)
     assert report.failed == {} and report.processed == [str(path.resolve())]
     _doc, chunks = app.pipeline.load_chunks(file_doc_id(path))
-    assert len(chunks) >= 5  # one failure stays within max_failed_ratio=0.2
+    assert len(chunks) >= 5  # один сбой укладывается в max_failed_ratio=0.2
     partial = [e for e in logs if e["event"] == "extract_partial"]
     assert len(partial) == 1
     assert partial[0]["failed"] == 1 and partial[0]["total"] == len(chunks)
@@ -428,7 +429,7 @@ async def test_graph_stage_rerun_is_idempotent(make_app, docs):
     await app.pipeline.ingest([docs], build_wiki=False)
     before = app.graph.counts()
     doc_id = file_doc_id(docs / "attention_en.md")
-    app.registry.set_stage(doc_id, "graph", "running")  # simulate a crash during the graph stage
+    app.registry.set_stage(doc_id, "graph", "running")  # имитируем падение на стадии graph
     report = await app.pipeline.ingest([docs], build_wiki=False)
     assert report.processed == [str((docs / "attention_en.md").resolve())]
     assert app.graph.counts() == before
@@ -446,7 +447,7 @@ async def test_removed_page_leaves_no_dangling_links(make_app, tmp_path):
     page = tmp_path / "wiki" / "entities" / "transformer.md"
     assert "[[softmax|Softmax]]" in page.read_text(encoding="utf-8")
 
-    # Softmax lives only in gone.md; Transformer's page is not about anything in it
+    # Softmax есть только в gone.md; страница Transformer ни к чему из него не относится
     gone.write_text("# Notes\n\nNothing to see here.\n", encoding="utf-8")
     report = await app.pipeline.ingest([folder])
     assert report.processed == [str(gone.resolve())]
@@ -474,8 +475,8 @@ async def test_embedder_template_change_is_refused(make_app, docs):
 
 async def test_signature_upgrade_never_overwrites_a_concurrent_reindex(make_app, monkeypatch):
     app = make_app()
-    app.registry.set_meta("embedder", "reindex-in-progress")  # reindex started meanwhile
-    read = {"embedder": "fake-embed:64"}  # what this process read before that
+    app.registry.set_meta("embedder", "reindex-in-progress")  # тем временем запущен reindex
+    read = {"embedder": "fake-embed:64"}  # что этот процесс прочитал до этого
     monkeypatch.setattr(app.registry, "get_meta", lambda key: read[key])
     app.pipeline.prepare(resume=False)
     monkeypatch.undo()
@@ -484,11 +485,11 @@ async def test_signature_upgrade_never_overwrites_a_concurrent_reindex(make_app,
 
 async def test_legacy_signature_of_the_same_model_is_accepted_and_upgraded(make_app):
     app = make_app()
-    app.registry.set_meta("embedder", "fake-embed:64")  # written before templates were signed
+    app.registry.set_meta("embedder", "fake-embed:64")  # записано до включения шаблонов в сигнатуру
     app.pipeline.prepare()
     assert app.registry.get_meta("embedder") == embedder_signature(app.embedder)
 
-    app.registry.set_meta("embedder", "fake-embed:32")  # legacy, but another dimension
+    app.registry.set_meta("embedder", "fake-embed:32")  # старый формат, но другая размерность
     with pytest.raises(EmbedderMismatchError, match="reindex"):
         app.pipeline.prepare()
 
@@ -506,11 +507,11 @@ async def test_graph_stage_uses_extractions_of_a_previous_model(make_app, docs, 
     monkeypatch.undo()
     calls = len(app.llm.calls_for("extract"))
 
-    # the extraction model changes before the failed graph stage is retried
+    # модель извлечения меняется до повторного запуска упавшей стадии graph
     app.llm.model_for = lambda task: f"other-{task}"
     retried = await app.pipeline.ingest([docs], build_wiki=False, retry_failed=True)
     assert retried.failed == {} and len(retried.processed) == 2
-    assert len(app.llm.calls_for("extract")) == calls  # cached results reused, no new calls
+    assert len(app.llm.calls_for("extract")) == calls  # результаты из кэша, новых вызовов нет
     attention = app.graph.get_entity(entity_id("Method", "Attention Mechanism"))
     assert attention is not None and attention.mention_count >= 2
 
@@ -521,13 +522,13 @@ async def test_graph_stage_fails_when_extractions_are_missing(make_app, docs):
     path = docs / "attention_en.md"
     doc_id = file_doc_id(path)
     app.registry._db.execute("DELETE FROM extraction_cache WHERE chunk_id LIKE ?", (f"{doc_id}:%",))
-    app.registry.set_stage(doc_id, "graph", "pending")  # e.g. interrupted before it finished
+    app.registry.set_stage(doc_id, "graph", "pending")  # например, прервано до завершения
 
     report = await app.pipeline.ingest([docs], build_wiki=False)
     assert list(report.failed) == [str(path.resolve())]
     assert "ExtractionFailedError" in report.failed[str(path.resolve())]
     assert app.registry.stage_status(doc_id, "graph") == "failed"
-    assert app.registry.stage_status(doc_id, "extract") == "pending"  # retry re-extracts
+    assert app.registry.stage_status(doc_id, "extract") == "pending"  # retry извлекает заново
 
     calls = len(app.llm.calls_for("extract"))
     fixed = await app.pipeline.ingest([docs], build_wiki=False, retry_failed=True)
@@ -558,9 +559,9 @@ def _fail_once(monkeypatch, target, name: str, after_call: bool = False) -> None
 @pytest.mark.parametrize(
     ("where", "name", "after_call"),
     [
-        ("vectors", "delete_entities", False),  # Qdrant fails mid-cleanup
+        ("vectors", "delete_entities", False),  # Qdrant падает посреди очистки
         ("vectors", "delete_wiki_page", False),
-        ("graph", "delete_document", True),  # the graph transaction committed, then a crash
+        ("graph", "delete_document", True),  # транзакция графа закоммичена, затем падение
         ("registry", "clear_doc", False),
     ],
 )
@@ -589,10 +590,10 @@ async def test_interrupted_document_removal_is_finished_on_retry(
     assert report.failed == {} and report.processed == [str(gone.resolve())]
     assert app.graph.get_entity(softmax) is None
     assert not softmax_page.exists()
-    assert _points(app, app.vectors.wiki, "page_id", softmax) == 0  # no orphan wiki sections
+    assert _points(app, app.vectors.wiki, "page_id", softmax) == 0  # нет осиротевших wiki-секций
     assert _points(app, app.vectors.entities, "entity_id", softmax) == 0
     assert "Softmax" in report.wiki.deleted
-    # the page that linked to the removed one was marked dirty and rewritten
+    # страница, ссылавшаяся на удалённую, помечена dirty и переписана
     assert "Transformer" in report.wiki.updated
     assert "[[softmax|" not in transformer_page.read_text(encoding="utf-8")
     assert app.registry.dirty() == []
@@ -602,9 +603,9 @@ async def test_interrupted_document_removal_is_finished_on_retry(
 @pytest.mark.parametrize(
     ("where", "name", "after_call"),
     [
-        ("vectors", "delete_entities", False),  # after the graph transaction committed
-        ("graph", "delete_document", True),  # the graph transaction committed, then a crash
-        ("graph", "delete_document", False),  # before the graph transaction
+        ("vectors", "delete_entities", False),  # после коммита транзакции графа
+        ("graph", "delete_document", True),  # транзакция графа закоммичена, затем падение
+        ("graph", "delete_document", False),  # до транзакции графа
     ],
 )
 async def test_replayed_removal_spares_entities_revived_later_in_the_run(
@@ -622,8 +623,8 @@ async def test_replayed_removal_spares_entities_revived_later_in_the_run(
     softmax = entity_id("Concept", "Softmax")
     page = tmp_path / "wiki" / "entities" / "softmax.md"
 
-    # one run: the paragraph moves from gone.md to kept.md, and gone.md's removal fails;
-    # kept.md (processed later in the same run) mentions Softmax again
+    # один прогон: абзац переезжает из gone.md в kept.md, а удаление gone.md падает;
+    # kept.md (обрабатывается позже в том же прогоне) снова упоминает Softmax
     gone.write_text("# Notes\n\nNothing to see here.\n", encoding="utf-8")
     kept.write_text(f"# Models\n\nThe Transformer is a network.\n\n{paragraph}\n", encoding="utf-8")
     _fail_once(monkeypatch, getattr(app, where), name, after_call)
@@ -664,7 +665,7 @@ async def test_stuck_pending_removal_names_the_document(make_app, tmp_path, monk
     assert [d for d, _ in app.registry.pending_removals()] == [old]
 
 
-@pytest.mark.parametrize("after_call", [False, True])  # before / after the graph commit
+@pytest.mark.parametrize("after_call", [False, True])  # до / после коммита графа
 async def test_removal_spares_a_document_a_later_file_shares(
     make_app, tmp_path, monkeypatch, after_call
 ):
@@ -677,7 +678,7 @@ async def test_removal_spares_a_document_a_later_file_shares(
     await app.pipeline.ingest([folder], build_wiki=False)
     x = file_doc_id(a)
     softmax = entity_id("Concept", "Softmax")
-    # one run: a.md changes and its removal fails; a new b.md has a's old content
+    # один прогон: a.md меняется, и его удаление падает; у нового b.md старое содержимое a.md
     b = folder / "b.md"
     b.write_text(text, encoding="utf-8")
     a.write_text("# Notes\n\nNothing here.\n", encoding="utf-8")
@@ -692,10 +693,10 @@ async def test_removal_spares_a_document_a_later_file_shares(
         assert _points(app, app.vectors.entities, "entity_id", softmax) == 1
         assert app.registry.pending_stages(x) == []
         assert app.registry.get_file(str(b.resolve())).status == "done"
-        assert document_path(app, x) == str(b.resolve())  # citations name a live path
+        assert document_path(app, x) == str(b.resolve())  # цитаты указывают на существующий путь
 
     b_is_live()
-    app.pipeline.finish_pending_removals()  # what `wiki build` / the next ingest do first
+    app.pipeline.finish_pending_removals()  # с этого начинают `wiki build` / следующий ingest
     b_is_live()
     report = await app.pipeline.ingest([folder])
     assert report.failed == {}
@@ -722,8 +723,8 @@ async def test_replay_keeps_a_page_file_another_entity_now_owns(make_app, tmp_pa
     page = tmp_path / "wiki" / "entities" / "softmax.md"
     assert app.graph.wiki_page(concept).path == "entities/softmax.md"
 
-    # one run: gone.md's removal commits and then fails; a new file brings a different
-    # entity whose page takes over the now free slug "softmax"
+    # один прогон: удаление gone.md коммитится, а затем падает; новый файл приносит другую
+    # сущность, чья страница занимает освободившийся slug "softmax"
     gone.write_text("# Notes\n\nNothing here.\n", encoding="utf-8")
     (folder / "layer.md").write_text("# Layers\n\nThe softmax layer.\n", encoding="utf-8")
     _fail_once(monkeypatch, app.graph, "delete_document", after_call=True)
@@ -731,7 +732,7 @@ async def test_replay_keeps_a_page_file_another_entity_now_owns(make_app, tmp_pa
     method = entity_id("Method", "Softmax")
     assert app.graph.wiki_page(method).path == "entities/softmax.md"
 
-    await app.pipeline.ingest([folder])  # replays gone.md's removal
+    await app.pipeline.ingest([folder])  # повторяет удаление gone.md
     assert app.registry.pending_removals() == []
     assert page.exists() and f"id: {method}" in page.read_text(encoding="utf-8")
     assert _points(app, app.vectors.wiki, "page_id", method) > 0
@@ -763,7 +764,7 @@ async def test_failed_pending_removal_names_only_itself_and_keeps_finished_names
     assert [d for d, _ in app.registry.pending_removals()] == [stuck]
 
     monkeypatch.setattr(app.vectors, "delete_doc", real)
-    assert app.pipeline.finish_pending_removals() == ["Alpha", "Beta"]  # Alpha not lost
+    assert app.pipeline.finish_pending_removals() == ["Alpha", "Beta"]  # Alpha не потерян
     assert app.pipeline.finish_pending_removals() == []
 
 
@@ -776,17 +777,18 @@ async def test_changed_entity_types_warn_until_everything_is_reextracted(make_ap
     changed = make_app(entity_types=new_types)
     with capture_logs() as logs:
         skipped = await changed.pipeline.ingest([docs], build_wiki=False)
-    assert len(skipped.skipped) == 2  # unchanged documents keep their old types
+    assert len(skipped.skipped) == 2  # у неизменённых документов остаются старые типы
     assert skipped.types_warning is not None and "mnogobase reset" in skipped.types_warning
     assert any(e["event"] == "entity_types_changed" for e in logs)
 
-    # a new document is extracted with the new types; the old ones still have the old types
+    # новый документ извлекается с новыми типами; у старых по-прежнему старые типы
     (docs / "extra.md").write_text("# Extra\n\nSoftmax and attention again.\n", encoding="utf-8")
     mixed = await changed.pipeline.ingest([docs], build_wiki=False)
     assert len(mixed.processed) == 1 and mixed.types_warning is not None
     assert changed.graph.get_entity(entity_id("Other", "Softmax")) is not None
 
-    # editing both old documents re-extracts them with the new types: no warning, no reset
+    # правка обоих старых документов заново извлекает их с новыми типами:
+    # без предупреждения и без reset
     for name in ("attention_en.md", "vnimanie_ru.md"):
         path = docs / name
         path.write_text(path.read_text(encoding="utf-8") + "\nEdited.\n", encoding="utf-8")
@@ -795,8 +797,8 @@ async def test_changed_entity_types_warn_until_everything_is_reextracted(make_ap
     assert changed.graph.get_entity(entity_id("Method", "Attention Mechanism")) is None
     assert changed.graph.get_entity(entity_id("Other", "Attention Mechanism")) is not None
 
-    # reset + ingest is the other way to re-extract everything
-    stale = make_app()  # back to the defaults: everything is stale again
+    # reset + ingest — другой способ заново извлечь всё
+    stale = make_app()  # снова значения по умолчанию: всё опять устарело
     assert (await stale.pipeline.ingest([docs], build_wiki=False)).types_warning is not None
     reset(stale)
     fresh = await stale.pipeline.ingest([docs], build_wiki=False)

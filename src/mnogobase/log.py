@@ -17,12 +17,13 @@ _SHARED = [
     structlog.processors.add_log_level,
     structlog.processors.TimeStamper(fmt="iso", key="ts"),
 ]
-# structured tracebacks without frame locals: locals can hold API keys or document text
+# структурированные traceback без локальных переменных фреймов: в них могут быть
+# API-ключи или текст документов
 _TRACEBACKS = structlog.processors.ExceptionRenderer(
     structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
 )
 
-# third-party loggers whose INFO lines bury the CLI progress display (warnings still pass)
+# сторонние логгеры, чьи INFO-строки забивают прогресс в CLI (warning по-прежнему проходят)
 _NOISY = ("httpx", "httpcore", "neo4j", "urllib3", "docling", "docling_core", "filelock")
 
 
@@ -35,8 +36,8 @@ _WARNINGS_ONLY = _WarningsOnly()
 
 
 class _CurrentStderr(logging.StreamHandler):
-    """Writes to whatever `sys.stderr` is now: a Rich live display redirects it while it
-    runs, so a warning is printed above the progress bars instead of through them."""
+    """Пишет в тот `sys.stderr`, который актуален сейчас: Rich live display подменяет его,
+    пока работает, поэтому warning печатается над прогресс-барами, а не поверх них."""
 
     def emit(self, record: logging.LogRecord) -> None:
         self.stream = sys.stderr
@@ -44,19 +45,19 @@ class _CurrentStderr(logging.StreamHandler):
 
 
 def _quiet_third_party() -> None:
-    """Silence chatty INFO logs and model-loading progress bars of the parsing stack."""
+    """Глушит болтливые INFO-логи и прогресс-бары загрузки моделей в стеке парсинга."""
     for name in _NOISY:
         logging.getLogger(name).setLevel(logging.WARNING)
-    # RapidOCR (docling's OCR) logs INFO to its own handler and resets its level to INFO
-    # when it is imported, so a filter is what keeps it quiet
+    # RapidOCR (OCR в docling) пишет INFO в свой handler и при импорте сбрасывает уровень
+    # на INFO, поэтому заглушить его можно только фильтром
     logging.getLogger("RapidOCR").addFilter(_WARNINGS_ONLY)
-    # Hugging Face download bars and transformers' "Loading weights" bar
+    # прогресс-бары загрузки Hugging Face и бар "Loading weights" из transformers
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     try:
         from transformers.utils import logging as hf_logging
-    except ImportError:  # pragma: no cover - transformers is a dependency
+    except ImportError:  # pragma: no cover - transformers есть в зависимостях
         return
-    hf_logging.disable_progress_bar()  # also disables huggingface_hub's bars
+    hf_logging.disable_progress_bar()  # заодно отключает бары huggingface_hub
 
 
 def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True) -> None:
@@ -96,7 +97,7 @@ def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True)
                 foreign_pre_chain=_SHARED,
             )
         )
-        console_handler.setLevel(logging.WARNING)  # Rich progress owns the terminal
+        console_handler.setLevel(logging.WARNING)  # терминалом владеет Rich progress
         root.addHandler(console_handler)
     root.setLevel(level)
     _quiet_third_party()
