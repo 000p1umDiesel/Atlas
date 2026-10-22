@@ -31,6 +31,8 @@ from mnogobase.config import Settings, load_settings
 from mnogobase.doctor import Check, run_checks
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.log import configure_logging, new_run_id
+from mnogobase.log_view import LEVELS, LogFilter, last_run_id, needs_dates, render, tail
+from mnogobase.log_view import follow as log_follow
 from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
@@ -559,6 +561,43 @@ def reset(
     finally:
         lock.release()
     console.print("All data deleted.")
+
+
+@app.command("logs")
+def logs_cmd(
+    follow: Annotated[
+        bool, typer.Option("--follow", "-f", help="Keep printing new events.")
+    ] = False,
+    lines: Annotated[int, typer.Option("--lines", "-n", help="How many past events.")] = 40,
+    level: Annotated[str, typer.Option(help="Minimum level: info, warning, error.")] = "info",
+    run: Annotated[
+        str | None, typer.Option(help="Only this run_id (a prefix is enough) or `last`.")
+    ] = None,
+    event: Annotated[str | None, typer.Option(help="Only events whose name contains this.")] = None,
+    http: Annotated[bool, typer.Option(help="Also show raw HTTP request lines.")] = False,
+) -> None:
+    """Журнал logs/mnogobase.jsonl в читаемом виде: последние события, с -f — новые."""
+    settings = _settings()
+    path = settings.logs_dir / "mnogobase.jsonl"
+    if level.lower() not in LEVELS:
+        console.print(f"[red]--level must be one of {', '.join(LEVELS)}.[/red]")
+        raise typer.Exit(2)
+    run_id = last_run_id(path) if run == "last" and path.exists() else run
+    flt = LogFilter(level=level.lower(), run_id=run_id, event=event, http=http)
+    past = tail(path, lines, flt)
+    dated = needs_dates(past)
+    for record in past:
+        console.print(render(record, show_date=dated), soft_wrap=True, highlight=False)
+    if not follow:
+        if not past:
+            console.print(f"No events in {escape(str(path))}.", style="dim", soft_wrap=True)
+        return
+    console.print(f"Following {escape(str(path))} (Ctrl+C to stop)…", style="dim", soft_wrap=True)
+    try:
+        for record in log_follow(path, flt):
+            console.print(render(record), soft_wrap=True, highlight=False)
+    except KeyboardInterrupt:
+        pass
 
 
 RolesArg = Annotated[

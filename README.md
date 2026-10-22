@@ -300,6 +300,7 @@ uv run mnogobase reset --yes      # без вопроса
 | `reset [--yes]` | удалить все данные проекта | qdrant, neo4j | да |
 | `models up [РОЛИ...] [--runner auto\|docker\|native]` | поднять серверы ролей с `serve: llamacpp \| vllm` и дождаться готовности (раздел 7.15) | — | нет |
 | `models down` / `status` / `logs РОЛЬ [-f]` | остановить серверы моделей / где какая модель и готова ли / лог сервера роли | — | нет |
+| `logs [-f] [-n N] [--level L] [--run ID\|last] [--event S]` | журнал `logs/mnogobase.jsonl` в читаемом виде (раздел 4.5) | — | нет |
 
 Одновременно может работать только одна из команд `ingest` / `wiki build` / `reindex` / `reset` (файловая блокировка `.mnogobase/ingest.lock`). Вторая сразу завершается с сообщением `Another ingest / wiki / reindex / reset run is in progress.`
 
@@ -450,6 +451,25 @@ jq 'select(.question | test("внимани")) | {mode, answer}' runs/compare.js
 ### 4.5 Логи (logs/mnogobase.jsonl)
 
 Команды пишут структурированный лог в `logs/mnogobase.jsonl` (JSON по строкам, ротация по 10 МБ, хранится 5 старых файлов). В консоль выводятся только предупреждения и ошибки. Трейсбеки пишутся без локальных переменных, чтобы в лог не попадали ключи и тексты документов.
+
+Читать его удобнее командой `mnogobase logs`: события по одному в строке, время локальное, у частых событий короткая сводка, ошибки красным с последним кадром трейсбека (полный — в файле).
+
+```bash
+uv run mnogobase logs                     # последние 40 событий
+uv run mnogobase logs -f                  # и дальше новые, как tail -f (Ctrl+C — выход)
+uv run mnogobase logs --level warning     # только предупреждения и ошибки
+uv run mnogobase logs --run last -n 200   # последний запуск ingest / wiki build (или --run <начало run_id>)
+uv run mnogobase logs --event llm_call    # события, в имени которых есть подстрока
+```
+
+```
+12:04:31 INFO  llm_call               extract · gpt-6-luna · 1062→737 tok · 7.0 s  run 2659c0 doc bdfaa6
+12:04:33 INFO  entity_merged          WMT 2014 EN-FR → WMT 2014 EN-DE (vector, 0.968)  run 2659c0 doc bdfaa6
+12:05:10 ERROR stage_failed           parse · report.pdf · VisionError: 2 of 5 pictures got no description …
+    VisionError: … at docling_parser.py:212
+```
+
+`-f` переживает ротацию файла. События старше сегодняшнего дня показываются с датой. Строки `HTTP Request: ...` (дублируют `llm_call`) скрыты, `--http` их показывает. На сервере удобно держать `logs -f` во второй панели tmux рядом с `ingest` (раздел 11.3).
 
 Общие поля: `ts`, `level`, `event`, `run_id` (у `ingest` и `wiki build`), `doc_id` (внутри обработки файла). Основные события:
 
@@ -1163,6 +1183,7 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `models.py` | доменные модели: `DocumentRecord`, `ChunkRecord`, `EntityRecord`, `ExtractionResult`, `ContextItem`, `Answer` и др. |
 | `ids.py` | детерминированные ID, `normalize_name`, `slugify` |
 | `log.py` | structlog, `run_id`, `log_stage` |
+| `log_view.py` | `mnogobase logs`: фильтр, сводка событий, хвост и слежение с ротацией |
 | `device.py` | выбор `cuda` / `mps` / `cpu` |
 | `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки; OCR-языки, описание картинок VLM (`_describe_pictures`, `_describe_whole_image`, `VisionError`) |
 | `chunking/hybrid.py` | `Chunker`: HybridChunker с токенайзером из `chunking/tokenizer.py` |
