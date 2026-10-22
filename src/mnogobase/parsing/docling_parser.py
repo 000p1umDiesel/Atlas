@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import (
@@ -21,7 +24,6 @@ from docling.document_converter import (
     PowerpointFormatOption,
     WordFormatOption,
 )
-from docling.utils.api_image_request import api_image_request
 from docling_core.types.doc import (
     BoundingBox,
     CoordOrigin,
@@ -34,10 +36,10 @@ from docling_core.types.doc import (
 )
 from docling_core.types.doc.labels import PictureClassificationLabel
 from PIL import Image
-from pydantic import AnyUrl
+from tenacity import Retrying, retry_if_exception, stop_after_attempt
 
 from mnogobase.config import ParsingSettings, VisionSettings
-from mnogobase.embedding.http import auth_headers
+from mnogobase.embedding.http import DEFAULT_RETRY_WAIT, auth_headers, retryable
 from mnogobase.log import get_logger
 
 _CUDA_BATCH_SIZE = 16
@@ -151,24 +153,26 @@ def _describe_pictures(options: ConvertPipelineOptions, vision: VisionSettings) 
     options.do_picture_classification = bool(vision.skip)
 
 
-def _describe_whole_image(doc: DoclingDocument, path: Path, vision: VisionSettings) -> None:
+def _describe_whole_image(
+    doc: DoclingDocument,
+    path: Path,
+    vision: VisionSettings,
+    client: httpx.Client | None = None,
+    retry_wait=DEFAULT_RETRY_WAIT,
+) -> None:
     """Файл-картинка (скриншот) описывается целиком: разметка находит в нём текст и таблицы,
     а не картинку, и до описания картинок Docling он иначе не доходит. Описание встаёт в
     начало документа, перед текстом OCR."""
     with Image.open(path) as source:
         image = source.convert("RGB")
-    result = api_image_request(
-        image,
-        vision.prompt,
-        AnyUrl(f"{vision.url}/chat/completions"),
-        timeout=vision.timeout_s,
-        headers=auth_headers(vision.api_key_env),
-        model=vision.model,
-        max_tokens=vision.max_tokens,
-        **vision.params,
-    )
-    if result.error:
-        raise VisionError(f"{path.name}: the VLM at {vision.url} failed: {result.error}")
+    try:
+        text = _ask_vlm(image, vision, client, retry_wait)
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+        raise VisionError(
+            f"{path.name}: the VLM at {vision.url} failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not text.strip():
+        raise VisionError(f"{path.name}: the VLM at {vision.url} returned an empty description")
     page = doc.pages.get(1)
     width, height = (page.size.width, page.size.height) if page else image.size
     picture = doc.add_picture(
@@ -178,10 +182,52 @@ def _describe_whole_image(doc: DoclingDocument, path: Path, vision: VisionSettin
             charspan=(0, 0),
         )
     )
-    picture.meta = PictureMeta(
-        description=DescriptionMetaField(text=result.text, created_by=vision.model)
-    )
+    picture.meta = PictureMeta(description=DescriptionMetaField(text=text, created_by=vision.model))
     doc.body.children.insert(0, doc.body.children.pop())
+
+
+def _ask_vlm(
+    image: Image.Image,
+    vision: VisionSettings,
+    client: httpx.Client | None = None,
+    retry_wait=DEFAULT_RETRY_WAIT,
+) -> str:
+    """Один запрос OpenAI `/chat/completions` с картинкой (PNG в data URL) и промптом
+    `vision.prompt`; сетевые ошибки и 5xx повторяются."""
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    payload = {
+        "model": vision.model,
+        "max_tokens": vision.max_tokens,
+        **vision.params,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": vision.prompt},
+                ],
+            }
+        ],
+    }
+    http = client or httpx.Client(
+        base_url=vision.url, timeout=vision.timeout_s, headers=auth_headers(vision.api_key_env)
+    )
+    try:
+        for attempt in Retrying(
+            retry=retry_if_exception(retryable),
+            stop=stop_after_attempt(3),
+            wait=retry_wait,
+            reraise=True,
+        ):
+            with attempt:
+                response = http.post("/chat/completions", json=payload)
+                response.raise_for_status()
+    finally:
+        if client is None:
+            http.close()
+    return response.json()["choices"][0]["message"]["content"] or ""
 
 
 def _check_descriptions(doc: DoclingDocument, vision: VisionSettings) -> None:

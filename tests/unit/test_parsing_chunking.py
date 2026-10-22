@@ -3,7 +3,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from docling.datamodel.base_models import ApiImageRequestResult, InputFormat, VlmStopReason
+from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling_core.transforms.chunker.hierarchical_chunker import ChunkingDocSerializer
 from docling_core.types.doc import DescriptionMetaField, DoclingDocument, PictureItem, PictureMeta
@@ -102,24 +102,29 @@ def test_without_vision_pictures_are_not_described(tmp_path):
     assert not formats[InputFormat.DOCX].pipeline_options.do_picture_description
 
 
-def test_an_image_file_is_described_whole_before_its_ocr_text(tmp_path, monkeypatch):
+def _vlm(respond):
+    return httpx.Client(base_url="http://vl:8003/v1", transport=httpx.MockTransport(respond))
+
+
+def test_an_image_file_is_described_whole_before_its_ocr_text(tmp_path):
     shot = tmp_path / "shot.png"
     Image.new("RGB", (40, 20), "white").save(shot)
-    calls: list = []
+    requests: list = []
 
-    def fake_request(image, prompt, url, **kwargs):
-        calls.append((image.size, str(url), kwargs["model"]))
-        return ApiImageRequestResult(
-            text="Панель склада: подшипник 6205, 1 240 шт.",
-            num_tokens=12,
-            stop_reason=VlmStopReason.END_OF_SEQUENCE,
-        )
+    def respond(request):
+        requests.append((str(request.url), json.loads(request.content)))
+        message = {"content": "Панель склада: подшипник 6205, 1 240 шт."}
+        return httpx.Response(200, json={"choices": [{"message": message}]})
 
-    monkeypatch.setattr(docling_parser, "api_image_request", fake_request)
     doc = DoclingDocument(name="shot")
     doc.add_text(label="text", text="OCR text")
-    docling_parser._describe_whole_image(doc, shot, VISION)
-    assert calls == [((40, 20), "http://vl:8003/v1/chat/completions", "vl")]
+    docling_parser._describe_whole_image(doc, shot, VISION, _vlm(respond))
+    [(url, body)] = requests
+    assert url == "http://vl:8003/v1/chat/completions"
+    assert (body["model"], body["max_tokens"], body["temperature"]) == ("vl", 400, 0.0)
+    image, prompt = body["messages"][0]["content"]
+    assert image["image_url"]["url"].startswith("data:image/png;base64,")
+    assert prompt == {"type": "text", "text": VISION.prompt}
     first = doc.body.children[0].resolve(doc)
     assert isinstance(first, PictureItem) and first.prov[0].page_no == 1
     # описание попадает в текст чанков, перед текстом OCR
@@ -127,7 +132,7 @@ def test_an_image_file_is_described_whole_before_its_ocr_text(tmp_path, monkeypa
     assert text.index("подшипник 6205") < text.index("OCR text")
 
 
-def test_a_failed_description_fails_the_parse(tmp_path, monkeypatch):
+def test_a_failed_description_fails_the_parse(tmp_path):
     # Docling глушит ошибки API: описание остаётся пустым
     doc = DoclingDocument(name="d")
     picture = doc.add_picture()
@@ -137,9 +142,17 @@ def test_a_failed_description_fails_the_parse(tmp_path, monkeypatch):
 
     shot = tmp_path / "shot.png"
     Image.new("RGB", (4, 4)).save(shot)
-    failed = ApiImageRequestResult(
-        text="", num_tokens=0, stop_reason=VlmStopReason.INFERENCE_ERROR, error="ConnectError"
-    )
-    monkeypatch.setattr(docling_parser, "api_image_request", lambda *a, **k: failed)
-    with pytest.raises(VisionError, match="shot.png: the VLM at http://vl:8003/v1 failed"):
-        docling_parser._describe_whole_image(DoclingDocument(name="s"), shot, VISION)
+    attempts: list = []
+
+    def down(request):
+        attempts.append(request)
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(VisionError, match="shot.png: the VLM at http://vl:8003/v1 failed: Conn"):
+        docling_parser._describe_whole_image(
+            DoclingDocument(name="s"), shot, VISION, _vlm(down), retry_wait=lambda state: 0
+        )
+    assert len(attempts) == 3  # сетевые ошибки повторяются
+    empty = _vlm(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]}))
+    with pytest.raises(VisionError, match="returned an empty description"):
+        docling_parser._describe_whole_image(DoclingDocument(name="s"), shot, VISION, empty)
