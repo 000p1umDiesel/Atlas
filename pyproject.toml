@@ -67,7 +67,7 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
   "integration: needs a running Docker daemon (testcontainers)",
-  "e2e: needs Docker + llama.cpp embedder/reranker (scripts/llama-local.sh) + the LLM endpoint",
+  "e2e: needs Docker + model servers (mnogobase models up) + the LLM endpoint",
 ]
 addopts = "-m 'not integration and not e2e'"
 

@@ -1,0 +1,73 @@
+# Серверы моделей для `mnogobase models up` (Linux + NVIDIA Container Toolkit). Напрямую не
+# запускайте: какую роль на каком бэкенде поднять и с какой моделью, решает config.yaml
+# (serve, model, gguf, server), а команду сервиса mnogobase передаёт в MB_<СЕРВИС>_ARGS.
+# Проект compose — mnogobase-models, отдельно от Qdrant и Neo4j из docker-compose.yml.
+# Порты слушают MODELS_BIND (по умолчанию 127.0.0.1: у серверов без --api-key нет авторизации).
+# GGUF и веса кэшируются в томах llama_models и hf_cache и переживают перезапуски.
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+  restart: unless-stopped
+
+x-llamacpp: &llamacpp
+  <<: *gpu
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda-b11515
+  environment:
+    LLAMA_CACHE: /models
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes: ["llama_models:/models"]
+
+x-vllm: &vllm
+  <<: *gpu
+  image: vllm/vllm-openai:v0.31.0
+  ipc: host
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes: ["hf_cache:/root/.cache/huggingface"]
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+    interval: 15s
+    timeout: 5s
+    retries: 10
+    start_period: 30m  # первая загрузка модели с Hugging Face
+
+services:
+  embed-llamacpp:
+    <<: *llamacpp
+    profiles: [embed-llamacpp]
+    command: ${MB_EMBED_LLAMACPP_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8001:8080"]
+  embed-vllm:
+    <<: *vllm
+    profiles: [embed-vllm]
+    command: ${MB_EMBED_VLLM_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8001:8000"]
+
+  rerank-llamacpp:
+    <<: *llamacpp
+    profiles: [rerank-llamacpp]
+    command: ${MB_RERANK_LLAMACPP_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8002:8080"]
+  rerank-vllm:
+    <<: *vllm
+    profiles: [rerank-vllm]
+    command: ${MB_RERANK_VLLM_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8002:8000"]
+
+  llm-llamacpp:
+    <<: *llamacpp
+    profiles: [llm-llamacpp]
+    command: ${MB_LLM_LLAMACPP_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8000:8080"]
+  llm-vllm:
+    <<: *vllm
+    profiles: [llm-vllm]
+    command: ${MB_LLM_VLLM_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8000:8000"]
+
+volumes:
+  llama_models:
+  hf_cache:

@@ -60,10 +60,10 @@ def test_embedder_batches_and_applies_templates():
     out = emb.embed_documents([EmbedInput(text=f"t{i}") for i in range(5)])
     assert len(out) == 5 and len(out[0]) == 2
     assert [len(b["input"]) for b in bodies] == [2, 2, 1]
-    assert bodies[0] == {"model": "qwen3-embedding-4b", "input": ["t0", "t1"]}
+    assert bodies[0] == {"model": "Qwen/Qwen3-Embedding-4B", "input": ["t0", "t1"]}
     emb.embed_query("hi")
     assert bodies[-1]["input"] == ["q: hi"]
-    assert embedder_signature(emb).startswith("openai:qwen3-embedding-4b:2:tpl-")
+    assert embedder_signature(emb).startswith("llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2:tpl-")
 
 
 def test_embedder_orders_by_index_and_sends_the_api_key(monkeypatch):
@@ -93,7 +93,7 @@ def test_signature_covers_the_templates_and_accepts_legacy_signatures():
     assert sig(doc_template="title: {title} | {text}") != default
     assert sig(query_template="{query}") != default
     emb = OpenAICompatEmbedder(EmbedderSettings())
-    for accepted in (None, default, "openai:qwen3-embedding-4b:2560"):
+    for accepted in (None, default, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560"):
         assert signature_mismatch(accepted, emb) is None, accepted
     templates = signature_mismatch(sig(doc_template="title: {title} | {text}"), emb)
     assert templates is not None and "templates changed" in templates
@@ -135,3 +135,13 @@ def test_fake_embedder_similarity():
     )
     dot = lambda x, y: sum(p * q for p, q in zip(x, y, strict=True))  # noqa: E731
     assert dot(a, b) > dot(a, c)
+
+
+def test_signature_follows_the_backend_and_the_quant():
+    def model_id(**update):
+        return OpenAICompatEmbedder(EmbedderSettings(**update)).model_id
+
+    assert model_id() == "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
+    assert model_id(gguf="Qwen/Qwen3-Embedding-4B-GGUF:Q8_0") != model_id()
+    assert model_id(serve="vllm") == "vllm:Qwen/Qwen3-Embedding-4B"
+    assert model_id(serve="external", base_url="http://x/v1") == "external:Qwen/Qwen3-Embedding-4B"

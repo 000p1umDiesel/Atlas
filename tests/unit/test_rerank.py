@@ -70,7 +70,7 @@ def test_api_reranker_sends_raw_texts_once_and_maps_scores_back_to_input_order()
         model="Qwen/Qwen3-Reranker-4B",
         max_chars=100,
     )
-    client = httpx.Client(base_url=settings.base_url, transport=httpx.MockTransport(handler))
+    client = httpx.Client(base_url=settings.url, transport=httpx.MockTransport(handler))
     reranker = ApiReranker(settings, client=client)
     assert reranker.score("q", ["a" * 150, "b", "c"]) == [0.2, 0.9, 0.0]  # c не вернулся
     assert reranker.score("q", []) == []
@@ -94,7 +94,7 @@ def test_api_reranker_retries_server_errors():
         return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.7}]})
 
     settings = RerankSettings()
-    client = httpx.Client(base_url=settings.base_url, transport=httpx.MockTransport(handler))
+    client = httpx.Client(base_url=settings.url, transport=httpx.MockTransport(handler))
     reranker = ApiReranker(settings, client=client, retry_wait=wait_none())
     assert reranker.score("q", ["a"]) == [0.7]
     assert calls["n"] == 2

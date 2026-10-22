@@ -1,5 +1,5 @@
 # docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d   (Linux + NVIDIA Container Toolkit)
-# Qdrant с GPU-индексацией. Модели — оверлей docker-compose.llamacpp.yml или docker-compose.vllm.yml.
+# Qdrant с GPU-индексацией. Модели поднимает `mnogobase models up` (docker-compose.models.yml).
 services:
   qdrant:
     image: qdrant/qdrant:v1.19.2-gpu-nvidia

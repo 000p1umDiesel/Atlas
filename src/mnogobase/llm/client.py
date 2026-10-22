@@ -95,7 +95,7 @@ class OpenAICompatLLM:
     ):
         self._settings = settings
         self._client = AsyncOpenAI(
-            base_url=settings.base_url,
+            base_url=settings.url,
             api_key=settings.api_key(),
             timeout=settings.timeout_s,
             max_retries=0,  # повторами управляет tenacity

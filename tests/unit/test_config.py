@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import DEFAULT_ENTITY_TYPES, ExtractSettings, load_settings
+from mnogobase.config import (
+    DEFAULT_ENTITY_TYPES,
+    EmbedderSettings,
+    ExtractSettings,
+    LLMSettings,
+    load_settings,
+)
 
 
 @pytest.fixture
@@ -24,9 +30,12 @@ def clean_env(monkeypatch):
 def test_defaults_without_config_file(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     s = load_settings()
-    assert s.embedder.model == "qwen3-embedding-4b"
+    assert s.embedder.model == "Qwen/Qwen3-Embedding-4B"
+    assert s.embedder.serve == "llamacpp" and s.llm.serve == "external"
     assert s.embedder.dim == 2560
-    assert s.embedder.base_url == "http://localhost:8001/v1"
+    assert s.embedder.url == "http://localhost:8001/v1"
+    assert s.rerank.url == "http://localhost:8002/v1"
+    assert s.llm.url == "https://codex.sale/v1"
     assert s.qdrant.prefix == "mb_"
     assert s.llm.model == "gpt-6-luna"
     assert s.llm.model_for("extract") == "gpt-6-luna"
@@ -246,3 +255,15 @@ def test_wildcard_no_proxy_is_untouched(tmp_path, no_proxy_env):
     no_proxy_env.setenv("NO_PROXY", "*")
     load_settings()
     assert os.environ["NO_PROXY"] == "*"
+
+
+def test_serve_requires_what_the_backend_needs():
+    with pytest.raises(ValueError, match="llm.gguf is required for serve: llamacpp"):
+        LLMSettings(serve="llamacpp")
+    with pytest.raises(ValueError, match="embedder.base_url is required for serve: external"):
+        EmbedderSettings(serve="external")
+    vllm = LLMSettings(model="Qwen/Qwen3-8B", serve="vllm", base_url=None)
+    assert vllm.url == "http://localhost:8000/v1" and vllm.weights == "Qwen/Qwen3-8B"
+    remote = EmbedderSettings(base_url="http://gpu:8001/v1/")  # модель поднята на другой машине
+    assert remote.url == "http://gpu:8001/v1"
+    assert remote.weights == "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"

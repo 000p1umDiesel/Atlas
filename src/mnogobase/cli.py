@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import filelock
 import typer
@@ -43,12 +43,28 @@ from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.compare import compare as do_compare
 from mnogobase.retrieval.compare import config_hash, run_mode
 from mnogobase.retrieval.translate import QueryTranslator
+from mnogobase.serving import (
+    ModelRunner,
+    Runner,
+    Served,
+    ServeError,
+    bring_up,
+    is_ready,
+    make_runner,
+    resolve_runner,
+    served_roles,
+)
 from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.wiki.builder import WikiReport
 
 app = typer.Typer(no_args_is_help=True, help="mnogobase — LLM Wiki core: ingest, wiki, retrieval.")
 wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
 app.add_typer(wiki_app, name="wiki")
+models_app = typer.Typer(
+    no_args_is_help=True,
+    help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",
+)
+app.add_typer(models_app, name="models")
 console = Console()
 _state: dict[str, Path | None] = {"config": None}
 # сервисы, нужные команде до старта: embedder, LLM, векторное хранилище, граф
@@ -541,3 +557,114 @@ def reset(
     finally:
         lock.release()
     console.print("All data deleted.")
+
+
+RolesArg = Annotated[
+    list[str] | None, typer.Argument(help="Roles: embedder, rerank, llm (default: all served).")
+]
+RunnerOpt = Annotated[
+    str,
+    typer.Option(
+        "--runner", help="docker (Linux + NVIDIA), native (llama-server; default on macOS) or auto."
+    ),
+]
+
+
+def _runner(runner: str) -> Runner:
+    if runner not in ("auto", "docker", "native"):
+        console.print("[red]--runner must be auto, docker or native.[/red]")
+        raise typer.Exit(2)
+    return cast(Runner, runner)
+
+
+def _models(roles: list[str] | None, runner: Runner) -> tuple[list[Served], ModelRunner]:
+    settings = _settings()
+    try:
+        return served_roles(settings, roles or ()), make_runner(runner, settings)
+    except ServeError as exc:
+        _fail_cleanly(exc)
+        raise AssertionError("unreachable") from exc
+
+
+@models_app.command("up")
+def models_up(
+    roles: RolesArg = None,
+    runner: RunnerOpt = "auto",
+    timeout: Annotated[
+        float, typer.Option(help="Seconds to wait for the servers (first start downloads models).")
+    ] = 1800,
+) -> None:
+    """Поднять серверы ролей с `serve: llamacpp | vllm` и дождаться их готовности."""
+    served, model_runner = _models(roles, _runner(runner))
+    if not served:
+        console.print("Nothing to start: every role is serve: external (or rerank is disabled).")
+        return
+    where = resolve_runner(_runner(runner))
+    for s in served:
+        console.print(
+            f"{s.role}: {escape(s.settings.weights)} on {s.backend} ({where}) → {s.settings.url}",
+            soft_wrap=True,
+        )
+
+    def waiting(s: Served, elapsed: float) -> None:
+        if int(elapsed) % 60 < 5:  # раз в минуту, а не каждые 5 с
+            console.print(
+                f"  waiting for {s.role} ({int(elapsed)} s; the first start downloads the model, "
+                f"see `mnogobase models logs {s.role}`)",
+                soft_wrap=True,
+            )
+
+    try:
+        bring_up(served, model_runner, timeout, waiting)
+    except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
+        _fail_cleanly(exc)
+    console.print("[green]All model servers are ready.[/green]")
+
+
+@models_app.command("down")
+def models_down(runner: RunnerOpt = "auto") -> None:
+    """Остановить серверы моделей (скачанные модели остаются в кэше)."""
+    _, model_runner = _models(None, _runner(runner))
+    try:
+        model_runner.stop()
+    except (ServeError, OSError) as exc:
+        _fail_cleanly(exc)
+    console.print("Model servers stopped.")
+
+
+@models_app.command("status")
+def models_status() -> None:
+    """Где работает модель каждой роли и готов ли её сервер."""
+    settings = _settings()
+    table = Table("role", "serve")
+    for column in ("model", "url"):
+        table.add_column(column, overflow="fold")
+    table.add_column("state")
+    roles = [("embedder", settings.embedder), ("rerank", settings.rerank), ("llm", settings.llm)]
+    for role, s in roles:
+        if role == "rerank" and not settings.rerank.enabled:
+            state = "disabled"
+        elif s.serve == "external":
+            state = "external"
+        else:
+            state = "[green]ready[/green]" if is_ready(Served(role, s)) else "[red]down[/red]"
+        table.add_row(role, s.serve, escape(s.weights), escape(s.url), state)
+    console.print(table)
+
+
+@models_app.command("logs")
+def models_logs(
+    role: Annotated[str, typer.Argument(help="embedder, rerank or llm.")],
+    follow: Annotated[
+        bool, typer.Option("--follow", "-f", help="Keep printing new lines.")
+    ] = False,
+    runner: RunnerOpt = "auto",
+) -> None:
+    """Последние строки лога сервера роли."""
+    served, model_runner = _models([role], _runner(runner))
+    if not served:
+        _fail_cleanly(ServeError(f"{role} is not served locally (serve: external or disabled)"))
+    try:
+        model_runner.logs(served[0], follow)
+    except (ServeError, OSError) as exc:
+        _fail_cleanly(exc)

@@ -24,7 +24,7 @@ class ApiReranker:
     Формат Jina/Cohere: `query` и `documents` одним запросом, ответ `results[].index` и
     `relevance_score` в [0, 1]. Промпт Qwen3-Reranker сервер строит сам (vLLM — с
     `--chat-template .../qwen3_reranker.jinja`, llama.cpp — из GGUF), поэтому тексты уходят
-    как есть. `base_url` включает `/v1`.
+    как есть.
     """
 
     def __init__(
@@ -35,7 +35,7 @@ class ApiReranker:
     ):
         self._s = settings
         self._client = client or httpx.Client(
-            base_url=settings.base_url, timeout=120, headers=auth_headers(settings.api_key_env)
+            base_url=settings.url, timeout=120, headers=auth_headers(settings.api_key_env)
         )
         self._retry_wait = retry_wait
         self._log = get_logger(__name__)

@@ -7,7 +7,7 @@ import httpx
 from qdrant_client import QdrantClient
 
 from mnogobase.chunking.tokenizer import AUTO, load_tokenizer, tokenizer_source
-from mnogobase.config import Settings
+from mnogobase.config import ServedModel, Settings
 from mnogobase.device import detect_device
 from mnogobase.embedding.base import embedder_signature, signature_mismatch
 from mnogobase.embedding.http import auth_headers
@@ -73,13 +73,22 @@ def run_checks(
         roles = [("embedder", settings.embedder)]
         if settings.rerank.enabled:
             roles.append(("reranker", settings.rerank))
-        servers: dict[tuple[str, str | None], list[str]] = {}
+        servers: dict[tuple[str, str | None], list[ServedModel]] = {}
         for _, s in roles:
-            servers.setdefault((s.base_url.rstrip("/"), s.api_key_env), []).append(s.model)
+            servers.setdefault((s.url, s.api_key_env), []).append(s)
         problems = []
         for (url, key_env), wanted in servers.items():
-            served = _served_models(url, key_env, timeout)
-            for model in wanted:
+            try:
+                served = _served_models(url, key_env, timeout)
+            except httpx.TransportError as exc:
+                if all(s.serve == "external" for s in wanted):
+                    raise
+                problems.append(
+                    f"{url} is not reachable ({type(exc).__name__}): "
+                    "start the local models with `mnogobase models up`"
+                )
+                continue
+            for model in (s.model for s in wanted):
                 if model not in served:
                     listed = ", ".join(sorted(served)) or "nothing"
                     problems.append(f"{model} is not served by {url} (it serves {listed})")
@@ -95,11 +104,11 @@ def run_checks(
 
     def llm() -> Check:
         resp = httpx.get(
-            f"{settings.llm.base_url.rstrip('/')}/models",
+            f"{settings.llm.url}/models",
             timeout=timeout,
             headers={"Authorization": f"Bearer {settings.llm.api_key()}"},
         )
-        where = f"{settings.llm.model} @ {settings.llm.base_url}"
+        where = f"{settings.llm.model} @ {settings.llm.url}"
         if resp.status_code in (404, 405):
             # некоторые OpenAI-совместимые endpoint'ы отдают chat completions без списка
             # моделей; 401/403 (неверный ключ) и прочие ошибки всё равно падают ниже
@@ -108,7 +117,7 @@ def run_checks(
         ids = {m["id"] for m in resp.json().get("data", [])}
         if not ids or settings.llm.model in ids:
             return Check("llm", True, where)
-        return Check("llm", False, f"{settings.llm.model} is not served by {settings.llm.base_url}")
+        return Check("llm", False, f"{settings.llm.model} is not served by {settings.llm.url}")
 
     def qdrant() -> Check:
         # проверка сообщает о доступности; warning клиента о проверке версии пропускаем

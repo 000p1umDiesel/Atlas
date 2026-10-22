@@ -16,9 +16,9 @@ from mnogobase.models import EmbedInput
 class OpenAICompatEmbedder:
     """`/embeddings` OpenAI-совместимого сервера: llama.cpp server, vLLM, LM Studio, TEI.
 
-    `base_url` включает `/v1`. Контекст задаётся при запуске сервера, а длинный вход сервер
-    не обрезает, а отклоняет: чанки не длиннее `chunking.max_tokens` должны помещаться в его
-    окно. Повтор при сетевых ошибках и 5xx."""
+    Контекст задаётся при запуске сервера, а длинный вход сервер не обрезает, а отклоняет:
+    чанки не длиннее `chunking.max_tokens` должны помещаться в его окно. Повтор при сетевых
+    ошибках и 5xx."""
 
     def __init__(
         self,
@@ -28,10 +28,10 @@ class OpenAICompatEmbedder:
     ):
         self._s = settings
         self._client = client or httpx.Client(
-            base_url=settings.base_url, timeout=120, headers=auth_headers(settings.api_key_env)
+            base_url=settings.url, timeout=120, headers=auth_headers(settings.api_key_env)
         )
         self._retry_wait = retry_wait
-        self.model_id = f"openai:{settings.model}"
+        self.model_id = settings.model_id
         self.dim = settings.dim
         self.templates = (settings.doc_template, settings.query_template)
         self._log = get_logger(__name__)

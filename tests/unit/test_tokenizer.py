@@ -13,7 +13,8 @@ from mnogobase.chunking.tokenizer import (
 from mnogobase.config import ChunkingSettings, EmbedderSettings
 
 AUTO = ChunkingSettings(max_tokens=64)
-EMBEDDER = EmbedderSettings(model="emb")
+# внешний сервер: токенизатор по его /v1/models или /tokenize
+EMBEDDER = EmbedderSettings(model="emb", serve="external", base_url="http://llama:8001/v1")
 
 
 def _server(models: list[dict], seen: list | None = None, tokenize_status: int = 200):
@@ -42,7 +43,20 @@ def test_explicit_repo_skips_the_server(monkeypatch):
     assert loaded == [("Qwen/Qwen3-Embedding-4B", 128)]
 
 
-def test_auto_on_vllm_loads_the_repo_it_reports(monkeypatch):
+@pytest.mark.parametrize("serve", ["llamacpp", "vllm"])
+def test_auto_for_a_local_server_is_the_hf_tokenizer_of_the_model(monkeypatch, serve):
+    loaded: list = []
+    monkeypatch.setattr(
+        tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append(repo) or "tok"
+    )
+    embedder = EmbedderSettings(model="Qwen/Qwen3-Embedding-4B", serve=serve)
+    # сервер не спрашивается: клиент, который упадёт на любом запросе
+    boom = httpx.Client(transport=httpx.MockTransport(lambda request: 1 / 0))
+    assert load_tokenizer(AUTO, embedder, client=boom) == "tok"
+    assert loaded == ["Qwen/Qwen3-Embedding-4B"]
+
+
+def test_auto_on_external_vllm_loads_the_repo_it_reports(monkeypatch):
     loaded: list = []
     monkeypatch.setattr(
         tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append(repo) or "tok"
@@ -52,7 +66,7 @@ def test_auto_on_vllm_loads_the_repo_it_reports(monkeypatch):
     assert loaded == ["Qwen/Qwen3-Embedding-4B"]
 
 
-def test_auto_on_llama_cpp_counts_with_its_tokenize_and_caches():
+def test_auto_on_external_llama_cpp_counts_with_its_tokenize_and_caches():
     seen: list = []
     client = _server([{"id": "emb", "aliases": ["emb"]}], seen)
     tok = load_tokenizer(AUTO, EMBEDDER, client=client)

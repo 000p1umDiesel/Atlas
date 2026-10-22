@@ -52,14 +52,19 @@ def load_tokenizer(
     settings: ChunkingSettings, embedder: EmbedderSettings, *, client: httpx.Client | None = None
 ) -> BaseTokenizer:
     """Токенизатор для подсчёта токенов чанка: HF-репозиторий `chunking.tokenizer` или, при
-    `auto`, токенизатор самой модели эмбеддера, чтобы он всегда соответствовал
-    `embedder.model`: по HF-репозиторию, который сообщает сервер (vLLM), или `/tokenize`
-    сервера (llama.cpp). `client` — клиент корня сервера (тесты)."""
+    `auto`, токенизатор самой модели эмбеддера, чтобы он всегда соответствовал её смене.
+
+    Модель, которую поднимает `mnogobase models up` (`serve: llamacpp | vllm`), — HF-репозиторий
+    `embedder.model`: его токенизатор совпадает с GGUF. У внешнего сервера (`external`) —
+    репозиторий, который он сообщает (`root` у vLLM), или его `/tokenize` (llama.cpp).
+    `client` — клиент корня внешнего сервера (тесты)."""
     if settings.tokenizer != AUTO:
         return _from_hf(settings.tokenizer, settings.max_tokens)
+    if embedder.serve != "external":
+        return _from_hf(embedder.model, settings.max_tokens)
     if client is None:
         client = httpx.Client(
-            base_url=server_root(embedder.base_url),
+            base_url=server_root(embedder.url),
             timeout=60,
             headers=auth_headers(embedder.api_key_env),
         )

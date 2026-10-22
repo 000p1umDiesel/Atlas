@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal, Self
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 LLM_TASKS = ("extract", "resolve", "wiki", "answer", "query")
@@ -83,10 +83,68 @@ DEFAULT_EXTENSIONS = [
 ]
 
 
-class LLMSettings(BaseModel):
-    base_url: str = "https://codex.sale/v1"
+Serve = Literal["llamacpp", "vllm", "external"]
+
+
+class ServerSettings(BaseModel):
+    """Как `mnogobase models up` запускает модель роли (при `serve: llamacpp | vllm`)."""
+
+    ctx: int = Field(default=8192, ge=512)  # окно контекста: --ctx-size / --max-model-len
+    gpu_memory: float = Field(default=0.15, gt=0, lt=1)  # vLLM: доля ВСЕЙ видеопамяти
+    args: list[str] = Field(default_factory=list)  # дополнительные флаги сервера
+
+
+class ServedModel(BaseModel):
+    """Модель на OpenAI-совместимом сервере.
+
+    `serve` — где она работает: `llamacpp` или `vllm` поднимает `mnogobase models up` на порту
+    роли (`port`), `external` — уже работающий сервер или API по `base_url`. `model` — HF-
+    репозиторий исходной модели и её имя на сервере на любом бэкенде (у llama.cpp это
+    `--alias`); веса для llama.cpp — GGUF из `gguf` (`repo:квант`)."""
+
+    role: ClassVar[str]
+    port: ClassVar[int]
+
+    model: str
+    serve: Serve = "llamacpp"
+    gguf: str | None = None
+    base_url: str | None = None  # до /v1 включительно; по умолчанию localhost:<port> роли
+    api_key_env: str | None = None  # переменная с Bearer-ключом сервера (--api-key)
+    server: ServerSettings = Field(default_factory=ServerSettings)
+
+    @model_validator(mode="after")
+    def _check_serve(self) -> Self:
+        if self.serve == "llamacpp" and not self.gguf:
+            raise ValueError(
+                f"{self.role}.gguf is required for serve: llamacpp "
+                "(a GGUF repo with quant, e.g. Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M)"
+            )
+        if self.serve == "external" and not self.base_url:
+            raise ValueError(f"{self.role}.base_url is required for serve: external")
+        return self
+
+    @property
+    def url(self) -> str:
+        """Адрес OpenAI-API сервера, до /v1 включительно."""
+        return (self.base_url or f"http://localhost:{self.port}/v1").rstrip("/")
+
+    @property
+    def weights(self) -> str:
+        """Что именно работает на сервере: GGUF у llama.cpp, иначе `model`."""
+        return self.gguf if self.serve == "llamacpp" and self.gguf else self.model
+
+
+class LLMSettings(ServedModel):
+    role: ClassVar[str] = "llm"
+    port: ClassVar[int] = 8000
+
     model: str = "gpt-6-luna"
-    api_key_env: str = "LLM_API_KEY"
+    serve: Serve = "external"
+    base_url: str | None = "https://codex.sale/v1"
+    api_key_env: str | None = "LLM_API_KEY"
+    server: ServerSettings = Field(
+        default_factory=lambda: ServerSettings(ctx=32768, gpu_memory=0.6)
+    )
     concurrency: int = 4
     temperature: float = 0.0
     timeout_s: float = 120.0
@@ -97,24 +155,29 @@ class LLMSettings(BaseModel):
 
     def api_key(self) -> str:
         # локальные серверы игнорируют ключ, но OpenAI SDK не принимает пустой
-        return os.environ.get(self.api_key_env) or "local"
+        return (os.environ.get(self.api_key_env) if self.api_key_env else None) or "local"
 
 
-class EmbedderSettings(BaseModel):
-    """`/embeddings` OpenAI-совместимого сервера (llama.cpp server, vLLM, ...).
+class EmbedderSettings(ServedModel):
+    """`/embeddings`; по умолчанию Qwen3-Embedding-4B на llama.cpp."""
 
-    По умолчанию — Qwen3-Embedding-4B из `scripts/llama-local.sh` и
-    `docker-compose.llamacpp.yml` (имя модели — `--alias` llama.cpp)."""
+    role: ClassVar[str] = "embedder"
+    port: ClassVar[int] = 8001
 
-    base_url: str = "http://localhost:8001/v1"  # до /v1 включительно
-    api_key_env: str | None = None  # переменная с Bearer-ключом сервера (--api-key)
-    model: str = "qwen3-embedding-4b"
+    model: str = "Qwen/Qwen3-Embedding-4B"
+    gguf: str | None = "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
     dim: int = 2560
     batch_size: int = 32
     doc_template: str = "{text}"
     query_template: str = (
         "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
     )
+
+    @property
+    def model_id(self) -> str:
+        """Какие веса считают векторы — часть подписи индекса: смена бэкенда или кванта
+        требует `reindex`."""
+        return f"{self.serve}:{self.weights}"
 
 
 class SparseSettings(BaseModel):
@@ -200,14 +263,16 @@ class RetrievalSettings(BaseModel):
     )
 
 
-class RerankSettings(BaseModel):
-    """Cross-encoder reranking хитов rag: `/rerank` OpenAI-совместимого сервера (llama.cpp
-    server, vLLM) с Qwen3-Reranker."""
+class RerankSettings(ServedModel):
+    """Cross-encoder reranking хитов rag: `/rerank` с Qwen3-Reranker (llama.cpp — GGUF с
+    классификатором yes/no, например от gorse-io; vLLM — исходная модель)."""
+
+    role: ClassVar[str] = "rerank"
+    port: ClassVar[int] = 8002
 
     enabled: bool = False
-    base_url: str = "http://localhost:8002/v1"  # до /v1 включительно
-    api_key_env: str | None = None  # переменная с Bearer-ключом сервера
-    model: str = "qwen3-reranker-4b"
+    model: str = "Qwen/Qwen3-Reranker-4B"
+    gguf: str | None = "gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M"
     candidates: int = Field(default=30, ge=1)  # гибридных хитов на скоринг; остаются лучшие k
     max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для реранкера
 

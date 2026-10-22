@@ -13,6 +13,7 @@ from mnogobase.maintenance import ReindexError
 from mnogobase.models import Answer, Source
 from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
+from mnogobase.serving import ServeError
 
 runner = CliRunner()
 
@@ -511,3 +512,38 @@ def test_wiki_build_and_reindex_report_progress(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert result.output.strip() == "reindexed: 1 chunks, 2 entities, 3 wiki sections"
     assert seen == ["wiki RichProgress", "reindex RichProgress"]
+
+
+def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "rerank: {enabled: true, serve: vllm}\nllm: {serve: external, base_url: http://api/v1}\n",
+        encoding="utf-8",
+    )
+    started: list = []
+    monkeypatch.setattr(cli, "make_runner", lambda runner, settings: f"runner:{runner}")
+    monkeypatch.setattr(
+        cli, "bring_up", lambda served, model_runner, timeout, on_wait: started.append(served)
+    )
+    result = runner.invoke(cli.app, ["models", "up", "--runner", "docker"])
+    assert result.exit_code == 0, result.output
+    assert [s.service for s in started[0]] == ["embed-llamacpp", "rerank-vllm"]
+    assert "rerank: Qwen/Qwen3-Reranker-4B on vllm (docker)" in result.output
+
+    def broken(served, model_runner, timeout, on_wait):
+        raise ServeError("embedder: the llamacpp server exited")
+
+    monkeypatch.setattr(cli, "bring_up", broken)
+    result = runner.invoke(cli.app, ["models", "up", "embedder"])
+    assert result.exit_code == 2 and "server exited" in result.output
+
+
+def test_models_status_shows_where_each_role_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "is_ready", lambda served: served.role == "embedder")
+    result = runner.invoke(cli.app, ["models", "status"])
+    assert result.exit_code == 0, result.output
+    lines = {line.split()[1]: line for line in result.output.splitlines() if "│" in line[:3]}
+    assert "llamacpp" in lines["embedder"] and "ready" in lines["embedder"]
+    assert "disabled" in lines["rerank"]
+    assert "external" in lines["llm"]

@@ -29,7 +29,8 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     assert fresh.ok and fresh.detail == "no index yet"
     assert not (tmp_path / ".mb" / "state.db").exists()
 
-    store_signature(tmp_path, "openai:qwen3-embedding-4b:2560")  # старый формат: без шаблонов
+    # старый формат подписи (без шаблонов) той же модели и размерности допустим
+    store_signature(tmp_path, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560")
     [same] = run_checks(settings, only=["index"])
     assert same.ok
 
@@ -37,7 +38,7 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     [changed] = run_checks(settings, only=["index"])
     assert not changed.ok
     assert "ollama:qwen3-embedding:4b:2560" in changed.detail
-    assert "openai:qwen3-embedding-4b:2560" in changed.detail
+    assert "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560" in changed.detail
     assert "mnogobase reindex" in changed.detail
 
 

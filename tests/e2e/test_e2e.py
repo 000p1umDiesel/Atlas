@@ -1,7 +1,7 @@
 """Сквозной сценарий на настоящих сервисах.
 
 Нужны Docker (testcontainers: Neo4j + Qdrant из `tests/conftest.py`), эмбеддер и реранкер
-из `config.yaml` (`scripts/llama-local.sh start`) и LLM-эндпоинт оттуда же с `LLM_API_KEY` в `.env`.
+из `config.yaml` (`uv run mnogobase models up`) и LLM-эндпоинт оттуда же с `LLM_API_KEY` в `.env`.
 Запуск: `uv run pytest -m e2e -s`.
 """
 
