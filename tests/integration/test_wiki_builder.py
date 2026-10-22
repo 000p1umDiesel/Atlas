@@ -1,3 +1,4 @@
+import json
 import re
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput, EntityReco
 from mnogobase.registry import Registry
 from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.builder import WikiBuilder
+from mnogobase.wiki.obsidian import GRAPH_FILTER
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
 
 pytestmark = [
@@ -24,7 +26,12 @@ DOC = "d" * 16
 
 @pytest.fixture
 def world(graph, tmp_path):
-    def factory(min_mentions: int = 2, handler=scripted_llm_handler, evidence_k: int = 12):
+    def factory(
+        min_mentions: int = 2,
+        handler=scripted_llm_handler,
+        evidence_k: int = 12,
+        obsidian: bool = True,
+    ):
         vectors = QdrantStore(QdrantClient(":memory:"), "t_", 64)
         vectors.ensure_collections()
         emb, sparse = FakeEmbedder(), FakeSparse()
@@ -84,13 +91,16 @@ def world(graph, tmp_path):
         llm = FakeLLM(handler)
         wiki_dir = tmp_path / "wiki"
         builder = WikiBuilder(
-            WikiSettings(dir=wiki_dir, min_mentions=min_mentions, evidence_k=evidence_k),
+            WikiSettings(
+                dir=wiki_dir, min_mentions=min_mentions, evidence_k=evidence_k, obsidian=obsidian
+            ),
             graph,
             vectors,
             emb,
             sparse,
             llm,
             registry,
+            entity_types=["Concept", "Other"],
         )
         return SimpleNamespace(
             builder=builder,
@@ -114,6 +124,20 @@ def wiki_points(vectors: QdrantStore, page_id: str) -> list[dict]:
         limit=100,
     )
     return [p.payload for p in points]
+
+
+async def test_build_writes_obsidian_graph_settings(world):
+    w = world()
+    await w.builder.build()
+    graph_json = json.loads((w.wiki / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
+    assert graph_json["search"] == GRAPH_FILTER
+    assert [g["query"] for g in graph_json["colorGroups"]] == ["[type:Concept]", "[type:Other]"]
+
+
+async def test_build_skips_obsidian_settings_when_disabled(world):
+    w = world(obsidian=False)
+    await w.builder.build()
+    assert not (w.wiki / ".obsidian").exists()
 
 
 async def test_build_creates_linked_cited_pages(world, graph):

@@ -66,7 +66,16 @@ def build_app(
     chunker = Chunker(settings.chunking, settings.embedder)
     extractor = Extractor(llm, registry, settings.extract.entity_types)
     resolver = EntityResolver(graph, vectors, embedder, llm, settings.resolve)
-    wiki = WikiBuilder(settings.wiki, graph, vectors, embedder, sparse, llm, registry)
+    wiki = WikiBuilder(
+        settings.wiki,
+        graph,
+        vectors,
+        embedder,
+        sparse,
+        llm,
+        registry,
+        entity_types=list(settings.extract.entity_types),
+    )
     pipeline = Pipeline(
         settings,
         registry,

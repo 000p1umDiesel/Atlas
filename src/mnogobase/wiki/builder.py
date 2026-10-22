@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -24,6 +25,7 @@ from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.wiki.obsidian import write_graph_settings
 from mnogobase.wiki.render import (
     SourceRef,
     append_log,
@@ -90,8 +92,10 @@ class WikiBuilder:
         sparse: SparseEncoder,
         llm: LLMClient,
         registry: Registry,
+        entity_types: Sequence[str] = (),
     ):
         self._s = settings
+        self._entity_types = list(entity_types)
         self._graph = graph
         self._vectors = vectors
         self._embedder = embedder
@@ -184,6 +188,8 @@ class WikiBuilder:
         (self._s.dir / "index.md").write_text(
             render_index(self._graph.wiki_pages()), encoding="utf-8"
         )
+        if self._s.obsidian:
+            write_graph_settings(self._s.dir, self._entity_types)
         if report.created or report.updated or report.deleted or documents:
             append_log(
                 self._s.dir / "log.md",

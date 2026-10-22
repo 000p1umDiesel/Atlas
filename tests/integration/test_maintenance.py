@@ -93,7 +93,8 @@ async def test_reindex_after_embedder_change_then_reset(graph, tmp_path, docs, s
 
     reset(second)
     assert graph.counts()["Entity"] == 0
-    assert not (tmp_path / "wiki").exists()
+    # страницы удалены, а настройки Obsidian остаются: в .obsidian/ могут быть и чужие
+    assert sorted(p.name for p in (tmp_path / "wiki").iterdir()) == [".obsidian"]
     assert second.registry.files() == []
     assert not client.collection_exists(second.vectors.chunks)
     second.registry.close()

@@ -75,6 +75,7 @@ resolve:
 wiki:
   dir: wiki
   language: en
+  obsidian: true                     # .obsidian/graph.json: index/log скрыты из графа, цвета по типам
   min_mentions: 2
   evidence_k: 12
 

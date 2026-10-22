@@ -263,6 +263,7 @@ class WikiSettings(BaseModel):
 
 
 class RetrievalSettings(BaseModel):
+    obsidian: bool = True  # писать .obsidian/graph.json: фильтр и цвета по типам
     k: int = 8
     context_tokens: int = 6000
     neighbors: int = Field(default=0, ge=0)  # rag: доп. чанки той же секции с каждой стороны хита
