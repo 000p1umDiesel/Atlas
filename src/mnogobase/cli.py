@@ -597,7 +597,7 @@ def models_up(
     """Поднять серверы ролей с `serve: llamacpp | vllm` и дождаться их готовности."""
     served, model_runner = _models(roles, _runner(runner))
     if not served:
-        console.print("Nothing to start: every role is serve: external (or rerank is disabled).")
+        console.print("Nothing to start: every role is serve: api (or rerank is disabled).")
         return
     where = resolve_runner(_runner(runner))
     for s in served:
@@ -644,8 +644,8 @@ def models_status() -> None:
     for role, s in roles:
         if role == "rerank" and not settings.rerank.enabled:
             state = "disabled"
-        elif s.serve == "external":
-            state = "external"
+        elif s.serve == "api":
+            state = "api"
         else:
             state = "[green]ready[/green]" if is_ready(Served(role, s)) else "[red]down[/red]"
         table.add_row(role, s.serve, escape(s.weights), escape(s.url), state)
@@ -663,7 +663,7 @@ def models_logs(
     """Последние строки лога сервера роли."""
     served, model_runner = _models([role], _runner(runner))
     if not served:
-        _fail_cleanly(ServeError(f"{role} is not served locally (serve: external or disabled)"))
+        _fail_cleanly(ServeError(f"{role} is not served locally (serve: api or disabled)"))
     try:
         model_runner.logs(served[0], follow)
     except (ServeError, OSError) as exc:

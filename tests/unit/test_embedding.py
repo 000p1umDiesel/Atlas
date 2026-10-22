@@ -144,4 +144,4 @@ def test_signature_follows_the_backend_and_the_quant():
     assert model_id() == "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
     assert model_id(gguf="Qwen/Qwen3-Embedding-4B-GGUF:Q8_0") != model_id()
     assert model_id(serve="vllm") == "vllm:Qwen/Qwen3-Embedding-4B"
-    assert model_id(serve="external", base_url="http://x/v1") == "external:Qwen/Qwen3-Embedding-4B"
+    assert model_id(serve="api", base_url="http://x/v1") == "api:Qwen/Qwen3-Embedding-4B"

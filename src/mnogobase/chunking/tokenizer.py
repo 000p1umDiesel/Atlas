@@ -55,12 +55,12 @@ def load_tokenizer(
     `auto`, токенизатор самой модели эмбеддера, чтобы он всегда соответствовал её смене.
 
     Модель, которую поднимает `mnogobase models up` (`serve: llamacpp | vllm`), — HF-репозиторий
-    `embedder.model`: его токенизатор совпадает с GGUF. У внешнего сервера (`external`) —
+    `embedder.model`: его токенизатор совпадает с GGUF. У внешнего сервера (`api`) —
     репозиторий, который он сообщает (`root` у vLLM), или его `/tokenize` (llama.cpp).
     `client` — клиент корня внешнего сервера (тесты)."""
     if settings.tokenizer != AUTO:
         return _from_hf(settings.tokenizer, settings.max_tokens)
-    if embedder.serve != "external":
+    if embedder.serve != "api":
         return _from_hf(embedder.model, settings.max_tokens)
     if client is None:
         client = httpx.Client(

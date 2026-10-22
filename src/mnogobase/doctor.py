@@ -81,7 +81,7 @@ def run_checks(
             try:
                 served = _served_models(url, key_env, timeout)
             except httpx.TransportError as exc:
-                if all(s.serve == "external" for s in wanted):
+                if all(s.serve == "api" for s in wanted):
                     raise
                 problems.append(
                     f"{url} is not reachable ({type(exc).__name__}): "

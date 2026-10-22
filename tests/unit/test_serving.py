@@ -29,8 +29,8 @@ def settings(**update) -> Settings:
     return Settings().model_copy(update=update)
 
 
-def test_served_roles_skip_external_and_disabled():
-    assert [s.role for s in served_roles(settings())] == ["embedder"]  # llm external, rerank off
+def test_served_roles_skip_api_and_disabled():
+    assert [s.role for s in served_roles(settings())] == ["embedder"]  # llm api, rerank off
     full = settings(rerank=RerankSettings(enabled=True), llm=LOCAL_LLM)
     assert [s.service for s in served_roles(full)] == [
         "embed-llamacpp",
@@ -145,7 +145,7 @@ def test_native_runner_starts_once_and_restarts_on_new_args(tmp_path, sleeper):
     runner.start(changed)
     assert len(spawn.calls) == 2
     assert procs[0].wait(timeout=5) is not None  # старый сервер остановлен
-    runner.prune([])  # эмбеддер стал external
+    runner.prune([])  # эмбеддер стал api
     assert procs[1].wait(timeout=5) is not None
     assert not runner.alive(served[0])
 

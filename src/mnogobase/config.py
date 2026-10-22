@@ -83,7 +83,7 @@ DEFAULT_EXTENSIONS = [
 ]
 
 
-Serve = Literal["llamacpp", "vllm", "external"]
+Serve = Literal["llamacpp", "vllm", "api"]
 
 
 class ServerSettings(BaseModel):
@@ -98,7 +98,7 @@ class ServedModel(BaseModel):
     """Модель на OpenAI-совместимом сервере.
 
     `serve` — где она работает: `llamacpp` или `vllm` поднимает `mnogobase models up` на порту
-    роли (`port`), `external` — уже работающий сервер или API по `base_url`. `model` — HF-
+    роли (`port`), `api` — уже работающий сервер или API по `base_url`. `model` — HF-
     репозиторий исходной модели и её имя на сервере на любом бэкенде (у llama.cpp это
     `--alias`); веса для llama.cpp — GGUF из `gguf` (`repo:квант`)."""
 
@@ -119,8 +119,8 @@ class ServedModel(BaseModel):
                 f"{self.role}.gguf is required for serve: llamacpp "
                 "(a GGUF repo with quant, e.g. Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M)"
             )
-        if self.serve == "external" and not self.base_url:
-            raise ValueError(f"{self.role}.base_url is required for serve: external")
+        if self.serve == "api" and not self.base_url:
+            raise ValueError(f"{self.role}.base_url is required for serve: api")
         return self
 
     @property
@@ -139,7 +139,7 @@ class LLMSettings(ServedModel):
     port: ClassVar[int] = 8000
 
     model: str = "gpt-6-luna"
-    serve: Serve = "external"
+    serve: Serve = "api"
     base_url: str | None = "https://codex.sale/v1"
     api_key_env: str | None = "LLM_API_KEY"
     server: ServerSettings = Field(

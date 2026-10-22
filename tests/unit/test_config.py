@@ -31,7 +31,7 @@ def test_defaults_without_config_file(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     s = load_settings()
     assert s.embedder.model == "Qwen/Qwen3-Embedding-4B"
-    assert s.embedder.serve == "llamacpp" and s.llm.serve == "external"
+    assert s.embedder.serve == "llamacpp" and s.llm.serve == "api"
     assert s.embedder.dim == 2560
     assert s.embedder.url == "http://localhost:8001/v1"
     assert s.rerank.url == "http://localhost:8002/v1"
@@ -260,8 +260,8 @@ def test_wildcard_no_proxy_is_untouched(tmp_path, no_proxy_env):
 def test_serve_requires_what_the_backend_needs():
     with pytest.raises(ValueError, match="llm.gguf is required for serve: llamacpp"):
         LLMSettings(serve="llamacpp")
-    with pytest.raises(ValueError, match="embedder.base_url is required for serve: external"):
-        EmbedderSettings(serve="external")
+    with pytest.raises(ValueError, match="embedder.base_url is required for serve: api"):
+        EmbedderSettings(serve="api")
     vllm = LLMSettings(model="Qwen/Qwen3-8B", serve="vllm", base_url=None)
     assert vllm.url == "http://localhost:8000/v1" and vllm.weights == "Qwen/Qwen3-8B"
     remote = EmbedderSettings(base_url="http://gpu:8001/v1/")  # модель поднята на другой машине

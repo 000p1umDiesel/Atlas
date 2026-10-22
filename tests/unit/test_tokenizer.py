@@ -14,7 +14,7 @@ from mnogobase.config import ChunkingSettings, EmbedderSettings
 
 AUTO = ChunkingSettings(max_tokens=64)
 # внешний сервер: токенизатор по его /v1/models или /tokenize
-EMBEDDER = EmbedderSettings(model="emb", serve="external", base_url="http://llama:8001/v1")
+EMBEDDER = EmbedderSettings(model="emb", serve="api", base_url="http://llama:8001/v1")
 
 
 def _server(models: list[dict], seen: list | None = None, tokenize_status: int = 200):
@@ -56,7 +56,7 @@ def test_auto_for_a_local_server_is_the_hf_tokenizer_of_the_model(monkeypatch, s
     assert loaded == ["Qwen/Qwen3-Embedding-4B"]
 
 
-def test_auto_on_external_vllm_loads_the_repo_it_reports(monkeypatch):
+def test_auto_on_api_vllm_loads_the_repo_it_reports(monkeypatch):
     loaded: list = []
     monkeypatch.setattr(
         tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append(repo) or "tok"
@@ -66,7 +66,7 @@ def test_auto_on_external_vllm_loads_the_repo_it_reports(monkeypatch):
     assert loaded == ["Qwen/Qwen3-Embedding-4B"]
 
 
-def test_auto_on_external_llama_cpp_counts_with_its_tokenize_and_caches():
+def test_auto_on_api_llama_cpp_counts_with_its_tokenize_and_caches():
     seen: list = []
     client = _server([{"id": "emb", "aliases": ["emb"]}], seen)
     tok = load_tokenizer(AUTO, EMBEDDER, client=client)

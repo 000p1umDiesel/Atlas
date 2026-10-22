@@ -70,7 +70,7 @@ class Served:
 
 
 def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
-    """Роли с локальным сервером (`serve` не `external`), реранкер — только при
+    """Роли с локальным сервером (`serve` не `api`), реранкер — только при
     `rerank.enabled`; `roles` сужает список."""
     unknown = set(roles) - set(SERVICE_PREFIX)
     if unknown:
@@ -81,7 +81,7 @@ def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
     return [
         Served(role, s)
         for role, s in candidates
-        if s.serve != "external" and (not roles or role in roles)
+        if s.serve != "api" and (not roles or role in roles)
     ]
 
 
@@ -156,7 +156,7 @@ class DockerRunner:
         }
 
     def prune(self, served: Sequence[Served]) -> None:
-        """Удаляет контейнеры ролей, которые сменили бэкенд или стали external: они занимают
+        """Удаляет контейнеры ролей, которые сменили бэкенд или стали api: они занимают
         порт роли."""
         wanted = {s.service for s in served}
         stale = [
@@ -244,7 +244,7 @@ class NativeRunner:
             )
 
     def prune(self, served: Sequence[Served]) -> None:
-        """Останавливает серверы ролей, которые стали external или отключены."""
+        """Останавливает серверы ролей, которые стали api или отключены."""
         wanted = {s.role for s in served}
         for role in SERVICE_PREFIX:
             if role not in wanted:

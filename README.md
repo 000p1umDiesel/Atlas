@@ -125,7 +125,7 @@ uv run mnogobase doctor
 |---|---|---|
 | `device` | выбирает устройство для Docling: CUDA → MPS → CPU (или то, что задано в `device`) | — |
 | `models` | `GET <url>/models` у сервера эмбеддера и (при `rerank.enabled`) реранкера: отдаёт ли он `model` из конфига | `... is not reachable: start the local models with mnogobase models up`, `<model> is not served by <url> (it serves ...)` |
-| `tokenizer` | загружает токенайзер чанкера: при `auto` — HF-токенайзер `embedder.model` (у `serve: external` — по `root` в `/v1/models` или `/tokenize` сервера); иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
+| `tokenizer` | загружает токенайзер чанкера: при `auto` — HF-токенайзер `embedder.model` (у `serve: api` — по `root` в `/v1/models` или `/tokenize` сервера); иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
 | `llm` | `GET <llm url>/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <url>` |
 | `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
 | `neo4j` | подключение с логином и паролем | `ServiceUnavailable`, `AuthError` |
@@ -519,7 +519,7 @@ flowchart TD
 Детали этапов:
 
 - **parse** — `DocumentConverter` с OCR из `parsing.ocr` и ускорителем из `device` (эти опции заданы для PDF; на CUDA увеличены размеры батчей). Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
-- **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это HF-токенайзер `embedder.model` (у GGUF тот же словарь, проверено на Qwen3-Embedding); у `serve: external` — репозиторий из `root` в `/v1/models` (vLLM) или `POST /tokenize` сервера (llama.cpp, `ServerTokenizer` с кэшем). Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
+- **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это HF-токенайзер `embedder.model` (у GGUF тот же словарь, проверено на Qwen3-Embedding); у `serve: api` — репозиторий из `root` в `/v1/models` (vLLM) или `POST /tokenize` сервера (llama.cpp, `ServerTokenizer` с кэшем). Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
 - **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
 - **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
 - **graph** — по каждому чанку: слияние каждой сущности (раздел 5.5), `MENTIONS` от чанка к сущностям, `entity_ids` в payload чанка, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`. Все затронутые сущности попадают в `dirty_entities`. Если у документа больше `max_failed_ratio` чанков без кэша извлечения, `graph` падает, а `extract` возвращается в `pending`.
@@ -787,9 +787,9 @@ flowchart TD
 | `logs_dir` | `logs` | папка `mnogobase.jsonl` | сразу |
 | `runs_dir` | `runs` | папка `compare.jsonl` | сразу |
 | `llm.model` | `gpt-6-luna` | HF-репозиторий исходной модели и её имя на сервере (у llama.cpp — `--alias`, его ставит `models up`) | новые вызовы; новая модель `extract` — новый ключ кэша |
-| `llm.serve` | `external` | где работает модель: `llamacpp`, `vllm` (поднимает `mnogobase models up` на порту 8000) или `external` (готовый сервер или API по `base_url`) | новые вызовы; новая модель `extract` — новый ключ кэша |
+| `llm.serve` | `api` | где работает модель: `llamacpp`, `vllm` (поднимает `mnogobase models up` на порту 8000) или `api` (готовый сервер или API по `base_url`) | новые вызовы; новая модель `extract` — новый ключ кэша |
 | `llm.gguf` | не задан | GGUF для `serve: llamacpp`, `repo:квант` | новые вызовы; новая модель `extract` — новый ключ кэша |
-| `llm.base_url` | `https://codex.sale/v1` | адрес OpenAI-API до `/v1` включительно; обязателен для `external`, для локальных бэкендов по умолчанию `http://localhost:8000/v1` (задайте, если модель поднята на другой машине) | сразу |
+| `llm.base_url` | `https://codex.sale/v1` | адрес OpenAI-API до `/v1` включительно; обязателен для `api`, для локальных бэкендов по умолчанию `http://localhost:8000/v1` (задайте, если модель поднята на другой машине) | сразу |
 | `llm.server` | ctx `32768`, gpu_memory `0.6`, args `[]` | как `models up` запускает сервер: окно контекста (`--ctx-size` / `--max-model-len`), доля видеопамяти vLLM, дополнительные флаги | `models up` |
 | `llm.api_key_env` | `LLM_API_KEY` | имя переменной с ключом | сразу |
 | `llm.concurrency` | `4` | максимум одновременных запросов к LLM | сразу |
@@ -797,9 +797,9 @@ flowchart TD
 | `llm.timeout_s` | `120` | таймаут одного запроса, с | сразу |
 | `llm.overrides` | `{extract: null, resolve: null, wiki: null, answer: null, query: null}` | своя модель для задачи, `null` — `llm.model` | как `llm.model` |
 | `embedder.model` | `Qwen/Qwen3-Embedding-4B` | HF-репозиторий исходной модели и её имя на сервере (у llama.cpp — `--alias`, его ставит `models up`) | `reindex` |
-| `embedder.serve` | `llamacpp` | где работает модель: `llamacpp`, `vllm` (поднимает `mnogobase models up` на порту 8001) или `external` (готовый сервер или API по `base_url`) | `reindex` |
+| `embedder.serve` | `llamacpp` | где работает модель: `llamacpp`, `vllm` (поднимает `mnogobase models up` на порту 8001) или `api` (готовый сервер или API по `base_url`) | `reindex` |
 | `embedder.gguf` | `Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M` | GGUF для `serve: llamacpp`, `repo:квант` | `reindex` |
-| `embedder.base_url` | не задан | адрес OpenAI-API до `/v1` включительно; обязателен для `external`, для локальных бэкендов по умолчанию `http://localhost:8001/v1` (задайте, если модель поднята на другой машине) | сразу |
+| `embedder.base_url` | не задан | адрес OpenAI-API до `/v1` включительно; обязателен для `api`, для локальных бэкендов по умолчанию `http://localhost:8001/v1` (задайте, если модель поднята на другой машине) | сразу |
 | `embedder.server` | ctx `8192`, gpu_memory `0.15`, args `[]` | как `models up` запускает сервер: окно контекста (`--ctx-size` / `--max-model-len`), доля видеопамяти vLLM, дополнительные флаги | `models up` |
 | `embedder.api_key_env` | не задан | имя переменной с Bearer-ключом сервера (`--api-key` у vLLM и llama.cpp) | сразу |
 | `embedder.dim` | `2560` | размерность: вектор модели обрезается до неё и нормируется (Matryoshka) | `reindex`, см. 7.4 |
@@ -828,9 +828,9 @@ flowchart TD
 | `retrieval.budget` | `{rag: 0.4, wiki: 0.3, graph: 0.3}` | доли бюджета в режиме `all` | сразу |
 | `rerank.enabled` | `false` (в `config.yaml` — `true`) | пересортировать попадания rag кросс-энкодером | сразу |
 | `rerank.model` | `Qwen/Qwen3-Reranker-4B` | HF-репозиторий исходной модели и её имя на сервере (у llama.cpp — `--alias`, его ставит `models up`) | сразу |
-| `rerank.serve` | `llamacpp` | где работает модель: `llamacpp`, `vllm` (поднимает `mnogobase models up` на порту 8002) или `external` (готовый сервер или API по `base_url`) | сразу |
+| `rerank.serve` | `llamacpp` | где работает модель: `llamacpp`, `vllm` (поднимает `mnogobase models up` на порту 8002) или `api` (готовый сервер или API по `base_url`) | сразу |
 | `rerank.gguf` | `gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M` | GGUF для `serve: llamacpp`, `repo:квант` | сразу |
-| `rerank.base_url` | не задан | адрес OpenAI-API до `/v1` включительно; обязателен для `external`, для локальных бэкендов по умолчанию `http://localhost:8002/v1` (задайте, если модель поднята на другой машине) | сразу |
+| `rerank.base_url` | не задан | адрес OpenAI-API до `/v1` включительно; обязателен для `api`, для локальных бэкендов по умолчанию `http://localhost:8002/v1` (задайте, если модель поднята на другой машине) | сразу |
 | `rerank.server` | ctx `8192`, gpu_memory `0.15`, args `[]` | как `models up` запускает сервер: окно контекста (`--ctx-size` / `--max-model-len`), доля видеопамяти vLLM, дополнительные флаги | `models up` |
 | `rerank.api_key_env` | не задан | имя переменной с Bearer-ключом сервера | сразу |
 | `rerank.candidates` | `30` | сколько попаданий гибридного поиска оценивает реранкер; остаются лучшие `retrieval.k` | сразу |
@@ -918,7 +918,7 @@ llm:
   # base_url уберите: локальный сервер слушает http://localhost:8000/v1
 ```
 
-Затем `uv run mnogobase models up` поднимет и LLM. Ключ не нужен. Проверка: `uv run mnogobase doctor` (строка `llm`). Последствия: модель входит в ключ кэша извлечения, поэтому новые и изменённые документы извлекаются новой моделью, а уже загруженные остаются как есть; для полного переизвлечения — `reset` и `ingest`. Параллелизм ограничивают и `llm.concurrency`, и число слотов сервера (у llama.cpp — `--parallel`, задаётся в `llm.server.args`). `llm.overrides` с другими именами моделей работает только с `external`: локальный сервер держит одну модель.
+Затем `uv run mnogobase models up` поднимет и LLM. Ключ не нужен. Проверка: `uv run mnogobase doctor` (строка `llm`). Последствия: модель входит в ключ кэша извлечения, поэтому новые и изменённые документы извлекаются новой моделью, а уже загруженные остаются как есть; для полного переизвлечения — `reset` и `ingest`. Параллелизм ограничивают и `llm.concurrency`, и число слотов сервера (у llama.cpp — `--parallel`, задаётся в `llm.server.args`). `llm.overrides` с другими именами моделей работает только с `api`: локальный сервер держит одну модель.
 
 ### 7.2 Другой OpenAI-совместимый эндпоинт
 
@@ -1055,7 +1055,7 @@ Qdrant можно делить между проектами через `qdrant.
 |---|---|---|
 | `llamacpp` | llama.cpp server с квантизованным GGUF из `gguf`; мало видеопамяти, работает и на Mac (Metal) | `mnogobase models up` |
 | `vllm` | vLLM с исходными весами `model`; быстрее на CUDA под нагрузкой, только Linux + NVIDIA | `mnogobase models up` (в Docker) |
-| `external` | уже работающий сервер или облачный API по `base_url` | вы |
+| `api` | уже работающий сервер или облачный API по `base_url` | вы |
 
 Роли независимы, их можно смешивать. Например, эмбеддер и реранкер на llama.cpp (мало памяти), LLM на vLLM:
 
@@ -1065,7 +1065,7 @@ rerank:   {enabled: true, model: Qwen/Qwen3-Reranker-4B, serve: llamacpp, gguf: 
 llm:      {model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8, serve: vllm, base_url: null}
 ```
 
-Или эмбеддер на vLLM, а LLM по API: `embedder: {serve: vllm}`, `llm: {serve: external, base_url: ...}`.
+Или эмбеддер на vLLM, а LLM по API: `embedder: {serve: vllm}`, `llm: {serve: api, base_url: ...}`.
 
 `model` — всегда HF-репозиторий исходной модели, и под этим именем модель видна на сервере на любом бэкенде (llama.cpp получает его как `--alias`), поэтому `doctor` и запросы не зависят от бэкенда. `gguf` нужен только для `llamacpp`: что качать, в формате `repo:квант` — посмотреть варианты можно на странице GGUF-репозитория на Hugging Face (`*-GGUF`, файлы `*-Q4_K_M.gguf`, `*-Q8_0.gguf` и т. д.).
 
@@ -1079,7 +1079,7 @@ uv run mnogobase models logs rerank -f   # лог сервера роли
 uv run mnogobase models down             # остановить (скачанные модели остаются в кэше)
 ```
 
-`models up` идемпотентна: работающий сервер с той же моделью и флагами не трогается, после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `external` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux) — сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). vLLM работает только в Docker.
+`models up` идемпотентна: работающий сервер с той же моделью и флагами не трогается, после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `api` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux) — сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). vLLM работает только в Docker.
 
 Особенности:
 
@@ -1087,7 +1087,7 @@ uv run mnogobase models down             # остановить (скачанн�
 - **vLLM.** Каждый контейнер резервирует долю **всей** видеопамяти (`<роль>.server.gpu_memory`: 0.15 для эмбеддера и реранкера, 0.6 для LLM); на одной карте сумма долей должна быть меньше 1, и `models up` запускает vLLM-серверы по очереди. Для Qwen3-Reranker `models up` сам добавляет `--hf-overrides` и шаблон промпта из образа. vLLM проверен по документации и модульным тестам, не вживую.
 - **Окно контекста** — `<роль>.server.ctx`. Длинный вход сервер не обрезает, а отклоняет: окно эмбеддера должно вмещать `chunking.max_tokens` плюс шаблон.
 - **Дополнительные флаги** сервера — `<роль>.server.args`, например `["--parallel", "8"]` для llama.cpp.
-- **Ключ API.** Если сервер (`external`) требует ключ, задайте `<роль>.api_key_env` — имя переменной из `.env`.
+- **Ключ API.** Если сервер (`api`) требует ключ, задайте `<роль>.api_key_env` — имя переменной из `.env`.
 
 ---
 
@@ -1108,7 +1108,7 @@ uv run mnogobase models down             # остановить (скачанн�
 | `device.py` | выбор `cuda` / `mps` / `cpu` |
 | `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки |
 | `chunking/hybrid.py` | `Chunker`: HybridChunker с токенайзером из `chunking/tokenizer.py` |
-| `chunking/tokenizer.py` | `load_tokenizer`: HF-репозиторий или (`auto`) HF-токенайзер `embedder.model`; у `external` — по `root` из `/v1/models` или `/tokenize` сервера (`ServerTokenizer`) |
+| `chunking/tokenizer.py` | `load_tokenizer`: HF-репозиторий или (`auto`) HF-токенайзер `embedder.model`; у `api` — по `root` из `/v1/models` или `/tokenize` сервера (`ServerTokenizer`) |
 | `embedding/` | протоколы `Embedder`, `SparseEncoder` и помощники (`base.py`), `OpenAICompatEmbedder` (`openai_compat.py`), общий HTTP-код (`http.py`), `BM25Encoder` |
 | `llm/` | протокол `LLMClient`, `OpenAICompatLLM` (`client.py`), `render` (`templates.py`), промпты |
 | `extraction/` | `Extractor` (кэш, очистка ответа, `PROMPT_VERSION`), `EntityResolver` |
@@ -1197,7 +1197,7 @@ def build_app(settings, *, embedder=None, sparse=None, llm=None, vectors=None, g
 
 **Новый эмбеддер** (например, sentence-transformers или облачный API):
 
-1. Сначала проверьте, нельзя ли обойтись без кода: любой сервер с OpenAI-совместимым `/embeddings` (LM Studio, TEI, облачный API) подключается как `embedder.serve: external` с `base_url` и `model`. Новый **бэкенд запуска** (как llama.cpp и vLLM) добавляется в `serving.py`: значение `Serve` в `config.py`, ветка в `server_args`, сервисы в `docker-compose.models.yml`.
+1. Сначала проверьте, нельзя ли обойтись без кода: любой сервер с OpenAI-совместимым `/embeddings` (LM Studio, TEI, облачный API) подключается как `embedder.serve: api` с `base_url` и `model`. Новый **бэкенд запуска** (как llama.cpp и vLLM) добавляется в `serving.py`: значение `Serve` в `config.py`, ветка в `server_args`, сервисы в `docker-compose.models.yml`.
 2. Иначе — класс в `src/mnogobase/embedding/<name>.py` с атрибутами `model_id`, `dim`, `templates` и методами `embed_documents`, `embed_query` (образец — `OpenAICompatEmbedder`). Используйте помощники из `embedding/base.py`: `format_document(item, template)`, `format_query(query, template)` и `truncate_normalize(vec, dim)` (обрезка Matryoshka и L2-нормировка), а для HTTP — `retryable` и `auth_headers` из `embedding/http.py`.
 3. `model_id` должен быть уникальным с префиксом провайдера (как `openai:<model>`): подпись `model_id:dim:tpl-<хеш templates>` (`embedder_signature`) сохраняется в `meta` и защищает индекс от смешивания векторов. Если провайдер не использует шаблоны, задайте `templates` постоянными.
 4. `config.py`: поле в `EmbedderSettings`, по которому выбирается класс; выбор — в `build_app` (`app.py`) и в проверке `index` (`doctor.py`). Проверка `models` и `chunking.tokenizer: auto` рассчитаны на OpenAI-совместимый `/v1/models`; для другого API адаптируйте `_served_models` (`doctor.py`) или задайте HF-репозиторий в `chunking.tokenizer`. Набор проверок команд задан в `cli.py` (`PREFLIGHT_CHECKS`, `INGEST_CHECKS`, `REINDEX_CHECKS`).
@@ -1270,7 +1270,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 |---|---|---|
 | `doctor`: `neo4j` или `qdrant` — ошибка соединения (`ServiceUnavailable`, connection refused) | контейнеры не запущены или Neo4j ещё стартует | `docker compose up -d`, подождите ~30 с (у Neo4j есть healthcheck), `docker compose ps` |
 | `doctor`: `neo4j` — `AuthError` | пароль в `.env` не совпадает с паролем базы. `NEO4J_AUTH` применяется только при первом создании тома `neo4j_data` | верните прежний пароль в `.env` или войдите в Neo4j Browser со старым паролем и смените его: `:use system`, затем `ALTER CURRENT USER SET PASSWORD FROM 'старый' TO 'новый'` |
-| `doctor`: `models` — `<model> is not served by <url> (it serves ...)` | на порту роли работает другая модель (сервер запущен не `models up` или с другим конфигом) | `uv run mnogobase models up` — перезапустит роль по конфигу; для `external` исправьте `model` |
+| `doctor`: `models` — `<model> is not served by <url> (it serves ...)` | на порту роли работает другая модель (сервер запущен не `models up` или с другим конфигом) | `uv run mnogobase models up` — перезапустит роль по конфигу; для `api` исправьте `model` |
 | в логе `rerank_failed` | сервер реранкера недоступен или отвечает ошибкой; ответ строится без реранкинга | `uv run mnogobase models status`, `uv run mnogobase models logs rerank` |
 | `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера или реранкера не запущен (или ещё качает модель) | `uv run mnogobase models up`; прогресс — `uv run mnogobase models logs <роль> -f` |
 | `doctor`: `llm` — `HTTPStatusError: Client error '401 Unauthorized'` (или 403) | нет или неверный `LLM_API_KEY` | впишите ключ в `.env` |
@@ -1279,12 +1279,12 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `extract` упал: `ExtractionFailedError: 7/20 chunks failed extraction` | больше `max_failed_ratio` чанков не извлеклись (ошибки LLM или невалидный JSON) | причины — события `extract_failed` и `llm_invalid_json` в логе; почините LLM и выполните `ingest --retry-failed` (повторяются только чанки без кэша) |
 | `graph` упал: `N/M chunks have no cached extraction; rerun with --retry-failed ...` | кэш извлечения неполный | `uv run mnogobase ingest --retry-failed` |
 | файл пропускается: `stage <этап> failed earlier; rerun with --retry-failed` | этап упал в прошлый раз | исправьте причину (`status` показывает ошибку), затем `ingest --retry-failed` |
-| `tokenizer`: `TokenizerError: <model> has no Hugging Face repo in /v1/models and its server has no /tokenize` | `serve: external` с сервером, который не сообщает репозиторий и не умеет `/tokenize` | укажите в `chunking.tokenizer` HF-репозиторий модели эмбеддера |
+| `tokenizer`: `TokenizerError: <model> has no Hugging Face repo in /v1/models and its server has no /tokenize` | `serve: api` с сервером, который не сообщает репозиторий и не умеет `/tokenize` | укажите в `chunking.tokenizer` HF-репозиторий модели эмбеддера |
 | `tokenizer`: `TokenizerError: cannot load the tokenizer '<repo>'` | нет такого HF-репозитория, нет сети или доступа (закрытый репозиторий) | исправьте `chunking.tokenizer`; для закрытых — `hf auth login` или `HF_TOKEN` в `.env` |
 | `tokenizer`: `TokenizerError: <model> is served from a local path ...` | внешний vLLM запущен с локальной папкой модели, а не HF-репозиторием | укажите в `chunking.tokenizer` HF-репозиторий модели |
 | реранкер llama.cpp ставит релевантные документы последними, оценки около 1e-25 | GGUF без классификатора Qwen3-Reranker (старые конвертации: `dengcao`, `mradermacher`, `QuantFactory`) | `rerank.gguf: gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M` (по умолчанию) или `Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp`, затем `models up` |
 | `models up`: `<роль>: the vllm server exited`, в логе `ValueError` про свободную память GPU | контейнеры vLLM вместе просят больше видеопамяти, чем есть (`server.gpu_memory`) | уменьшите `<роль>.server.gpu_memory` (сумма на карту < 1) или переведите роль на `llamacpp` |
-| `Invalid configuration: ... gguf is required for serve: llamacpp` / `base_url is required for serve: external` | для бэкенда не хватает поля | задайте `gguf` (`repo:квант`) или `base_url` |
+| `Invalid configuration: ... gguf is required for serve: llamacpp` / `base_url is required for serve: api` | для бэкенда не хватает поля | задайте `gguf` (`repo:квант`) или `base_url` |
 | `index was built with ..., config now uses ...; run mnogobase reindex` | эмбеддер в конфиге (модель, размерность или шаблоны — тогда в сообщении `embedder templates changed`) не тот, которым строился индекс | `uv run mnogobase reindex` |
 | `mb_chunks has dim 2560, config 1024: run mnogobase reindex` | `embedder.dim` изменился, коллекции Qdrant ещё старой размерности | `uv run mnogobase reindex` (пересоздаёт коллекции, рецепт 7.4) |
 | `reindex`: `embedder check failed: model returned N dims, config expects M; nothing was changed` | модель выдаёт меньше измерений, чем `embedder.dim` | уменьшите `embedder.dim` или смените модель; индекс не тронут |
@@ -1345,7 +1345,7 @@ flowchart LR
     subgraph SRV["сервер: Docker"]
         EMB["embed :8001<br/>llama.cpp или vLLM"]
         RR["rerank :8002<br/>llama.cpp или vLLM"]
-        LLM["llm :8000<br/>(если serve не external)"]
+        LLM["llm :8000<br/>(если serve не api)"]
         QD[("Qdrant :6333")]
         NEO[("Neo4j :7687")]
     end

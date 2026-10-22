@@ -5,12 +5,12 @@ runs_dir: runs
 
 # Модели трёх ролей (llm, embedder, rerank). serve — где работает модель:
 #   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002);
-#   external        — уже работающий сервер или API по base_url.
+#   api             — уже работающий сервер или API по base_url.
 # model — HF-репозиторий исходной модели и её имя на сервере на любом бэкенде; gguf —
 # квантизованные веса для llamacpp (repo:квант). Смена serve/gguf эмбеддера — `mnogobase reindex`.
 llm:
   model: gpt-6-luna
-  serve: external
+  serve: api
   base_url: https://codex.sale/v1
   # локально: model: Qwen/Qwen3-30B-A3B-Instruct-2507, serve: llamacpp,
   #   gguf: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M (base_url убрать)
@@ -36,7 +36,7 @@ parsing:
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
 
 chunking:
-  # auto: токенизатор модели эмбеддера (HF-репозиторий embedder.model, у external — с её
+  # auto: токенизатор модели эмбеддера (HF-репозиторий embedder.model, у api — с её
   # сервера); иначе HF-репозиторий
   tokenizer: auto
   max_tokens: 512
