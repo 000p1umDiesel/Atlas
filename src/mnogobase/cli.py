@@ -52,9 +52,9 @@ app.add_typer(wiki_app, name="wiki")
 console = Console()
 _state: dict[str, Path | None] = {"config": None}
 # сервисы, нужные команде до старта: embedder, LLM, векторное хранилище, граф
-PREFLIGHT_CHECKS = ("ollama", "llm", "qdrant", "neo4j")
+PREFLIGHT_CHECKS = ("models", "llm", "qdrant", "neo4j")
 INGEST_CHECKS = (*PREFLIGHT_CHECKS, "tokenizer")  # только ingest режет документы на чанки
-REINDEX_CHECKS = ("ollama", "qdrant", "neo4j")
+REINDEX_CHECKS = ("models", "qdrant", "neo4j")
 RESET_CHECKS = ("qdrant", "neo4j")
 
 
@@ -245,7 +245,7 @@ def _check_status(check: Check) -> str:
 
 @app.command()
 def doctor() -> None:
-    """Проверить device, Ollama, токенизатор, LLM endpoint, Qdrant, Neo4j, индекс и типы
+    """Проверить device, серверы моделей, токенизатор, LLM endpoint, Qdrant, Neo4j, индекс и типы
     сущностей."""
     checks = run_checks(_settings())
     table = Table("check", "status", "detail")

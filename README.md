@@ -10,7 +10,7 @@
 4. [Как смотреть результаты](#4-как-смотреть-результаты): [Neo4j](#41-граф-в-neo4j), [Qdrant](#42-векторы-и-чанки-в-qdrant), [Obsidian](#43-wiki-в-obsidian), [compare.jsonl](#44-сравнение-режимов-runscomparejsonl), [логи](#45-логи-logsmnogobasejsonl)
 5. [Как это устроено внутри](#5-как-это-устроено-внутри): [конвейер](#51-конвейер-ingest), [один файл](#52-загрузка-одного-файла), [состояния этапов](#53-состояния-этапов), [модель данных](#54-модель-данных), [слияние сущностей](#55-слияние-сущностей-entity-resolution), [wiki](#56-инкрементальное-обновление-wiki), [поиск](#57-поиск-и-ответ), [гарантии](#58-гарантии-согласованности)
 6. [Справочник настроек](#6-справочник-настроек): [все ключи](#61-все-ключи-configyaml), [переменные окружения](#62-переопределение-через-переменные-окружения), [типы сущностей](#63-типы-сущностей)
-7. [Как поменять типовые вещи](#7-как-поменять-типовые-вещи)
+7. [Как поменять типовые вещи](#7-как-поменять-типовые-вещи): [vLLM и llama.cpp](#715-vllm-или-llamacpp-вместо-ollama)
 8. [Как расширять код](#8-как-расширять-код)
 9. [Диагностика и частые проблемы](#9-диагностика-и-частые-проблемы)
 10. [Тесты](#10-тесты)
@@ -125,15 +125,15 @@ uv run mnogobase doctor
 | Проверка | Что делает | Типичный провал |
 |---|---|---|
 | `device` | выбирает устройство для Docling: CUDA → MPS → CPU (или то, что задано в `device`) | — |
-| `ollama` | `GET {embedder.base_url}/api/tags`, ищет модель эмбеддера и, при `rerank.enabled` и том же `base_url`, модель реранкера | `model embeddinggemma-2:740m missing: run ollama pull embeddinggemma-2:740m` |
-| `tokenizer` | загружает токенайзер чанкера: при `auto` — из модели эмбеддера в Ollama (`POST /api/show`), иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: Ollama exposes no tokenizer for ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
+| `models` | спрашивает каждый сервер эмбеддера и (при `rerank.enabled`) реранкера, отдаёт ли он нужную модель: Ollama — `GET {base_url}/api/tags`, `provider: openai` — `GET {base_url}/models` (у llama.cpp имя модели — её `--alias`) | `model embeddinggemma-2:740m missing: run ollama pull embeddinggemma-2:740m` |
+| `tokenizer` | загружает токенайзер чанкера: при `auto` — из модели эмбеддера в Ollama (`POST /api/show`) или по HF-репозиторию, который сообщает vLLM (`root` в `/models`), иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: Ollama exposes no tokenizer for ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
 | `llm` | `GET {llm.base_url}/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <base_url>` |
 | `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
 | `neo4j` | подключение с логином и паролем | `ServiceUnavailable`, `AuthError` |
 | `index` | совпадает ли эмбеддер, которым построен индекс (модель, размерность, шаблоны), с текущим конфигом | `index was built with ..., config now uses ...: run mnogobase reindex` |
 | `types` | менялись ли типы сущностей после загрузки документов | только `warn`, см. раздел [6.3](#63-типы-сущностей) |
 
-Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`ollama`, `llm`, `qdrant`, `neo4j`; `ingest` — ещё и `tokenizer`), `reindex` — без `llm` и без сверки размерности коллекций (он их пересоздаёт), `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
+Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`models`, `llm`, `qdrant`, `neo4j`; `ingest` — ещё и `tokenizer`), `reindex` — без `llm` и без сверки размерности коллекций (он их пересоздаёт), `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
 
 ---
 
@@ -292,11 +292,11 @@ uv run mnogobase reset --yes      # без вопроса
 |---|---|---|---|
 | `doctor` | все проверки окружения (раздел 2.4) | — | нет |
 | `status` | сводка по файлам, этапам, очереди wiki, удалениям и ошибкам | — | нет |
-| `ingest PATH... [--no-wiki] [--retry-failed]` | загрузка документов | ollama, llm, qdrant, neo4j | да |
-| `wiki build [--all]` | обновить страницы сущностей с новыми упоминаниями (или все) | ollama, llm, qdrant, neo4j | да |
-| `ask "ВОПРОС" [--mode/-m rag\|wiki\|graph\|all] [--k N]` | ответ с цитатами в одном режиме | ollama, llm, qdrant, neo4j | нет |
-| `compare "ВОПРОС" [--k N]` | все 4 режима рядом и запись в `runs/compare.jsonl` | ollama, llm, qdrant, neo4j | нет |
-| `reindex` | пересчитать все векторы после смены эмбеддера | ollama, qdrant, neo4j | да |
+| `ingest PATH... [--no-wiki] [--retry-failed]` | загрузка документов | models, tokenizer, llm, qdrant, neo4j | да |
+| `wiki build [--all]` | обновить страницы сущностей с новыми упоминаниями (или все) | models, llm, qdrant, neo4j | да |
+| `ask "ВОПРОС" [--mode/-m rag\|wiki\|graph\|all] [--k N]` | ответ с цитатами в одном режиме | models, llm, qdrant, neo4j | нет |
+| `compare "ВОПРОС" [--k N]` | все 4 режима рядом и запись в `runs/compare.jsonl` | models, llm, qdrant, neo4j | нет |
+| `reindex` | пересчитать все векторы после смены эмбеддера | models, qdrant, neo4j | да |
 | `reset [--yes]` | удалить все данные проекта | qdrant, neo4j | да |
 
 Одновременно может работать только одна из команд `ingest` / `wiki build` / `reindex` / `reset` (файловая блокировка `.mnogobase/ingest.lock`). Вторая сразу завершается с сообщением `Another ingest / wiki / reindex / reset run is in progress.`
@@ -519,7 +519,7 @@ flowchart TD
 
 - **parse** — `DocumentConverter` с OCR из `parsing.ocr` и ускорителем из `device` (эти опции заданы для PDF; на CUDA увеличены размеры батчей). Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
 - **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это токенайзер самой модели эмбеддера: у GGUF-моделей словарь и merges берутся из `POST /api/show` (`verbose: true`) и собираются конвертером GGUF из `transformers`, у safetensors-моделей (новый движок Ollama) читается слой `tokenizer.json` из локального хранилища Ollama (`$OLLAMA_MODELS`, по умолчанию `~/.ollama/models`). Ollama вызывается один раз при первом чанкинге, дальше токены считаются локально. Ollama не умеет токенизировать сама (`/api/tokenize` нет), а подсчёт через `/api/embed` прогонял бы всю модель на каждый вызов. Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
-- **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /api/embed` Ollama (с `truncate: true`), обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
+- **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /api/embed` Ollama (с `truncate: true`) или `POST /embeddings` OpenAI-совместимого сервера (`embedder.provider: openai`), обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
 - **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
 - **graph** — по каждому чанку: слияние каждой сущности (раздел 5.5), `MENTIONS` от чанка к сущностям, `entity_ids` в payload чанка, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`. Все затронутые сущности попадают в `dirty_entities`. Если у документа больше `max_failed_ratio` чанков без кэша извлечения, `graph` падает, а `extract` возвращается в `pending`.
 
@@ -672,7 +672,7 @@ erDiagram
 | `chunk_extract` | `chunk_id` PK, `status`, `attempts`, `error` | результат извлечения по чанкам |
 | `extraction_cache` | `chunk_id`, `prompt_version`, `model`, `result_json` | кэш ответов LLM на этапе `extract` |
 | `dirty_entities` | `entity_id` PK, `marked_at` | очередь сущностей на обновление wiki |
-| `meta` | `key` PK, `value` | подпись эмбеддера индекса (`embedder` = `ollama:<model>:<dim>:tpl-<хеш шаблонов>`) и служебные значения |
+| `meta` | `key` PK, `value` | подпись эмбеддера индекса (`embedder` = `<provider>:<model>:<dim>:tpl-<хеш шаблонов>`, например `ollama:qwen3-embedding:4b:2560:tpl-...`) и служебные значения |
 | `pending_removals` | `doc_id` PK, `plan_json` | журнал незавершённых удалений старых версий документов |
 
 ### 5.5 Слияние сущностей (entity resolution)
@@ -751,7 +751,7 @@ flowchart TD
 
 - **Перевод запроса.** Если вопрос не на английском и `retrieval.translate: true`, `QueryTranslator` (`retrieval/translate.py`, промпт `translate_query.md`, задача `query`) один раз переводит его на английский; все режимы ищут и по оригиналу, и по переводу (`alt_queries`). Источники, wiki и имена сущностей в основном английские, а BM25 не сопоставляет русский запрос с английским текстом. Ошибка перевода не прерывает ответ: поиск идёт по оригиналу.
 - **rag** — гибридный запрос Qdrant: по два prefetch по `k * 4` (`dense` и `bm25`) на каждую формулировку, слияние RRF, `k` результатов. Текст каждого чанка начинается с пути заголовков (`Глава > Раздел`). При `retrieval.neighbors: N > 0` попадание расширяется до N соседних чанков с каждой стороны, пока у них те же заголовки (тот же раздел); попадание, уже вошедшее в окно более сильного, пропускается. Цитата указывает на чанк-попадание.
-- **Реранкер** (`rerank.enabled`, `retrieval/rerank.py`). В режиме rag гибридный поиск отдаёт `rerank.candidates` попаданий, Qwen3-Reranker оценивает каждое (путь заголовков + текст) против исходного вопроса, и остаются лучшие `k`; `ContextItem.score` — оценка реранкера (0–1). В Ollama нет rerank-эндпоинта, поэтому это `/api/generate` с raw-промптом в формате Qwen3-Reranker и одним токеном: оценка = P(yes) / (P(yes) + P(no)) по `top_logprobs` (нужна Ollama с logprobs, 0.12+). `rerank.concurrency` запросов идут параллельно; 30 кандидатов — около 1.3 с на GPU (первый запрос после простоя дольше: модель загружается). Если реранкер недоступен, в лог пишется `rerank_failed` и используется порядок гибридного поиска.
+- **Реранкер** (`rerank.enabled`, `retrieval/rerank.py`). В режиме rag гибридный поиск отдаёт `rerank.candidates` попаданий, Qwen3-Reranker оценивает каждое (путь заголовков + текст) против исходного вопроса, и остаются лучшие `k`; `ContextItem.score` — оценка реранкера (0–1). В Ollama нет rerank-эндпоинта, поэтому это `/api/generate` с raw-промптом в формате Qwen3-Reranker и одним токеном: оценка = P(yes) / (P(yes) + P(no)) по `top_logprobs` (нужна Ollama с logprobs, 0.12+). `rerank.concurrency` запросов идут параллельно; 30 кандидатов — около 1.3 с на GPU. С `rerank.provider: openai` все кандидаты уходят одним запросом `POST /rerank` (формат Jina/Cohere), промпт Qwen3-Reranker строит сервер, а `relevance_score` уже в 0–1 (первый запрос после простоя дольше: модель загружается). Если реранкер недоступен, в лог пишется `rerank_failed` и используется порядок гибридного поиска.
 - **wiki** — то же по разделам wiki; после каждого раздела идут чанки из его `chunk_ids` (всего не больше `k`), чтобы ответ ссылался на файл и страницу.
 - **graph** — seeds: до `graph.seeds` сущностей по вектору вопроса с косинусом не ниже `graph.seed_threshold` плюс полнотекстовый поиск по именам и алиасам, по каждой формулировке вопроса (всего не больше `2 * seeds`; векторные seeds — по убыванию сходства). Окрестность на `graph.hops` шагов (в коде ограничено 1–3), до `graph.max_relations` связей; контекст — описания seed-сущностей, тройки `A —predicate→ B` и до `k` чанков-доказательств.
 - **all** — режимы по очереди заполняют свою долю `retrieval.context_tokens` (`retrieval.budget`), повторы по `(kind, ref)` пропускаются.
@@ -792,12 +792,13 @@ flowchart TD
 | `llm.temperature` | `0` | температура генерации | сразу |
 | `llm.timeout_s` | `120` | таймаут одного запроса, с | сразу |
 | `llm.overrides` | `{extract: null, resolve: null, wiki: null, answer: null, query: null}` | своя модель для задачи, `null` — `llm.model` | как `llm.model` |
-| `embedder.provider` | `ollama` | единственное поддерживаемое значение | — |
-| `embedder.base_url` | `http://localhost:11434` | адрес Ollama | сразу |
+| `embedder.provider` | `ollama` | `ollama` (`/api/embed`) или `openai` — `/embeddings` OpenAI-совместимого сервера: vLLM, llama.cpp server, LM Studio, TEI (раздел 7.15) | `reindex` |
+| `embedder.base_url` | `http://localhost:11434` | адрес Ollama; у `openai` — до `/v1` включительно | сразу |
+| `embedder.api_key_env` | не задан | имя переменной с Bearer-ключом сервера (`--api-key` у vLLM и llama.cpp) | сразу |
 | `embedder.model` | `embeddinggemma-2:740m` | модель эмбеддингов | `reindex` |
 | `embedder.dim` | `768` | размерность: вектор модели обрезается до неё и нормируется (Matryoshka) | `reindex`, см. 7.4 |
-| `embedder.batch_size` | `32` | текстов в одном запросе к Ollama | сразу |
-| `embedder.num_ctx` | не задан (в `config.yaml` — `2048`) | контекст модели в Ollama; более длинные тексты обрезаются. Qwen3 по умолчанию грузится с контекстом ~40k, его кэш занимает ~9 ГБ видеопамяти и вытесняет реранкер (каждое переключение моделей — ~3 с). На векторы не влияет, пока текст помещается | сразу |
+| `embedder.batch_size` | `32` | текстов в одном запросе к серверу | сразу |
+| `embedder.num_ctx` | не задан (в `config.yaml` — `2048`) | только Ollama (у `openai` контекст задаётся при запуске сервера): контекст модели; более длинные тексты обрезаются. Qwen3 по умолчанию грузится с контекстом ~40k, его кэш занимает ~9 ГБ видеопамяти и вытесняет реранкер (каждое переключение моделей — ~3 с). На векторы не влияет, пока текст помещается | сразу |
 | `embedder.doc_template` | `title: {title} \| text: {text}` | шаблон документа; `{title}` — заголовок документа, имя сущности или страницы (`none`, если нет) | `reindex` |
 | `embedder.query_template` | `task: search result \| query: {query}` | шаблон запроса (согласуйте с doc_template) | `reindex` |
 | `sparse.model` | `Qdrant/bm25` | модель fastembed для BM25 | `reindex` |
@@ -821,13 +822,15 @@ flowchart TD
 | `retrieval.neighbors` | `0` | соседних чанков того же раздела с каждой стороны попадания в режиме rag (и в его доле `all`) | сразу |
 | `retrieval.budget` | `{rag: 0.4, wiki: 0.3, graph: 0.3}` | доли бюджета в режиме `all` | сразу |
 | `rerank.enabled` | `false` (в `config.yaml` — `true`) | пересортировать попадания rag кросс-энкодером | сразу |
-| `rerank.base_url` | `http://localhost:11434` | Ollama с моделью реранкера | сразу |
-| `rerank.model` | `dengcao/Qwen3-Reranker-4B:Q4_K_M` | модель Qwen3-Reranker в Ollama | сразу |
+| `rerank.provider` | `ollama` | `ollama` (промпт Qwen3-Reranker и logprobs через `/api/generate`) или `openai` — `/rerank` vLLM или llama.cpp server (раздел 7.15) | сразу |
+| `rerank.base_url` | `http://localhost:11434` | сервер реранкера; у `openai` — до `/v1` включительно | сразу |
+| `rerank.api_key_env` | не задан | имя переменной с Bearer-ключом сервера | сразу |
+| `rerank.model` | `dengcao/Qwen3-Reranker-4B:Q4_K_M` | модель Qwen3-Reranker на этом сервере | сразу |
 | `rerank.candidates` | `30` | сколько попаданий гибридного поиска оценивает реранкер; остаются лучшие `retrieval.k` | сразу |
-| `rerank.concurrency` | `4` | параллельных запросов к Ollama (выше `OLLAMA_NUM_PARALLEL` смысла нет) | сразу |
+| `rerank.concurrency` | `4` | только Ollama: параллельных запросов (выше `OLLAMA_NUM_PARALLEL` смысла нет); `openai` отправляет всех кандидатов одним запросом | сразу |
 | `rerank.max_chars` | `4000` | до скольких символов обрезается текст чанка в запросе к реранкеру | сразу |
-| `rerank.num_ctx` | `4096` | контекст модели реранкера в Ollama (промпт + до `max_chars` текста) | сразу |
-| `rerank.instruction` | `Given a question, retrieve passages that answer it` | строка `<Instruct>` промпта Qwen3-Reranker | сразу |
+| `rerank.num_ctx` | `4096` | только Ollama: контекст модели реранкера (промпт + до `max_chars` текста) | сразу |
+| `rerank.instruction` | `Given a question, retrieve passages that answer it` | только Ollama: строка `<Instruct>` промпта Qwen3-Reranker (у `openai` промпт строит сервер со своей инструкцией) | сразу |
 | `graph.hops` | `2` | глубина обхода в режиме `graph` (1–3) | сразу |
 | `graph.max_relations` | `30` | максимум связей в контексте `graph` | сразу |
 | `graph.seeds` | `5` | число стартовых сущностей из каждого поиска | сразу |
@@ -916,7 +919,7 @@ llm:
 
 ### 7.2 Другой OpenAI-совместимый эндпоинт
 
-vLLM, LM Studio, OpenRouter, OpenAI или корпоративный прокси подключаются одинаково:
+vLLM, llama.cpp server, LM Studio, OpenRouter, OpenAI или корпоративный прокси подключаются одинаково (эмбеддер и реранкер на vLLM или llama.cpp — раздел 7.15):
 
 ```yaml
 llm:
@@ -1044,6 +1047,59 @@ uv run mnogobase -c project-b.yaml ingest documents-b/
 
 Qdrant можно делить между проектами через `qdrant.prefix`. **Neo4j делить нельзя:** код пишет в базу по умолчанию, а `reset` удаляет в ней все узлы. Поднимите второй экземпляр, например `docker run -d --name neo4j-b -p 7475:7474 -p 7688:7687 -e NEO4J_AUTH=neo4j/mnogobase-dev neo4j:5.26-community`.
 
+### 7.15 vLLM или llama.cpp вместо Ollama
+
+Эмбеддер и реранкер умеют работать с OpenAI-совместимым сервером (`provider: openai`), а LLM всегда идёт через OpenAI-совместимый API (раздел 7.2). vLLM и llama.cpp server обслуживают **одну модель на процесс**, поэтому каждая роль — отдельный контейнер на своём порту: LLM — 8000, эмбеддер — 8001, реранкер — 8002. Готовые оверлеи для Linux с NVIDIA Container Toolkit:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d                # эмбеддер + реранкер
+docker compose -f docker-compose.yml -f docker-compose.vllm.yml --profile llm up -d  # + локальная LLM
+# то же на llama.cpp: docker-compose.llamacpp.yml
+```
+
+Модели и доли памяти меняются переменными в `.env` (`VLLM_EMBED_MODEL`, `VLLM_RERANK_GPU`, `LLAMACPP_LLM_MODEL`, ... — см. шапку файлов). Первая загрузка моделей с Hugging Face долгая; закрытым репозиториям нужен `HF_TOKEN`.
+
+**vLLM** — имена моделей совпадают с HF-репозиториями, `chunking.tokenizer: auto` берёт токенайзер по ним (vLLM сообщает репозиторий в `/v1/models`):
+
+```yaml
+embedder:
+  provider: openai
+  base_url: http://<host>:8001/v1
+  model: Qwen/Qwen3-Embedding-4B
+  dim: 2560
+  doc_template: "{text}"
+  query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
+rerank:
+  enabled: true
+  provider: openai
+  base_url: http://<host>:8002/v1
+  model: Qwen/Qwen3-Reranker-4B
+llm:
+  base_url: http://<host>:8000/v1
+  model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
+```
+
+Каждый контейнер vLLM при старте резервирует долю **всей** видеопамяти (`--gpu-memory-utilization`, по умолчанию 0.92). В оверлее доли 0.15 / 0.15 / 0.6 и контейнеры стартуют по очереди; на одной карте сумма долей должна быть меньше 1. Реранкер запускается с `--hf-overrides` (Qwen3-Reranker как классификатор yes/no) и `--chat-template` из образа: без шаблона vLLM оценивает голую пару вопрос/документ и ошибается.
+
+**llama.cpp server** — имя модели равно `--alias` из оверлея, а токенайзер нужно указать явно: llama.cpp не сообщает HF-репозиторий.
+
+```yaml
+embedder: {provider: openai, base_url: "http://<host>:8001/v1", model: qwen3-embedding-4b, dim: 2560}
+rerank: {enabled: true, provider: openai, base_url: "http://<host>:8002/v1", model: qwen3-reranker-4b}
+llm: {base_url: "http://<host>:8000/v1", model: llm}
+chunking: {tokenizer: Qwen/Qwen3-Embedding-4B}
+```
+
+Реранкеру llama.cpp нужен GGUF с классификатором Qwen3-Reranker (`gorse-io/Qwen3-Reranker-4B-GGUF` в оверлее). Старые конвертации, в том числе модель `dengcao/...` из Ollama, загружаются, но дают бессмысленные оценки.
+
+Особенности:
+
+- `embedder.num_ctx`, `rerank.num_ctx`, `rerank.concurrency` и `rerank.instruction` относятся только к Ollama. Контекст задаётся флагами сервера (`--max-model-len`, `--ctx-size`), реранкер получает всех кандидатов одним запросом, а промпт Qwen3-Reranker со своей инструкцией строит сервер.
+- Длинный вход сервер не обрезает, а отклоняет. Окно эмбеддера должно вмещать `chunking.max_tokens` плюс шаблон (в оверлеях 2048 и 8192 токена).
+- Смена `embedder.provider` меняет подпись индекса (`openai:<model>:...`), поэтому нужен `uv run mnogobase reindex`, даже если модель та же.
+- Если сервер запущен с `--api-key`, задайте `embedder.api_key_env` / `rerank.api_key_env` (имя переменной из `.env`) и `llm.api_key_env`.
+- `uv run mnogobase doctor` проверяет каждый сервер (`models`) и токенайзер (`tokenizer`).
+
 ---
 
 ## 8. Как расширять код
@@ -1063,8 +1119,8 @@ Qdrant можно делить между проектами через `qdrant.
 | `device.py` | выбор `cuda` / `mps` / `cpu` |
 | `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки |
 | `chunking/hybrid.py` | `Chunker`: HybridChunker с токенайзером из `chunking/tokenizer.py` |
-| `chunking/tokenizer.py` | `load_tokenizer`: HF-репозиторий или (`auto`) токенайзер модели эмбеддера из Ollama |
-| `embedding/` | протоколы `Embedder`, `SparseEncoder` и помощники (`base.py`), `OllamaEmbedder`, `BM25Encoder` |
+| `chunking/tokenizer.py` | `load_tokenizer`: HF-репозиторий или (`auto`) токенайзер модели эмбеддера из Ollama либо по HF-репозиторию от vLLM |
+| `embedding/` | протоколы `Embedder`, `SparseEncoder` и помощники (`base.py`), `build_embedder` (`__init__.py`), общий HTTP-код (`http.py`), `OllamaEmbedder`, `OpenAICompatEmbedder`, `BM25Encoder` |
 | `llm/` | протокол `LLMClient`, `OpenAICompatLLM` (`client.py`), `render` (`templates.py`), промпты |
 | `extraction/` | `Extractor` (кэш, очистка ответа, `PROMPT_VERSION`), `EntityResolver` |
 | `stores/` | `QdrantStore` и `GraphStore` — весь код Qdrant и весь Cypher |
@@ -1145,17 +1201,17 @@ class Retriever(Protocol):
 def build_app(settings, *, embedder=None, sparse=None, llm=None, vectors=None, graph=None) -> App
 ```
 
-Всё, что не передано, создаётся по настройкам: `OllamaEmbedder`, `BM25Encoder`, `QdrantStore.from_settings`, `GraphStore.from_settings`, `OpenAICompatLLM`. Тесты передают сюда фейки. Режимы поиска собирает `retrieval/__init__.py: build_retrievers(...)` — словарь `{режим: Retriever}`.
+Всё, что не передано, создаётся по настройкам: эмбеддер по `embedder.provider` (`build_embedder`), реранкер по `rerank.provider` (`build_reranker`), `BM25Encoder`, `QdrantStore.from_settings`, `GraphStore.from_settings`, `OpenAICompatLLM`. Тесты передают сюда фейки. Режимы поиска собирает `retrieval/__init__.py: build_retrievers(...)` — словарь `{режим: Retriever}`.
 
 ### 8.3 Рецепты расширения
 
 **Новый эмбеддер** (например, sentence-transformers или облачный API):
 
-1. Класс в `src/mnogobase/embedding/<name>.py` с атрибутами `model_id`, `dim`, `templates` и методами `embed_documents`, `embed_query`. Используйте помощники из `embedding/base.py`: `format_document(item, template)`, `format_query(query, template)` и `truncate_normalize(vec, dim)` (обрезка Matryoshka и L2-нормировка).
+1. Класс в `src/mnogobase/embedding/<name>.py` с атрибутами `model_id`, `dim`, `templates` и методами `embed_documents`, `embed_query`. Для HTTP-API проще унаследовать `HttpEmbedder` (`embedding/http.py`, как `OllamaEmbedder` и `OpenAICompatEmbedder`): нужны только `provider`, `path`, `_payload` и `_vectors`. Используйте помощники из `embedding/base.py`: `format_document(item, template)`, `format_query(query, template)` и `truncate_normalize(vec, dim)` (обрезка Matryoshka и L2-нормировка).
 2. `model_id` должен быть уникальным с префиксом провайдера (как `ollama:<model>`): подпись `model_id:dim:tpl-<хеш templates>` (`embedder_signature`) сохраняется в `meta` и защищает индекс от смешивания векторов. Если провайдер не использует шаблоны, задайте `templates` постоянными.
-3. `config.py`: расширьте `EmbedderSettings.provider: Literal["ollama", "<name>"]` и добавьте нужные поля.
-4. `app.py`: в `build_app` выбирайте класс по `settings.embedder.provider` вместо безусловного `OllamaEmbedder`.
-5. `doctor.py`: проверка `ollama` обращается к `/api/tags`, а проверка `index` строит `OllamaEmbedder` для подписи — сделайте обе зависимыми от провайдера. Проверка `tokenizer` и `chunking.tokenizer: auto` (`chunking/tokenizer.py`) читают токенайзер из Ollama — для другого провайдера задайте HF-репозиторий. Набор проверок команд задан в `cli.py` (`PREFLIGHT_CHECKS`, `INGEST_CHECKS`, `REINDEX_CHECKS`).
+3. `config.py`: расширьте `EmbedderSettings.provider: Literal["ollama", "openai", "<name>"]` и добавьте нужные поля.
+4. `embedding/__init__.py`: верните новый класс из `build_embedder` для своего `provider`.
+5. `doctor.py`: `_served_models` знает, как спросить у Ollama и OpenAI-совместимого сервера список моделей, — добавьте свой провайдер. `chunking.tokenizer: auto` (`chunking/tokenizer.py`) умеет Ollama и `root` из `/models`; для другого провайдера задайте HF-репозиторий. Набор проверок команд задан в `cli.py` (`PREFLIGHT_CHECKS`, `INGEST_CHECKS`, `REINDEX_CHECKS`).
 6. Тесты по образцу `tests/unit/test_embedding.py` (HTTP через `httpx.MockTransport`). После переключения — `reindex` (раздел 7.4).
 
 **Новый провайдер LLM.** Почти всегда хватает `OpenAICompatLLM` (раздел 7.2). Свой клиент нужен, если API не OpenAI-совместимый или не умеет `json_schema`:
@@ -1225,11 +1281,11 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 |---|---|---|
 | `doctor`: `neo4j` или `qdrant` — ошибка соединения (`ServiceUnavailable`, connection refused) | контейнеры не запущены или Neo4j ещё стартует | `docker compose up -d`, подождите ~30 с (у Neo4j есть healthcheck), `docker compose ps` |
 | `doctor`: `neo4j` — `AuthError` | пароль в `.env` не совпадает с паролем базы. `NEO4J_AUTH` применяется только при первом создании тома `neo4j_data` | верните прежний пароль в `.env` или войдите в Neo4j Browser со старым паролем и смените его: `:use system`, затем `ALTER CURRENT USER SET PASSWORD FROM 'старый' TO 'новый'` |
-| `doctor`: `missing embeddinggemma-2:740m: run ollama pull ...` | модель эмбеддера или реранкера не скачана | `ollama pull <модель из сообщения>` |
+| `doctor`: `models` — `embeddinggemma-2:740m missing: run ollama pull ...` | модель эмбеддера или реранкера не скачана | `ollama pull <модель из сообщения>` |
 | `ask` в режимах rag/all медленный (+~3 с), `ollama ps` показывает то эмбеддер, то реранкер | обе модели не помещаются в видеопамять вместе, Ollama перегружает их на каждом вопросе | уменьшите `embedder.num_ctx` / `rerank.num_ctx` (по умолчанию у Qwen3 ~40k контекста); проверка — `ollama ps`: должны быть загружены обе |
 | в логе `rerank_failed` | Ollama с реранкером недоступна или модель не скачана; ответ строится без реранкинга | `uv run mnogobase doctor`, `ollama pull dengcao/Qwen3-Reranker-4B:Q4_K_M` |
 | `rerank_failed` с `Ollama returned no logprobs` | старая Ollama | обновите Ollama (нужна 0.12+) |
-| `doctor`: `ollama` — `ConnectError` | Ollama не запущена | запустите приложение Ollama или `ollama serve` |
+| `doctor`: `models` — `ConnectError` | Ollama (или сервер vLLM / llama.cpp) не запущен | запустите приложение Ollama или `ollama serve` |
 | `doctor`: `llm` — `HTTPStatusError: Client error '401 Unauthorized'` (или 403) | нет или неверный `LLM_API_KEY` | впишите ключ в `.env` |
 | `doctor`: `<model> is not served by <base_url>` | имя модели не совпадает со списком `/models` | исправьте `llm.model` |
 | `extract` медленный, в логе `llm_call` с `retries` > 0, `APITimeoutError` | перегрузка эндпоинта, таймауты, 429 | уменьшите `llm.concurrency`, увеличьте `llm.timeout_s`; повторите `ingest --retry-failed` |
@@ -1296,6 +1352,7 @@ uv run ruff check . && uv run ruff format --check .
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d   # Qdrant с GPU-индексацией + Ollama в Docker
 docker compose exec ollama ollama pull embeddinggemma-2:740m
+# vLLM или llama.cpp вместо Ollama — раздел 7.15 (docker-compose.vllm.yml, docker-compose.llamacpp.yml)
 uv pip uninstall onnxruntime && uv pip install onnxruntime-gpu          # BM25 на GPU
 ```
 
@@ -1311,13 +1368,15 @@ mnogobase/
 ├── .env.example               # шаблон секретов; .env не коммитится
 ├── docker-compose.yml         # Qdrant + Neo4j (APOC, GDS)
 ├── docker-compose.cuda.yml    # override для NVIDIA: Qdrant с GPU и Ollama в Docker
+├── docker-compose.vllm.yml    # override: эмбеддер, реранкер и LLM на vLLM (раздел 7.15)
+├── docker-compose.llamacpp.yml # override: то же на llama.cpp server
 ├── docs/neo4j/mnogobase.grass # стиль Neo4j Browser
 ├── src/mnogobase/
 │   ├── cli.py  app.py  pipeline.py  registry.py  config.py
 │   ├── models.py  ids.py  log.py  device.py  doctor.py  maintenance.py
 │   ├── parsing/docling_parser.py
 │   ├── chunking/    hybrid.py  tokenizer.py
-│   ├── embedding/   base.py  ollama.py  sparse.py
+│   ├── embedding/   base.py  http.py  ollama.py  openai_compat.py  sparse.py
 │   ├── llm/         client.py  templates.py  prompts/*.md
 │   ├── extraction/  extractor.py  resolver.py
 │   ├── stores/      qdrant_store.py  graph_store.py

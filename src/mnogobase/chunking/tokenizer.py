@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from mnogobase.config import EmbedderSettings
+from mnogobase.embedding.http import auth_headers
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -28,15 +29,40 @@ def load_tokenizer(
     models_dir: Path | None = None,
 ) -> PreTrainedTokenizerBase:
     """Токенизатор для подсчёта токенов чанка: HF-репозиторий `name` или, при `auto`, токенизатор
-    самой модели эмбеддера из Ollama, чтобы он всегда соответствовал `embedder.model`."""
+    самой модели эмбеддера, чтобы он всегда соответствовал `embedder.model`: из Ollama или, у
+    OpenAI-совместимого сервера, по HF-репозиторию, который он сообщает (vLLM)."""
     if name != AUTO:
-        from transformers import AutoTokenizer
-
-        return AutoTokenizer.from_pretrained(name)
+        return _from_hf(name)
     if client is None:
-        with httpx.Client(base_url=embedder.base_url, timeout=60) as own:
-            return _from_ollama(embedder.model, own, models_dir or _models_dir())
+        headers = auth_headers(embedder.api_key_env)
+        with httpx.Client(base_url=embedder.base_url, timeout=60, headers=headers) as own:
+            return load_tokenizer(name, embedder, client=own, models_dir=models_dir)
+    if embedder.provider == "openai":
+        return _from_hf(_served_repo(embedder.model, client))
     return _from_ollama(embedder.model, client, models_dir or _models_dir())
+
+
+def _from_hf(repo: str) -> PreTrainedTokenizerBase:
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(repo)
+
+
+def _served_repo(model: str, client: httpx.Client) -> str:
+    """HF-репозиторий модели `model` по `/models` сервера: vLLM пишет его в `root`."""
+    response = client.get("/models")
+    response.raise_for_status()
+    for entry in response.json().get("data", []):
+        if model in (entry.get("id"), *(entry.get("aliases") or [])):
+            root = entry.get("root")
+            # llama.cpp server `root` не отдаёт, а vLLM с локальной моделью отдаёт путь на сервере
+            if root and not root.startswith(("/", ".")):
+                return root
+            raise TokenizerError(
+                f"the server does not report the Hugging Face repo of {model} "
+                f"(root: {root!r}): {_HF_HINT}"
+            )
+    raise TokenizerError(f"{model} is not served by {client.base_url}: check embedder.model")
 
 
 def _from_ollama(model: str, client: httpx.Client, models_dir: Path) -> PreTrainedTokenizerBase:

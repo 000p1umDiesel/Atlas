@@ -101,8 +101,11 @@ class LLMSettings(BaseModel):
 
 
 class EmbedderSettings(BaseModel):
-    provider: Literal["ollama"] = "ollama"
+    # ollama — `/api/embed`; openai — `/embeddings` OpenAI-совместимого сервера (vLLM,
+    # llama.cpp server, ...), тогда `base_url` включает `/v1`
+    provider: Literal["ollama", "openai"] = "ollama"
     base_url: str = "http://localhost:11434"
+    api_key_env: str | None = None  # переменная с Bearer-ключом сервера (vLLM/llama.cpp --api-key)
     model: str = "embeddinggemma-2:740m"
     dim: int = 768
     batch_size: int = 32
@@ -110,7 +113,7 @@ class EmbedderSettings(BaseModel):
     query_template: str = "task: search result | query: {query}"
     # Контекстное окно Ollama; None оставляет значение модели по умолчанию (Qwen3 грузится
     # с ~40k токенов, и её KV-кэш может вытеснить другую модель из VRAM). Более длинный
-    # вход обрезается.
+    # вход обрезается. У provider openai контекст задаётся при запуске сервера.
     num_ctx: int | None = Field(default=None, ge=256)
 
 
@@ -198,14 +201,17 @@ class RetrievalSettings(BaseModel):
 
 
 class RerankSettings(BaseModel):
-    """Cross-encoder reranking хитов rag (Qwen3-Reranker через Ollama)."""
+    """Cross-encoder reranking хитов rag (Qwen3-Reranker)."""
 
     enabled: bool = False
-    provider: Literal["ollama"] = "ollama"
+    # ollama — промпт Qwen3-Reranker и logprobs через `/api/generate`; openai — `/rerank`
+    # OpenAI-совместимого сервера (vLLM, llama.cpp server), `base_url` включает `/v1`
+    provider: Literal["ollama", "openai"] = "ollama"
     base_url: str = "http://localhost:11434"
+    api_key_env: str | None = None  # переменная с Bearer-ключом сервера
     model: str = "dengcao/Qwen3-Reranker-4B:Q4_K_M"
     candidates: int = Field(default=30, ge=1)  # гибридных хитов на скоринг; остаются лучшие k
-    concurrency: int = Field(default=4, ge=1)  # параллельных запросов на скоринг
+    concurrency: int = Field(default=4, ge=1)  # ollama: параллельных запросов на скоринг
     max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для промпта reranker
     num_ctx: int = Field(default=4096, ge=512)  # контекстное окно Ollama (промпт + max_chars)
     instruction: str = "Given a question, retrieve passages that answer it"

@@ -9,8 +9,9 @@ from qdrant_client import QdrantClient
 from mnogobase.chunking.tokenizer import AUTO, load_tokenizer
 from mnogobase.config import Settings
 from mnogobase.device import detect_device
+from mnogobase.embedding import build_embedder
 from mnogobase.embedding.base import embedder_signature, signature_mismatch
-from mnogobase.embedding.ollama import OllamaEmbedder
+from mnogobase.embedding.http import auth_headers
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
@@ -18,7 +19,7 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 CHECKS: tuple[str, ...] = (
     "device",
-    "ollama",
+    "models",
     "tokenizer",
     "llm",
     "qdrant",
@@ -34,6 +35,19 @@ class Check:
     ok: bool
     detail: str
     warn: bool = False  # стоит внимания, но не ошибка (doctor всё равно выходит с 0)
+
+
+def _served_models(provider: str, base_url: str, api_key_env: str | None, timeout: float) -> set:
+    """Имена моделей, которые отдаёт сервер: Ollama `/api/tags`, OpenAI-совместимый `/models`
+    (у llama.cpp server это `--alias`)."""
+    if provider == "ollama":
+        resp = httpx.get(f"{base_url}/api/tags", timeout=timeout)
+        resp.raise_for_status()
+        return {m["name"] for m in resp.json().get("models", [])}
+    resp = httpx.get(f"{base_url}/models", timeout=timeout, headers=auth_headers(api_key_env))
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+    return {m["id"] for m in data} | {a for m in data for a in m.get("aliases") or []}
 
 
 def _guard(name: str, fn: Callable[[], Check]) -> Check:
@@ -59,22 +73,30 @@ def run_checks(
     def device() -> Check:
         return Check("device", True, detect_device(settings.device))
 
-    def ollama() -> Check:
-        resp = httpx.get(f"{settings.embedder.base_url}/api/tags", timeout=timeout)
-        resp.raise_for_status()
-        names = {m["name"] for m in resp.json().get("models", [])}
-        wanted = {"embedder": settings.embedder.model}
-        # reranker может работать на другом Ollama; здесь проверяется только общий
-        same_host = settings.rerank.base_url.rstrip("/") == settings.embedder.base_url.rstrip("/")
-        if settings.rerank.enabled and same_host:
-            wanted["reranker"] = settings.rerank.model
-        missing = [m for m in wanted.values() if m not in names and f"{m}:latest" not in names]
-        if missing:
-            pulls = "; ".join(f"`ollama pull {m}`" for m in missing)
-            return Check("ollama", False, f"missing {', '.join(missing)}: run {pulls}")
-        return Check(
-            "ollama", True, ", ".join(f"{r} {m}" for r, m in wanted.items()) + " available"
-        )
+    def models() -> Check:
+        # embedder и reranker могут работать на разных серверах и у разных провайдеров
+        roles = [("embedder", settings.embedder)]
+        if settings.rerank.enabled:
+            roles.append(("reranker", settings.rerank))
+        servers: dict[tuple[str, str, str | None], list[str]] = {}
+        for _, s in roles:
+            servers.setdefault((s.provider, s.base_url.rstrip("/"), s.api_key_env), []).append(
+                s.model
+            )
+        problems = []
+        for (provider, url, key_env), wanted in servers.items():
+            served = _served_models(provider, url, key_env, timeout)
+            for model in wanted:
+                if model in served or f"{model}:latest" in served:
+                    continue
+                if provider == "ollama":
+                    problems.append(f"{model} missing: run `ollama pull {model}`")
+                else:
+                    listed = ", ".join(sorted(served)) or "nothing"
+                    problems.append(f"{model} is not served by {url} (it serves {listed})")
+        if problems:
+            return Check("models", False, "; ".join(problems))
+        return Check("models", True, ", ".join(f"{r} {s.model}" for r, s in roles) + " available")
 
     def tokenizer() -> Check:
         name = settings.chunking.tokenizer
@@ -127,7 +149,7 @@ def run_checks(
 
     def index() -> Check:
         db = settings.data_dir / "state.db"
-        embedder = OllamaEmbedder(settings.embedder)
+        embedder = build_embedder(settings.embedder)
         expected = embedder_signature(embedder)
         if not db.exists():
             return Check("index", True, "no index yet")
@@ -156,7 +178,7 @@ def run_checks(
 
     checks = {
         "device": device,
-        "ollama": ollama,
+        "models": models,
         "tokenizer": tokenizer,
         "llm": llm,
         "qdrant": qdrant,

@@ -60,8 +60,8 @@ def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path, monkeypatch
 
     monkeypatch.setattr(doctor.httpx, "get", refuse)
     settings = make_settings(tmp_path)
-    checks = run_checks(settings, timeout=1.0, only=["index", "ollama"])
-    assert [c.name for c in checks] == ["ollama", "index"]  # порядок doctor, а не порядок запроса
+    checks = run_checks(settings, timeout=1.0, only=["index", "models"])
+    assert [c.name for c in checks] == ["models", "index"]  # порядок doctor, а не порядок запроса
     assert not checks[0].ok and "ConnectError" in checks[0].detail
 
 
@@ -73,20 +73,20 @@ def _tags(monkeypatch, models: list[str]) -> None:
     monkeypatch.setattr(doctor.httpx, "get", fake_get)
 
 
-def test_ollama_check_requires_the_reranker_only_when_enabled(tmp_path, monkeypatch):
+def test_models_check_requires_the_reranker_only_when_enabled(tmp_path, monkeypatch):
     _tags(monkeypatch, ["qwen3-embedding:4b"])
     embedder = EmbedderSettings(model="qwen3-embedding:4b")
-    [plain] = run_checks(make_settings(tmp_path, embedder=embedder), only=["ollama"])
+    [plain] = run_checks(make_settings(tmp_path, embedder=embedder), only=["models"])
     assert plain.ok and plain.detail == "embedder qwen3-embedding:4b available"
 
     rerank = RerankSettings(enabled=True, model="rr:4b")
     [missing] = run_checks(
-        make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["ollama"]
+        make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"]
     )
     assert not missing.ok and "`ollama pull rr:4b`" in missing.detail
 
     _tags(monkeypatch, ["qwen3-embedding:4b", "rr:4b"])
-    [both] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["ollama"])
+    [both] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"])
     assert both.ok and "reranker rr:4b" in both.detail
 
 
@@ -174,3 +174,29 @@ def test_tokenizer_check_reports_the_source_or_why_it_failed(tmp_path, monkeypat
     monkeypatch.setattr(doctor, "load_tokenizer", unavailable)
     [failed] = run_checks(settings, only=["tokenizer"])
     assert not failed.ok and "chunking.tokenizer" in failed.detail
+
+
+def test_models_check_asks_each_server_with_its_own_api(tmp_path, monkeypatch):
+    seen: list[str] = []
+
+    def fake_get(url, **kwargs):
+        seen.append(url)
+        if url.endswith("/api/tags"):
+            payload = {"models": [{"name": "rr:4b"}]}
+        else:  # llama.cpp server: имя модели — её --alias
+            payload = {"data": [{"id": "/models/emb.gguf", "aliases": ["emb"]}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(doctor.httpx, "get", fake_get)
+    embedder = EmbedderSettings(provider="openai", base_url="http://gpu:8001/v1/", model="emb")
+    rerank = RerankSettings(enabled=True, base_url="http://other:11434", model="rr:4b")
+    settings = make_settings(tmp_path, embedder=embedder, rerank=rerank)
+    [ok] = run_checks(settings, only=["models"])
+    assert ok.ok and ok.detail == "embedder emb, reranker rr:4b available"
+    assert seen == ["http://gpu:8001/v1/models", "http://other:11434/api/tags"]
+
+    embedder = embedder.model_copy(update={"model": "Qwen/Qwen3-Embedding-4B"})
+    [missing] = run_checks(make_settings(tmp_path, embedder=embedder), only=["models"])
+    assert not missing.ok
+    assert "Qwen/Qwen3-Embedding-4B is not served by http://gpu:8001/v1" in missing.detail
+    assert "/models/emb.gguf" in missing.detail

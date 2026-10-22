@@ -112,7 +112,7 @@ def test_reset_refuses_outside_a_project(tmp_path, monkeypatch, args):
 
 @pytest.mark.parametrize(
     ("args", "expected"),
-    [(["reset", "--yes"], {"qdrant", "neo4j"}), (["reindex"], {"ollama", "qdrant", "neo4j"})],
+    [(["reset", "--yes"], {"qdrant", "neo4j"}), (["reindex"], {"models", "qdrant", "neo4j"})],
 )
 def test_reset_and_reindex_preflight(tmp_path, monkeypatch, args, expected):
     monkeypatch.chdir(tmp_path)
@@ -176,7 +176,7 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args, extra)
 
     def failing(settings, only=None, **kwargs):
         asked.append(tuple(only or ()))
-        return [Check("qdrant", True, "ok"), Check("ollama", False, "ConnectError: refused")]
+        return [Check("qdrant", True, "ok"), Check("models", False, "ConnectError: refused")]
 
     def no_app(settings):
         raise AssertionError("build_app must not run after a failed preflight")
@@ -185,8 +185,8 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args, extra)
     monkeypatch.setattr(cli, "build_app", no_app)
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
-    assert "ollama" in result.output and "ConnectError: refused" in result.output
-    assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"} | extra
+    assert "models" in result.output and "ConnectError: refused" in result.output
+    assert set(asked[0]) == {"models", "llm", "qdrant", "neo4j"} | extra
 
 
 def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
@@ -203,7 +203,7 @@ def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
     assert result.exit_code == 2, result.output
     assert "ServiceUnavailable: down" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
-    assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"}
+    assert set(asked[0]) == {"models", "llm", "qdrant", "neo4j"}
 
 
 def test_wiki_build_finishes_pending_removals_first(tmp_path, monkeypatch):

@@ -7,7 +7,12 @@ from tenacity import wait_none
 
 from mnogobase.config import RerankSettings
 from mnogobase.retrieval.rag import RagRetriever
-from mnogobase.retrieval.rerank import OllamaReranker, yes_probability
+from mnogobase.retrieval.rerank import (
+    ApiReranker,
+    OllamaReranker,
+    build_reranker,
+    yes_probability,
+)
 from tests.fakes import FakeEmbedder, FakeSparse
 from tests.unit.test_retrieval import StubChunks, _chunk
 
@@ -119,3 +124,38 @@ def test_rag_keeps_hybrid_order_on_ties_and_when_the_reranker_fails():
         reranker=StubReranker(RuntimeError("ollama down")),
     )
     assert [i.ref for i in broken.retrieve("q", 2)] == HITS[:2]
+
+
+def test_api_reranker_sends_raw_texts_once_and_maps_scores_back_to_input_order():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        results = [{"index": 1, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.2}]
+        return httpx.Response(200, json={"results": results})
+
+    settings = RerankSettings(
+        provider="openai",
+        base_url="http://vllm:8002/v1",
+        model="Qwen/Qwen3-Reranker-4B",
+        max_chars=100,
+    )
+    client = httpx.Client(base_url=settings.base_url, transport=httpx.MockTransport(handler))
+    reranker = ApiReranker(settings, client=client)
+    assert reranker.score("q", ["a" * 150, "b", "c"]) == [0.2, 0.9, 0.0]  # c не вернулся
+    assert reranker.score("q", []) == []
+    assert len(seen) == 1 and str(seen[0].url) == "http://vllm:8002/v1/rerank"
+    body = json.loads(seen[0].content)
+    assert body == {
+        "model": "Qwen/Qwen3-Reranker-4B",
+        "query": "q",
+        "documents": ["a" * 100, "b", "c"],
+        "top_n": 3,
+    }
+
+
+def test_build_reranker_follows_enabled_and_provider():
+    assert build_reranker(RerankSettings()) is None
+    assert isinstance(build_reranker(RerankSettings(enabled=True)), OllamaReranker)
+    api = RerankSettings(enabled=True, provider="openai", base_url="http://x/v1")
+    assert isinstance(build_reranker(api), ApiReranker)

@@ -6,6 +6,7 @@ import pytest
 from tenacity import wait_none
 
 from mnogobase.config import EmbedderSettings
+from mnogobase.embedding import build_embedder
 from mnogobase.embedding.base import (
     embedder_signature,
     format_document,
@@ -14,6 +15,7 @@ from mnogobase.embedding.base import (
     truncate_normalize,
 )
 from mnogobase.embedding.ollama import OllamaEmbedder
+from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.models import EmbedInput
 from tests.fakes import FakeEmbedder
 
@@ -122,3 +124,43 @@ def test_fake_embedder_similarity():
     )
     dot = lambda x, y: sum(p * q for p, q in zip(x, y, strict=True))  # noqa: E731
     assert dot(a, b) > dot(a, c)
+
+
+def test_openai_compat_embedder_posts_under_v1_and_orders_by_index(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        body = json.loads(request.content)
+        assert body == {"model": "Qwen/Qwen3-Embedding-4B", "input": ["a", "b"]}
+        data = [{"index": 1, "embedding": [0.0, 2.0]}, {"index": 0, "embedding": [3.0, 0.0]}]
+        return httpx.Response(200, json={"data": data})
+
+    monkeypatch.setenv("EMB_KEY", "secret")
+    settings = EmbedderSettings(
+        provider="openai",
+        base_url="http://vllm:8001/v1",
+        api_key_env="EMB_KEY",
+        model="Qwen/Qwen3-Embedding-4B",
+        dim=2,
+        doc_template="{text}",
+    )
+    emb = build_embedder(settings)
+    assert (
+        isinstance(emb, OpenAICompatEmbedder) and emb.model_id == "openai:Qwen/Qwen3-Embedding-4B"
+    )
+    emb._client = httpx.Client(
+        base_url=settings.base_url,
+        headers=emb._client.headers,
+        transport=httpx.MockTransport(handler),
+    )
+    assert emb.embed_documents([EmbedInput(text="a"), EmbedInput(text="b")]) == [
+        [1.0, 0.0],
+        [0.0, 1.0],
+    ]
+    assert str(seen[0].url) == "http://vllm:8001/v1/embeddings"
+    assert seen[0].headers["authorization"] == "Bearer secret"
+
+
+def test_build_embedder_defaults_to_ollama():
+    assert isinstance(build_embedder(EmbedderSettings()), OllamaEmbedder)

@@ -6,6 +6,7 @@ import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers.convert_slow_tokenizer import bytes_to_unicode
 
+from mnogobase.chunking import tokenizer as tokenizer_module
 from mnogobase.chunking.tokenizer import TokenizerError, _manifest_path, load_tokenizer
 from mnogobase.config import EmbedderSettings
 
@@ -107,3 +108,34 @@ def test_auto_explains_when_the_gguf_converter_changed_shape(tmp_path, monkeypat
     monkeypatch.setattr(gguf_tokenizer_mapping, "GGUF_TOKENIZER_MAPPING", {"renamed": {}})
     with pytest.raises(TokenizerError, match="cannot rebuild.*chunking.tokenizer"):
         load_tokenizer("auto", EMBEDDER, client=_client(_gguf_info()), models_dir=tmp_path)
+
+
+def _models_client(data: list[dict]) -> httpx.Client:
+    def handler(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": data})
+
+    return httpx.Client(base_url="http://vllm/v1", transport=httpx.MockTransport(handler))
+
+
+def test_auto_on_openai_server_loads_the_repo_vllm_reports(monkeypatch):
+    loaded: list[str] = []
+    monkeypatch.setattr(tokenizer_module, "_from_hf", lambda repo: loaded.append(repo) or "tok")
+    embedder = EmbedderSettings(provider="openai", model="emb")
+    client = _models_client([{"id": "emb", "root": "Qwen/Qwen3-Embedding-4B"}])
+    assert load_tokenizer("auto", embedder, client=client) == "tok"
+    assert loaded == ["Qwen/Qwen3-Embedding-4B"]
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ([{"id": "emb", "aliases": ["emb"]}], "Hugging Face repo"),  # llama.cpp: без root
+        ([{"id": "emb", "root": "/models/qwen"}], "Hugging Face repo"),  # путь на сервере
+        ([{"id": "other", "root": "Qwen/Other"}], "not served"),
+    ],
+)
+def test_auto_on_openai_server_without_a_repo_points_to_the_config(data, message):
+    embedder = EmbedderSettings(provider="openai", model="emb")
+    with pytest.raises(TokenizerError, match=message):
+        load_tokenizer("auto", embedder, client=_models_client(data))

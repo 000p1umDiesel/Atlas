@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
 from mnogobase.device import detect_device
+from mnogobase.embedding import build_embedder
 from mnogobase.embedding.base import Embedder, SparseEncoder
-from mnogobase.embedding.ollama import OllamaEmbedder
 from mnogobase.embedding.sparse import BM25Encoder
 from mnogobase.extraction.extractor import Extractor
 from mnogobase.extraction.resolver import EntityResolver
@@ -14,7 +14,7 @@ from mnogobase.llm.client import LLMClient, OpenAICompatLLM
 from mnogobase.parsing.docling_parser import DoclingParser
 from mnogobase.pipeline import Pipeline
 from mnogobase.registry import Registry
-from mnogobase.retrieval.rerank import OllamaReranker, Reranker
+from mnogobase.retrieval.rerank import Reranker, build_reranker
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.builder import WikiBuilder
@@ -55,13 +55,12 @@ def build_app(
 ) -> App:
     device = detect_device(settings.device)
     registry = Registry(settings.data_dir / "state.db")
-    embedder = embedder or OllamaEmbedder(settings.embedder)
+    embedder = embedder or build_embedder(settings.embedder)
     sparse = sparse or BM25Encoder(settings.sparse.model, device=device)
     vectors = vectors or QdrantStore.from_settings(settings.qdrant, embedder.dim)
     graph = graph or GraphStore.from_settings(settings.neo4j)
     llm = llm or OpenAICompatLLM(settings.llm)
-    if reranker is None and settings.rerank.enabled:
-        reranker = OllamaReranker(settings.rerank)
+    reranker = reranker or build_reranker(settings.rerank)
     parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache")
     chunker = Chunker(settings.chunking, settings.embedder)
     extractor = Extractor(llm, registry, settings.extract.entity_types)
