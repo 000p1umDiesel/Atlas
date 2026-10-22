@@ -522,6 +522,7 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     )
     started: list = []
     monkeypatch.setattr(cli, "make_runner", lambda runner, settings: f"runner:{runner}")
+    monkeypatch.setattr(cli, "ModelWatch", lambda served, runner: SimpleNamespace(poll=list))
     monkeypatch.setattr(
         cli,
         "bring_up",
@@ -530,7 +531,8 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     result = runner.invoke(cli.app, ["models", "up", "--runner", "docker"])
     assert result.exit_code == 0, result.output
     assert [s.service for s in started[0][0]] == ["embed-llamacpp", "rerank-vllm"]
-    assert "rerank: Qwen/Qwen3-Reranker-4B on vllm (docker)" in result.output
+    assert "Starting embedder, rerank (docker)" in result.output
+    assert "rerank → http://localhost:8002/v1" in result.output
     # одна роль: остальные серверы из конфига не останавливаются
     result = runner.invoke(cli.app, ["models", "up", "rerank"])
     served, keep = started[1]

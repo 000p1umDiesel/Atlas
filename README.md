@@ -1095,6 +1095,18 @@ uv run mnogobase models logs rerank -f   # лог сервера роли
 uv run mnogobase models down             # остановить (скачанные модели остаются в кэше)
 ```
 
+Пока серверы поднимаются, `models up` показывает живую таблицу:
+
+```
+role      backend   weights                      state
+embedder  llamacpp  Qwen3-Embedding-4B:Q4_K_M    ━━━━━━━━━━━━╸━━━━━  1.6/2.5 GB · 38 MB/s · 0:24 left
+rerank    llamacpp  Qwen3-Reranker-4B:Q4_K_M     ✓ ready             cached
+vision    llamacpp  Qwen3-VL-2B-Instruct:Q4_K_M  ⠋ loading into memory  1.9 GB downloaded
+elapsed 1:23
+```
+
+Серверы качают веса молча, поэтому прогресс считается снаружи (`model_watch.py`): какие файлы нужны — по списку файлов репозитория на Hugging Face (GGUF кванта и проектор `mmproj` у llama.cpp, safetensors у vLLM), сколько скачано — по размеру этих файлов в кэше (нативно — `~/.cache/huggingface/hub`, в Docker — `find` внутри контейнера). Без доступа к Hugging Face API роль показывается как `starting` без процентов. Без терминала (`nohup`, cron, CI) вместо таблицы печатаются строки: при смене состояния и раз в 30 с во время скачивания. Колонка `backend` появляется при ширине терминала от 110 символов.
+
 `models up` идемпотентна: работающий сервер с той же моделью и флагами не трогается, после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `api` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux) — сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). vLLM работает только в Docker.
 
 Особенности:
@@ -1163,6 +1175,8 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `retrieval/` | протокол `Retriever`, 4 режима, `Answerer`, `compare` |
 | `doctor.py` | проверки окружения и предварительные проверки команд |
 | `serving.py` | `mnogobase models`: роли с `serve`, команды llama.cpp и vLLM (`server_args`), запуск в Docker (`DockerRunner`) и нативно (`NativeRunner`), ожидание `/health` |
+| `model_watch.py` | прогресс `models up`: файлы весов роли по Hugging Face (`weight_files`), скачанные байты в кэше (`downloaded`), фазы роли (`ModelWatch`) |
+| `model_view.py` | отрисовка `models up`: живая таблица в терминале, строки без него (`UpReporter`) |
 | `maintenance.py` | `reindex`, `reset` |
 
 Зависимости между пакетами (общие `config`, `models`, `ids`, `log` используются всеми и на схеме опущены):
@@ -1318,7 +1332,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `doctor`: `neo4j` — `AuthError` | пароль в `.env` не совпадает с паролем базы. `NEO4J_AUTH` применяется только при первом создании тома `neo4j_data` | верните прежний пароль в `.env` или войдите в Neo4j Browser со старым паролем и смените его: `:use system`, затем `ALTER CURRENT USER SET PASSWORD FROM 'старый' TO 'новый'` |
 | `doctor`: `models` — `<model> is not served by <url> (it serves ...)` | на порту роли работает другая модель (сервер запущен не `models up` или с другим конфигом) | `uv run mnogobase models up` — перезапустит роль по конфигу; для `api` исправьте `model` |
 | в логе `rerank_failed` | сервер реранкера недоступен или отвечает ошибкой; ответ строится без реранкинга | `uv run mnogobase models status`, `uv run mnogobase models logs rerank` |
-| `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера, реранкера или VLM не запущен (или ещё качает модель) | `uv run mnogobase models up`; прогресс — `uv run mnogobase models logs <роль> -f` |
+| `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера, реранкера или VLM не запущен (или ещё качает модель) | `uv run mnogobase models up` — покажет прогресс скачивания; лог сервера — `uv run mnogobase models logs <роль> -f` |
 | `doctor`: `llm` — `HTTPStatusError: Client error '401 Unauthorized'` (или 403) | нет или неверный `LLM_API_KEY` | впишите ключ в `.env` |
 | `doctor`: `<model> is not served by <base_url>` | имя модели не совпадает со списком `/models` | исправьте `llm.model` |
 | `extract` медленный, в логе `llm_call` с `retries` > 0, `APITimeoutError` | перегрузка эндпоинта, таймауты, 429 | уменьшите `llm.concurrency`, увеличьте `llm.timeout_s`; повторите `ingest --retry-failed` |
@@ -1436,7 +1450,7 @@ uv run mnogobase doctor                    # всё зелёное
 
 На Linux `models up` по умолчанию запускает модели в Docker: сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в отдельном compose-проекте `mnogobase-models` (их видно в `docker ps`, команду каждому строит `mnogobase` из конфига). Сервер без Docker, но с собранным `llama-server` в `PATH` — `models up --runner native`.
 
-**Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` ждёт `/health` и раз в минуту пишет, кого ждёт; прогресс — `uv run mnogobase models logs <роль> -f`. Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
+**Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` показывает живую таблицу по ролям (раздел 7.15): полосу скачивания, байты, скорость и оставшееся время, затем «loading into memory» и «ready». Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
 
 **Какая роль на каком бэкенде** — `serve` в `config.yaml` (раздел 7.15). Отличия сервера от ноутбука удобнее задавать переменными `MNOGOBASE_*` в `.env`, а не правкой `config.yaml`, чтобы `git pull` проходил без конфликтов. Например, LLM на vLLM на сервере, а эмбеддер и реранкер на llama.cpp, как в репозитории:
 

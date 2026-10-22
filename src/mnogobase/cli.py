@@ -34,6 +34,8 @@ from mnogobase.log import configure_logging, new_run_id
 from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
+from mnogobase.model_view import UpReporter
+from mnogobase.model_watch import ModelWatch
 from mnogobase.models import Answer
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
 from mnogobase.registry import STAGES, Registry, ingest_lock
@@ -605,25 +607,29 @@ def models_up(
         console.print("Nothing to start: every role is serve: api (or disabled).")
         return
     where = resolve_runner(_runner(runner))
-    for s in served:
-        console.print(
-            f"{s.role}: {escape(s.settings.weights)} on {s.backend} ({where}) → {s.settings.url}",
-            soft_wrap=True,
-        )
-
-    def waiting(s: Served, elapsed: float) -> None:
-        if int(elapsed) % 60 < 5:  # раз в минуту, а не каждые 5 с
-            console.print(
-                f"  waiting for {s.role} ({int(elapsed)} s; the first start downloads the model, "
-                f"see `mnogobase models logs {s.role}`)",
-                soft_wrap=True,
-            )
-
+    console.print(
+        f"Starting {', '.join(s.role for s in served)} ({where}); "
+        "server logs: `mnogobase models logs <role> -f`",
+        soft_wrap=True,
+    )
+    watch = ModelWatch(served, model_runner)
+    reporter = UpReporter(console)
     try:
-        # `models up vision` не трогает серверы других ролей из конфига
-        bring_up(served, model_runner, timeout, waiting, keep=everything)
+        # первый опрос — после запуска: до него на порту может отвечать сервер со старым конфигом
+        with reporter.live():
+            # `models up vision` не трогает серверы других ролей из конфига
+            bring_up(
+                served,
+                model_runner,
+                timeout,
+                lambda s, elapsed: reporter.update(watch.poll()),
+                keep=everything,
+            )
+            reporter.update(watch.poll())
     except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
         _fail_cleanly(exc)
+    for s in served:
+        console.print(f"{s.role} → {s.settings.url}", soft_wrap=True, highlight=False)
     console.print("[green]All model servers are ready.[/green]")
 
 

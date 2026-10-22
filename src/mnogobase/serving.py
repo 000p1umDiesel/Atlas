@@ -185,6 +185,16 @@ class DockerRunner:
         )  # fmt: skip
         return bool(result.stdout.strip())
 
+    def cache_listing(self, served: Served) -> list[tuple[int, str]]:
+        """Файлы кэшей моделей в контейнере роли: GGUF llama.cpp и кэш Hugging Face vLLM."""
+        result = self._run(
+            ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", str(self._file),
+             "--profile", served.service, "exec", "-T", served.service,
+             "find", "/models", "/root/.cache/huggingface", "-type", "f", "-printf", "%s %p\\n"],
+            capture_output=True, text=True, check=False,
+        )  # fmt: skip
+        return _parse_listing(result.stdout or "")
+
     def stop(self) -> None:
         self._compose("down")
 
@@ -266,6 +276,29 @@ class NativeRunner:
                 os.kill(record["pid"], signal.SIGTERM)
         self._pidfile(role).unlink(missing_ok=True)
 
+    def cache_listing(self, served: Served) -> list[tuple[int, str]]:
+        """Файлы кэша llama.cpp на этой машине: кэш Hugging Face (`blobs/` репозитория) и
+        плоский кэш (`LLAMA_CACHE`, старые версии llama.cpp)."""
+        from huggingface_hub import constants
+
+        repo = (served.settings.gguf or served.settings.model).partition(":")[0]
+        dirs = [Path(constants.HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}" / "blobs"]
+        if os.environ.get("LLAMA_CACHE"):
+            dirs.append(Path(os.environ["LLAMA_CACHE"]))
+        dirs += [
+            Path.home() / "Library" / "Caches" / "llama.cpp",
+            Path.home() / ".cache" / "llama.cpp",
+        ]
+        listing = []
+        for directory in dirs:
+            with contextlib.suppress(OSError), os.scandir(directory) as entries:
+                listing += [
+                    (entry.stat().st_size, entry.path)
+                    for entry in entries
+                    if entry.is_file(follow_symlinks=False)
+                ]
+        return listing
+
     def stop(self) -> None:
         for role in SERVICE_PREFIX:
             self._kill(role)
@@ -275,6 +308,16 @@ class NativeRunner:
         if not path.exists():
             raise ServeError(f"no log yet: {path}")
         subprocess.run(["tail", "-n", "200", *(["-f"] if follow else []), str(path)], check=False)
+
+
+def _parse_listing(text: str) -> list[tuple[int, str]]:
+    """Вывод `find -printf '%s %p\\n'`: размер и путь в строке."""
+    listing = []
+    for line in text.splitlines():
+        size, _, path = line.partition(" ")
+        if size.isdigit() and path:
+            listing.append((int(size), path))
+    return listing
 
 
 def _pid_alive(pid: object) -> bool:
@@ -306,8 +349,10 @@ def wait_ready(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     ready: Callable[[Served], bool] = is_ready,
+    interval: float = 2.0,
 ) -> None:
-    """Ждёт `/health` каждого сервера: первая загрузка модели с Hugging Face идёт минуты."""
+    """Ждёт `/health` каждого сервера: первая загрузка модели с Hugging Face идёт минуты.
+    `on_wait` вызывается после каждой проверки, пока кто-то не готов."""
     start = clock()
     pending = list(served)
     while pending:
@@ -326,7 +371,7 @@ def wait_ready(
                 f"{names} not ready after {int(timeout)} s: see `mnogobase models logs`"
             )
         on_wait(pending[0], elapsed)
-        sleep(5)
+        sleep(interval)
 
 
 def bring_up(

@@ -235,3 +235,17 @@ def test_wait_ready_reports_exited_and_slow_servers():
             sleep=lambda s: None,
             clock=lambda: next(clock),
         )
+
+
+def test_docker_runner_lists_the_model_caches_inside_the_container(tmp_path):
+    compose = tmp_path / "docker-compose.models.yml"
+    compose.write_text("services: {}\n")
+    run = FakeRun(running="2500 /models/blobs/abc\n7 /root/.cache/huggingface/hub/x\n")
+    [served] = served_roles(settings())
+    assert DockerRunner(compose, run=run).cache_listing(served) == [
+        (2500, "/models/blobs/abc"),
+        (7, "/root/.cache/huggingface/hub/x"),
+    ]
+    [(cmd, kwargs)] = run.calls
+    assert cmd[cmd.index("exec") :][:4] == ["exec", "-T", "embed-llamacpp", "find"]
+    assert kwargs["check"] is False
