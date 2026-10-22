@@ -14,7 +14,7 @@ x-gpu: &gpu
 
 x-llamacpp: &llamacpp
   <<: *gpu
-  image: ghcr.io/ggml-org/llama.cpp:server-cuda-b11515
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda-b11804
   environment:
     LLAMA_CACHE: /models
     HF_TOKEN: ${HF_TOKEN:-}
@@ -22,7 +22,7 @@ x-llamacpp: &llamacpp
 
 x-vllm: &vllm
   <<: *gpu
-  image: vllm/vllm-openai:v0.31.0
+  image: vllm/vllm-openai:v0.32.0
   ipc: host
   environment:
     HF_TOKEN: ${HF_TOKEN:-}

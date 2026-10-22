@@ -63,10 +63,7 @@ def write_graph_settings(wiki_dir: Path, entity_types: Sequence[str]) -> bool:
         query = _type_query(entity_type)
         if query in queries:
             continue
-        if entity_type == "Other":
-            color = OTHER_COLOR
-        else:
-            color = next(free, _PALETTE[i % len(_PALETTE)])
+        color = OTHER_COLOR if entity_type == "Other" else next(free, _PALETTE[i % len(_PALETTE)])
         groups.append({"query": query, "color": {"a": 1, "rgb": color}})
     graph["colorGroups"] = groups
     if json.dumps(graph, sort_keys=True) == before:
