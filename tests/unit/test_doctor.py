@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 
 from mnogobase import doctor
 from mnogobase.chunking.tokenizer import TokenizerError
-from mnogobase.config import EmbedderSettings, RerankSettings, Settings
+from mnogobase.config import EmbedderSettings, RerankSettings, Settings, VisionSettings
 from mnogobase.doctor import run_checks
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
@@ -105,6 +105,19 @@ def test_models_check_asks_each_server(tmp_path, monkeypatch):
     [ok] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"])
     assert ok.ok and ok.detail == "embedder emb, reranker rr available"
     assert seen == ["http://a:8001/v1/models", "http://b:8002/v1/models"]
+
+
+def test_models_check_includes_the_vlm_when_enabled(tmp_path, monkeypatch):
+    _served(monkeypatch, {"http://a:8001/v1": [{"id": "emb"}], "http://v:8003/v1": []})
+    embedder = EmbedderSettings(base_url="http://a:8001/v1", model="emb")
+    vision = VisionSettings(enabled=True, base_url="http://v:8003/v1", model="vl")
+    [missing] = run_checks(
+        make_settings(tmp_path, embedder=embedder, vision=vision), only=["models"]
+    )
+    assert (
+        not missing.ok
+        and missing.detail == "vl is not served by http://v:8003/v1 (it serves nothing)"
+    )
 
 
 def _models_endpoint(monkeypatch, status: int, payload: dict | None = None) -> list[str]:

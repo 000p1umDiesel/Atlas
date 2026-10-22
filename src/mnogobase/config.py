@@ -80,6 +80,14 @@ DEFAULT_EXTENSIONS = [
     "adoc",
     "csv",
     "txt",
+    # картинки и скриншоты: OCR и (при vision.enabled) описание VLM
+    "png",
+    "jpg",
+    "jpeg",
+    "tif",
+    "tiff",
+    "bmp",
+    "webp",
 ]
 
 
@@ -186,6 +194,8 @@ class SparseSettings(BaseModel):
 
 class ParsingSettings(BaseModel):
     ocr: bool = True
+    # языки OCR (BCP-47 с префиксом iso:); без них Docling берёт китайскую модель RapidOCR
+    ocr_lang: list[str] = Field(default_factory=lambda: ["iso:ru", "iso:en"])
     extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_EXTENSIONS))
 
 
@@ -277,6 +287,52 @@ class RerankSettings(ServedModel):
     max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для реранкера
 
 
+DEFAULT_VISION_PROMPT = (
+    "Describe this image. If it is a chart, diagram or table, "
+    "say what it shows, name its axes or parts and give the key values and trends. "
+    "Transcribe the visible text verbatim in its original language. Be factual and concise."
+)
+
+
+class VisionSettings(ServedModel):
+    """Описание картинок при разборе: Docling отправляет каждую картинку документа на
+    `/chat/completions` VLM, описание попадает в текст документа рядом с картинкой."""
+
+    role: ClassVar[str] = "vision"
+    port: ClassVar[int] = 8003
+
+    enabled: bool = False
+    model: str = "Qwen/Qwen3-VL-2B-Instruct"
+    gguf: str | None = "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M"
+    prompt: str = DEFAULT_VISION_PROMPT
+    max_tokens: int = Field(default=400, ge=16)
+    # маленькие VLM на temperature 0 зацикливаются; presence_penalty — рекомендация Qwen3-VL
+    params: dict[str, Any] = Field(
+        default_factory=lambda: {"temperature": 0.0, "presence_penalty": 1.5}
+    )
+    min_area: float = Field(default=0.05, ge=0, le=1)  # доля площади страницы
+    # классы картинок (классификатор Docling), которые не описываются
+    skip: list[str] = Field(
+        default_factory=lambda: ["logo", "icon", "qr_code", "bar_code", "signature", "stamp"]
+    )
+    concurrency: int = Field(default=4, ge=1)
+    timeout_s: float = 120.0
+
+    @field_validator("skip")
+    @classmethod
+    def _known_labels(cls, value: list[str]) -> list[str]:
+        from docling_core.types.doc.labels import PictureClassificationLabel
+
+        known = {label.value for label in PictureClassificationLabel}
+        unknown = [v for v in value if v not in known]
+        if unknown:
+            raise ValueError(
+                f"vision.skip: unknown picture class {', '.join(unknown)} "
+                f"(known: {', '.join(sorted(known))})"
+            )
+        return value
+
+
 class GraphSettings(BaseModel):
     hops: int = 2
     max_relations: int = 30
@@ -333,6 +389,7 @@ class Settings(BaseSettings):
     wiki: WikiSettings = Field(default_factory=WikiSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
+    vision: VisionSettings = Field(default_factory=VisionSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     neo4j: Neo4jSettings = Field(default_factory=Neo4jSettings)

@@ -560,7 +560,8 @@ def reset(
 
 
 RolesArg = Annotated[
-    list[str] | None, typer.Argument(help="Roles: embedder, rerank, llm (default: all served).")
+    list[str] | None,
+    typer.Argument(help="Roles: embedder, rerank, vision, llm (default: all served)."),
 ]
 RunnerOpt = Annotated[
     str,
@@ -577,10 +578,14 @@ def _runner(runner: str) -> Runner:
     return cast(Runner, runner)
 
 
-def _models(roles: list[str] | None, runner: Runner) -> tuple[list[Served], ModelRunner]:
+def _models(
+    roles: list[str] | None, runner: Runner
+) -> tuple[list[Served], list[Served], ModelRunner]:
+    """Роли из `roles` (все, если не заданы), все роли с локальным сервером и раннер."""
     settings = _settings()
     try:
-        return served_roles(settings, roles or ()), make_runner(runner, settings)
+        everything = served_roles(settings)
+        return served_roles(settings, roles or ()), everything, make_runner(runner, settings)
     except ServeError as exc:
         _fail_cleanly(exc)
         raise AssertionError("unreachable") from exc
@@ -595,9 +600,9 @@ def models_up(
     ] = 1800,
 ) -> None:
     """Поднять серверы ролей с `serve: llamacpp | vllm` и дождаться их готовности."""
-    served, model_runner = _models(roles, _runner(runner))
+    served, everything, model_runner = _models(roles, _runner(runner))
     if not served:
-        console.print("Nothing to start: every role is serve: api (or rerank is disabled).")
+        console.print("Nothing to start: every role is serve: api (or disabled).")
         return
     where = resolve_runner(_runner(runner))
     for s in served:
@@ -615,7 +620,8 @@ def models_up(
             )
 
     try:
-        bring_up(served, model_runner, timeout, waiting)
+        # `models up vision` не трогает серверы других ролей из конфига
+        bring_up(served, model_runner, timeout, waiting, keep=everything)
     except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
         _fail_cleanly(exc)
     console.print("[green]All model servers are ready.[/green]")
@@ -624,7 +630,7 @@ def models_up(
 @models_app.command("down")
 def models_down(runner: RunnerOpt = "auto") -> None:
     """Остановить серверы моделей (скачанные модели остаются в кэше)."""
-    _, model_runner = _models(None, _runner(runner))
+    _, _, model_runner = _models(None, _runner(runner))
     try:
         model_runner.stop()
     except (ServeError, OSError) as exc:
@@ -640,9 +646,14 @@ def models_status() -> None:
     for column in ("model", "url"):
         table.add_column(column, overflow="fold")
     table.add_column("state")
-    roles = [("embedder", settings.embedder), ("rerank", settings.rerank), ("llm", settings.llm)]
+    roles = [
+        ("embedder", settings.embedder),
+        ("rerank", settings.rerank),
+        ("vision", settings.vision),
+        ("llm", settings.llm),
+    ]
     for role, s in roles:
-        if role == "rerank" and not settings.rerank.enabled:
+        if not getattr(s, "enabled", True):
             state = "disabled"
         elif s.serve == "api":
             state = "api"
@@ -654,14 +665,14 @@ def models_status() -> None:
 
 @models_app.command("logs")
 def models_logs(
-    role: Annotated[str, typer.Argument(help="embedder, rerank or llm.")],
+    role: Annotated[str, typer.Argument(help="embedder, rerank, vision or llm.")],
     follow: Annotated[
         bool, typer.Option("--follow", "-f", help="Keep printing new lines.")
     ] = False,
     runner: RunnerOpt = "auto",
 ) -> None:
     """Последние строки лога сервера роли."""
-    served, model_runner = _models([role], _runner(runner))
+    served, _, model_runner = _models([role], _runner(runner))
     if not served:
         _fail_cleanly(ServeError(f"{role} is not served locally (serve: api or disabled)"))
     try:

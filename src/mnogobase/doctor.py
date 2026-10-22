@@ -69,10 +69,12 @@ def run_checks(
         return Check("device", True, detect_device(settings.device))
 
     def models() -> Check:
-        # embedder и reranker могут работать на разных серверах
-        roles = [("embedder", settings.embedder)]
+        # embedder, reranker и VLM могут работать на разных серверах
+        roles: list[tuple[str, ServedModel]] = [("embedder", settings.embedder)]
         if settings.rerank.enabled:
             roles.append(("reranker", settings.rerank))
+        if settings.vision.enabled:
+            roles.append(("vision", settings.vision))
         servers: dict[tuple[str, str | None], list[ServedModel]] = {}
         for _, s in roles:
             servers.setdefault((s.url, s.api_key_env), []).append(s)

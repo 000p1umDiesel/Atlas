@@ -62,7 +62,7 @@ def build_app(
     llm = llm or OpenAICompatLLM(settings.llm)
     if reranker is None and settings.rerank.enabled:
         reranker = ApiReranker(settings.rerank)
-    parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache")
+    parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache", settings.vision)
     chunker = Chunker(settings.chunking, settings.embedder)
     extractor = Extractor(llm, registry, settings.extract.entity_types)
     resolver = EntityResolver(graph, vectors, embedder, llm, settings.resolve)

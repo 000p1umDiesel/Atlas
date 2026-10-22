@@ -3,8 +3,8 @@ data_dir: .mnogobase
 logs_dir: logs
 runs_dir: runs
 
-# Модели трёх ролей (llm, embedder, rerank). serve — где работает модель:
-#   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002);
+# Модели ролей (llm, embedder, rerank, vision). serve — где работает модель:
+#   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002/8003);
 #   api             — уже работающий сервер или API по base_url.
 # model — HF-репозиторий исходной модели и её имя на сервере на любом бэкенде; gguf —
 # квантизованные веса для llamacpp (repo:квант). Смена serve/gguf эмбеддера — `mnogobase reindex`.
@@ -33,7 +33,8 @@ sparse:
 
 parsing:
   ocr: true
-  extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
+  ocr_lang: ["iso:ru", "iso:en"]     # языки OCR; у RapidOCR работает первый (кириллическая модель читает и латиницу)
+  extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt, png, jpg, jpeg, tif, tiff, bmp, webp]
 
 chunking:
   # auto: токенизатор модели эмбеддера (HF-репозиторий embedder.model, у api — с её
@@ -91,6 +92,17 @@ rerank:
   serve: llamacpp
   gguf: gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M   # GGUF с классификатором Qwen3-Reranker
   candidates: 30                     # сколько гибридных попаданий оценивать на вопрос; остаются лучшие retrieval.k
+
+vision:
+  # описание картинок при разборе (графики, схемы, скриншоты) VLM-моделью: описание
+  # становится текстом документа и дальше ищется, извлекается в граф и цитируется
+  enabled: true
+  model: Qwen/Qwen3-VL-2B-Instruct
+  serve: llamacpp
+  gguf: unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M
+  max_tokens: 400
+  min_area: 0.05                     # картинки меньше этой доли страницы не описываются
+  skip: [logo, icon, qr_code, bar_code, signature, stamp]   # классы картинок без описания
 
 graph:
   hops: 2

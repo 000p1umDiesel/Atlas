@@ -523,14 +523,23 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     started: list = []
     monkeypatch.setattr(cli, "make_runner", lambda runner, settings: f"runner:{runner}")
     monkeypatch.setattr(
-        cli, "bring_up", lambda served, model_runner, timeout, on_wait: started.append(served)
+        cli,
+        "bring_up",
+        lambda served, model_runner, timeout, on_wait, keep: started.append((served, keep)),
     )
     result = runner.invoke(cli.app, ["models", "up", "--runner", "docker"])
     assert result.exit_code == 0, result.output
-    assert [s.service for s in started[0]] == ["embed-llamacpp", "rerank-vllm"]
+    assert [s.service for s in started[0][0]] == ["embed-llamacpp", "rerank-vllm"]
     assert "rerank: Qwen/Qwen3-Reranker-4B on vllm (docker)" in result.output
+    # одна роль: остальные серверы из конфига не останавливаются
+    result = runner.invoke(cli.app, ["models", "up", "rerank"])
+    served, keep = started[1]
+    assert [s.role for s in served] == ["rerank"] and [s.role for s in keep] == [
+        "embedder",
+        "rerank",
+    ]
 
-    def broken(served, model_runner, timeout, on_wait):
+    def broken(served, model_runner, timeout, on_wait, keep):
         raise ServeError("embedder: the llamacpp server exited")
 
     monkeypatch.setattr(cli, "bring_up", broken)

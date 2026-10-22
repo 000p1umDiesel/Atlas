@@ -10,7 +10,7 @@
 4. [Как смотреть результаты](#4-как-смотреть-результаты): [Neo4j](#41-граф-в-neo4j), [Qdrant](#42-векторы-и-чанки-в-qdrant), [Obsidian](#43-wiki-в-obsidian), [compare.jsonl](#44-сравнение-режимов-runscomparejsonl), [логи](#45-логи-logsmnogobasejsonl)
 5. [Как это устроено внутри](#5-как-это-устроено-внутри): [конвейер](#51-конвейер-ingest), [один файл](#52-загрузка-одного-файла), [состояния этапов](#53-состояния-этапов), [модель данных](#54-модель-данных), [слияние сущностей](#55-слияние-сущностей-entity-resolution), [wiki](#56-инкрементальное-обновление-wiki), [поиск](#57-поиск-и-ответ), [гарантии](#58-гарантии-согласованности)
 6. [Справочник настроек](#6-справочник-настроек): [все ключи](#61-все-ключи-configyaml), [переменные окружения](#62-переопределение-через-переменные-окружения), [типы сущностей](#63-типы-сущностей)
-7. [Как поменять типовые вещи](#7-как-поменять-типовые-вещи): [где работают модели](#715-где-работают-модели-serve)
+7. [Как поменять типовые вещи](#7-как-поменять-типовые-вещи): [где работают модели](#715-где-работают-модели-serve), [картинки и графики](#716-картинки-и-графики-vision)
 8. [Как расширять код](#8-как-расширять-код)
 9. [Диагностика и частые проблемы](#9-диагностика-и-частые-проблемы)
 10. [Тесты](#10-тесты)
@@ -96,15 +96,16 @@ docker compose up -d
 # 3. Python-зависимости (пакет ставится в .venv в режиме редактирования)
 uv sync
 
-# 4. Эмбеддер (:8001) и реранкер (:8002) по config.yaml: на Mac — нативный llama.cpp,
-#    на Linux-сервере — Docker (раздел 11). Первый старт качает модели (~2.5 ГБ каждая)
+# 4. Эмбеддер (:8001), реранкер (:8002) и VLM для картинок (:8003) по config.yaml: на Mac —
+#    нативный llama.cpp, на Linux-сервере — Docker (раздел 11). Первый старт качает модели
+#    (~2.5 ГБ эмбеддер и реранкер, ~2 ГБ VLM)
 uv run mnogobase models up
 
 # 5. Проверка: всё должно быть зелёным
 uv run mnogobase doctor
 ```
 
-> **Первый запуск дольше обычного.** `mnogobase models up` качает GGUF эмбеддера и реранкера с Hugging Face, а первый `ingest` — модели разметки и OCR Docling и BM25 `Qdrant/bm25`. Токенайзер чанкера по умолчанию (`chunking.tokenizer: auto`) — HF-токенайзер `embedder.model` (несколько МБ). Если Hugging Face откажет в доступе (закрытый репозиторий), примите лицензию на странице модели и выполните `hf auth login` (или задайте `HF_TOKEN`).
+> **Первый запуск дольше обычного.** `mnogobase models up` качает GGUF эмбеддера, реранкера и VLM с Hugging Face, а первый `ingest` — модели разметки и OCR Docling и BM25 `Qdrant/bm25`. Токенайзер чанкера по умолчанию (`chunking.tokenizer: auto`) — HF-токенайзер `embedder.model` (несколько МБ). Если Hugging Face откажет в доступе (закрытый репозиторий), примите лицензию на странице модели и выполните `hf auth login` (или задайте `HF_TOKEN`).
 
 ### 2.3 Файл .env
 
@@ -124,7 +125,7 @@ uv run mnogobase doctor
 | Проверка | Что делает | Типичный провал |
 |---|---|---|
 | `device` | выбирает устройство для Docling: CUDA → MPS → CPU (или то, что задано в `device`) | — |
-| `models` | `GET <url>/models` у сервера эмбеддера и (при `rerank.enabled`) реранкера: отдаёт ли он `model` из конфига | `... is not reachable: start the local models with mnogobase models up`, `<model> is not served by <url> (it serves ...)` |
+| `models` | `GET <url>/models` у сервера эмбеддера и (при `enabled`) реранкера и VLM: отдаёт ли он `model` из конфига | `... is not reachable: start the local models with mnogobase models up`, `<model> is not served by <url> (it serves ...)` |
 | `tokenizer` | загружает токенайзер чанкера: при `auto` — HF-токенайзер `embedder.model` (у `serve: api` — по `root` в `/v1/models` или `/tokenize` сервера); иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
 | `llm` | `GET <llm url>/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <url>` |
 | `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
@@ -166,7 +167,7 @@ cp ~/Downloads/*.pdf documents/
 
 - Подпапки можно любые: `ingest` обходит папку рекурсивно.
 - Скрытые файлы и папки (имя начинается с `.`) пропускаются.
-- Берутся только расширения из `parsing.extensions`: `pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt`. Остальные файлы молча игнорируются.
+- Берутся только расширения из `parsing.extensions`: `pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt` и картинки `png, jpg, jpeg, tif, tiff, bmp, webp` (скриншоты). Остальные файлы молча игнорируются.
 - Документы могут быть на русском и на английском вперемешку. Страницы wiki пишутся на языке из `wiki.language` (по умолчанию `en`).
 
 Папка может быть любой: `documents/` — просто соглашение. `ingest` принимает и отдельные файлы, и несколько путей сразу.
@@ -181,7 +182,7 @@ uv run mnogobase ingest documents/
 
 | Этап | Что происходит | Где результат |
 |---|---|---|
-| `parse` | Docling разбирает файл: текст, заголовки, таблицы, OCR для сканов; картинки сохраняются на будущее | `.mnogobase/cache/<doc_id>.json`, картинки и `images.json` в `.mnogobase/cache/<doc_id>/images/` |
+| `parse` | Docling разбирает файл: текст, заголовки, таблицы, OCR для сканов и скриншотов; при `vision.enabled` графики, схемы и скриншоты описывает VLM, описание становится текстом документа | `.mnogobase/cache/<doc_id>.json`, картинки и `images.json` в `.mnogobase/cache/<doc_id>/images/` |
 | `chunk` | HybridChunker режет документ по структуре на чанки до `chunking.max_tokens` (512) токенов | `.mnogobase/cache/<doc_id>.chunks.json` |
 | `embed` | каждый чанк (с заголовками раздела) → плотный вектор Qwen3-Embedding и BM25 | Qdrant `mb_chunks`; узлы `Document`, `Chunk`, связи `HAS_CHUNK`, `NEXT` в Neo4j |
 | `extract` | LLM достаёт из каждого чанка сущности и связи (параллельно, до `llm.concurrency` запросов) | кэш в `.mnogobase/state.db` (`extraction_cache`) |
@@ -518,7 +519,7 @@ flowchart TD
 
 Детали этапов:
 
-- **parse** — `DocumentConverter` с OCR из `parsing.ocr` и ускорителем из `device` (эти опции заданы для PDF; на CUDA увеличены размеры батчей). Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
+- **parse** — `DocumentConverter` с OCR из `parsing.ocr` / `parsing.ocr_lang` и ускорителем из `device` (эти опции заданы для PDF и картинок; на CUDA увеличены размеры батчей). При `vision.enabled` картинки PDF, DOCX и PPTX описывает VLM (раздел [7.16](#716-картинки-и-графики-vision)), а файл-картинка описывается ещё и целиком. Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
 - **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это HF-токенайзер `embedder.model` (у GGUF тот же словарь, проверено на Qwen3-Embedding); у `serve: api` — репозиторий из `root` в `/v1/models` (vLLM) или `POST /tokenize` сервера (llama.cpp, `ServerTokenizer` с кэшем). Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
 - **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
 - **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
@@ -807,8 +808,9 @@ flowchart TD
 | `embedder.doc_template` | `{text}` | шаблон документа; `{title}` — заголовок документа, имя сущности или страницы (`none`, если нет) | `reindex` |
 | `embedder.query_template` | `Instruct: Given a question, retrieve passages that answer it\nQuery: {query}` | шаблон запроса (инструкция Qwen3-Embedding; согласуйте с doc_template) | `reindex` |
 | `sparse.model` | `Qdrant/bm25` | модель fastembed для BM25 | `reindex` |
-| `parsing.ocr` | `true` | OCR в PDF | новые и изменённые файлы |
-| `parsing.extensions` | `[pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]` | какие файлы берёт `ingest` | сразу |
+| `parsing.ocr` | `true` | OCR в PDF и картинках | новые и изменённые файлы |
+| `parsing.ocr_lang` | `["iso:ru", "iso:en"]` | языки OCR (BCP-47 с префиксом `iso:`); RapidOCR берёт первый, кириллическая модель читает и латиницу. Пустой список — китайская модель RapidOCR, кириллицу она не читает | новые и изменённые файлы |
+| `parsing.extensions` | `[pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt, png, jpg, jpeg, tif, tiff, bmp, webp]` | какие файлы берёт `ingest` | сразу |
 | `chunking.tokenizer` | `auto` | токенайзер для подсчёта токенов чанка: `auto` — токенайзер модели `embedder.model` с её сервера, иначе HF-репозиторий (например `Qwen/Qwen3-Embedding-4B`) | новые и изменённые файлы |
 | `chunking.max_tokens` | `512` | максимальный размер чанка | новые и изменённые файлы |
 | `extract.entity_types` | 20 типов (6.3) | типы сущностей и их описания для промпта | новые и изменённые файлы, предупреждение |
@@ -835,6 +837,18 @@ flowchart TD
 | `rerank.api_key_env` | не задан | имя переменной с Bearer-ключом сервера | сразу |
 | `rerank.candidates` | `30` | сколько попаданий гибридного поиска оценивает реранкер; остаются лучшие `retrieval.k` | сразу |
 | `rerank.max_chars` | `4000` | до скольких символов обрезается текст чанка в запросе к реранкеру | сразу |
+| `vision.enabled` | `false` (в `config.yaml` — `true`) | описывать картинки документов VLM-моделью при разборе | новые и изменённые файлы |
+| `vision.model` | `Qwen/Qwen3-VL-2B-Instruct` | HF-репозиторий VLM и её имя на сервере | новые и изменённые файлы |
+| `vision.serve` | `llamacpp` | `llamacpp`, `vllm` (`models up` на порту 8003) или `api` (любой мультимодальный OpenAI-API по `base_url`) | новые и изменённые файлы |
+| `vision.gguf` | `unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M` | GGUF для `serve: llamacpp`; в репозитории должен лежать проектор картинок `mmproj-*.gguf`, его `-hf` качает сам | новые и изменённые файлы |
+| `vision.base_url`, `vision.api_key_env`, `vision.server` | как у других ролей | адрес (по умолчанию `http://localhost:8003/v1`), ключ, параметры сервера | — |
+| `vision.prompt` | описать картинку, у графика — оси, ключевые значения и тренды, текст переписать дословно | промпт VLM для каждой картинки | новые и изменённые файлы |
+| `vision.max_tokens` | `400` | предел длины описания | новые и изменённые файлы |
+| `vision.params` | `{temperature: 0.0, presence_penalty: 1.5}` | дополнительные поля запроса `/chat/completions`; штраф за повторы не даёт маленькой VLM зацикливаться | новые и изменённые файлы |
+| `vision.min_area` | `0.05` | картинки меньше этой доли площади страницы не описываются | новые и изменённые файлы |
+| `vision.skip` | `[logo, icon, qr_code, bar_code, signature, stamp]` | классы картинок (классификатор Docling, вероятность класса ≥ 0.5), которые не описываются; `[]` — без классификатора | новые и изменённые файлы |
+| `vision.concurrency` | `4` | параллельных запросов к VLM | сразу |
+| `vision.timeout_s` | `120` | таймаут одного запроса | сразу |
 | `graph.hops` | `2` | глубина обхода в режиме `graph` (1–3) | сразу |
 | `graph.max_relations` | `30` | максимум связей в контексте `graph` | сразу |
 | `graph.seeds` | `5` | число стартовых сущностей из каждого поиска | сразу |
@@ -971,7 +985,9 @@ embedder:
 
 ### 7.6 OCR
 
-`parsing.ocr: false` заметно ускоряет разбор «цифровых» PDF (с текстовым слоем), но сканы тогда дадут пустой текст. Настройка задаётся только для PDF и действует на новые и изменённые файлы.
+`parsing.ocr: false` заметно ускоряет разбор «цифровых» PDF (с текстовым слоем), но сканы и скриншоты тогда дадут пустой текст. OCR работает только там, где у PDF нет текстового слоя (сканы, растровые области), и на файлах-картинках.
+
+Языки — `parsing.ocr_lang` (по умолчанию `["iso:ru", "iso:en"]`). Docling сам выбирает движок (на Mac обычно RapidOCR), а RapidOCR работает с одним языком — первым из списка; его кириллическая модель читает и латиницу. Без `ocr_lang` RapidOCR берёт китайскую модель, и русский текст не распознаётся совсем. Модели OCR качаются при первом разборе (несколько МБ). Настройки действуют на новые и изменённые файлы.
 
 ### 7.7 Новые форматы файлов
 
@@ -981,7 +997,7 @@ embedder:
 uv run python -c "from docling.datamodel.base_models import FormatToExtensions as F; [print(k.value, v) for k, v in F.items()]"
 ```
 
-Картинки (`png`, `jpg`, ...) Docling тоже читает через OCR, но с его настройками по умолчанию (`parsing.ocr` и `device` в коде заданы только для PDF). Некоторым форматам нужны дополнительные зависимости Docling — проверьте на одном файле. Форматы, которых нет в Docling, требуют кода (раздел 8.3).
+Картинки (`png`, `jpg`, ...) уже в списке: они идут тем же конвейером, что и PDF (разметка, OCR, описание VLM). Некоторым форматам нужны дополнительные зависимости Docling — проверьте на одном файле. Форматы, которых нет в Docling, требуют кода (раздел 8.3).
 
 ### 7.8 Типы сущностей
 
@@ -1049,7 +1065,7 @@ Qdrant можно делить между проектами через `qdrant.
 
 ### 7.15 Где работают модели (serve)
 
-У каждой роли — эмбеддера, реранкера и LLM — своё поле `serve`:
+У каждой роли — эмбеддера, реранкера, VLM (`vision`) и LLM — своё поле `serve`:
 
 | `serve` | Что это | Кто запускает |
 |---|---|---|
@@ -1088,6 +1104,36 @@ uv run mnogobase models down             # остановить (скачанн�
 - **Окно контекста** — `<роль>.server.ctx`. Длинный вход сервер не обрезает, а отклоняет: окно эмбеддера должно вмещать `chunking.max_tokens` плюс шаблон.
 - **Дополнительные флаги** сервера — `<роль>.server.args`, например `["--parallel", "8"]` для llama.cpp.
 - **Ключ API.** Если сервер (`api`) требует ключ, задайте `<роль>.api_key_env` — имя переменной из `.env`.
+- **VLM на llama.cpp.** Нужен GGUF-репозиторий с проектором картинок (`mmproj-*.gguf`): `-hf` скачивает и подключает его сам, в логе сервера — `loaded multimodal model`.
+
+### 7.16 Картинки и графики (vision)
+
+OCR только извлекает текст, и подписи внутри графика или схемы обычно не попадают в чанк: Docling считает такую область картинкой. При `vision.enabled` каждую картинку описывает VLM (по умолчанию Qwen3-VL-2B на llama.cpp, порт 8003): что изображено, оси и ключевые значения графика, дословный текст. Описание встаёт в документ рядом с картинкой (после подписи `Figure ...`) и дальше работает как обычный текст: эмбеддинг и поиск, извлечение сущностей в граф, цитаты в ответах и wiki со ссылкой на документ и страницу.
+
+Как Docling отбирает картинки:
+
+1. Модель разметки находит на странице области «картинка» (в PDF, DOCX, PPTX и файлах-картинках).
+2. Картинки меньше `vision.min_area` площади страницы пропускаются.
+3. Классификатор Docling определяет тип (графики, схемы, фото, логотипы, ...); классы из `vision.skip` с вероятностью ≥ 0.5 пропускаются.
+4. Остальные уходят на `POST <vision.url>/chat/completions` (`vision.concurrency` параллельно).
+
+Файл-картинка (скриншот) описывается ещё и **целиком**: разметка находит в скриншоте текст и таблицы, а не картинку. Описание VLM идёт первым, за ним текст OCR. На скриншоте с русской таблицей Qwen3-VL-2B переписала текст без ошибок, а OCR ошибся в нескольких словах.
+
+Включение:
+
+```bash
+# config.yaml: vision.enabled: true (модель и сервер — ключи vision.*, раздел 6.1)
+uv run mnogobase models up vision    # ~2 ГБ: GGUF модели и проектор картинок
+uv run mnogobase doctor              # строка models: vision ... available
+```
+
+Особенности:
+
+- **Применяется к новым и изменённым файлам.** Уже загруженные документы разобраны без описаний; чтобы описать их картинки — `reset` и `ingest` (кэш извлечения привязан к `chunk_id`, поэтому частичный повторный разбор не годится).
+- **Скорость.** Одна картинка — 1–3 с на Mac (Qwen3-VL-2B Q4_K_M), статья на 16 страниц с 5 схемами разбирается ~20 с вместо ~12 с.
+- **Ошибки VLM не проходят молча.** Docling при ошибке API оставляет описание пустым; `mnogobase` в этом случае завершает этап `parse` ошибкой (`VisionError`), и файл повторяется через `ingest --retry-failed`.
+- **Качество.** Маленькая VLM иногда ошибается в расшифровке терминов на графиках (на тесте: «MNLI» как «Mean Normalized Log Likelihood»). Для лучшего качества — `Qwen/Qwen3-VL-8B-Instruct` (GGUF `unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M`, ~6 ГБ) или любой мультимодальный API: `vision: {serve: api, base_url: ..., model: ..., api_key_env: ...}`.
+- **Язык описания** — английский (промпт на английском), как и канонические имена сущностей; текст с картинки переписывается на его языке.
 
 ---
 
@@ -1106,7 +1152,7 @@ uv run mnogobase models down             # остановить (скачанн�
 | `ids.py` | детерминированные ID, `normalize_name`, `slugify` |
 | `log.py` | structlog, `run_id`, `log_stage` |
 | `device.py` | выбор `cuda` / `mps` / `cpu` |
-| `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки |
+| `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки; OCR-языки, описание картинок VLM (`_describe_pictures`, `_describe_whole_image`, `VisionError`) |
 | `chunking/hybrid.py` | `Chunker`: HybridChunker с токенайзером из `chunking/tokenizer.py` |
 | `chunking/tokenizer.py` | `load_tokenizer`: HF-репозиторий или (`auto`) HF-токенайзер `embedder.model`; у `api` — по `root` из `/v1/models` или `/tokenize` сервера (`ServerTokenizer`) |
 | `embedding/` | протоколы `Embedder`, `SparseEncoder` и помощники (`base.py`), `OpenAICompatEmbedder` (`openai_compat.py`), общий HTTP-код (`http.py`), `BM25Encoder` |
@@ -1272,7 +1318,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `doctor`: `neo4j` — `AuthError` | пароль в `.env` не совпадает с паролем базы. `NEO4J_AUTH` применяется только при первом создании тома `neo4j_data` | верните прежний пароль в `.env` или войдите в Neo4j Browser со старым паролем и смените его: `:use system`, затем `ALTER CURRENT USER SET PASSWORD FROM 'старый' TO 'новый'` |
 | `doctor`: `models` — `<model> is not served by <url> (it serves ...)` | на порту роли работает другая модель (сервер запущен не `models up` или с другим конфигом) | `uv run mnogobase models up` — перезапустит роль по конфигу; для `api` исправьте `model` |
 | в логе `rerank_failed` | сервер реранкера недоступен или отвечает ошибкой; ответ строится без реранкинга | `uv run mnogobase models status`, `uv run mnogobase models logs rerank` |
-| `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера или реранкера не запущен (или ещё качает модель) | `uv run mnogobase models up`; прогресс — `uv run mnogobase models logs <роль> -f` |
+| `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера, реранкера или VLM не запущен (или ещё качает модель) | `uv run mnogobase models up`; прогресс — `uv run mnogobase models logs <роль> -f` |
 | `doctor`: `llm` — `HTTPStatusError: Client error '401 Unauthorized'` (или 403) | нет или неверный `LLM_API_KEY` | впишите ключ в `.env` |
 | `doctor`: `<model> is not served by <base_url>` | имя модели не совпадает со списком `/models` | исправьте `llm.model` |
 | `extract` медленный, в логе `llm_call` с `retries` > 0, `APITimeoutError` | перегрузка эндпоинта, таймауты, 429 | уменьшите `llm.concurrency`, увеличьте `llm.timeout_s`; повторите `ingest --retry-failed` |
@@ -1294,6 +1340,8 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | предупреждение `entity types changed in config: ...` | типы в конфиге изменились после загрузки документов | ничего, если старые типы допустимы; иначе `reset` и `ingest` (раздел 6.3) |
 | `No mnogobase project here (no .../state.db)` | команда запущена не из корня проекта или без нужного `--config` | перейдите в корень или передайте `-c` |
 | `Invalid configuration: ...` / `Config file not found: ...` | ошибка в YAML, в переменной `MNOGOBASE_*` или неверный путь | исправьте конфиг (раздел 6) |
+| `ingest`: `VisionError: N of M pictures got no description from the VLM at ...` или `...: the VLM at ... failed` | сервер VLM недоступен или не успел ответить (`vision.timeout_s`) | `uv run mnogobase models up vision`, `uv run mnogobase models logs vision`; затем `ingest --retry-failed` |
+| русский текст сканов и скриншотов не распознаётся (пусто или иероглифы) | OCR с китайской моделью RapidOCR: `parsing.ocr_lang` пуст | `parsing.ocr_lang: ["iso:ru", "iso:en"]` (по умолчанию), затем `reset` и `ingest` для уже загруженных |
 | PDF разбирается очень долго | OCR и модели разметки Docling на CPU, большие сканы | `doctor` покажет устройство; для цифровых PDF `parsing.ocr: false`; на NVIDIA — раздел 11.5 |
 | у сущности нет wiki-страницы | меньше `wiki.min_mentions` упоминаний, нет evidence (`skipped` в отчёте), `ingest --no-wiki` или страница упала | проверьте `mention_count` (запрос в 4.1), `wiki build`; порог — 7.9 |
 | ответ `The knowledge base has no relevant sources for this question.` | поиск ничего не вернул: в `wiki` — wiki ещё не собрана, в `graph` — не нашлось seed-сущностей | `wiki build`; для `graph` понизьте `graph.seed_threshold`; попробуйте `rag` |
@@ -1345,11 +1393,12 @@ flowchart LR
     subgraph SRV["сервер: Docker"]
         EMB["embed :8001<br/>llama.cpp или vLLM"]
         RR["rerank :8002<br/>llama.cpp или vLLM"]
+        VL["vision :8003<br/>llama.cpp или vLLM"]
         LLM["llm :8000<br/>(если serve не api)"]
         QD[("Qdrant :6333")]
         NEO[("Neo4j :7687")]
     end
-    CLI --> EMB & RR & QD & NEO
+    CLI --> EMB & RR & VL & QD & NEO
     CLI --> LLM
     CLI -. "или внешний LLM API" .-> API["LLM API"]
 ```
@@ -1358,7 +1407,7 @@ flowchart LR
 
 - Linux с драйвером NVIDIA, Docker с Compose v2 и [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). Проверка: `docker run --rm --gpus all ubuntu nvidia-smi`.
 - `git` и [uv](https://docs.astral.sh/uv/).
-- Диск: образы Docker (несколько ГБ), GGUF эмбеддера и реранкера (~2.5 ГБ каждая), локальная LLM — ещё ~18 ГБ (llama.cpp, Q4_K_M) или ~31 ГБ (vLLM, FP8), плюс Qdrant и Neo4j.
+- Диск: образы Docker (несколько ГБ), GGUF эмбеддера и реранкера (~2.5 ГБ каждая), VLM (~2 ГБ), локальная LLM — ещё ~18 ГБ (llama.cpp, Q4_K_M) или ~31 ГБ (vLLM, FP8), плюс Qdrant и Neo4j.
 
 ### 11.2 Первый запуск
 
@@ -1483,7 +1532,7 @@ mnogobase/
 
 - Desktop UI, сервер FastAPI/MCP, агент Deep Research.
 - Поиск пробелов и противоречий в знаниях, community summaries (GDS), нормализация предикатов.
-- Эмбеддинги картинок и аудио (задел: `EmbedInput.modality`, поле `modality` в payload; Docling уже сохраняет картинки в `.mnogobase/cache/<doc_id>/images/`).
+- Мультимодальные эмбеддинги картинок и аудио — поиск картинки по вопросу без текстового описания (задел: `EmbedInput.modality`, поле `modality` в payload; Docling уже сохраняет картинки в `.mnogobase/cache/<doc_id>/images/`). Сейчас картинки попадают в поиск через описания VLM (раздел 7.16).
 - Langfuse-трейсинг, учёт токенов на этапах `ingest`, автоматическое сравнение RAG / Wiki / Graph по `runs/compare.jsonl`.
 - Команда удаления из индекса файлов, удалённых с диска; watch-папка и фоновая очередь.
 - Веб-страницы как источник (URL → HTML → Docling).

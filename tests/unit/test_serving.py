@@ -6,7 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from mnogobase.config import EmbedderSettings, LLMSettings, RerankSettings, ServerSettings, Settings
+from mnogobase.config import (
+    EmbedderSettings,
+    LLMSettings,
+    RerankSettings,
+    ServerSettings,
+    Settings,
+    VisionSettings,
+)
 from mnogobase.serving import (
     COMPOSE_PROJECT,
     QWEN3_RERANKER_TEMPLATE,
@@ -38,6 +45,12 @@ def test_served_roles_skip_api_and_disabled():
         "llm-llamacpp",
     ]
     assert [s.role for s in served_roles(full, ["llm"])] == ["llm"]
+    with_vision = settings(vision=VisionSettings(enabled=True), llm=LOCAL_LLM)
+    assert [s.service for s in served_roles(with_vision)] == [
+        "embed-llamacpp",
+        "vision-llamacpp",
+        "llm-llamacpp",
+    ]
     with pytest.raises(ServeError, match="unknown role nope"):
         served_roles(full, ["nope"])
 
@@ -53,6 +66,10 @@ def test_llamacpp_args_name_the_model_like_vllm():
     assert "--rerank" in rerank and "--alias" in rerank and "Qwen/Qwen3-Reranker-4B" in rerank
     llm = server_args(Served("llm", LOCAL_LLM), 8000)
     assert "--embedding" not in llm and "--rerank" not in llm
+    # VLM: проектор картинок (mmproj) -hf скачивает сам, отдельных флагов не нужно
+    assert server_args(Served("vision", VisionSettings()), 8003)[:4] == [
+        "-hf", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M", "--alias", "Qwen/Qwen3-VL-2B-Instruct",
+    ]  # fmt: skip
 
 
 def test_vllm_args_serve_the_hf_repo():
@@ -93,7 +110,8 @@ def test_docker_runner_prunes_other_backends_and_passes_the_commands(tmp_path, m
     (rm, rm_kwargs), (up, up_kwargs) = run.calls
     assert rm[:6] == ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", str(compose)]
     assert rm[rm.index("rm") :] == [
-        "rm", "--stop", "--force", "embed-vllm", "rerank-llamacpp", "llm-llamacpp", "llm-vllm",
+        "rm", "--stop", "--force", "embed-vllm", "rerank-llamacpp",
+        "vision-llamacpp", "vision-vllm", "llm-llamacpp", "llm-vllm",
     ]  # fmt: skip
     assert up[up.index("up") :] == ["up", "-d", "embed-llamacpp", "rerank-vllm"]
     env = up_kwargs["env"]
@@ -162,10 +180,12 @@ def test_native_runner_refuses_vllm_and_needs_llama_server(tmp_path):
 class FakeRunner:
     def __init__(self, dead: set[str] = frozenset()):
         self.events: list[str] = []
+        self.pruned: list[list[str]] = []
         self.dead = dead
 
     def prune(self, served):
         self.events.append("prune")
+        self.pruned.append([s.role for s in served])
 
     def start(self, served):
         self.events.append("start " + ",".join(s.role for s in served))
@@ -191,6 +211,14 @@ def test_bring_up_starts_vllm_servers_one_by_one():
 
     bring_up(served_roles(full), runner, 60, ready=is_ready, sleep=lambda s: None)
     assert runner.events == ["prune", "start rerank", "start embedder", "start llm"]
+
+
+def test_bring_up_of_one_role_keeps_the_other_servers():
+    full = settings(rerank=RerankSettings(enabled=True))
+    runner = FakeRunner()
+    bring_up(served_roles(full, ["rerank"]), runner, 60, keep=served_roles(full), ready=bool)
+    assert runner.pruned == [["embedder", "rerank"]]
+    assert runner.events == ["prune", "start rerank"]
 
 
 def test_wait_ready_reports_exited_and_slow_servers():

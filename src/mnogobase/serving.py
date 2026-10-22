@@ -1,6 +1,6 @@
 """Серверы моделей по `config.yaml`: `mnogobase models up | down | status | logs`.
 
-Каждая роль (`embedder`, `rerank`, `llm`) с `serve: llamacpp | vllm` получает свой сервер на
+Каждая роль (`embedder`, `rerank`, `vision`, `llm`) с `serve: llamacpp | vllm` получает свой сервер на
 порту роли. Команды серверов строятся здесь, из конфига; запускаются они либо в Docker
 (`docker-compose.models.yml`, сервис `<роль>-<бэкенд>`, команда приходит переменной
 `MB_<СЕРВИС>_ARGS`), либо нативно (llama.cpp на Mac: в Docker на Mac нет GPU)."""
@@ -27,7 +27,7 @@ from mnogobase.config import ServedModel, Settings
 from mnogobase.embedding.http import server_root
 
 Runner = Literal["auto", "docker", "native"]
-SERVICE_PREFIX = {"embedder": "embed", "rerank": "rerank", "llm": "llm"}
+SERVICE_PREFIX = {"embedder": "embed", "rerank": "rerank", "vision": "vision", "llm": "llm"}
 BACKENDS = ("llamacpp", "vllm")
 CONTAINER_PORT = {"llamacpp": 8080, "vllm": 8000}
 COMPOSE_FILE = "docker-compose.models.yml"
@@ -70,14 +70,19 @@ class Served:
 
 
 def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
-    """Роли с локальным сервером (`serve` не `api`), реранкер — только при
-    `rerank.enabled`; `roles` сужает список."""
+    """Роли с локальным сервером (`serve` не `api`), реранкер и VLM — только при
+    `enabled`; `roles` сужает список."""
     unknown = set(roles) - set(SERVICE_PREFIX)
     if unknown:
-        raise ServeError(f"unknown role {', '.join(sorted(unknown))}: use embedder, rerank, llm")
-    candidates = [("embedder", settings.embedder), ("llm", settings.llm)]
+        raise ServeError(
+            f"unknown role {', '.join(sorted(unknown))}: use {', '.join(SERVICE_PREFIX)}"
+        )
+    candidates: list[tuple[str, ServedModel]] = [("embedder", settings.embedder)]
     if settings.rerank.enabled:
-        candidates.insert(1, ("rerank", settings.rerank))
+        candidates.append(("rerank", settings.rerank))
+    if settings.vision.enabled:
+        candidates.append(("vision", settings.vision))
+    candidates.append(("llm", settings.llm))
     return [
         Served(role, s)
         for role, s in candidates
@@ -89,7 +94,8 @@ def server_args(served: Served, port: int) -> list[str]:
     """Аргументы сервера (без самой программы): `llama-server ...` или `vllm serve ...`."""
     s, c = served.settings, served.settings.server
     if served.backend == "llamacpp":
-        # имя модели на сервере — `model`, как у vLLM, поэтому конфиг не зависит от бэкенда
+        # имя модели на сервере — `model`, как у vLLM, поэтому конфиг не зависит от бэкенда;
+        # у VLM -hf сам скачивает и подключает проектор картинок (mmproj) из того же репозитория
         args = ["-hf", s.gguf or "", "--alias", s.model, "--port", str(port)]
         args += ["--ctx-size", str(c.ctx), "--n-gpu-layers", "999"]
         if served.role == "embedder":
@@ -328,12 +334,14 @@ def bring_up(
     runner: DockerRunner | NativeRunner,
     timeout: float,
     on_wait: Callable[[Served, float], None] = lambda s, elapsed: None,
+    keep: Sequence[Served] | None = None,
     **wait_kwargs,
 ) -> None:
     """Запускает серверы ролей и ждёт их готовности. llama.cpp стартуют вместе, vLLM — по
     одному: каждый при старте резервирует долю свободной видеопамяти, и параллельный старт
-    сбивает этот расчёт."""
-    runner.prune(served)
+    сбивает этот расчёт. Останавливаются серверы, которых нет в `keep` (по умолчанию —
+    в `served`): роли, ставшие `api` или отключённые, и прежний бэкенд роли."""
+    runner.prune(served if keep is None else keep)
     llama = [s for s in served if s.backend == "llamacpp"]
     if llama:
         runner.start(llama)

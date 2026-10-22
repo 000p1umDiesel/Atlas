@@ -8,6 +8,7 @@ from mnogobase.config import (
     EmbedderSettings,
     ExtractSettings,
     LLMSettings,
+    VisionSettings,
     load_settings,
 )
 
@@ -255,6 +256,12 @@ def test_wildcard_no_proxy_is_untouched(tmp_path, no_proxy_env):
     no_proxy_env.setenv("NO_PROXY", "*")
     load_settings()
     assert os.environ["NO_PROXY"] == "*"
+
+
+def test_vision_skip_takes_docling_picture_classes():
+    assert VisionSettings(skip=["logo", "bar_chart"]).skip == ["logo", "bar_chart"]
+    with pytest.raises(ValueError, match="unknown picture class logotype"):
+        VisionSettings(skip=["logotype"])
 
 
 def test_serve_requires_what_the_backend_needs():

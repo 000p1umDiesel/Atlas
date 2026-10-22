@@ -57,6 +57,17 @@ services:
     command: ${MB_RERANK_VLLM_ARGS:-}
     ports: ["${MODELS_BIND:-127.0.0.1}:8002:8000"]
 
+  vision-llamacpp:
+    <<: *llamacpp
+    profiles: [vision-llamacpp]
+    command: ${MB_VISION_LLAMACPP_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8003:8080"]
+  vision-vllm:
+    <<: *vllm
+    profiles: [vision-vllm]
+    command: ${MB_VISION_VLLM_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8003:8000"]
+
   llm-llamacpp:
     <<: *llamacpp
     profiles: [llm-llamacpp]
