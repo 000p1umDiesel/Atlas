@@ -1095,6 +1095,18 @@ uv run mnogobase models logs rerank -f   # лог сервера роли
 uv run mnogobase models down             # остановить (скачанные модели остаются в кэше)
 ```
 
+`models up` сначала печатает команду каждого сервера (`llama-server ...` или `vllm serve ...`), затем, пока серверы поднимаются, раз в 15 с — состояние каждого не готового по его `/health`:
+
+```
+embedder → http://localhost:8001/v1 (native): llama-server -hf Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M --alias ...
+[0:00] embedder: starting or downloading the model (server log: `mnogobase models logs embedder -f`)
+[0:45] embedder: loading the model (server log: ...)
+[0:52] embedder: ready
+[0:52] All model servers are ready.
+```
+
+«starting or downloading» — сервер ещё не отвечает (запускается или качает веса; размер загрузки сервер не сообщает), «loading the model» — `/health` отвечает 503, веса грузятся в память.
+
 `models up` идемпотентна: работающий сервер с той же моделью и флагами не трогается, после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `api` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux) — сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). vLLM работает только в Docker.
 
 Особенности:
@@ -1436,7 +1448,7 @@ uv run mnogobase doctor                    # всё зелёное
 
 На Linux `models up` по умолчанию запускает модели в Docker: сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в отдельном compose-проекте `mnogobase-models` (их видно в `docker ps`, команду каждому строит `mnogobase` из конфига). Сервер без Docker, но с собранным `llama-server` в `PATH` — `models up --runner native`.
 
-**Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` ждёт `/health` и раз в минуту пишет, кого ждёт; прогресс — `uv run mnogobase models logs <роль> -f`. Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
+**Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` ждёт `/health` и раз в 15 с пишет, что делает каждый ещё не готовый сервер (раздел 7.15); лог сервера — `uv run mnogobase models logs <роль> -f`. Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
 
 **Какая роль на каком бэкенде** — `serve` в `config.yaml` (раздел 7.15). Отличия сервера от ноутбука удобнее задавать переменными `MNOGOBASE_*` в `.env`, а не правкой `config.yaml`, чтобы `git pull` проходил без конфликтов. Например, LLM на vLLM на сервере, а эмбеддер и реранкер на llama.cpp, как в репозитории:
 

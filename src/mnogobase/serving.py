@@ -120,11 +120,20 @@ def resolve_runner(runner: Runner) -> Literal["docker", "native"]:
 
 
 def is_ready(served: Served, client: httpx.Client | None = None) -> bool:
+    return health_state(served, client) == "ready"
+
+
+def health_state(served: Served, client: httpx.Client | None = None) -> str:
+    """Что сервер роли сообщает на `/health`, словами для `models up`."""
     try:
         response = (client or httpx).get(served.health_url, timeout=2)
     except httpx.TransportError:
-        return False
-    return response.status_code == 200
+        return "starting or downloading the model"
+    if response.status_code == 200:
+        return "ready"
+    if response.status_code == 503:  # llama.cpp и vLLM: модель ещё грузится в память
+        return "loading the model"
+    return f"HTTP {response.status_code}"
 
 
 class DockerRunner:
@@ -302,12 +311,13 @@ def wait_ready(
     served: Sequence[Served],
     runner: DockerRunner | NativeRunner,
     timeout: float,
-    on_wait: Callable[[Served, float], None] = lambda s, elapsed: None,
+    on_wait: Callable[[Sequence[Served], float], None] = lambda pending, elapsed: None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     ready: Callable[[Served], bool] = is_ready,
 ) -> None:
-    """Ждёт `/health` каждого сервера: первая загрузка модели с Hugging Face идёт минуты."""
+    """Ждёт `/health` каждого сервера: первая загрузка модели с Hugging Face идёт минуты.
+    `on_wait` получает ещё не готовые серверы после каждой проверки."""
     start = clock()
     pending = list(served)
     while pending:
@@ -325,7 +335,7 @@ def wait_ready(
             raise ServeError(
                 f"{names} not ready after {int(timeout)} s: see `mnogobase models logs`"
             )
-        on_wait(pending[0], elapsed)
+        on_wait(pending, elapsed)
         sleep(5)
 
 
@@ -333,7 +343,7 @@ def bring_up(
     served: Sequence[Served],
     runner: DockerRunner | NativeRunner,
     timeout: float,
-    on_wait: Callable[[Served, float], None] = lambda s, elapsed: None,
+    on_wait: Callable[[Sequence[Served], float], None] = lambda pending, elapsed: None,
     keep: Sequence[Served] | None = None,
     **wait_kwargs,
 ) -> None:

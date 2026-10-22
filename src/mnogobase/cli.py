@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
+import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, cast
@@ -44,15 +46,18 @@ from mnogobase.retrieval.compare import compare as do_compare
 from mnogobase.retrieval.compare import config_hash, run_mode
 from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.serving import (
+    CONTAINER_PORT,
     ModelRunner,
     Runner,
     Served,
     ServeError,
     bring_up,
+    health_state,
     is_ready,
     make_runner,
     resolve_runner,
     served_roles,
+    server_args,
 )
 from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.wiki.builder import WikiReport
@@ -72,6 +77,7 @@ PREFLIGHT_CHECKS = ("models", "llm", "qdrant", "neo4j")
 INGEST_CHECKS = (*PREFLIGHT_CHECKS, "tokenizer")  # только ingest режет документы на чанки
 REINDEX_CHECKS = ("models", "qdrant", "neo4j")
 RESET_CHECKS = ("qdrant", "neo4j")
+WAIT_REPORT_EVERY = 15.0  # models up: строка о сервере, который ещё не готов, раз в столько секунд
 
 
 @app.callback()
@@ -606,25 +612,42 @@ def models_up(
         return
     where = resolve_runner(_runner(runner))
     for s in served:
+        port = s.port if where == "native" else CONTAINER_PORT[s.backend]
+        program = "llama-server" if s.backend == "llamacpp" else "vllm serve"
         console.print(
-            f"{s.role}: {escape(s.settings.weights)} on {s.backend} ({where}) → {s.settings.url}",
+            f"{s.role} → {s.settings.url} ({where}): {program} {shlex.join(server_args(s, port))}",
             soft_wrap=True,
+            highlight=False,
         )
+    start = time.monotonic()
+    shown: dict[str, float] = {}  # роль -> когда о ней печаталась строка ожидания
 
-    def waiting(s: Served, elapsed: float) -> None:
-        if int(elapsed) % 60 < 5:  # раз в минуту, а не каждые 5 с
-            console.print(
-                f"  waiting for {s.role} ({int(elapsed)} s; the first start downloads the model, "
-                f"see `mnogobase models logs {s.role}`)",
-                soft_wrap=True,
-            )
+    def stamp() -> str:
+        minutes, seconds = divmod(int(time.monotonic() - start), 60)
+        return f"[{minutes}:{seconds:02d}]"
+
+    def waiting(pending: Sequence[Served], elapsed: float) -> None:
+        names = {s.role for s in pending}
+        for role in [r for r in shown if r not in names]:
+            console.print(f"{stamp()} {role}: ready", highlight=False)
+            del shown[role]
+        now = time.monotonic()
+        for s in pending:
+            if now - shown.get(s.role, -WAIT_REPORT_EVERY) >= WAIT_REPORT_EVERY:
+                shown[s.role] = now
+                console.print(
+                    f"{stamp()} {s.role}: {health_state(s)} "
+                    f"(server log: `mnogobase models logs {s.role} -f`)",
+                    soft_wrap=True,
+                    highlight=False,
+                )
 
     try:
         # `models up vision` не трогает серверы других ролей из конфига
         bring_up(served, model_runner, timeout, waiting, keep=everything)
     except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
         _fail_cleanly(exc)
-    console.print("[green]All model servers are ready.[/green]")
+    console.print(f"[green]{stamp()} All model servers are ready.[/green]", highlight=False)
 
 
 @models_app.command("down")

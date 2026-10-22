@@ -530,7 +530,9 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     result = runner.invoke(cli.app, ["models", "up", "--runner", "docker"])
     assert result.exit_code == 0, result.output
     assert [s.service for s in started[0][0]] == ["embed-llamacpp", "rerank-vllm"]
-    assert "rerank: Qwen/Qwen3-Reranker-4B on vllm (docker)" in result.output
+    assert "rerank → http://localhost:8002/v1 (docker): vllm serve Qwen/Qwen3-Reranker-4B" in (
+        result.output
+    )
     # одна роль: остальные серверы из конфига не останавливаются
     result = runner.invoke(cli.app, ["models", "up", "rerank"])
     served, keep = started[1]
@@ -545,6 +547,25 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     monkeypatch.setattr(cli, "bring_up", broken)
     result = runner.invoke(cli.app, ["models", "up", "embedder"])
     assert result.exit_code == 2 and "server exited" in result.output
+
+
+def test_models_up_reports_waiting_and_ready_servers(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "make_runner", lambda runner, settings: "runner")
+    monkeypatch.setattr(cli, "health_state", lambda served: "loading the model")
+
+    def bring_up(served, model_runner, timeout, on_wait, keep):
+        on_wait(served, 5)  # эмбеддер ещё грузится
+        on_wait(served, 10)  # через 5 с: повтор строки не печатается
+        on_wait([], 15)  # готов
+
+    monkeypatch.setattr(cli, "bring_up", bring_up)
+    result = runner.invoke(cli.app, ["models", "up", "embedder"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert sum("embedder: loading the model" in line for line in lines) == 1
+    assert any(line.endswith("embedder: ready") for line in lines)
+    assert "All model servers are ready." in lines[-1]
 
 
 def test_models_status_shows_where_each_role_runs(tmp_path, monkeypatch):

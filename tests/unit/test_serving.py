@@ -4,6 +4,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from mnogobase.config import (
@@ -22,6 +23,8 @@ from mnogobase.serving import (
     Served,
     ServeError,
     bring_up,
+    health_state,
+    is_ready,
     served_roles,
     server_args,
     wait_ready,
@@ -235,3 +238,20 @@ def test_wait_ready_reports_exited_and_slow_servers():
             sleep=lambda s: None,
             clock=lambda: next(clock),
         )
+
+
+@pytest.mark.parametrize(
+    ("respond", "state"),
+    [
+        (lambda request: httpx.Response(200), "ready"),
+        (lambda request: httpx.Response(503), "loading the model"),
+        (lambda request: httpx.Response(500), "HTTP 500"),
+        (lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused")),
+         "starting or downloading the model"),
+    ],
+)  # fmt: skip
+def test_health_state_says_what_the_server_is_doing(respond, state):
+    [served] = served_roles(settings())
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    assert health_state(served, client) == state
+    assert is_ready(served, client) == (state == "ready")
