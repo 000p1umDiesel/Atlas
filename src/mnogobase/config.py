@@ -18,55 +18,56 @@ DEFAULT_ENTITY_TYPES: dict[str, str] = {
         "A company, institution, university, government body, team or community; "
         "not the place it is located in (Location)."
     ),
-    "Location": "A country, city, region, geographic feature or a specific facility or building.",
+    "Location": (
+        "A place on Earth or in space, such as a country, city, region, geographic feature, "
+        "facility, building or an astronomical object (planet, star, galaxy)."
+    ),
     "Event": (
-        "A dated happening such as a conference, incident, battle, release or election; "
-        "not an ongoing initiative (Project)."
+        "A dated happening such as a conference, incident, battle, release or election, "
+        "or a named historical period; not an ongoing initiative (Project)."
     ),
     "Project": (
         "A named initiative, programme or mission with a goal; not a one-off happening (Event)."
     ),
     "Product": (
-        "A physical or commercial good or service that is not software, or a brand; "
-        "software goes to Software."
+        "A commercial good or service, or a brand; software goes to Software, an instrument "
+        "or machine used for work or research to Equipment."
+    ),
+    "Equipment": (
+        "A specific instrument, apparatus, machine, spacecraft or other device used for work "
+        "or research (e.g. VLT/SPHERE, James Webb Space Telescope, Voyager 1); a general "
+        "hardware category goes to Technology."
     ),
     "Software": (
-        "A program, app, library, framework, programming language or software platform; "
-        "a trained ML model goes to AIModel."
+        "A program, app, library, framework, programming language, software platform "
+        "or trained machine-learning model (e.g. PyTorch, GPT-4)."
     ),
     "Technology": (
         "A general technology, standard, protocol or hardware category, not a specific "
         "product or program (e.g. 5G, lithium-ion battery, blockchain)."
     ),
-    "AIModel": (
-        "A named trained machine-learning model or model family (e.g. GPT-4, BERT); "
-        "the software running it goes to Software, the architecture or technique to Method."
-    ),
     "Method": (
-        "A technique, algorithm, procedure or process for doing something (e.g. gradient "
-        "descent, PCR); not an abstract idea (Concept) or a technology (Technology)."
+        "A technique, algorithm or procedure that someone applies (e.g. gradient descent, PCR); "
+        "a natural process or phenomenon goes to Concept, a technology to Technology."
     ),
     "Concept": (
-        "An abstract idea, theory, principle or term; not a way of doing something (Method) "
-        "or a whole discipline (Field)."
-    ),
-    "Field": (
-        "A discipline or domain of knowledge or industry (e.g. machine learning, oncology, "
-        "banking); not a single idea within it (Concept)."
+        "An abstract idea, theory, principle, term, natural process or phenomenon, or a whole "
+        "discipline (e.g. inflation, photosynthesis, machine learning)."
     ),
     "Work": (
-        "A book, paper, article, report, film, artwork, song or other created work, "
-        "named by its title."
+        "A book, paper, article, report, journal, film, artwork, song, dataset, benchmark "
+        "or other created work, named by its title."
     ),
-    "Dataset": "A named data collection, corpus or benchmark.",
     "Metric": (
-        "A measure or indicator (e.g. accuracy, BLEU, GDP, inflation rate); "
-        "not a benchmark (Dataset)."
+        "A measure, indicator or unit (e.g. accuracy, BLEU, GDP, inflation rate, "
+        "astronomical unit); a benchmark goes to Work."
     ),
     "Regulation": "A law, regulation, policy, treaty or other legal act.",
-    "Substance": "A chemical, material, drug or food ingredient.",
+    "Substance": (
+        "A chemical, material, drug, food ingredient or biomolecule such as a protein or hormone."
+    ),
     "Condition": "A disease, disorder, symptom or other medical or psychological condition.",
-    "Organism": "A species, organism, cell type or other living thing.",
+    "Organism": "A species, organism, cell type, organ or other living thing or part of one.",
     "Other": "Anything meaningful that fits none of the types above.",
 }
 DEFAULT_EXTENSIONS = [
@@ -250,8 +251,10 @@ def _list_entry(item: object) -> tuple[str, object]:
 
 
 class ResolveSettings(BaseModel):
-    auto_merge: float = 0.92
-    llm_check: float = 0.80
+    # 1.0: по одному косинусу не сливать, всё через LLM. Замер на размеченных парах: при 0.92
+    # вектор склеивал "X. Zhang" с "H. Zhang" и "Gaia DR3" с "DR2", а верные пары давали 0.75-0.97
+    auto_merge: float = 1.0
+    llm_check: float = 0.75
     max_descriptions: int = 5
 
 
@@ -260,10 +263,10 @@ class WikiSettings(BaseModel):
     language: str = "en"
     min_mentions: int = 2
     evidence_k: int = 12
+    obsidian: bool = True  # писать .obsidian/graph.json: фильтр и цвета по типам
 
 
 class RetrievalSettings(BaseModel):
-    obsidian: bool = True  # писать .obsidian/graph.json: фильтр и цвета по типам
     k: int = 8
     context_tokens: int = 6000
     neighbors: int = Field(default=0, ge=0)  # rag: доп. чанки той же секции с каждой стороны хита

@@ -13,7 +13,7 @@ from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, Ex
 from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
 
-PROMPT_VERSION = "extract-v2"
+PROMPT_VERSION = "extract-v3"
 TYPES_CHANGED = (
     "entity types changed in config: already-ingested documents keep their old types "
     "(new and changed documents use the new ones); run `mnogobase reset`, then "

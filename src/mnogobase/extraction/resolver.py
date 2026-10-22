@@ -4,13 +4,15 @@ from pydantic import BaseModel
 
 from mnogobase.config import ResolveSettings
 from mnogobase.embedding.base import Embedder
-from mnogobase.ids import entity_id, normalize_name
+from mnogobase.ids import entity_id, entity_name_keys, normalize_name
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render
 from mnogobase.log import get_logger
 from mnogobase.models import EmbedInput, EntityRecord, ExtractedEntity
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
+
+_CANDIDATES = 3  # сколько кандидатов брать по имени и отдельно по вектору
 
 
 class SameEntity(BaseModel):
@@ -76,31 +78,34 @@ class EntityResolver:
         return record
 
     async def _match(self, entity: ExtractedEntity) -> EntityRecord | None:
-        hits = self._vectors.search_entities(
-            self._vector(entity), k=3, score_threshold=self._s.llm_check
+        # Совпадение имени или алиаса проверяется LLM при любом косинусе: та же сущность под
+        # другим типом или с другим описанием часто оказывается ниже llm_check.
+        by_name = self._vectors.find_entities_by_name(
+            entity_name_keys(entity.name, entity.aliases), limit=_CANDIDATES
         )
-        for hit in hits:
-            candidate = self._graph.get_entity(hit.key)
+        hits = self._vectors.search_entities(
+            self._vector(entity), k=_CANDIDATES, score_threshold=self._s.llm_check
+        )
+        candidates: list[tuple[str, float | None]] = [(key, None) for key in by_name]
+        candidates += [(hit.key, hit.score) for hit in hits if hit.key not in by_name]
+        for key, score in candidates:
+            candidate = self._graph.get_entity(key)
             if candidate is None:
                 continue
-            if hit.score >= self._s.auto_merge:
-                self._log.info(
-                    "entity_merged",
-                    name=entity.name,
-                    into=candidate.name,
-                    score=round(hit.score, 3),
-                    method="vector",
-                )
-                return candidate
-            if await self._same(entity, candidate):
-                self._log.info(
-                    "entity_merged",
-                    name=entity.name,
-                    into=candidate.name,
-                    score=round(hit.score, 3),
-                    method="llm",
-                )
-                return candidate
+            if score is not None and score >= self._s.auto_merge:
+                method = "vector"
+            elif await self._same(entity, candidate):
+                method = "llm" if score is not None else "llm_name"
+            else:
+                continue
+            self._log.info(
+                "entity_merged",
+                name=entity.name,
+                into=candidate.name,
+                score=None if score is None else round(score, 3),
+                method=method,
+            )
+            return candidate
         return None
 
     async def _same(self, entity: ExtractedEntity, candidate: EntityRecord) -> bool:

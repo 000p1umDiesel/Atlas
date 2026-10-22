@@ -11,6 +11,15 @@ def test_normalize_name():
     assert ids.normalize_name("ＴＲＡＮＳＦＯＲＭＥＲ") == "transformer"  # NFKC, полная ширина
 
 
+def test_name_key_ignores_spaces_and_hyphens():
+    assert ids.name_key("MagAO-X") == ids.name_key("MagAOX") == "magaox"
+    assert ids.name_key("Semi-major axis") == ids.name_key("Semimajor Axis")
+    assert ids.entity_name_keys("ALMA", ["Atacama Array", "alma", "!!"]) == [
+        "alma",
+        "atacamaarray",
+    ]
+
+
 def test_entity_id_is_stable_case_insensitive_and_type_sensitive():
     a = ids.entity_id("Method", "Self-Attention")
     assert a == ids.entity_id("method", "self attention")

@@ -22,6 +22,8 @@ VECTORS = {
     "Transformer Architecture": [0.97, 0.243, 0.0],  # косинус 0.97 -> автослияние
     "Transformer Model": [0.85, 0.527, 0.0],  # косинус 0.85 -> спросить LLM
     "Cat": [0.0, 0.0, 1.0],
+    "MagAO-X": [0.0, 1.0, 0.0],
+    "MagAOX": [0.6, 0.0, 0.8],  # косинус 0 с "MagAO-X": найти можно только по имени
 }
 
 
@@ -74,12 +76,42 @@ async def test_exact_id_merges_aliases_and_descriptions(graph, make_resolver):
 
 
 async def test_vector_auto_merge(graph, make_resolver):
-    resolver, _, llm = make_resolver()
+    resolver, _, llm = make_resolver(auto_merge=0.92)
     base = await resolver.resolve(E("Transformer"))
     merged = await resolver.resolve(E("Transformer Architecture", etype="Concept"))
     assert merged.entity_id == base.entity_id
     assert "Transformer Architecture" in graph.get_entity(base.entity_id).aliases
     assert llm.calls_for("resolve") == []
+
+
+async def test_high_score_goes_to_llm_by_default(graph, make_resolver):
+    resolver, _, llm = make_resolver()
+    base = await resolver.resolve(E("Transformer"))
+    other = await resolver.resolve(E("Transformer Architecture", etype="Concept"))
+    assert len(llm.calls_for("resolve")) == 1
+    assert other.entity_id != base.entity_id  # scripted_llm_handler отвечает "не то же"
+
+
+@pytest.mark.parametrize("same", [True, False])
+async def test_name_key_candidate_is_checked_regardless_of_score(graph, make_resolver, same):
+    def handler(task, prompt):
+        return json.dumps({"same": same, "reason": "r"})
+
+    resolver, _, llm = make_resolver(handler)
+    base = await resolver.resolve(E("MagAO-X", etype="Equipment"))
+    other = await resolver.resolve(E("MagAOX", etype="Technology"))
+    assert len(llm.calls_for("resolve")) == 1
+    assert (other.entity_id == base.entity_id) is same
+
+
+async def test_alias_key_candidate(graph, make_resolver):
+    def handler(task, prompt):
+        return json.dumps({"same": True, "reason": "r"})
+
+    resolver, _, _ = make_resolver(handler)
+    base = await resolver.resolve(E("MagAO-X", aliases=["Cat"]))
+    other = await resolver.resolve(E("Cat", etype="Concept"))
+    assert other.entity_id == base.entity_id
 
 
 @pytest.mark.parametrize("same", [True, False])

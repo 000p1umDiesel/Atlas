@@ -320,7 +320,7 @@ uv run mnogobase reset --yes      # без вопроса
 1. Откройте **http://localhost:7474**.
 2. Подключение: `neo4j://localhost:7687`, пользователь `neo4j`, пароль из `.env` (по умолчанию `mnogobase-dev`).
 3. **Стиль (один раз).** Выполните в строке запроса `:style`, затем перетащите в открывшуюся панель файл [`docs/neo4j/mnogobase.grass`](docs/neo4j/mnogobase.grass). У сущностей появятся имена, у связей — предикаты, у документов и чанков — свои цвета и подписи (заголовок документа, номер чанка).
-4. **Цвет по типу сущности (по желанию).** Тип хранится в свойстве `type`; чтобы раскрасить узлы, добавьте его как метку (стиль выше уже содержит цвета для всех 20 типов по умолчанию, см. раздел 6.3):
+4. **Цвет по типу сущности (по желанию).** Тип хранится в свойстве `type`; чтобы раскрасить узлы, добавьте его как метку (стиль выше уже содержит цвета для всех 18 типов по умолчанию, см. раздел 6.3):
 
    ```cypher
    MATCH (e:Entity) CALL apoc.create.addLabels(e, [e.type]) YIELD node RETURN count(node);
@@ -458,7 +458,7 @@ jq 'select(.question | test("внимани")) | {mode, answer}' runs/compare.js
 | `llm_call` | `task` (`extract`, `resolve`, `wiki`, `answer`, `query`), `model`, `tokens_in`, `tokens_out`, `retries`, `duration_ms` | каждый вызов LLM |
 | `llm_invalid_json` | `task`, `error` | ответ LLM не прошёл схему, идёт повтор с текстом ошибки |
 | `extract_failed` / `extract_partial` | `chunk_id`, `error` / `failed`, `total` | неудачные чанки на этапе `extract` |
-| `entity_merged` | `name`, `into`, `score`, `method` (`vector` или `llm`) | слияние сущностей |
+| `entity_merged` | `name`, `into`, `score`, `method` (`vector`, `llm` или `llm_name` — кандидат по ключу имени, `score` пустой) | слияние сущностей |
 | `wiki_built` / `wiki_page_failed` | счётчики / `entity_id`, `error` | сборка wiki |
 | `ingest_done`, `ingest_file_failed` | счётчики / `path`, `error` | итог `ingest` |
 | `resuming_interrupted_stages`, `resuming_document_removal`, `document_removed`, `document_repointed`, `document_needs_reingest` | | восстановление, удаление старых версий, переименование |
@@ -520,7 +520,7 @@ flowchart TD
 - **parse** — `DocumentConverter` с OCR из `parsing.ocr` / `parsing.ocr_lang` и ускорителем из `device` (эти опции заданы для PDF и картинок; на CUDA увеличены размеры батчей). При `vision.enabled` картинки PDF, DOCX и PPTX описывает VLM (раздел [7.16](#716-картинки-и-графики-vision)), а файл-картинка описывается ещё и целиком. Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
 - **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это HF-токенайзер `embedder.model` (у GGUF тот же словарь, проверено на Qwen3-Embedding); у `serve: api` — репозиторий из `root` в `/v1/models` (vLLM) или `POST /tokenize` сервера (llama.cpp, `ServerTokenizer` с кэшем). Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
 - **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
-- **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
+- **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Измерения, координаты, даты и безымянные гипотетические объекты («ring at 144 au», «an unseen planet») промпт просит не делать сущностями. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
 - **graph** — по каждому чанку: слияние каждой сущности (раздел 5.5), `MENTIONS` от чанка к сущностям, `entity_ids` в payload чанка, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`. Все затронутые сущности попадают в `dirty_entities`. Если у документа больше `max_failed_ratio` чанков без кэша извлечения, `graph` падает, а `extract` возвращается в `pending`.
 
 ### 5.2 Загрузка одного файла
@@ -684,11 +684,11 @@ flowchart TD
     IN["сущность из extract:<br/>name, type, description, aliases"] --> ID["entity_id из type и name"]
     ID --> EXISTS{"такой entity_id<br/>уже есть в Neo4j?"}
     EXISTS -->|"да"| MERGE["слить: aliases, descriptions"]
-    EXISTS -->|"нет"| SEARCH["поиск в mb_entities: top 3<br/>с косинусом не ниже llm_check 0.80"]
+    EXISTS -->|"нет"| SEARCH["кандидаты из mb_entities:<br/>до 3 с тем же ключом имени или алиаса,<br/>затем top 3 с косинусом не ниже llm_check 0.75"]
     SEARCH --> CAND{"следующий кандидат?"}
     CAND -->|"нет"| NEW["новая сущность"]
-    CAND -->|"score ≥ auto_merge 0.92"| MERGE
-    CAND -->|"score от 0.80 до 0.92"| SAME{"LLM resolve_same:<br/>одна и та же?"}
+    CAND -->|"score ≥ auto_merge 1.0"| MERGE
+    CAND -->|"остальные"| SAME{"LLM resolve_same:<br/>одна и та же?"}
     SAME -->|"да"| MERGE
     SAME -->|"нет"| CAND
     MERGE --> MANY{"описаний больше<br/>max_descriptions 5?"}
@@ -700,7 +700,8 @@ flowchart TD
 
 - Имена извлекаются как канонические английские, исходное написание уходит в `aliases` — поэтому русский и английский тексты обычно дают один `entity_id` сразу, а вектор и LLM ловят остальные случаи (синонимы, сокращения, варианты написания).
 - При слиянии сохраняются имя и тип существующей сущности, новое имя становится алиасом. Сопоставление `entity_id` извлечённой сущности с итоговым запоминается на время процесса, чтобы не искать заново.
-- Поиск по вектору идёт без фильтра по типу.
+- Поиск идёт без фильтра по типу. Ключ имени — `normalize_name` без пробелов (`MagAO-X` = `MagAOX`, `Semi-major axis` = `Semimajor axis`); он считается от имени и всех алиасов и хранится в payload `name_keys`. Кандидаты по ключу проверяются LLM при любом косинусе: одна сущность под другим типом или с другим описанием (`Sun` как Location и как Other, `NASA` и `National Aeronautics and Space Administration`) часто даёт косинус 0.5–0.75.
+- По умолчанию сущности не сливаются по одному косинусу (`auto_merge: 1.0`), см. раздел 7.12.
 
 ### 5.6 Инкрементальное обновление wiki
 
@@ -811,17 +812,17 @@ flowchart TD
 | `parsing.extensions` | `[pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt, png, jpg, jpeg, tif, tiff, bmp, webp]` | какие файлы берёт `ingest` | сразу |
 | `chunking.tokenizer` | `auto` | токенайзер для подсчёта токенов чанка: `auto` — токенайзер модели `embedder.model` с её сервера, иначе HF-репозиторий (например `Qwen/Qwen3-Embedding-4B`) | новые и изменённые файлы |
 | `chunking.max_tokens` | `512` | максимальный размер чанка | новые и изменённые файлы |
-| `extract.entity_types` | 20 типов (6.3) | типы сущностей и их описания для промпта | новые и изменённые файлы, предупреждение |
+| `extract.entity_types` | 18 типов (6.3) | типы сущностей и их описания для промпта | новые и изменённые файлы, предупреждение |
 | `extract.max_failed_ratio` | `0.2` | допустимая доля чанков без извлечения на документ | сразу |
-| `resolve.auto_merge` | `0.92` | косинус, с которого сущности сливаются без вопросов | новые слияния |
-| `resolve.llm_check` | `0.80` | косинус, с которого LLM спрашивают «одна ли это сущность» | новые слияния |
+| `resolve.auto_merge` | `1.0` | косинус, с которого сущности сливаются без LLM (1.0 — никогда) | новые слияния |
+| `resolve.llm_check` | `0.75` | косинус, с которого LLM спрашивают «одна ли это сущность» (кандидаты по ключу имени — всегда) | новые слияния |
 | `resolve.max_descriptions` | `5` | после скольких описаний LLM сжимает их в одно | новые слияния |
 | `wiki.dir` | `wiki` | папка wiki | `wiki build --all` |
 | `wiki.language` | `en` | язык страниц: `en`, `ru` или название языка | `wiki build --all` |
 | `wiki.min_mentions` | `2` | минимум чанков с упоминанием для страницы | `wiki build --all` |
 | `wiki.evidence_k` | `12` | чанков-доказательств на страницу | `wiki build --all` |
-| `retrieval.k` | `8` | результатов на поиск (по умолчанию для `--k`) | сразу |
 | `wiki.obsidian` | `true` | дописывать в `wiki/.obsidian/graph.json` фильтр служебных страниц и цвета по типам (4.3) | следующий `wiki build` |
+| `retrieval.k` | `8` | результатов на поиск (по умолчанию для `--k`) | сразу |
 | `retrieval.context_tokens` | `6000` | бюджет контекста ответа (символы / 4) | сразу |
 | `retrieval.translate` | `true` | искать и по английскому переводу вопроса не на английском (один вызов LLM `query` на вопрос) | сразу |
 | `retrieval.answer_language` | `auto` (в `config.yaml` — `ru`) | язык ответа: код (`ru`, `en`, …) или `auto` — язык вопроса | сразу |
@@ -885,9 +886,11 @@ MNOGOBASE_EXTRACT__ENTITY_TYPES='["Gene", "Condition", "Other"]'
 
 ### 6.3 Типы сущностей
 
-Типы задаются в `extract.entity_types`: имя типа → одна строка описания. Описания попадают в промпт извлечения и помогают LLM различать похожие типы. По умолчанию 20 типов для документов из любых областей, не только научных статей:
+Типы задаются в `extract.entity_types`: имя типа → одна строка описания. Описания попадают в промпт извлечения и помогают LLM различать похожие типы. По умолчанию 18 крупных типов для документов из любых областей:
 
-`Person`, `Organization`, `Location`, `Event`, `Project`, `Product`, `Software`, `Technology`, `AIModel`, `Method`, `Concept`, `Field`, `Work`, `Dataset`, `Metric`, `Regulation`, `Substance`, `Condition`, `Organism`, `Other`.
+`Person`, `Organization`, `Location`, `Event`, `Project`, `Product`, `Equipment`, `Software`, `Technology`, `Method`, `Concept`, `Work`, `Metric`, `Regulation`, `Substance`, `Condition`, `Organism`, `Other`.
+
+Набор нарочно небольшой. Тип входит в `entity_id`, поэтому каждая размытая граница между типами даёт дубли (одна сущность под двумя типами), а поиск по типу не фильтрует — тип нужен для подписи в режиме graph, frontmatter wiki и цветов. Близкие типы объединены: обученные модели — `Software`, дисциплины и природные процессы — `Concept`, датасеты и журналы — `Work`, небесные тела — `Location`, эпохи — `Event`. Узкие типы под свой корпус (`Gene`, `Contract`, `Vulnerability`, …) добавляйте в `config.yaml`.
 
 Чтобы добавить или изменить тип, отредактируйте список в `config.yaml` (порядок сохраняется, `Other` оставляйте последним: в него попадает всё, что LLM отнесла к неизвестному типу; если `Other` нет, неизвестный тип становится последним в списке):
 
@@ -1023,7 +1026,16 @@ wiki:
 
 ### 7.12 Слияние сущностей
 
-`resolve.auto_merge` ниже — больше автоматических слияний и риск склеить разные вещи; `resolve.llm_check` ниже — больше вопросов к LLM. Действует на новые слияния; уже слитые сущности не разделяются (для пересборки графа — `reset` и `ingest`). Результаты видны в логе (`entity_merged`, раздел 4.5).
+`resolve.auto_merge` ниже 1.0 — часть слияний без LLM (дешевле) и риск склеить разные вещи; `resolve.llm_check` ниже — больше вопросов к LLM и меньше пропущенных дублей. Значения по умолчанию выбраны замером на 361 размеченной вручную паре сущностей из статьи по астрономии и брошюры о Солнечной системе (вердикты — LLM `resolve` из `config.yaml`):
+
+| Политика | Слито | Ошибочно | Пропущено |
+|---|---|---|---|
+| `auto_merge 0.92`, `llm_check 0.80`, без ключа имени (было) | 32 | 7 | 31 из 56 |
+| `auto_merge 0.97`, `llm_check 0.80` | 27 | 2 | 31 из 56 |
+| `auto_merge 1.0`, `llm_check 0.80`, с ключом имени | 42 | 1 | 15 из 56 |
+| `auto_merge 1.0`, `llm_check 0.75`, с ключом имени (сейчас) | 58 | 2 | 0 из 56 |
+
+Вектор ошибается и при очень высоком косинусе: `Gap depth method` → `Gap width method` (0.988), `WMT 2014 English-to-French` → `English-to-German` (0.968), `X. Zhang` → `H. Zhang` (0.962), а верные пары начинаются с 0.5. В журнале 111 прошлых слияний (статьи о Transformer и BERT) по одному вектору верны 16 из 47, после проверки LLM — 52 из 54 однозначных. Пары ниже 0.75 размечены только среди найденных по ключу имени, поэтому «0 пропущенных» — оценка сверху. Действует на новые слияния; уже слитые сущности не разделяются (для пересборки графа — `reset` и `ingest`). Результаты видны в логе (`entity_merged`, раздел 4.5).
 
 ### 7.13 Промпты
 
@@ -1038,7 +1050,7 @@ wiki:
 | `answer.md` | ответ с цитатами `[n]` | `$question`, `$context`, `$language` | сразу |
 | `translate_query.md` | перевод вопроса на английский для поиска | `$question` | сразу |
 
-- **Кэш извлечения.** Ключ кэша — `(chunk_id, prompt_version, model)`, где `prompt_version` = `PROMPT_VERSION` из `src/mnogobase/extraction/extractor.py` (сейчас `extract-v2`) плюс подпись набора типов. **Меняете смысл `extract.md` — увеличьте `PROMPT_VERSION`**, иначе чанки с кэшем получат старые результаты. Уже загруженные документы сами не переизвлекаются; для всех — `reset` и `ingest`.
+- **Кэш извлечения.** Ключ кэша — `(chunk_id, prompt_version, model)`, где `prompt_version` = `PROMPT_VERSION` из `src/mnogobase/extraction/extractor.py` (сейчас `extract-v3`) плюс подпись набора типов. **Меняете смысл `extract.md` — увеличьте `PROMPT_VERSION`**, иначе чанки с кэшем получат старые результаты. Уже загруженные документы сами не переизвлекаются; для всех — `reset` и `ingest`.
 - Новый плейсхолдер нужно передать из кода (`render(...)` в месте вызова) и добавить в `tests/unit/test_templates.py`: тест проверяет, что в промпте не осталось `$`.
 - Поля JSON-ответов задаются схемами в коде (`ExtractionResult` в `models.py`, `SameEntity` и `MergedDescription` в `extraction/resolver.py`), промптом их не поменять.
 

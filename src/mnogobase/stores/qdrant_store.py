@@ -10,7 +10,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from mnogobase.config import QdrantSettings
-from mnogobase.ids import point_id
+from mnogobase.ids import entity_name_keys, point_id
 from mnogobase.models import ChunkRecord, EntityRecord, SearchHit
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class QdrantStore:
         self._ensure(
             self.chunks, sparse=True, indexes=("chunk_id", "doc_id", "entity_ids", "modality")
         )
-        self._ensure(self.entities, sparse=False, indexes=("entity_id", "type"))
+        self._ensure(self.entities, sparse=False, indexes=("entity_id", "type", "name_keys"))
         self._ensure(self.wiki, sparse=True, indexes=("page_id", "entity_id"))
 
     def _ensure(self, name: str, *, sparse: bool, indexes: tuple[str, ...]) -> None:
@@ -219,11 +219,31 @@ class QdrantStore:
             qm.PointStruct(
                 id=point_id(e.entity_id),
                 vector={DENSE: d},
-                payload={"entity_id": e.entity_id, "name": e.name, "type": e.type},
+                payload={
+                    "entity_id": e.entity_id,
+                    "name": e.name,
+                    "type": e.type,
+                    "name_keys": entity_name_keys(e.name, e.aliases),
+                },
             )
             for e, d in zip(entities, dense, strict=True)
         ]
         self._upsert(self.entities, points)
+
+    def find_entities_by_name(self, keys: list[str], limit: int) -> list[str]:
+        """entity_id сущностей, у которых имя или алиас даёт один из ключей `name_key`."""
+        if not keys:
+            return []
+        points, _ = self._call(
+            self.client.scroll,
+            self.entities,
+            scroll_filter=qm.Filter(
+                must=[qm.FieldCondition(key="name_keys", match=qm.MatchAny(any=keys))]
+            ),
+            limit=limit,
+            with_payload=["entity_id"],
+        )
+        return [p.payload["entity_id"] for p in points]
 
     def search_entities(
         self, dense: list[float], k: int, score_threshold: float | None = None

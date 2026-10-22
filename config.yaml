@@ -47,37 +47,35 @@ extract:
   entity_types:
     Person: A real or fictional individual, named or clearly identified.
     Organization: A company, institution, university, government body, team or community; not the place it is located in (Location).
-    Location: A country, city, region, geographic feature or a specific facility or building.
-    Event: A dated happening such as a conference, incident, battle, release or election; not an ongoing initiative (Project).
+    Location: A place on Earth or in space, such as a country, city, region, geographic feature, facility, building or an astronomical object (planet, star, galaxy).
+    Event: A dated happening such as a conference, incident, battle, release or election, or a named historical period; not an ongoing initiative (Project).
     Project: A named initiative, programme or mission with a goal; not a one-off happening (Event).
-    Product: A physical or commercial good or service that is not software, or a brand; software goes to Software.
-    Software: A program, app, library, framework, programming language or software platform; a trained ML model goes to AIModel.
+    Product: A commercial good or service, or a brand; software goes to Software, an instrument or machine used for work or research to Equipment.
+    Equipment: A specific instrument, apparatus, machine, spacecraft or other device used for work or research (e.g. VLT/SPHERE, James Webb Space Telescope, Voyager 1); a general hardware category goes to Technology.
+    Software: A program, app, library, framework, programming language, software platform or trained machine-learning model (e.g. PyTorch, GPT-4).
     Technology: A general technology, standard, protocol or hardware category, not a specific product or program (e.g. 5G, lithium-ion battery, blockchain).
-    AIModel: A named trained machine-learning model or model family (e.g. GPT-4, BERT); the software running it goes to Software, the architecture or technique to Method.
-    Method: A technique, algorithm, procedure or process for doing something (e.g. gradient descent, PCR); not an abstract idea (Concept) or a technology (Technology).
-    Concept: An abstract idea, theory, principle or term; not a way of doing something (Method) or a whole discipline (Field).
-    Field: A discipline or domain of knowledge or industry (e.g. machine learning, oncology, banking); not a single idea within it (Concept).
-    Work: A book, paper, article, report, film, artwork, song or other created work, named by its title.
-    Dataset: A named data collection, corpus or benchmark.
-    Metric: A measure or indicator (e.g. accuracy, BLEU, GDP, inflation rate); not a benchmark (Dataset).
+    Method: A technique, algorithm or procedure that someone applies (e.g. gradient descent, PCR); a natural process or phenomenon goes to Concept, a technology to Technology.
+    Concept: An abstract idea, theory, principle, term, natural process or phenomenon, or a whole discipline (e.g. inflation, photosynthesis, machine learning).
+    Work: A book, paper, article, report, journal, film, artwork, song, dataset, benchmark or other created work, named by its title.
+    Metric: A measure, indicator or unit (e.g. accuracy, BLEU, GDP, inflation rate, astronomical unit); a benchmark goes to Work.
     Regulation: A law, regulation, policy, treaty or other legal act.
-    Substance: A chemical, material, drug or food ingredient.
+    Substance: A chemical, material, drug, food ingredient or biomolecule such as a protein or hormone.
     Condition: A disease, disorder, symptom or other medical or psychological condition.
-    Organism: A species, organism, cell type or other living thing.
+    Organism: A species, organism, cell type, organ or other living thing or part of one.
     Other: Anything meaningful that fits none of the types above.
   max_failed_ratio: 0.2
 
 resolve:
-  auto_merge: 0.92
-  llm_check: 0.80
+  auto_merge: 1.0                    # 1.0: по одному косинусу не сливать, всё через LLM
+  llm_check: 0.75
   max_descriptions: 5
 
 wiki:
   dir: wiki
   language: en
-  obsidian: true                     # .obsidian/graph.json: index/log скрыты из графа, цвета по типам
   min_mentions: 2
   evidence_k: 12
+  obsidian: true                     # .obsidian/graph.json: index/log скрыты из графа, цвета по типам
 
 retrieval:
   k: 8

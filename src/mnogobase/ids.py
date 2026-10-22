@@ -31,6 +31,15 @@ def normalize_name(name: str) -> str:
     return " ".join(_SEPARATORS.sub(" ", text).split())
 
 
+def name_key(name: str) -> str:
+    """Ключ для поиска кандидатов на слияние: без пробелов и дефисов ("MagAO-X" = "MagAOX")."""
+    return normalize_name(name).replace(" ", "")
+
+
+def entity_name_keys(name: str, aliases: list[str]) -> list[str]:
+    return sorted({key for key in map(name_key, [name, *aliases]) if key})
+
+
 def entity_id(entity_type: str, name: str) -> str:
     key = f"{entity_type.casefold()}|{normalize_name(name)}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]

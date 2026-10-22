@@ -222,3 +222,18 @@ def test_get_chunks_returns_existing_payloads_by_id():
     got = store.get_chunks(["aaaa:00001", "aaaa:00009"])
     assert list(got) == ["aaaa:00001"] and got["aaaa:00001"]["text"] == "two"
     assert store.get_chunks([]) == {}
+
+
+def test_find_entities_by_name_matches_name_and_alias_keys():
+    store = make_store()
+    recs = [
+        EntityRecord(entity_id="e1", name="MagAO-X", type="Equipment", description="d"),
+        EntityRecord(
+            entity_id="e2", name="Atacama Array", type="Location", description="d", aliases=["ALMA"]
+        ),
+        EntityRecord(entity_id="e3", name="Cat", type="Organism", description="d"),
+    ]
+    store.upsert_entities(recs, EMB.embed_documents([EmbedInput(text=r.name) for r in recs]))
+    assert store.find_entities_by_name(["magaox"], limit=3) == ["e1"]
+    assert store.find_entities_by_name(["alma", "nothing"], limit=3) == ["e2"]
+    assert store.find_entities_by_name([], limit=3) == []
