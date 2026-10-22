@@ -59,7 +59,7 @@ def test_llamacpp_args_name_the_model_like_vllm():
     embed = Served("embedder", EmbedderSettings(server=ServerSettings(ctx=4096, args=["-np", "8"])))
     assert server_args(embed, 8080) == [
         "-hf", "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M", "--alias", "Qwen/Qwen3-Embedding-4B",
-        "--port", "8080", "--ctx-size", "4096", "--n-gpu-layers", "999",
+        "--port", "8080", "--ctx-size", "4096", "--n-gpu-layers", "999", "--metrics",
         "--embedding", "--ubatch-size", "4096", "-np", "8",
     ]  # fmt: skip
     rerank = server_args(Served("rerank", RerankSettings()), 8002)

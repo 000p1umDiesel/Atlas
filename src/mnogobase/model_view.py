@@ -1,5 +1,5 @@
-"""Отрисовка `mnogobase models up` в терминале: живая таблица в TTY, строки — без него
-(nohup, cron, CI: лог-файл не забивается перерисовками)."""
+"""Отрисовка `mnogobase models up` и `models top` в терминале. `models up` — живая таблица в
+TTY, строки без него (nohup, cron, CI: лог-файл не забивается перерисовками)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
+from mnogobase.model_top import Gpu, RoleLoad
 from mnogobase.model_watch import RoleStatus
 
 PLAIN_EVERY = 30.0  # без TTY: строка о скачивании не чаще, чем раз в столько секунд
@@ -151,3 +152,76 @@ class UpReporter:
                 yield self
             finally:
                 self._live = None
+
+
+def _count(n: float | None) -> str:
+    """`5.2k`, `1.3M`: токены и токены/с."""
+    if n is None:
+        return "–"
+    for unit, scale in (("M", 1e6), ("k", 1e3)):
+        if n >= scale:
+            return f"{n / scale:.1f}{unit}"
+    return f"{n:.0f}"
+
+
+_STATE_TEXT = {
+    "ready": "[green]● up[/green]",
+    "down": "[red]● down[/red]",
+    "api": "[cyan]api[/cyan]",
+}
+
+
+def top_view(loads: Sequence[RoleLoad], gpus: Sequence[Gpu], width: int = WIDE) -> Group:
+    """Таблица `models top`: роль, состояние, занятость, токены/с; ниже — видеокарты."""
+    wide = width >= 100
+    table = Table(box=None, pad_edge=False, show_edge=False, header_style="bold")
+    table.add_column("role", no_wrap=True)
+    if wide:
+        table.add_column("serve", no_wrap=True)
+    table.add_column("state", no_wrap=True)
+    table.add_column("busy", justify="right", no_wrap=True)
+    table.add_column("queue", justify="right", no_wrap=True)
+    table.add_column("in tok/s", justify="right", no_wrap=True)
+    table.add_column("out tok/s", justify="right", no_wrap=True)
+    if wide:
+        table.add_column("total in/out", justify="right", no_wrap=True)
+        table.add_column("mem", justify="right", no_wrap=True)
+    table.add_column("", overflow="ellipsis", no_wrap=True)
+    for load in loads:
+        busy = (
+            f"{load.busy}/{load.slots}"
+            if load.busy is not None and load.slots
+            else _count(load.busy)
+        )
+        busy_style = "yellow" if load.busy and load.slots and load.busy >= load.slots else ""
+        cells: list[str | Text] = [load.role]
+        if wide:
+            cells.append(load.settings.serve)
+        cells += [
+            Text.from_markup(_STATE_TEXT[load.state]),
+            Text(busy, style=busy_style),
+            Text(_count(load.waiting), style="yellow" if load.waiting else ""),
+            _count(load.tok_in),
+            _count(load.tok_out),
+        ]
+        if wide:
+            totals = (
+                f"{_count(load.total_in)}/{_count(load.total_out)}"
+                if load.total_in is not None
+                else "–"
+            )
+            cells += [totals, human_bytes(load.memory) if load.memory else "–"]
+        cells.append(Text(load.note, style="dim"))
+        table.add_row(*cells)
+    parts: list[Table | Text] = [table]
+    for gpu in gpus:
+        line = Text(f"GPU {gpu.index} {gpu.name}  util ", style="bold")
+        line.append(f"{gpu.util:>3}%", style="yellow" if gpu.util >= 90 else "")
+        share = gpu.used / gpu.total if gpu.total else 0
+        line.append("  VRAM ")
+        line.append(
+            f"{gpu.used / 1024:.1f}/{gpu.total / 1024:.1f} GB",
+            style="red" if share >= 0.95 else "yellow" if share >= 0.85 else "",
+        )
+        parts.append(line)
+    return Group(*parts)

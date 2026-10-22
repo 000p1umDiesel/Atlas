@@ -11,7 +11,7 @@ Run everything from the repo root: `config.yaml` and `.env` are read from the CW
 ```bash
 uv sync                                   # install deps (editable) into .venv
 docker compose up -d                      # Qdrant :6333, Neo4j :7474/:7687 (docker-compose.cuda.yml for GPU)
-uv run mnogobase models up | down | status | logs ROLE   # model servers per config `serve` (native llama-server on macOS, Docker on Linux)
+uv run mnogobase models up | down | status | top | logs ROLE   # model servers per config `serve` (native llama-server on macOS, Docker on Linux); up shows download progress
 uv run mnogobase doctor                   # check device, models, tokenizer, llm, qdrant, neo4j, index, types
 uv run mnogobase logs [-f] [--level warning] [--run last]   # readable view of logs/mnogobase.jsonl
 

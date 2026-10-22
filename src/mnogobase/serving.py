@@ -98,6 +98,7 @@ def server_args(served: Served, port: int) -> list[str]:
         # у VLM -hf сам скачивает и подключает проектор картинок (mmproj) из того же репозитория
         args = ["-hf", s.gguf or "", "--alias", s.model, "--port", str(port)]
         args += ["--ctx-size", str(c.ctx), "--n-gpu-layers", "999"]
+        args += ["--metrics"]  # Prometheus /metrics для `models top`
         if served.role == "embedder":
             args += ["--embedding", "--ubatch-size", str(c.ctx)]
         elif served.role == "rerank":
@@ -268,6 +269,10 @@ class NativeRunner:
 
     def alive(self, served: Served) -> bool:
         return self._record(served.role) is not None
+
+    def pid(self, role: str) -> int | None:
+        record = self._record(role)
+        return record["pid"] if record else None
 
     def _kill(self, role: str) -> None:
         record = self._record(role)

@@ -300,6 +300,7 @@ uv run mnogobase reset --yes      # без вопроса
 | `reset [--yes]` | удалить все данные проекта | qdrant, neo4j | да |
 | `models up [РОЛИ...] [--runner auto\|docker\|native]` | поднять серверы ролей с `serve: llamacpp \| vllm` и дождаться готовности (раздел 7.15) | — | нет |
 | `models down` / `status` / `logs РОЛЬ [-f]` | остановить серверы моделей / где какая модель и готова ли / лог сервера роли | — | нет |
+| `models top [--interval S] [--once]` | нагрузка серверов вживую: занятые слоты, очередь, токены/с, память, видеокарты; у LLM по API — вызовы за минуту из журнала (раздел 7.15) | — | нет |
 | `logs [-f] [-n N] [--level L] [--run ID\|last] [--event S]` | журнал `logs/mnogobase.jsonl` в читаемом виде (раздел 4.5) | — | нет |
 
 Одновременно может работать только одна из команд `ingest` / `wiki build` / `reindex` / `reset` (файловая блокировка `.mnogobase/ingest.lock`). Вторая сразу завершается с сообщением `Another ingest / wiki / reindex / reset run is in progress.`
@@ -1111,6 +1112,7 @@ llm:      {model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8, serve: vllm, base_url: n
 uv run mnogobase models up               # поднять все роли с serve: llamacpp | vllm и дождаться /health
 uv run mnogobase models up embedder      # только одну роль
 uv run mnogobase models status           # роль, бэкенд, веса, адрес, готовность
+uv run mnogobase models top              # нагрузка вживую: слоты, очередь, токены/с, память, GPU
 uv run mnogobase models logs rerank -f   # лог сервера роли
 uv run mnogobase models down             # остановить (скачанные модели остаются в кэше)
 ```
@@ -1133,6 +1135,7 @@ elapsed 1:23
 
 - **llama.cpp, реранкер.** Нужен GGUF с классификатором Qwen3-Reranker (`gorse-io/Qwen3-Reranker-4B-GGUF` по умолчанию); старые конвертации (`dengcao`, `mradermacher`, `QuantFactory`) загружаются, но дают бессмысленные оценки.
 - **vLLM.** Каждый контейнер резервирует долю **всей** видеопамяти (`<роль>.server.gpu_memory`: 0.15 для эмбеддера и реранкера, 0.6 для LLM); на одной карте сумма долей должна быть меньше 1, и `models up` запускает vLLM-серверы по очереди. Для Qwen3-Reranker `models up` сам добавляет `--hf-overrides` и шаблон промпта из образа. vLLM проверен по документации и модульным тестам, не вживую.
+- **Нагрузка** — `mnogobase models top`. llama.cpp отдаёт счётчики на `/metrics` благодаря флагу `--metrics`, который ставит `models up`. Токены/с считаются по разнице счётчиков между обновлениями; llama.cpp прибавляет токены, когда запрос завершён, поэтому у долгих запросов VLM скорость появляется рывками. LLM по API сервера не имеет, её нагрузка берётся из `llm_call` в журнале за последнюю минуту.
 - **Окно контекста** — `<роль>.server.ctx`. Длинный вход сервер не обрезает, а отклоняет: окно эмбеддера должно вмещать `chunking.max_tokens` плюс шаблон.
 - **Дополнительные флаги** сервера — `<роль>.server.args`, например `["--parallel", "8"]` для llama.cpp.
 - **Ключ API.** Если сервер (`api`) требует ключ, задайте `<роль>.api_key_env` — имя переменной из `.env`.
@@ -1197,7 +1200,8 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `doctor.py` | проверки окружения и предварительные проверки команд |
 | `serving.py` | `mnogobase models`: роли с `serve`, команды llama.cpp и vLLM (`server_args`), запуск в Docker (`DockerRunner`) и нативно (`NativeRunner`), ожидание `/health` |
 | `model_watch.py` | прогресс `models up`: файлы весов роли по Hugging Face (`weight_files`), скачанные байты в кэше (`downloaded`), фазы роли (`ModelWatch`) |
-| `model_view.py` | отрисовка `models up`: живая таблица в терминале, строки без него (`UpReporter`) |
+| `model_view.py` | отрисовка `models up` (`UpReporter`: живая таблица в терминале, строки без него) и `models top` (`top_view`) |
+| `model_top.py` | `models top`: `/slots` и `/metrics` llama.cpp, `/metrics` vLLM, вызовы LLM по API из журнала, `nvidia-smi`, память нативных серверов |
 | `maintenance.py` | `reindex`, `reset` |
 
 Зависимости между пакетами (общие `config`, `models`, `ids`, `log` используются всеми и на схеме опущены):
@@ -1504,7 +1508,20 @@ uv run mnogobase ask "что такое механизм внимания?"
 
 - **Wiki в Obsidian** — скопируйте папку: `rsync -av server:mnogobase/wiki/ ./wiki-server/` и откройте её как отдельный vault (раздел 4.3).
 - **Neo4j Browser и панель Qdrant** — через SSH-туннель: `ssh -N -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 server`, затем http://localhost:7474 (Bolt `bolt://localhost:7687`) и http://localhost:6333/dashboard.
-- **Логи** — `logs/mnogobase.jsonl` на сервере (раздел 4.5), модели — `uv run mnogobase models logs <роль>`, базы — `docker compose logs -f qdrant neo4j`.
+- **Логи** — `uv run mnogobase logs -f` (раздел 4.5), серверы моделей — `uv run mnogobase models logs <роль>`, базы — `docker compose logs -f qdrant neo4j`.
+
+**Наблюдение за долгим ingest.** Удобная раскладка — одна сессия tmux на три панели: сам `ingest` с барами по файлам и этапам, нагрузка моделей и журнал событий. Сессия и `ingest` переживают обрыв SSH, `tmux attach -t mb` возвращает всё на место.
+
+```bash
+tmux new -s mb                                   # панель 1
+uv run mnogobase ingest documents/
+# Ctrl+B "  — панель 2 снизу:
+uv run mnogobase models top                      # слоты, очередь, токены/с, VRAM
+# Ctrl+B %  — панель 3 справа:
+uv run mnogobase logs -f --level info            # этапы, вызовы LLM, ошибки
+```
+
+`models top` на сервере показывает видеокарты из `nvidia-smi` (загрузка и VRAM; ≥ 85% VRAM — жёлтым, ≥ 95% — красным). Постоянная очередь (`queue`) у эмбеддера при всех занятых слотах (`busy 4/4`) — повод добавить слоты: `embedder.server.args: ["--parallel", "8"]` (каждый слот занимает свою долю контекста). Без терминала (cron, скрипт) `models top --once` печатает один снимок.
 
 Запускать CLI на ноутбуке против серверных сервисов можно (туннель на 8001, 8002, 6333, 7687 и `config.yaml` с теми же адресами), но тогда `.mnogobase/state.db` и wiki окажутся на ноутбуке. У одного проекта должно быть одно место запуска: два CLI с разными `state.db` на одних Qdrant и Neo4j рассинхронизируются.
 
