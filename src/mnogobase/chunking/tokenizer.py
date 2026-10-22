@@ -54,13 +54,13 @@ def load_tokenizer(
     """Токенизатор для подсчёта токенов чанка: HF-репозиторий `chunking.tokenizer` или, при
     `auto`, токенизатор самой модели эмбеддера, чтобы он всегда соответствовал её смене.
 
-    Модель, которую поднимает `mnogobase models up` (`serve: llamacpp | vllm`), — HF-репозиторий
-    `embedder.model`: его токенизатор совпадает с GGUF. У внешнего сервера (`api`) —
-    репозиторий, который он сообщает (`root` у vLLM), или его `/tokenize` (llama.cpp).
-    `client` — клиент корня внешнего сервера (тесты)."""
+    У llama.cpp (`serve: llamacpp`) — `/tokenize` сервера: токенизатор зашит в GGUF, HF-
+    репозиторий исходной модели не нужен. У vLLM — HF-репозиторий `embedder.model`. У внешнего
+    сервера (`api`) — репозиторий, который он сообщает (`root` у vLLM), или его `/tokenize`
+    (llama.cpp). `client` — клиент корня сервера эмбеддера (тесты)."""
     if settings.tokenizer != AUTO:
         return _from_hf(settings.tokenizer, settings.max_tokens)
-    if embedder.serve != "api":
+    if embedder.serve == "vllm":
         return _from_hf(embedder.model, settings.max_tokens)
     if client is None:
         client = httpx.Client(
@@ -68,9 +68,10 @@ def load_tokenizer(
             timeout=60,
             headers=auth_headers(embedder.api_key_env),
         )
-    repo = _served_repo(embedder.model, client)
-    if repo:
-        return _from_hf(repo, settings.max_tokens)
+    if embedder.serve == "api":
+        repo = _served_repo(embedder.model, client)
+        if repo:
+            return _from_hf(repo, settings.max_tokens)
     tokenizer = ServerTokenizer(client=client, max_tokens=settings.max_tokens)
     try:
         tokenizer.count_tokens("tokenizer probe")

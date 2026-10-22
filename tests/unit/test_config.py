@@ -31,7 +31,7 @@ def clean_env(monkeypatch):
 def test_defaults_without_config_file(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     s = load_settings()
-    assert s.embedder.model == "Qwen/Qwen3-Embedding-4B"
+    assert s.embedder.model == "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M" and s.embedder.gguf is None
     assert s.embedder.serve == "llamacpp" and s.llm.serve == "api"
     assert s.embedder.dim == "auto"
     assert s.embedder.url == "http://localhost:8001/v1"
@@ -263,8 +263,11 @@ def test_vision_skip_takes_docling_picture_classes():
 
 
 def test_serve_requires_what_the_backend_needs():
-    with pytest.raises(ValueError, match="llm.gguf is required for serve: llamacpp"):
-        LLMSettings(serve="llamacpp")
+    # vLLM запускает HF-репозиторий: GGUF с квантом в model или gguf — ошибка конфига
+    with pytest.raises(ValueError, match="embedder.model .* looks like a GGUF with quant"):
+        EmbedderSettings(serve="vllm")
+    with pytest.raises(ValueError, match="llm.gguf is only for serve: llamacpp"):
+        LLMSettings(model="Qwen/Qwen3-8B", serve="vllm", gguf="Qwen/Qwen3-8B-GGUF:Q4_K_M")
     with pytest.raises(ValueError, match="embedder.base_url is required for serve: api"):
         EmbedderSettings(serve="api")
     vllm = LLMSettings(model="Qwen/Qwen3-8B", serve="vllm", base_url=None)

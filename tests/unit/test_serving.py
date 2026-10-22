@@ -61,27 +61,34 @@ def test_served_roles_skip_api_and_disabled():
 def test_llamacpp_args_name_the_model_like_vllm():
     embed = Served("embedder", EmbedderSettings(server=ServerSettings(ctx=4096, args=["-np", "8"])))
     assert server_args(embed, 8080) == [
-        "-hf", "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M", "--alias", "Qwen/Qwen3-Embedding-4B",
+        "-hf", "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M", "--alias", "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M",
         "--port", "8080", "--ctx-size", "4096", "--n-gpu-layers", "999",
         "--embedding", "--ubatch-size", "4096", "-np", "8",
     ]  # fmt: skip
     rerank = server_args(Served("rerank", RerankSettings()), 8002)
-    assert "--rerank" in rerank and "--alias" in rerank and "Qwen/Qwen3-Reranker-4B" in rerank
+    assert "--rerank" in rerank and "--alias" in rerank
+    assert "gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M" in rerank
+    # отдельный gguf: запускается он, а model остаётся именем на сервере
     llm = server_args(Served("llm", LOCAL_LLM), 8000)
+    assert llm[:4] == ["-hf", "Qwen/Qwen3-8B-GGUF:Q4_K_M", "--alias", "Qwen/Qwen3-8B"]
     assert "--embedding" not in llm and "--rerank" not in llm
     # VLM: проектор картинок (mmproj) -hf скачивает сам, отдельных флагов не нужно
     assert server_args(Served("vision", VisionSettings()), 8003)[:4] == [
-        "-hf", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M", "--alias", "Qwen/Qwen3-VL-2B-Instruct",
+        "-hf", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M",
+        "--alias", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M",
     ]  # fmt: skip
 
 
 def test_vllm_args_serve_the_hf_repo():
-    embed = server_args(Served("embedder", EmbedderSettings(serve="vllm")), 8000)
+    embed = server_args(
+        Served("embedder", EmbedderSettings(serve="vllm", model="Qwen/Qwen3-Embedding-4B")), 8000
+    )
     assert embed == [
         "Qwen/Qwen3-Embedding-4B", "--port", "8000", "--max-model-len", "8192",
         "--gpu-memory-utilization", "0.15", "--runner", "pooling",
     ]  # fmt: skip
-    rerank = server_args(Served("rerank", RerankSettings(serve="vllm")), 8000)
+    rerank = RerankSettings(serve="vllm", model="Qwen/Qwen3-Reranker-4B")
+    rerank = server_args(Served("rerank", rerank), 8000)
     overrides = json.loads(rerank[rerank.index("--hf-overrides") + 1])
     assert overrides["classifier_from_token"] == ["no", "yes"]
     assert rerank[rerank.index("--chat-template") + 1] == QWEN3_RERANKER_TEMPLATE
@@ -107,7 +114,8 @@ def test_docker_runner_prunes_other_backends_and_passes_the_commands(tmp_path, m
     compose.write_text("services: {}\n")
     run = FakeRun()
     runner = DockerRunner(compose, run=run)
-    served = served_roles(settings(rerank=RerankSettings(enabled=True, serve="vllm")))
+    rerank = RerankSettings(enabled=True, serve="vllm", model="Qwen/Qwen3-Reranker-4B")
+    served = served_roles(settings(rerank=rerank))
     runner.prune(served)
     runner.start(served)
     (rm, rm_kwargs), (up, up_kwargs) = run.calls
@@ -172,7 +180,9 @@ def test_native_runner_starts_once_and_restarts_on_new_args(tmp_path, sleeper):
 
 
 def test_native_runner_refuses_vllm_and_needs_llama_server(tmp_path):
-    vllm = served_roles(settings(embedder=EmbedderSettings(serve="vllm")))
+    vllm = served_roles(
+        settings(embedder=EmbedderSettings(serve="vllm", model="Qwen/Qwen3-Embedding-4B"))
+    )
     runner = NativeRunner(tmp_path, tmp_path, lambda name: "/bin/llama-server")
     with pytest.raises(ServeError, match="vLLM runs only in Docker"):
         runner.start(vllm)
@@ -199,7 +209,7 @@ class FakeRunner:
 
 def test_bring_up_starts_vllm_servers_one_by_one():
     full = settings(
-        embedder=EmbedderSettings(serve="vllm"),
+        embedder=EmbedderSettings(serve="vllm", model="Qwen/Qwen3-Embedding-4B"),
         rerank=RerankSettings(enabled=True),
         llm=LOCAL_LLM.model_copy(update={"serve": "vllm"}),
     )

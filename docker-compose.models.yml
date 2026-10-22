@@ -1,6 +1,6 @@
 # Серверы моделей для `mnogobase models up` (Linux + NVIDIA Container Toolkit). Напрямую не
 # запускайте: какую роль на каком бэкенде поднять и с какой моделью, решает config.yaml
-# (serve, model, gguf, server), а команду сервиса mnogobase передаёт в MB_<СЕРВИС>_ARGS.
+# (serve, model, server), а команду сервиса mnogobase передаёт в MB_<СЕРВИС>_ARGS.
 # Проект compose — mnogobase-models, отдельно от Qdrant и Neo4j из docker-compose.yml.
 # Порты слушают MODELS_BIND (по умолчанию 127.0.0.1: у серверов без --api-key нет авторизации).
 # GGUF и веса кэшируются в томах llama_models и hf_cache и переживают перезапуски.

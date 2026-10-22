@@ -517,7 +517,7 @@ def test_wiki_build_and_reindex_report_progress(tmp_path, monkeypatch):
 def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text(
-        "rerank: {enabled: true, serve: vllm}\nllm: {serve: api, base_url: http://cloud/v1}\n",
+        "rerank: {enabled: true, serve: vllm, model: Qwen/Qwen3-Reranker-4B}\nllm: {serve: api, base_url: http://cloud/v1}\n",
         encoding="utf-8",
     )
     started: list = []

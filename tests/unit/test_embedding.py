@@ -60,7 +60,7 @@ def test_embedder_batches_and_applies_templates():
     out = emb.embed_documents([EmbedInput(text=f"t{i}") for i in range(5)])
     assert len(out) == 5 and len(out[0]) == 2
     assert [len(b["input"]) for b in bodies] == [2, 2, 1]
-    assert bodies[0] == {"model": "Qwen/Qwen3-Embedding-4B", "input": ["t0", "t1"]}
+    assert bodies[0] == {"model": "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M", "input": ["t0", "t1"]}
     emb.embed_query("hi")
     assert bodies[-1]["input"] == ["q: hi"]
     assert embedder_signature(emb).startswith("llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2:tpl-")
@@ -160,6 +160,10 @@ def test_signature_follows_the_backend_and_the_quant():
         return OpenAICompatEmbedder(EmbedderSettings(**update)).model_id
 
     assert model_id() == "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
-    assert model_id(gguf="Qwen/Qwen3-Embedding-4B-GGUF:Q8_0") != model_id()
-    assert model_id(serve="vllm") == "vllm:Qwen/Qwen3-Embedding-4B"
-    assert model_id(serve="api", base_url="http://x/v1") == "api:Qwen/Qwen3-Embedding-4B"
+    assert model_id(model="Qwen/Qwen3-Embedding-4B-GGUF:Q8_0") != model_id()
+    # отдельный gguf — те же веса, та же подпись: имя на сервере в неё не входит
+    split = model_id(model="Qwen/Qwen3-Embedding-4B", gguf="Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M")
+    assert split == model_id()
+    hf = "Qwen/Qwen3-Embedding-4B"
+    assert model_id(serve="vllm", model=hf) == "vllm:Qwen/Qwen3-Embedding-4B"
+    assert model_id(serve="api", base_url="http://x/v1", model=hf) == "api:Qwen/Qwen3-Embedding-4B"

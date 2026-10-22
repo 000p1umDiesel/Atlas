@@ -96,7 +96,7 @@ def server_args(served: Served, port: int) -> list[str]:
     if served.backend == "llamacpp":
         # имя модели на сервере — `model`, как у vLLM, поэтому конфиг не зависит от бэкенда;
         # у VLM -hf сам скачивает и подключает проектор картинок (mmproj) из того же репозитория
-        args = ["-hf", s.gguf or "", "--alias", s.model, "--port", str(port)]
+        args = ["-hf", s.weights, "--alias", s.model, "--port", str(port)]
         args += ["--ctx-size", str(c.ctx), "--n-gpu-layers", "999"]
         if served.role == "embedder":
             args += ["--embedding", "--ubatch-size", str(c.ctx)]

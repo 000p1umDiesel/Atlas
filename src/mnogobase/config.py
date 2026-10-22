@@ -107,9 +107,11 @@ class ServedModel(BaseModel):
     """Модель на OpenAI-совместимом сервере.
 
     `serve` — где она работает: `llamacpp` или `vllm` поднимает `mnogobase models up` на порту
-    роли (`port`), `api` — уже работающий сервер или API по `base_url`. `model` — HF-
-    репозиторий исходной модели и её имя на сервере на любом бэкенде (у llama.cpp это
-    `--alias`); веса для llama.cpp — GGUF из `gguf` (`repo:квант`)."""
+    роли (`port`), `api` — уже работающий сервер или API по `base_url`. `model` — что
+    запускается и как модель называется на сервере: у llama.cpp — GGUF-репозиторий с квантом
+    (`repo:квант`, токенизатор берётся из самого GGUF), у vLLM — HF-репозиторий исходной
+    модели, у `api` — имя модели на сервере. `gguf` (только llama.cpp, необязательно) — веса
+    отдельно от имени: тогда запускается он, а `model` остаётся именем (`--alias`)."""
 
     role: ClassVar[str]
     port: ClassVar[int]
@@ -123,10 +125,12 @@ class ServedModel(BaseModel):
 
     @model_validator(mode="after")
     def _check_serve(self) -> Self:
-        if self.serve == "llamacpp" and not self.gguf:
+        if self.serve == "vllm" and self.gguf:
+            raise ValueError(f"{self.role}.gguf is only for serve: llamacpp; vLLM runs model")
+        if self.serve == "vllm" and ":" in self.model:
             raise ValueError(
-                f"{self.role}.gguf is required for serve: llamacpp "
-                "(a GGUF repo with quant, e.g. Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M)"
+                f"{self.role}.model {self.model!r} looks like a GGUF with quant: serve: vllm "
+                "needs the original Hugging Face repo (e.g. Qwen/Qwen3-Embedding-4B)"
             )
         if self.serve == "api" and not self.base_url:
             raise ValueError(f"{self.role}.base_url is required for serve: api")
@@ -139,7 +143,7 @@ class ServedModel(BaseModel):
 
     @property
     def weights(self) -> str:
-        """Что именно работает на сервере: GGUF у llama.cpp, иначе `model`."""
+        """Что именно работает на сервере: `gguf`, если он задан у llama.cpp, иначе `model`."""
         return self.gguf if self.serve == "llamacpp" and self.gguf else self.model
 
 
@@ -173,8 +177,7 @@ class EmbedderSettings(ServedModel):
     role: ClassVar[str] = "embedder"
     port: ClassVar[int] = 8001
 
-    model: str = "Qwen/Qwen3-Embedding-4B"
-    gguf: str | None = "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
+    model: str = "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
     # `auto` — полная размерность модели (узнаётся пробным запросом); число меньше неё —
     # Matryoshka-усечение
     dim: PositiveInt | Literal["auto"] = "auto"
@@ -287,8 +290,7 @@ class RerankSettings(ServedModel):
     port: ClassVar[int] = 8002
 
     enabled: bool = False
-    model: str = "Qwen/Qwen3-Reranker-4B"
-    gguf: str | None = "gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M"
+    model: str = "gorse-io/Qwen3-Reranker-4B-GGUF:Q4_K_M"
     candidates: int = Field(default=30, ge=1)  # гибридных хитов на скоринг; остаются лучшие k
     max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для реранкера
 
@@ -308,8 +310,7 @@ class VisionSettings(ServedModel):
     port: ClassVar[int] = 8003
 
     enabled: bool = False
-    model: str = "Qwen/Qwen3-VL-2B-Instruct"
-    gguf: str | None = "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M"
+    model: str = "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M"
     prompt: str = DEFAULT_VISION_PROMPT
     max_tokens: int = Field(default=400, ge=16)
     # маленькие VLM на temperature 0 зацикливаются; presence_penalty — рекомендация Qwen3-VL

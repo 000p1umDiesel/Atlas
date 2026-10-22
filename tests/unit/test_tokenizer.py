@@ -43,17 +43,26 @@ def test_explicit_repo_skips_the_server(monkeypatch):
     assert loaded == [("Qwen/Qwen3-Embedding-4B", 128)]
 
 
-@pytest.mark.parametrize("serve", ["llamacpp", "vllm"])
-def test_auto_for_a_local_server_is_the_hf_tokenizer_of_the_model(monkeypatch, serve):
+def test_auto_on_local_vllm_is_the_hf_tokenizer_of_the_model(monkeypatch):
     loaded: list = []
     monkeypatch.setattr(
         tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append(repo) or "tok"
     )
-    embedder = EmbedderSettings(model="Qwen/Qwen3-Embedding-4B", serve=serve)
+    embedder = EmbedderSettings(model="Qwen/Qwen3-Embedding-4B", serve="vllm")
     # сервер не спрашивается: клиент, который упадёт на любом запросе
     boom = httpx.Client(transport=httpx.MockTransport(lambda request: 1 / 0))
     assert load_tokenizer(AUTO, embedder, client=boom) == "tok"
     assert loaded == ["Qwen/Qwen3-Embedding-4B"]
+
+
+def test_auto_on_local_llama_cpp_counts_with_the_gguf_tokenizer(monkeypatch):
+    monkeypatch.setattr(tokenizer_module, "_from_hf", lambda repo, max_tokens: 1 / 0)
+    seen: list = []
+    # model — GGUF без HF-репозитория рядом: /v1/models не спрашивается, считает /tokenize
+    embedder = EmbedderSettings(model="mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0")
+    tok = load_tokenizer(AUTO, embedder, client=_server([], seen))
+    assert isinstance(tok, ServerTokenizer) and tok.count_tokens("one two") == 2
+    assert [path for path, _ in seen] == ["/tokenize", "/tokenize"]
 
 
 def test_auto_on_api_vllm_loads_the_repo_it_reports(monkeypatch):
