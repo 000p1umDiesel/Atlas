@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import httpx
 from qdrant_client import QdrantClient
 
+from mnogobase.chunking.tokenizer import AUTO, load_tokenizer
 from mnogobase.config import Settings
 from mnogobase.device import detect_device
 from mnogobase.embedding.base import embedder_signature, signature_mismatch
@@ -15,7 +16,16 @@ from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 
-CHECKS: tuple[str, ...] = ("device", "ollama", "llm", "qdrant", "neo4j", "index", "types")
+CHECKS: tuple[str, ...] = (
+    "device",
+    "ollama",
+    "tokenizer",
+    "llm",
+    "qdrant",
+    "neo4j",
+    "index",
+    "types",
+)
 
 
 @dataclass
@@ -65,6 +75,12 @@ def run_checks(
         return Check(
             "ollama", True, ", ".join(f"{r} {m}" for r, m in wanted.items()) + " available"
         )
+
+    def tokenizer() -> Check:
+        name = settings.chunking.tokenizer
+        tok = load_tokenizer(name, settings.embedder)
+        source = f"{settings.embedder.model} from Ollama" if name == AUTO else name
+        return Check("tokenizer", True, f"{source} ({len(tok)} tokens)")
 
     def llm() -> Check:
         resp = httpx.get(
@@ -141,6 +157,7 @@ def run_checks(
     checks = {
         "device": device,
         "ollama": ollama,
+        "tokenizer": tokenizer,
         "llm": llm,
         "qdrant": qdrant,
         "neo4j": neo4j,

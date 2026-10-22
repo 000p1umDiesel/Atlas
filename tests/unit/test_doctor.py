@@ -3,6 +3,7 @@ import pytest
 from qdrant_client import QdrantClient
 
 from mnogobase import doctor
+from mnogobase.chunking.tokenizer import TokenizerError
 from mnogobase.config import EmbedderSettings, RerankSettings, Settings
 from mnogobase.doctor import run_checks
 from mnogobase.embedding.base import embedder_signature
@@ -159,3 +160,17 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
     [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # то, что запускает reindex
     assert lenient.ok, lenient.detail
     assert "dim 64" in lenient.detail and "768" in lenient.detail
+
+
+def test_tokenizer_check_reports_the_source_or_why_it_failed(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(doctor, "load_tokenizer", lambda name, embedder: ["t"] * 7)
+    [ok] = run_checks(settings, only=["tokenizer"])
+    assert ok.ok and ok.detail == "embeddinggemma-2:740m from Ollama (7 tokens)"
+
+    def unavailable(name, embedder):
+        raise TokenizerError("no tokenizer: set chunking.tokenizer")
+
+    monkeypatch.setattr(doctor, "load_tokenizer", unavailable)
+    [failed] = run_checks(settings, only=["tokenizer"])
+    assert not failed.ok and "chunking.tokenizer" in failed.detail

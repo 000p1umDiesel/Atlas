@@ -124,7 +124,8 @@ class ParsingSettings(BaseModel):
 
 
 class ChunkingSettings(BaseModel):
-    tokenizer: str = "google/embeddinggemma-2"
+    # `auto` берёт токенизатор модели эмбеддера из Ollama; иначе это HF-репозиторий
+    tokenizer: str = "auto"
     max_tokens: int = 512
 
 

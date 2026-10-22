@@ -162,9 +162,14 @@ def test_missing_config_file_is_a_clear_error(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "args", [["ingest", "docs"], ["ask", "what is attention?"], ["compare", "what?"]]
+    ("args", "extra"),
+    [
+        (["ingest", "docs"], {"tokenizer"}),
+        (["ask", "what is attention?"], set()),
+        (["compare", "what?"], set()),
+    ],
 )
-def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args):
+def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args, extra):
     monkeypatch.chdir(tmp_path)
     make_project(tmp_path)
     asked: list[tuple[str, ...]] = []
@@ -181,7 +186,7 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args):
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "ollama" in result.output and "ConnectError: refused" in result.output
-    assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"}
+    assert set(asked[0]) == {"ollama", "llm", "qdrant", "neo4j"} | extra
 
 
 def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):

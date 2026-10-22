@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from mnogobase.chunking.hybrid import Chunker
-from mnogobase.config import ChunkingSettings, ParsingSettings
+from mnogobase.config import ChunkingSettings, EmbedderSettings, ParsingSettings
 from mnogobase.parsing.docling_parser import DoclingParser
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
@@ -31,7 +31,8 @@ def test_title_falls_back_to_file_stem(tmp_path):
 def test_chunker_records(tmp_path):
     parser = DoclingParser(ParsingSettings(), "cpu", tmp_path)
     parsed = parser.parse(FIXTURES / "vnimanie_ru.md", DOC)
-    chunks = Chunker(ChunkingSettings(max_tokens=64)).chunk(parsed, DOC, "/x/vnimanie_ru.md")
+    settings = ChunkingSettings(tokenizer="google/embeddinggemma-2", max_tokens=64)
+    chunks = Chunker(settings, EmbedderSettings()).chunk(parsed, DOC, "/x/vnimanie_ru.md")
     assert len(chunks) >= 2
     assert [c.idx for c in chunks] == list(range(len(chunks)))
     assert chunks[0].chunk_id == f"{DOC}:00000"

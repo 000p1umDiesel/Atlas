@@ -35,8 +35,9 @@ parsing:
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]
 
 chunking:
-  # tokenizer: google/embeddinggemma-2
-  tokenizer: Qwen/Qwen3-Embedding-4B
+  # auto: токенизатор модели embedder.model из Ollama (меняется вместе с ней);
+  # HF-репозиторий (например Qwen/Qwen3-Embedding-4B) — если Ollama его не отдаёт
+  tokenizer: auto
   max_tokens: 512
 
 extract:

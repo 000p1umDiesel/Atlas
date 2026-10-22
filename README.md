@@ -105,7 +105,7 @@ uv sync
 uv run mnogobase doctor
 ```
 
-> **Первый запуск `ingest` дольше обычного.** Docling скачивает свои модели разметки и OCR, чанкер — токенайзер `google/embeddinggemma-2` с Hugging Face, а BM25 — модель `Qdrant/bm25`. Если Hugging Face откажет в доступе (репозитории Gemma бывают закрыты), примите лицензию Gemma на странице модели и выполните `hf auth login` (или задайте `HF_TOKEN`).
+> **Первый запуск `ingest` дольше обычного.** Docling скачивает свои модели разметки и OCR, а BM25 — модель `Qdrant/bm25`. Токенайзер чанкера по умолчанию (`chunking.tokenizer: auto`) берётся из модели эмбеддера в Ollama и ничего не скачивает. Если вместо `auto` указан HF-репозиторий и Hugging Face откажет в доступе (репозитории Gemma бывают закрыты), примите лицензию на странице модели и выполните `hf auth login` (или задайте `HF_TOKEN`).
 
 ### 2.3 Файл .env
 
@@ -115,7 +115,7 @@ uv run mnogobase doctor
 |---|---|---|
 | `LLM_API_KEY` | для внешнего LLM | ключ OpenAI-совместимого эндпоинта. Имя переменной задаётся в `llm.api_key_env`. Если переменная пуста, клиент отправляет заглушку `ollama` — локальной Ollama ключ не нужен |
 | `NEO4J_PASSWORD` | да | пароль Neo4j. Имя переменной задаётся в `neo4j.password_env`. `docker-compose.yml` берёт этот же пароль при первом создании базы |
-| `HF_TOKEN` | если Hugging Face требует авторизацию | токен для скачивания токенайзера |
+| `HF_TOKEN` | если Hugging Face требует авторизацию | токен для скачивания токенайзера, когда `chunking.tokenizer` — HF-репозиторий |
 | `MNOGOBASE_*` | по желанию | переопределение любого ключа `config.yaml` (раздел [6.2](#62-переопределение-через-переменные-окружения)) |
 
 ### 2.4 Проверка окружения (doctor)
@@ -126,13 +126,14 @@ uv run mnogobase doctor
 |---|---|---|
 | `device` | выбирает устройство для Docling: CUDA → MPS → CPU (или то, что задано в `device`) | — |
 | `ollama` | `GET {embedder.base_url}/api/tags`, ищет модель эмбеддера и, при `rerank.enabled` и том же `base_url`, модель реранкера | `model embeddinggemma-2:740m missing: run ollama pull embeddinggemma-2:740m` |
+| `tokenizer` | загружает токенайзер чанкера: при `auto` — из модели эмбеддера в Ollama (`POST /api/show`), иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: Ollama exposes no tokenizer for ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
 | `llm` | `GET {llm.base_url}/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <base_url>` |
 | `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
 | `neo4j` | подключение с логином и паролем | `ServiceUnavailable`, `AuthError` |
 | `index` | совпадает ли эмбеддер, которым построен индекс (модель, размерность, шаблоны), с текущим конфигом | `index was built with ..., config now uses ...: run mnogobase reindex` |
 | `types` | менялись ли типы сущностей после загрузки документов | только `warn`, см. раздел [6.3](#63-типы-сущностей) |
 
-Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`ollama`, `llm`, `qdrant`, `neo4j`), `reindex` — без `llm` и без сверки размерности коллекций (он их пересоздаёт), `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
+Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`ollama`, `llm`, `qdrant`, `neo4j`; `ingest` — ещё и `tokenizer`), `reindex` — без `llm` и без сверки размерности коллекций (он их пересоздаёт), `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
 
 ---
 
@@ -517,7 +518,7 @@ flowchart TD
 Детали этапов:
 
 - **parse** — `DocumentConverter` с OCR из `parsing.ocr` и ускорителем из `device` (эти опции заданы для PDF; на CUDA увеличены размеры батчей). Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
-- **chunk** — `HybridChunker(merge_peers=True)` с HF-токенайзером из `chunking.tokenizer` и пределом `chunking.max_tokens`. Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
+- **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это токенайзер самой модели эмбеддера: у GGUF-моделей словарь и merges берутся из `POST /api/show` (`verbose: true`) и собираются конвертером GGUF из `transformers`, у safetensors-моделей (новый движок Ollama) читается слой `tokenizer.json` из локального хранилища Ollama (`$OLLAMA_MODELS`, по умолчанию `~/.ollama/models`). Ollama вызывается один раз при первом чанкинге, дальше токены считаются локально. Ollama не умеет токенизировать сама (`/api/tokenize` нет), а подсчёт через `/api/embed` прогонял бы всю модель на каждый вызов. Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
 - **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /api/embed` Ollama (с `truncate: true`), обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
 - **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
 - **graph** — по каждому чанку: слияние каждой сущности (раздел 5.5), `MENTIONS` от чанка к сущностям, `entity_ids` в payload чанка, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`. Все затронутые сущности попадают в `dirty_entities`. Если у документа больше `max_failed_ratio` чанков без кэша извлечения, `graph` падает, а `extract` возвращается в `pending`.
@@ -802,7 +803,7 @@ flowchart TD
 | `sparse.model` | `Qdrant/bm25` | модель fastembed для BM25 | `reindex` |
 | `parsing.ocr` | `true` | OCR в PDF | новые и изменённые файлы |
 | `parsing.extensions` | `[pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt]` | какие файлы берёт `ingest` | сразу |
-| `chunking.tokenizer` | `google/embeddinggemma-2` | HF-токенайзер для подсчёта токенов чанка | новые и изменённые файлы |
+| `chunking.tokenizer` | `auto` | токенайзер для подсчёта токенов чанка: `auto` — токенайзер модели `embedder.model` из Ollama, иначе HF-репозиторий (например `Qwen/Qwen3-Embedding-4B`) | новые и изменённые файлы |
 | `chunking.max_tokens` | `512` | максимальный размер чанка | новые и изменённые файлы |
 | `extract.entity_types` | 20 типов (6.3) | типы сущностей и их описания для промпта | новые и изменённые файлы, предупреждение |
 | `extract.max_failed_ratio` | `0.2` | допустимая доля чанков без извлечения на документ | сразу |
@@ -951,7 +952,7 @@ llm:
      query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
    ```
 
-   `chunking.tokenizer` — токенизатор той же модели (`Qwen/Qwen3-Embedding-4B`). У всех Qwen3-Embedding он один и тот же (отличаются только служебные `<think>`/`<tool_response>`), так что границы чанков при переходе между размерами модели не меняются.
+   `chunking.tokenizer: auto` сам подхватит токенайзер новой модели из Ollama. У всех Qwen3-Embedding он один и тот же (отличаются только служебные `<think>`/`<tool_response>`), так что границы чанков при переходе между размерами модели не меняются.
 
 3. `uv run mnogobase reindex` — он удалит коллекции Qdrant, создаст их заново с новой размерностью и пересчитает все векторы. Ничего удалять вручную не нужно.
 
@@ -959,7 +960,7 @@ llm:
 
 **Matryoshka (MRL):** EmbeddingGemma 2 можно использовать в 512 или 256 измерениях — поставьте `embedder.dim: 512` (или 256) и выполните шаг 3. Векторы меньше, поиск быстрее, качество немного ниже. Если размерность больше той, что выдаёт модель, `reindex` остановится до изменения индекса: `embedder check failed: model returned N dims, config expects M; nothing was changed`.
 
-`chunking.tokenizer` можно поменять на HF-токенайзер новой модели, но это влияет только на чанкинг новых и изменённых файлов.
+Токенайзер (`chunking.tokenizer: auto` следует за `embedder.model`) влияет только на чанкинг новых и изменённых файлов.
 
 ### 7.5 Размер чанка
 
@@ -1061,7 +1062,8 @@ Qdrant можно делить между проектами через `qdrant.
 | `log.py` | structlog, `run_id`, `log_stage` |
 | `device.py` | выбор `cuda` / `mps` / `cpu` |
 | `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки |
-| `chunking/hybrid.py` | `Chunker`: HybridChunker с HF-токенайзером |
+| `chunking/hybrid.py` | `Chunker`: HybridChunker с токенайзером из `chunking/tokenizer.py` |
+| `chunking/tokenizer.py` | `load_tokenizer`: HF-репозиторий или (`auto`) токенайзер модели эмбеддера из Ollama |
 | `embedding/` | протоколы `Embedder`, `SparseEncoder` и помощники (`base.py`), `OllamaEmbedder`, `BM25Encoder` |
 | `llm/` | протокол `LLMClient`, `OpenAICompatLLM` (`client.py`), `render` (`templates.py`), промпты |
 | `extraction/` | `Extractor` (кэш, очистка ответа, `PROMPT_VERSION`), `EntityResolver` |
@@ -1153,7 +1155,7 @@ def build_app(settings, *, embedder=None, sparse=None, llm=None, vectors=None, g
 2. `model_id` должен быть уникальным с префиксом провайдера (как `ollama:<model>`): подпись `model_id:dim:tpl-<хеш templates>` (`embedder_signature`) сохраняется в `meta` и защищает индекс от смешивания векторов. Если провайдер не использует шаблоны, задайте `templates` постоянными.
 3. `config.py`: расширьте `EmbedderSettings.provider: Literal["ollama", "<name>"]` и добавьте нужные поля.
 4. `app.py`: в `build_app` выбирайте класс по `settings.embedder.provider` вместо безусловного `OllamaEmbedder`.
-5. `doctor.py`: проверка `ollama` обращается к `/api/tags`, а проверка `index` строит `OllamaEmbedder` для подписи — сделайте обе зависимыми от провайдера. Набор проверок команд задан в `cli.py` (`PREFLIGHT_CHECKS`, `REINDEX_CHECKS`).
+5. `doctor.py`: проверка `ollama` обращается к `/api/tags`, а проверка `index` строит `OllamaEmbedder` для подписи — сделайте обе зависимыми от провайдера. Проверка `tokenizer` и `chunking.tokenizer: auto` (`chunking/tokenizer.py`) читают токенайзер из Ollama — для другого провайдера задайте HF-репозиторий. Набор проверок команд задан в `cli.py` (`PREFLIGHT_CHECKS`, `INGEST_CHECKS`, `REINDEX_CHECKS`).
 6. Тесты по образцу `tests/unit/test_embedding.py` (HTTP через `httpx.MockTransport`). После переключения — `reindex` (раздел 7.4).
 
 **Новый провайдер LLM.** Почти всегда хватает `OpenAICompatLLM` (раздел 7.2). Свой клиент нужен, если API не OpenAI-совместимый или не умеет `json_schema`:
@@ -1234,7 +1236,9 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `extract` упал: `ExtractionFailedError: 7/20 chunks failed extraction` | больше `max_failed_ratio` чанков не извлеклись (ошибки LLM или невалидный JSON) | причины — события `extract_failed` и `llm_invalid_json` в логе; почините LLM и выполните `ingest --retry-failed` (повторяются только чанки без кэша) |
 | `graph` упал: `N/M chunks have no cached extraction; rerun with --retry-failed ...` | кэш извлечения неполный | `uv run mnogobase ingest --retry-failed` |
 | файл пропускается: `stage <этап> failed earlier; rerun with --retry-failed` | этап упал в прошлый раз | исправьте причину (`status` показывает ошибку), затем `ingest --retry-failed` |
-| `chunk` упал с ошибкой доступа к `google/embeddinggemma-2` (gated repo, 401) | токенайзер на Hugging Face закрыт лицензией | примите лицензию Gemma на странице модели, `hf auth login` или `HF_TOKEN` в `.env`, затем `ingest --retry-failed` |
+| `tokenizer`: `TokenizerError: Ollama exposes no tokenizer for <model> and its tokenizer.json is not under ...` | safetensors-модель, а Ollama на другой машине или в Docker (локального хранилища нет) | задайте `OLLAMA_MODELS` на папку моделей этой Ollama или укажите в `chunking.tokenizer` HF-репозиторий модели |
+| `tokenizer`: `TokenizerError: cannot rebuild the tokenizer of <model>` или `this transformers version cannot rebuild ...` | `transformers` не умеет собирать токенайзер этого типа из GGUF, или после обновления `transformers` сменился его внутренний конвертер GGUF (`chunking/tokenizer.py` использует его напрямую) | укажите в `chunking.tokenizer` HF-репозиторий модели; если виновато обновление — откатите `transformers` в `uv.lock` или поправьте импорт в `chunking/tokenizer.py` |
+| `chunk` упал с ошибкой доступа к `google/embeddinggemma-2` (gated repo, 401) | `chunking.tokenizer` — HF-репозиторий, закрытый лицензией | примите лицензию Gemma на странице модели, `hf auth login` или `HF_TOKEN` в `.env`, затем `ingest --retry-failed` |
 | `index was built with ..., config now uses ...; run mnogobase reindex` | эмбеддер в конфиге (модель, размерность или шаблоны — тогда в сообщении `embedder templates changed`) не тот, которым строился индекс | `uv run mnogobase reindex` |
 | `mb_chunks has dim 768, config 512: run mnogobase reindex` | `embedder.dim` изменился, коллекции Qdrant ещё старой размерности | `uv run mnogobase reindex` (пересоздаёт коллекции, рецепт 7.4) |
 | `reindex`: `embedder check failed: model returned N dims, config expects M; nothing was changed` | модель выдаёт меньше измерений, чем `embedder.dim` | уменьшите `embedder.dim` или смените модель; индекс не тронут |
@@ -1312,7 +1316,7 @@ mnogobase/
 │   ├── cli.py  app.py  pipeline.py  registry.py  config.py
 │   ├── models.py  ids.py  log.py  device.py  doctor.py  maintenance.py
 │   ├── parsing/docling_parser.py
-│   ├── chunking/hybrid.py
+│   ├── chunking/    hybrid.py  tokenizer.py
 │   ├── embedding/   base.py  ollama.py  sparse.py
 │   ├── llm/         client.py  templates.py  prompts/*.md
 │   ├── extraction/  extractor.py  resolver.py

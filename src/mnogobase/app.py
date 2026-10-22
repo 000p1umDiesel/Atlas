@@ -63,7 +63,7 @@ def build_app(
     if reranker is None and settings.rerank.enabled:
         reranker = OllamaReranker(settings.rerank)
     parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache")
-    chunker = Chunker(settings.chunking)
+    chunker = Chunker(settings.chunking, settings.embedder)
     extractor = Extractor(llm, registry, settings.extract.entity_types)
     resolver = EntityResolver(graph, vectors, embedder, llm, settings.resolve)
     wiki = WikiBuilder(settings.wiki, graph, vectors, embedder, sparse, llm, registry)

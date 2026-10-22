@@ -59,5 +59,5 @@ Any config key can be overridden with `MNOGOBASE_<SECTION>__<KEY>` env vars (lis
 ## Environment notes
 
 - On Windows with a system proxy (registry), httpx routes even `localhost` through it, which shows up as 503 from Ollama/Qdrant. `config.load_settings` adds local hosts to `NO_PROXY` to prevent this. Code paths that build `Settings` without `load_settings` (some tests) are not covered.
-- `config.yaml` currently uses the `qwen3-embedding:4b` (dim 2560) embedder with the `Qwen/Qwen3-Embedding-4B` tokenizer and enables the `dengcao/Qwen3-Reranker-4B:Q4_K_M` reranker (both in Ollama), while the README's defaults describe `embeddinggemma-2`. The reranker uses `/api/generate` logprobs, as Ollama has no rerank endpoint.
+- `config.yaml` currently uses the `qwen3-embedding:4b` (dim 2560) embedder with `chunking.tokenizer: auto` (the embedder's own tokenizer, rebuilt from Ollama by `chunking/tokenizer.py`) and enables the `dengcao/Qwen3-Reranker-4B:Q4_K_M` reranker (both in Ollama), while the README's defaults describe `embeddinggemma-2`. The reranker uses `/api/generate` logprobs, as Ollama has no rerank endpoint.
 - Commit prefixes: `feat:`, `fix:`, `docs:`. Derived data (`.mnogobase/`, `logs/`, `runs/`, `wiki/`, `documents/`) is gitignored.

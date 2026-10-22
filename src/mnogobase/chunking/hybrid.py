@@ -3,7 +3,8 @@ from __future__ import annotations
 from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 
-from mnogobase.config import ChunkingSettings
+from mnogobase.chunking.tokenizer import load_tokenizer
+from mnogobase.config import ChunkingSettings, EmbedderSettings
 from mnogobase.ids import chunk_id
 from mnogobase.models import ChunkRecord
 from mnogobase.parsing.docling_parser import ParsedDocument
@@ -12,17 +13,16 @@ from mnogobase.parsing.docling_parser import ParsedDocument
 class Chunker:
     """Чанкинг с учётом структуры документа и токенов, на токенизаторе самого эмбеддера."""
 
-    def __init__(self, settings: ChunkingSettings):
+    def __init__(self, settings: ChunkingSettings, embedder: EmbedderSettings):
         self._s = settings
+        self._embedder = embedder
         self._chunker: HybridChunker | None = None
         self._tokenizer: HuggingFaceTokenizer | None = None
 
     def _get(self) -> tuple[HybridChunker, HuggingFaceTokenizer]:
         if self._chunker is None:
-            from transformers import AutoTokenizer
-
             self._tokenizer = HuggingFaceTokenizer(
-                tokenizer=AutoTokenizer.from_pretrained(self._s.tokenizer),
+                tokenizer=load_tokenizer(self._s.tokenizer, self._embedder),
                 max_tokens=self._s.max_tokens,
             )
             self._chunker = HybridChunker(tokenizer=self._tokenizer, merge_peers=True)
