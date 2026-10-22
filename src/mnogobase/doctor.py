@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import httpx
 from qdrant_client import QdrantClient
+from tenacity import wait_none
 
 from mnogobase.chunking.tokenizer import AUTO, load_tokenizer, tokenizer_source
 from mnogobase.config import ServedModel, Settings
@@ -64,6 +65,25 @@ def run_checks(
 
     `check_dim=False` допускает коллекции с размерностью, отличной от конфига: это нужно для
     `reindex`, который удаляет и пересоздаёт их."""
+    # один эмбеддер на все проверки: при `dim: auto` размерность — один пробный запрос
+    embed_client = httpx.Client(
+        base_url=settings.embedder.url,
+        timeout=timeout,
+        headers=auth_headers(settings.embedder.api_key_env),
+    )
+    embedder = OpenAICompatEmbedder(settings.embedder, client=embed_client, retry_wait=wait_none())
+    unreachable: list[str] = []
+
+    def embedder_dim() -> int | None:
+        """Размерность векторов эмбеддера; None, если для неё нужен сервер, а он не ответил
+        (это сообщает проверка models)."""
+        if unreachable:
+            return None
+        try:
+            return embedder.dim
+        except httpx.HTTPError as exc:
+            unreachable.append(f"{type(exc).__name__}: {exc}")
+            return None
 
     def device() -> Check:
         return Check("device", True, detect_device(settings.device))
@@ -127,17 +147,23 @@ def run_checks(
             url=settings.qdrant.url, timeout=int(timeout), check_compatibility=False
         )
         try:
-            store = QdrantStore(client, settings.qdrant.prefix, settings.embedder.dim)
+            store = QdrantStore(client, settings.qdrant.prefix, lambda: embedder.dim)
             dim = store.collection_dim(store.chunks)
         finally:
             client.close()
-        if dim is not None and dim != settings.embedder.dim:
-            mismatch = f"{store.chunks} has dim {dim}, config {settings.embedder.dim}"
+        if dim is None:
+            return Check("qdrant", True, f"{settings.qdrant.url} (no index yet)")
+        expected = embedder_dim()
+        if expected is None:
+            detail = f"dim {dim}, not compared: the embedder is not reachable"
+            return Check("qdrant", True, f"{settings.qdrant.url} ({detail})")
+        if dim != expected:
+            source = "embedder" if settings.embedder.dim == "auto" else "config"
+            mismatch = f"{store.chunks} has dim {dim}, {source} {expected}"
             if check_dim:
                 return Check("qdrant", False, f"{mismatch}: run `mnogobase reindex`")
             return Check("qdrant", True, f"{settings.qdrant.url} ({mismatch}: rebuilt)")
-        state = "no index yet" if dim is None else f"dim {dim}"
-        return Check("qdrant", True, f"{settings.qdrant.url} ({state})")
+        return Check("qdrant", True, f"{settings.qdrant.url} (dim {dim})")
 
     def neo4j() -> Check:
         graph = GraphStore.from_settings(settings.neo4j)
@@ -149,10 +175,11 @@ def run_checks(
 
     def index() -> Check:
         db = settings.data_dir / "state.db"
-        embedder = OpenAICompatEmbedder(settings.embedder)
-        expected = embedder_signature(embedder)
         if not db.exists():
             return Check("index", True, "no index yet")
+        if embedder_dim() is None:
+            return Check("index", False, f"embedder dimension unknown: {unreachable[0]}")
+        expected = embedder_signature(embedder)
         registry = Registry(db)
         try:
             stored = registry.get_meta("embedder")
@@ -186,4 +213,7 @@ def run_checks(
         "index": index,
         "types": types,
     }
-    return [_guard(name, checks[name]) for name in CHECKS if only is None or name in only]
+    try:
+        return [_guard(name, checks[name]) for name in CHECKS if only is None or name in only]
+    finally:
+        embed_client.close()

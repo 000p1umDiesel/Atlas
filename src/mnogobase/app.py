@@ -57,7 +57,8 @@ def build_app(
     registry = Registry(settings.data_dir / "state.db")
     embedder = embedder or OpenAICompatEmbedder(settings.embedder)
     sparse = sparse or BM25Encoder(settings.sparse.model, device=device)
-    vectors = vectors or QdrantStore.from_settings(settings.qdrant, embedder.dim)
+    # при `embedder.dim: auto` размерность спросит у сервера только команда, которой она нужна
+    vectors = vectors or QdrantStore.from_settings(settings.qdrant, lambda: embedder.dim)
     graph = graph or GraphStore.from_settings(settings.neo4j)
     llm = llm or OpenAICompatLLM(settings.llm)
     if reranker is None and settings.rerank.enabled:

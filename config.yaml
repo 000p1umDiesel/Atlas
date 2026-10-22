@@ -1,7 +1,4 @@
 device: mps                         # auto | cuda | mps | cpu
-data_dir: .mnogobase
-logs_dir: logs
-runs_dir: runs
 
 # Модели ролей (llm, embedder, rerank, vision). serve — где работает модель:
 #   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002/8003);
@@ -14,22 +11,16 @@ llm:
   base_url: https://codex.sale/v1
   # локально: model: Qwen/Qwen3-30B-A3B-Instruct-2507, serve: llamacpp,
   #   gguf: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M (base_url убрать)
-  api_key_env: LLM_API_KEY
   concurrency: 16
   temperature: 0.1
   timeout_s: 360
-  overrides: {extract: null, resolve: null, wiki: null, answer: null, query: null}
 
 embedder:
   model: Qwen/Qwen3-Embedding-4B
   serve: llamacpp
   gguf: Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M
-  dim: 2560
   doc_template: "{text}"
   query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
-
-sparse:
-  model: Qdrant/bm25
 
 parsing:
   ocr: true
@@ -37,9 +28,6 @@ parsing:
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt, png, jpg, jpeg, tif, tiff, bmp, webp]
 
 chunking:
-  # auto: токенизатор модели эмбеддера (HF-репозиторий embedder.model, у api — с её
-  # сервера); иначе HF-репозиторий
-  tokenizer: auto
   max_tokens: 512
 
 extract:
@@ -66,12 +54,10 @@ extract:
   max_failed_ratio: 0.2
 
 resolve:
-  auto_merge: 1.0                    # 1.0: по одному косинусу не сливать, всё через LLM
   llm_check: 0.75
   max_descriptions: 5
 
 wiki:
-  dir: wiki
   language: en
   min_mentions: 2
   evidence_k: 12
@@ -83,7 +69,7 @@ retrieval:
   neighbors: 2                       # rag: чанки той же секции, добавляемые с каждой стороны от попадания
   translate: true                    # искать также по английскому переводу неанглийского вопроса
   answer_language: ru                # ru | en | ... | auto (язык вопроса)
-  budget: {rag: 0.4, wiki: 0.3, graph: 0.3}
+  budget: {rag: 0.2, wiki: 0.2, graph: 0.6}
 
 rerank:
   enabled: true                      # rag: переоценка гибридных попаданий cross-encoder'ом

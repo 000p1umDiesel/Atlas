@@ -128,7 +128,7 @@ uv run mnogobase doctor
 | `models` | `GET <url>/models` у сервера эмбеддера и (при `enabled`) реранкера и VLM: отдаёт ли он `model` из конфига | `... is not reachable: start the local models with mnogobase models up`, `<model> is not served by <url> (it serves ...)` |
 | `tokenizer` | загружает токенайзер чанкера: при `auto` — HF-токенайзер `embedder.model` (у `serve: api` — по `root` в `/v1/models` или `/tokenize` сервера); иначе HF-репозиторий из `chunking.tokenizer` | `TokenizerError: ...` (см. раздел [9](#9-диагностика-и-частые-проблемы)) |
 | `llm` | `GET <llm url>/models` с ключом; 404/405 считаются нормой (`models endpoint not available`) | 401/403 (неверный ключ), `<model> is not served by <url>` |
-| `qdrant` | доступность и размерность коллекции `mb_chunks` | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`) |
+| `qdrant` | доступность и размерность коллекции `mb_chunks` (при `embedder.dim: auto` — против размерности, которую вернул эмбеддер; если он недоступен, размерность не сравнивается) | `mb_chunks has dim 768, config 512: run mnogobase reindex` (после смены `embedder.dim`), `mb_chunks has dim 2560, embedder 1024: ...` (после смены модели при `auto`) |
 | `neo4j` | подключение с логином и паролем | `ServiceUnavailable`, `AuthError` |
 | `index` | совпадает ли эмбеддер, которым построен индекс (модель, размерность, шаблоны), с текущим конфигом | `index was built with ..., config now uses ...: run mnogobase reindex` |
 | `types` | менялись ли типы сущностей после загрузки документов | только `warn`, см. раздел [6.3](#63-типы-сущностей) |
@@ -266,7 +266,7 @@ uv run mnogobase status
 uv run mnogobase reindex
 ```
 
-Нужен после смены эмбеддера (модель, размерность, шаблоны): `ingest`, `wiki build`, `ask` и `compare` сами замечают такую смену и останавливаются с просьбой запустить `reindex`. Сначала проверяет, что эмбеддер выдаёт вектор размерности `embedder.dim` (иначе останавливается, ничего не тронув), затем удаляет и заново создаёт три коллекции Qdrant с новой размерностью и пересчитывает векторы: чанки — из кэша `.mnogobase/cache/<doc_id>.chunks.json` (если кэша нет, текст берётся из Neo4j), сущности — из Neo4j, разделы wiki — из файлов `wiki/entities/*.md`. Граф, wiki-файлы и кэш извлечения не меняются, LLM не вызывается. Печатает `reindexed: N chunks, N entities, N wiki sections`.
+Нужен после смены эмбеддера (модель, размерность, шаблоны): `ingest`, `wiki build`, `ask` и `compare` сами замечают такую смену и останавливаются с просьбой запустить `reindex`. Сначала проверяет, что эмбеддер выдаёт вектор размерности `embedder.dim` (при `auto` — просто что он отвечает; иначе останавливается, ничего не тронув), затем удаляет и заново создаёт три коллекции Qdrant с новой размерностью и пересчитывает векторы: чанки — из кэша `.mnogobase/cache/<doc_id>.chunks.json` (если кэша нет, текст берётся из Neo4j), сущности — из Neo4j, разделы wiki — из файлов `wiki/entities/*.md`. Граф, wiki-файлы и кэш извлечения не меняются, LLM не вызывается. Печатает `reindexed: N chunks, N entities, N wiki sections`.
 
 Пока `reindex` идёт, индекс помечен как незавершённый: если его прервать, `ingest` и `ask` откажутся работать, пока `reindex` не будет запущен снова и не дойдёт до конца. Пример смены модели и размерности — рецепт [7.4](#74-сменить-эмбеддер-или-размерность).
 
@@ -519,7 +519,7 @@ flowchart TD
 
 - **parse** — `DocumentConverter` с OCR из `parsing.ocr` / `parsing.ocr_lang` и ускорителем из `device` (эти опции заданы для PDF и картинок; на CUDA увеличены размеры батчей). При `vision.enabled` картинки PDF, DOCX и PPTX описывает VLM (раздел [7.16](#716-картинки-и-графики-vision)), а файл-картинка описывается ещё и целиком. Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
 - **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` это HF-токенайзер `embedder.model` (у GGUF тот же словарь, проверено на Qwen3-Embedding); у `serve: api` — репозиторий из `root` в `/v1/models` (vLLM) или `POST /tokenize` сервера (llama.cpp, `ServerTokenizer` с кэшем). Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
-- **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
+- **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` (при `auto` — без обрезки) и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
 - **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Измерения, координаты, даты и безымянные гипотетические объекты («ring at 144 au», «an unseen planet») промпт просит не делать сущностями. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
 - **graph** — по каждому чанку: слияние каждой сущности (раздел 5.5), `MENTIONS` от чанка к сущностям, `entity_ids` в payload чанка, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`. Все затронутые сущности попадают в `dirty_entities`. Если у документа больше `max_failed_ratio` чанков без кэша извлечения, `graph` падает, а `extract` возвращается в `pending`.
 
@@ -645,7 +645,7 @@ erDiagram
 - `WikiPage.page_id` равен `entity_id`, `path` — путь относительно `wiki/` (`entities/<slug>.md`).
 - Ограничения уникальности: `Document.doc_id`, `Chunk.chunk_id`, `Entity.entity_id`, `WikiPage.page_id`. Индексы: `WikiPage.slug`, `Chunk.doc_id`, полнотекстовый `entity_names` по `Entity.name` и `Entity.aliases_text`. Схема создаётся `IF NOT EXISTS` при каждом запуске (`GraphStore.ensure_schema`).
 
-**Qdrant.** Префикс коллекций — `qdrant.prefix` (`mb_`). Плотный вектор называется `dense` (косинус, размерность `embedder.dim`), разреженный — `bm25` (модификатор IDF). Все индексируемые поля payload — keyword.
+**Qdrant.** Префикс коллекций — `qdrant.prefix` (`mb_`). Плотный вектор называется `dense` (косинус, размерность `embedder.dim` или, при `auto`, модели), разреженный — `bm25` (модификатор IDF). Все индексируемые поля payload — keyword.
 
 | Коллекция | Векторы | Индексы payload | Что эмбеддится | ID точки |
 |---|---|---|---|---|
@@ -802,7 +802,7 @@ flowchart TD
 | `embedder.base_url` | не задан | адрес OpenAI-API до `/v1` включительно; обязателен для `api`, для локальных бэкендов по умолчанию `http://localhost:8001/v1` (задайте, если модель поднята на другой машине) | сразу |
 | `embedder.server` | ctx `8192`, gpu_memory `0.15`, args `[]` | как `models up` запускает сервер: окно контекста (`--ctx-size` / `--max-model-len`), доля видеопамяти vLLM, дополнительные флаги | `models up` |
 | `embedder.api_key_env` | не задан | имя переменной с Bearer-ключом сервера (`--api-key` у vLLM и llama.cpp) | сразу |
-| `embedder.dim` | `2560` | размерность: вектор модели обрезается до неё и нормируется (Matryoshka) | `reindex`, см. 7.4 |
+| `embedder.dim` | `auto` | размерность векторов. `auto` — полная размерность модели: её сообщает пробный запрос `/embeddings`, когда она впервые нужна (создание коллекций, подпись индекса). Число — вектор модели обрезается до него и нормируется (Matryoshka) | `reindex`, см. 7.4 |
 | `embedder.batch_size` | `32` | текстов в одном запросе к серверу | сразу |
 | `embedder.doc_template` | `{text}` | шаблон документа; `{title}` — заголовок документа, имя сущности или страницы (`none`, если нет) | `reindex` |
 | `embedder.query_template` | `Instruct: Given a question, retrieve passages that answer it\nQuery: {query}` | шаблон запроса (инструкция Qwen3-Embedding; согласуйте с doc_template) | `reindex` |
@@ -967,17 +967,18 @@ llm:
 embedder:
   model: Qwen/Qwen3-Embedding-0.6B
   gguf: Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
-  dim: 1024
 ```
+
+`embedder.dim` по умолчанию `auto`: размерность новой модели берётся у сервера, править её не нужно.
 
 1. `uv run mnogobase models up` — перезапустит эмбеддер с новой моделью (остальные серверы не трогает).
 2. `uv run mnogobase reindex` — удалит коллекции Qdrant, создаст их заново с новой размерностью и пересчитает все векторы. Ничего удалять вручную не нужно.
 
 `chunking.tokenizer: auto` сам подхватит токенайзер новой модели. У всех Qwen3-Embedding он один и тот же (отличаются только служебные `<think>`/`<tool_response>`), так что границы чанков при переходе между размерами модели не меняются.
 
-Подпись индекса — это бэкенд, веса (у llama.cpp — GGUF с квантом), размерность и шаблоны. Пока `reindex` не выполнен, `ingest`, `wiki build`, `ask` и `compare` отказываются работать: при новой размерности предварительная проверка пишет `mb_chunks has dim 2560, config 1024: run mnogobase reindex`, при других весах или бэкенде — `index was built with llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560:tpl-..., config now uses ...; run mnogobase reindex`. Поэтому перевод эмбеддера с llama.cpp на vLLM (Q4 → bf16) или смена кванта тоже требуют `reindex`, а после правки одних `doc_template`/`query_template` в сообщении будет `embedder templates changed`. Индексы, построенные до `serve` (подписи `ollama:...` и `openai:...`), тоже требуют `reindex`.
+Подпись индекса — это бэкенд, веса (у llama.cpp — GGUF с квантом), размерность и шаблоны. Пока `reindex` не выполнен, `ingest`, `wiki build`, `ask` и `compare` отказываются работать: при новой размерности предварительная проверка пишет `mb_chunks has dim 2560, embedder 1024: run mnogobase reindex` (с явным числом в `embedder.dim` — `config 1024`), при других весах или бэкенде — `index was built with llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560:tpl-..., config now uses ...; run mnogobase reindex`. Поэтому перевод эмбеддера с llama.cpp на vLLM (Q4 → bf16) или смена кванта тоже требуют `reindex`, а после правки одних `doc_template`/`query_template` в сообщении будет `embedder templates changed`. Индексы, построенные до `serve` (подписи `ollama:...` и `openai:...`), тоже требуют `reindex`.
 
-**Matryoshka (MRL):** Qwen3-Embedding можно использовать в меньшей размерности — поставьте `embedder.dim: 1024` (или 512) без смены модели и выполните `reindex`. Векторы меньше, поиск быстрее, качество немного ниже. Если размерность больше той, что выдаёт модель, `reindex` остановится до изменения индекса: `embedder check failed: model returned N dims, config expects M; nothing was changed`.
+**Matryoshka (MRL):** Qwen3-Embedding можно использовать в меньшей размерности — поставьте `embedder.dim: 1024` (или 512) без смены модели и выполните `reindex`. Переход с явной полной размерности на `auto` (и обратно) у той же модели подпись индекса не меняет и `reindex` не требует. Векторы меньше, поиск быстрее, качество немного ниже. Если размерность больше той, что выдаёт модель, `reindex` остановится до изменения индекса: `embedder check failed: model returned N dims, config expects M; nothing was changed`.
 
 Токенайзер (`chunking.tokenizer: auto` следует за `embedder.model`) влияет только на чанкинг новых и изменённых файлов.
 
@@ -1355,7 +1356,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `models up`: `<роль>: the vllm server exited`, в логе `ValueError` про свободную память GPU | контейнеры vLLM вместе просят больше видеопамяти, чем есть (`server.gpu_memory`) | уменьшите `<роль>.server.gpu_memory` (сумма на карту < 1) или переведите роль на `llamacpp` |
 | `Invalid configuration: ... gguf is required for serve: llamacpp` / `base_url is required for serve: api` | для бэкенда не хватает поля | задайте `gguf` (`repo:квант`) или `base_url` |
 | `index was built with ..., config now uses ...; run mnogobase reindex` | эмбеддер в конфиге (модель, размерность или шаблоны — тогда в сообщении `embedder templates changed`) не тот, которым строился индекс | `uv run mnogobase reindex` |
-| `mb_chunks has dim 2560, config 1024: run mnogobase reindex` | `embedder.dim` изменился, коллекции Qdrant ещё старой размерности | `uv run mnogobase reindex` (пересоздаёт коллекции, рецепт 7.4) |
+| `mb_chunks has dim 2560, config 1024: run mnogobase reindex` (или `embedder 1024` при `dim: auto`) | размерность эмбеддера изменилась (`embedder.dim` или, при `auto`, модель), коллекции Qdrant ещё старой размерности | `uv run mnogobase reindex` (пересоздаёт коллекции, рецепт 7.4) |
 | `reindex`: `embedder check failed: model returned N dims, config expects M; nothing was changed` | модель выдаёт меньше измерений, чем `embedder.dim` | уменьшите `embedder.dim` или смените модель; индекс не тронут |
 | `index was built with reindex-in-progress, ...` | `reindex` был прерван | запустите `uv run mnogobase reindex` ещё раз |
 | `cannot finish removing old document version(s) ...` (код 2), `status` показывает `pending document removals` | удаление старой версии изменённого файла не завершилось (обычно недоступен Qdrant или Neo4j) | почините сервис (`doctor`) и повторите `ingest` или `wiki build`: удаление доводится первым. Начать заново — `reset` |

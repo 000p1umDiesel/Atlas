@@ -34,18 +34,31 @@ def _match(key: str, value: str) -> qm.Filter:
 
 class QdrantStore:
     def __init__(
-        self, client: QdrantClient, prefix: str, dim: int, *, retry_wait=_DEFAULT_RETRY_WAIT
+        self,
+        client: QdrantClient,
+        prefix: str,
+        dim: int | Callable[[], int],
+        *,
+        retry_wait=_DEFAULT_RETRY_WAIT,
     ):
+        """`dim` — размерность или функция, которая её узнает: она вызывается только при
+        создании или проверке коллекций, так что `reset` обходится без эмбеддера."""
         self.client = client
-        self.dim = dim
+        self._dim = dim
         self.chunks = f"{prefix}chunks"
         self.entities = f"{prefix}entities"
         self.wiki = f"{prefix}wiki_pages"
         self._retry_wait = retry_wait
 
     @classmethod
-    def from_settings(cls, settings: QdrantSettings, dim: int) -> QdrantStore:
+    def from_settings(cls, settings: QdrantSettings, dim: int | Callable[[], int]) -> QdrantStore:
         return cls(QdrantClient(url=settings.url, timeout=60), settings.prefix, dim)
+
+    @property
+    def dim(self) -> int:
+        if callable(self._dim):
+            self._dim = self._dim()
+        return self._dim
 
     def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Выполняет сетевой вызов Qdrant, повторяя только при транспортных ошибках."""

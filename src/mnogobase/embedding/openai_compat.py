@@ -18,7 +18,7 @@ class OpenAICompatEmbedder:
 
     Контекст задаётся при запуске сервера, а длинный вход сервер не обрезает, а отклоняет:
     чанки не длиннее `chunking.max_tokens` должны помещаться в его окно. Повтор при сетевых
-    ошибках и 5xx."""
+    ошибках и 5xx. При `dim: auto` размерность — длина первого вектора от сервера."""
 
     def __init__(
         self,
@@ -32,9 +32,17 @@ class OpenAICompatEmbedder:
         )
         self._retry_wait = retry_wait
         self.model_id = settings.model_id
-        self.dim = settings.dim
+        self._dim = settings.dim if settings.dim != "auto" else None
         self.templates = (settings.doc_template, settings.query_template)
         self._log = get_logger(__name__)
+
+    @property
+    def dim(self) -> int:
+        """Размерность векторов; при `dim: auto` до первого вектора её узнаёт пробный запрос."""
+        if self._dim is None:
+            self._embed(["dimension probe"])
+        assert self._dim is not None
+        return self._dim
 
     def _embed(self, inputs: list[str]) -> list[list[float]]:
         start = time.perf_counter()
@@ -56,7 +64,9 @@ class OpenAICompatEmbedder:
             batch_size=len(inputs),
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
-        return [truncate_normalize(item["embedding"], self.dim) for item in data]
+        if self._dim is None:
+            self._dim = len(data[0]["embedding"])
+        return [truncate_normalize(item["embedding"], self._dim) for item in data]
 
     def embed_documents(self, items: Sequence[EmbedInput]) -> list[list[float]]:
         texts = [format_document(item, self._s.doc_template) for item in items]

@@ -54,6 +54,20 @@ def test_ensure_is_idempotent_and_checks_dimension():
         QdrantStore(client, "t_", 32).ensure_collections()
 
 
+def test_dimension_callable_is_resolved_only_for_collections():
+    calls = []
+
+    def dim() -> int:
+        calls.append(1)
+        return 64
+
+    store = QdrantStore(QdrantClient(":memory:"), "t_", dim)
+    store.drop_collections()
+    assert calls == []  # reset обходится без эмбеддера
+    store.ensure_collections()
+    assert store.collection_dim(store.chunks) == 64 and calls == [1]
+
+
 def test_hybrid_search_ranks_relevant_chunk_first():
     store = make_store()
     index(

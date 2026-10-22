@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, Self
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 LLM_TASKS = ("extract", "resolve", "wiki", "answer", "query")
@@ -175,7 +175,9 @@ class EmbedderSettings(ServedModel):
 
     model: str = "Qwen/Qwen3-Embedding-4B"
     gguf: str | None = "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
-    dim: int = 2560
+    # `auto` — полная размерность модели (узнаётся пробным запросом); число меньше неё —
+    # Matryoshka-усечение
+    dim: PositiveInt | Literal["auto"] = "auto"
     batch_size: int = 32
     doc_template: str = "{text}"
     query_template: str = (

@@ -86,13 +86,13 @@ def test_embedder_orders_by_index_and_sends_the_api_key(monkeypatch):
 
 def test_signature_covers_the_templates_and_accepts_legacy_signatures():
     def sig(**update):
-        return embedder_signature(OpenAICompatEmbedder(EmbedderSettings(**update)))
+        return embedder_signature(OpenAICompatEmbedder(EmbedderSettings(dim=2560, **update)))
 
     default = sig()
     assert sig() == default  # стабильна
     assert sig(doc_template="title: {title} | {text}") != default
     assert sig(query_template="{query}") != default
-    emb = OpenAICompatEmbedder(EmbedderSettings())
+    emb = OpenAICompatEmbedder(EmbedderSettings(dim=2560))
     for accepted in (None, default, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560"):
         assert signature_mismatch(accepted, emb) is None, accepted
     templates = signature_mismatch(sig(doc_template="title: {title} | {text}"), emb)
@@ -123,6 +123,24 @@ def test_embedder_rejects_too_small_vectors():
     emb = OpenAICompatEmbedder(EmbedderSettings(dim=2), client=_client(handler))
     with pytest.raises(ValueError, match="dims"):
         emb.embed_query("x")
+
+
+def test_auto_dim_is_the_length_of_the_first_vector():
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_data([[3.0, 4.0, 0.0]]))
+
+    probed = OpenAICompatEmbedder(EmbedderSettings(), client=_client(handler))
+    assert probed.dim == 3 and probed.dim == 3  # один пробный запрос
+    assert [b["input"] for b in bodies] == [["dimension probe"]]
+    assert embedder_signature(probed).startswith("llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:3:")
+
+    bodies.clear()
+    emb = OpenAICompatEmbedder(EmbedderSettings(), client=_client(handler))
+    assert emb.embed_query("x") == pytest.approx([0.6, 0.8, 0.0])
+    assert emb.dim == 3 and len(bodies) == 1  # размерность пришла с первым вектором
 
 
 def test_fake_embedder_similarity():

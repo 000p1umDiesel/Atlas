@@ -12,6 +12,7 @@ import pytest
 
 from mnogobase.app import build_app
 from mnogobase.config import load_settings
+from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.ids import file_doc_id, normalize_name
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import Answerer
@@ -77,8 +78,9 @@ async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
             "wiki": base.wiki.model_copy(update={"dir": tmp_path / "wiki"}),
         }
     )
-    vectors = QdrantStore(qdrant_client, "e2e_", settings.embedder.dim)
-    app = build_app(settings, vectors=vectors, graph=graph)
+    embedder = OpenAICompatEmbedder(settings.embedder)
+    vectors = QdrantStore(qdrant_client, "e2e_", lambda: embedder.dim)
+    app = build_app(settings, embedder=embedder, vectors=vectors, graph=graph)
     try:
         report = await app.pipeline.ingest([corpus])
         assert report.failed == {}, report.failed

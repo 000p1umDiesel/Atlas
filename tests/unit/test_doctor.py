@@ -14,7 +14,21 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 
 def make_settings(tmp_path, **update) -> Settings:
-    return Settings().model_copy(update={"data_dir": tmp_path / ".mb", **update})
+    # dim задан явно: при `auto` проверки спросили бы его у сервера эмбеддера
+    embedder = EmbedderSettings(dim=2560)
+    return Settings().model_copy(
+        update={"data_dir": tmp_path / ".mb", "embedder": embedder, **update}
+    )
+
+
+def mock_embedder(monkeypatch, handler) -> None:
+    """Эмбеддер doctor отвечает через `handler` вместо сервера."""
+
+    def build(settings, client, retry_wait):
+        mock = httpx.Client(base_url=settings.url, transport=httpx.MockTransport(handler))
+        return OpenAICompatEmbedder(settings, client=mock, retry_wait=retry_wait)
+
+    monkeypatch.setattr(doctor, "OpenAICompatEmbedder", build)
 
 
 def store_signature(tmp_path, signature: str) -> None:
@@ -48,7 +62,8 @@ def test_index_check_fails_when_only_the_templates_changed(tmp_path):
     [same] = run_checks(settings, only=["index"])
     assert same.ok, same.detail
 
-    edited = make_settings(tmp_path, embedder=EmbedderSettings(doc_template="passage: {text}"))
+    embedder = EmbedderSettings(dim=2560, doc_template="passage: {text}")
+    edited = make_settings(tmp_path, embedder=embedder)
     [changed] = run_checks(edited, only=["index"])
     assert not changed.ok
     assert "templates changed" in changed.detail and "mnogobase reindex" in changed.detail
@@ -190,6 +205,42 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
     [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # то, что запускает reindex
     assert lenient.ok, lenient.detail
     assert "dim 64" in lenient.detail and "2560" in lenient.detail
+
+
+@pytest.mark.filterwarnings("ignore:Payload indexes have no effect in the local Qdrant:UserWarning")
+def test_auto_dimension_is_compared_with_what_the_embedder_returns(tmp_path, monkeypatch):
+    client = QdrantClient(":memory:")
+    QdrantStore(client, "mb_", 64).ensure_collections()
+    monkeypatch.setattr(client, "close", lambda: None)
+    monkeypatch.setattr(doctor, "QdrantClient", lambda **kwargs: client)
+    settings = make_settings(tmp_path, embedder=EmbedderSettings())  # dim: auto
+    store_signature(tmp_path, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:64")
+    calls = []
+
+    def vectors(size):
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0] * size}]})
+
+        return handler
+
+    mock_embedder(monkeypatch, vectors(64))
+    qdrant, index = run_checks(settings, only=["qdrant", "index"])
+    assert qdrant.ok and "dim 64" in qdrant.detail
+    assert index.ok and ":64:tpl-" in index.detail
+    assert len(calls) == 1  # один пробный запрос на все проверки
+
+    mock_embedder(monkeypatch, vectors(32))
+    [smaller] = run_checks(settings, only=["qdrant"])
+    assert not smaller.ok and "mb_chunks has dim 64, embedder 32" in smaller.detail
+
+    def down(request):
+        raise httpx.ConnectError("connection refused")
+
+    mock_embedder(monkeypatch, down)
+    qdrant, index = run_checks(settings, only=["qdrant", "index"])
+    assert qdrant.ok and "not reachable" in qdrant.detail  # о самом сервере сообщает models
+    assert not index.ok and "ConnectError" in index.detail
 
 
 def test_tokenizer_check_reports_the_source_or_why_it_failed(tmp_path, monkeypatch):

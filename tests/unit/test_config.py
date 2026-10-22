@@ -33,7 +33,7 @@ def test_defaults_without_config_file(tmp_path, clean_env):
     s = load_settings()
     assert s.embedder.model == "Qwen/Qwen3-Embedding-4B"
     assert s.embedder.serve == "llamacpp" and s.llm.serve == "api"
-    assert s.embedder.dim == 2560
+    assert s.embedder.dim == "auto"
     assert s.embedder.url == "http://localhost:8001/v1"
     assert s.rerank.url == "http://localhost:8002/v1"
     assert s.llm.url == "https://codex.sale/v1"
