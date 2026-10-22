@@ -300,8 +300,6 @@ uv run mnogobase reset --yes      # без вопроса
 | `reset [--yes]` | удалить все данные проекта | qdrant, neo4j | да |
 | `models up [РОЛИ...] [--runner auto\|docker\|native]` | поднять серверы ролей с `serve: llamacpp \| vllm` и дождаться готовности (раздел 7.15) | — | нет |
 | `models down` / `status` / `logs РОЛЬ [-f]` | остановить серверы моделей / где какая модель и готова ли / лог сервера роли | — | нет |
-| `models top [--interval S] [--once]` | нагрузка серверов вживую: занятые слоты, очередь, токены/с, память, видеокарты; у LLM по API — вызовы за минуту из журнала (раздел 7.15) | — | нет |
-| `logs [-f] [-n N] [--level L] [--run ID\|last] [--event S]` | журнал `logs/mnogobase.jsonl` в читаемом виде (раздел 4.5) | — | нет |
 
 Одновременно может работать только одна из команд `ingest` / `wiki build` / `reindex` / `reset` (файловая блокировка `.mnogobase/ingest.lock`). Вторая сразу завершается с сообщением `Another ingest / wiki / reindex / reset run is in progress.`
 
@@ -452,25 +450,6 @@ jq 'select(.question | test("внимани")) | {mode, answer}' runs/compare.js
 ### 4.5 Логи (logs/mnogobase.jsonl)
 
 Команды пишут структурированный лог в `logs/mnogobase.jsonl` (JSON по строкам, ротация по 10 МБ, хранится 5 старых файлов). В консоль выводятся только предупреждения и ошибки. Трейсбеки пишутся без локальных переменных, чтобы в лог не попадали ключи и тексты документов.
-
-Читать его удобнее командой `mnogobase logs`: события по одному в строке, время локальное, у частых событий короткая сводка, ошибки красным с последним кадром трейсбека (полный — в файле).
-
-```bash
-uv run mnogobase logs                     # последние 40 событий
-uv run mnogobase logs -f                  # и дальше новые, как tail -f (Ctrl+C — выход)
-uv run mnogobase logs --level warning     # только предупреждения и ошибки
-uv run mnogobase logs --run last -n 200   # последний запуск ingest / wiki build (или --run <начало run_id>)
-uv run mnogobase logs --event llm_call    # события, в имени которых есть подстрока
-```
-
-```
-12:04:31 INFO  llm_call               extract · gpt-6-luna · 1062→737 tok · 7.0 s  run 2659c0 doc bdfaa6
-12:04:33 INFO  entity_merged          WMT 2014 EN-FR → WMT 2014 EN-DE (vector, 0.968)  run 2659c0 doc bdfaa6
-12:05:10 ERROR stage_failed           parse · report.pdf · VisionError: 2 of 5 pictures got no description …
-    VisionError: … at docling_parser.py:212
-```
-
-`-f` переживает ротацию файла. События старше сегодняшнего дня показываются с датой. Строки `HTTP Request: ...` (дублируют `llm_call`) скрыты, `--http` их показывает. На сервере удобно держать `logs -f` во второй панели tmux рядом с `ingest` (раздел 11.3).
 
 Общие поля: `ts`, `level`, `event`, `run_id` (у `ingest` и `wiki build`), `doc_id` (внутри обработки файла). Основные события:
 
@@ -1112,22 +1091,9 @@ llm:      {model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8, serve: vllm, base_url: n
 uv run mnogobase models up               # поднять все роли с serve: llamacpp | vllm и дождаться /health
 uv run mnogobase models up embedder      # только одну роль
 uv run mnogobase models status           # роль, бэкенд, веса, адрес, готовность
-uv run mnogobase models top              # нагрузка вживую: слоты, очередь, токены/с, память, GPU
 uv run mnogobase models logs rerank -f   # лог сервера роли
 uv run mnogobase models down             # остановить (скачанные модели остаются в кэше)
 ```
-
-Пока серверы поднимаются, `models up` показывает живую таблицу:
-
-```
-role      backend   weights                      state
-embedder  llamacpp  Qwen3-Embedding-4B:Q4_K_M    ━━━━━━━━━━━━╸━━━━━  1.6/2.5 GB · 38 MB/s · 0:24 left
-rerank    llamacpp  Qwen3-Reranker-4B:Q4_K_M     ✓ ready             cached
-vision    llamacpp  Qwen3-VL-2B-Instruct:Q4_K_M  ⠋ loading into memory  1.9 GB downloaded
-elapsed 1:23
-```
-
-Серверы качают веса молча, поэтому прогресс считается снаружи (`model_watch.py`): какие файлы нужны — по списку файлов репозитория на Hugging Face (GGUF кванта и проектор `mmproj` у llama.cpp, safetensors у vLLM), сколько скачано — по размеру этих файлов в кэше (нативно — `~/.cache/huggingface/hub`, в Docker — `find` внутри контейнера). Без доступа к Hugging Face API роль показывается как `starting` без процентов. Без терминала (`nohup`, cron, CI) вместо таблицы печатаются строки: при смене состояния и раз в 30 с во время скачивания. Колонка `backend` появляется при ширине терминала от 110 символов.
 
 `models up` идемпотентна: работающий сервер с той же моделью и флагами не трогается, после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `api` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux) — сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). vLLM работает только в Docker.
 
@@ -1135,7 +1101,6 @@ elapsed 1:23
 
 - **llama.cpp, реранкер.** Нужен GGUF с классификатором Qwen3-Reranker (`gorse-io/Qwen3-Reranker-4B-GGUF` по умолчанию); старые конвертации (`dengcao`, `mradermacher`, `QuantFactory`) загружаются, но дают бессмысленные оценки.
 - **vLLM.** Каждый контейнер резервирует долю **всей** видеопамяти (`<роль>.server.gpu_memory`: 0.15 для эмбеддера и реранкера, 0.6 для LLM); на одной карте сумма долей должна быть меньше 1, и `models up` запускает vLLM-серверы по очереди. Для Qwen3-Reranker `models up` сам добавляет `--hf-overrides` и шаблон промпта из образа. vLLM проверен по документации и модульным тестам, не вживую.
-- **Нагрузка** — `mnogobase models top`. llama.cpp отдаёт счётчики на `/metrics` благодаря флагу `--metrics`, который ставит `models up`. Токены/с считаются по разнице счётчиков между обновлениями; llama.cpp прибавляет токены, когда запрос завершён, поэтому у долгих запросов VLM скорость появляется рывками. LLM по API сервера не имеет, её нагрузка берётся из `llm_call` в журнале за последнюю минуту.
 - **Окно контекста** — `<роль>.server.ctx`. Длинный вход сервер не обрезает, а отклоняет: окно эмбеддера должно вмещать `chunking.max_tokens` плюс шаблон.
 - **Дополнительные флаги** сервера — `<роль>.server.args`, например `["--parallel", "8"]` для llama.cpp.
 - **Ключ API.** Если сервер (`api`) требует ключ, задайте `<роль>.api_key_env` — имя переменной из `.env`.
@@ -1186,7 +1151,6 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `models.py` | доменные модели: `DocumentRecord`, `ChunkRecord`, `EntityRecord`, `ExtractionResult`, `ContextItem`, `Answer` и др. |
 | `ids.py` | детерминированные ID, `normalize_name`, `slugify` |
 | `log.py` | structlog, `run_id`, `log_stage` |
-| `log_view.py` | `mnogobase logs`: фильтр, сводка событий, хвост и слежение с ротацией |
 | `device.py` | выбор `cuda` / `mps` / `cpu` |
 | `parsing/docling_parser.py` | `DoclingParser`: Docling, кэш, картинки; OCR-языки, описание картинок VLM (`_describe_pictures`, `_describe_whole_image`, `VisionError`) |
 | `chunking/hybrid.py` | `Chunker`: HybridChunker с токенайзером из `chunking/tokenizer.py` |
@@ -1199,9 +1163,6 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `retrieval/` | протокол `Retriever`, 4 режима, `Answerer`, `compare` |
 | `doctor.py` | проверки окружения и предварительные проверки команд |
 | `serving.py` | `mnogobase models`: роли с `serve`, команды llama.cpp и vLLM (`server_args`), запуск в Docker (`DockerRunner`) и нативно (`NativeRunner`), ожидание `/health` |
-| `model_watch.py` | прогресс `models up`: файлы весов роли по Hugging Face (`weight_files`), скачанные байты в кэше (`downloaded`), фазы роли (`ModelWatch`) |
-| `model_view.py` | отрисовка `models up` (`UpReporter`: живая таблица в терминале, строки без него) и `models top` (`top_view`) |
-| `model_top.py` | `models top`: `/slots` и `/metrics` llama.cpp, `/metrics` vLLM, вызовы LLM по API из журнала, `nvidia-smi`, память нативных серверов |
 | `maintenance.py` | `reindex`, `reset` |
 
 Зависимости между пакетами (общие `config`, `models`, `ids`, `log` используются всеми и на схеме опущены):
@@ -1357,7 +1318,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `doctor`: `neo4j` — `AuthError` | пароль в `.env` не совпадает с паролем базы. `NEO4J_AUTH` применяется только при первом создании тома `neo4j_data` | верните прежний пароль в `.env` или войдите в Neo4j Browser со старым паролем и смените его: `:use system`, затем `ALTER CURRENT USER SET PASSWORD FROM 'старый' TO 'новый'` |
 | `doctor`: `models` — `<model> is not served by <url> (it serves ...)` | на порту роли работает другая модель (сервер запущен не `models up` или с другим конфигом) | `uv run mnogobase models up` — перезапустит роль по конфигу; для `api` исправьте `model` |
 | в логе `rerank_failed` | сервер реранкера недоступен или отвечает ошибкой; ответ строится без реранкинга | `uv run mnogobase models status`, `uv run mnogobase models logs rerank` |
-| `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера, реранкера или VLM не запущен (или ещё качает модель) | `uv run mnogobase models up` — покажет прогресс скачивания; лог сервера — `uv run mnogobase models logs <роль> -f` |
+| `doctor`: `models` — `... is not reachable: start the local models with mnogobase models up` | сервер эмбеддера, реранкера или VLM не запущен (или ещё качает модель) | `uv run mnogobase models up`; прогресс — `uv run mnogobase models logs <роль> -f` |
 | `doctor`: `llm` — `HTTPStatusError: Client error '401 Unauthorized'` (или 403) | нет или неверный `LLM_API_KEY` | впишите ключ в `.env` |
 | `doctor`: `<model> is not served by <base_url>` | имя модели не совпадает со списком `/models` | исправьте `llm.model` |
 | `extract` медленный, в логе `llm_call` с `retries` > 0, `APITimeoutError` | перегрузка эндпоинта, таймауты, 429 | уменьшите `llm.concurrency`, увеличьте `llm.timeout_s`; повторите `ingest --retry-failed` |
@@ -1475,7 +1436,7 @@ uv run mnogobase doctor                    # всё зелёное
 
 На Linux `models up` по умолчанию запускает модели в Docker: сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в отдельном compose-проекте `mnogobase-models` (их видно в `docker ps`, команду каждому строит `mnogobase` из конфига). Сервер без Docker, но с собранным `llama-server` в `PATH` — `models up --runner native`.
 
-**Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` показывает живую таблицу по ролям (раздел 7.15): полосу скачивания, байты, скорость и оставшееся время, затем «loading into memory» и «ready». Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
+**Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` ждёт `/health` и раз в минуту пишет, кого ждёт; прогресс — `uv run mnogobase models logs <роль> -f`. Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
 
 **Какая роль на каком бэкенде** — `serve` в `config.yaml` (раздел 7.15). Отличия сервера от ноутбука удобнее задавать переменными `MNOGOBASE_*` в `.env`, а не правкой `config.yaml`, чтобы `git pull` проходил без конфликтов. Например, LLM на vLLM на сервере, а эмбеддер и реранкер на llama.cpp, как в репозитории:
 
@@ -1508,20 +1469,7 @@ uv run mnogobase ask "что такое механизм внимания?"
 
 - **Wiki в Obsidian** — скопируйте папку: `rsync -av server:mnogobase/wiki/ ./wiki-server/` и откройте её как отдельный vault (раздел 4.3).
 - **Neo4j Browser и панель Qdrant** — через SSH-туннель: `ssh -N -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 server`, затем http://localhost:7474 (Bolt `bolt://localhost:7687`) и http://localhost:6333/dashboard.
-- **Логи** — `uv run mnogobase logs -f` (раздел 4.5), серверы моделей — `uv run mnogobase models logs <роль>`, базы — `docker compose logs -f qdrant neo4j`.
-
-**Наблюдение за долгим ingest.** Удобная раскладка — одна сессия tmux на три панели: сам `ingest` с барами по файлам и этапам, нагрузка моделей и журнал событий. Сессия и `ingest` переживают обрыв SSH, `tmux attach -t mb` возвращает всё на место.
-
-```bash
-tmux new -s mb                                   # панель 1
-uv run mnogobase ingest documents/
-# Ctrl+B "  — панель 2 снизу:
-uv run mnogobase models top                      # слоты, очередь, токены/с, VRAM
-# Ctrl+B %  — панель 3 справа:
-uv run mnogobase logs -f --level info            # этапы, вызовы LLM, ошибки
-```
-
-`models top` на сервере показывает видеокарты из `nvidia-smi` (загрузка и VRAM; ≥ 85% VRAM — жёлтым, ≥ 95% — красным). Постоянная очередь (`queue`) у эмбеддера при всех занятых слотах (`busy 4/4`) — повод добавить слоты: `embedder.server.args: ["--parallel", "8"]` (каждый слот занимает свою долю контекста). Без терминала (cron, скрипт) `models top --once` печатает один снимок.
+- **Логи** — `logs/mnogobase.jsonl` на сервере (раздел 4.5), модели — `uv run mnogobase models logs <роль>`, базы — `docker compose logs -f qdrant neo4j`.
 
 Запускать CLI на ноутбуке против серверных сервисов можно (туннель на 8001, 8002, 6333, 7687 и `config.yaml` с теми же адресами), но тогда `.mnogobase/state.db` и wiki окажутся на ноутбуке. У одного проекта должно быть одно место запуска: два CLI с разными `state.db` на одних Qdrant и Neo4j рассинхронизируются.
 

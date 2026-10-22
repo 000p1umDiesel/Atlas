@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,8 +10,7 @@ from typing import Annotated, cast
 import filelock
 import typer
 import yaml
-from rich.console import Console, Group
-from rich.live import Live
+from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
@@ -33,14 +31,9 @@ from mnogobase.config import Settings, load_settings
 from mnogobase.doctor import Check, run_checks
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.log import configure_logging, new_run_id
-from mnogobase.log_view import LEVELS, LogFilter, last_run_id, needs_dates, render, tail
-from mnogobase.log_view import follow as log_follow
 from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
-from mnogobase.model_top import ModelTop
-from mnogobase.model_view import UpReporter, top_view
-from mnogobase.model_watch import ModelWatch
 from mnogobase.models import Answer
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
 from mnogobase.registry import STAGES, Registry, ingest_lock
@@ -52,7 +45,6 @@ from mnogobase.retrieval.compare import config_hash, run_mode
 from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.serving import (
     ModelRunner,
-    NativeRunner,
     Runner,
     Served,
     ServeError,
@@ -70,7 +62,7 @@ wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
 app.add_typer(wiki_app, name="wiki")
 models_app = typer.Typer(
     no_args_is_help=True,
-    help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, top, logs.",
+    help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",
 )
 app.add_typer(models_app, name="models")
 console = Console()
@@ -567,43 +559,6 @@ def reset(
     console.print("All data deleted.")
 
 
-@app.command("logs")
-def logs_cmd(
-    follow: Annotated[
-        bool, typer.Option("--follow", "-f", help="Keep printing new events.")
-    ] = False,
-    lines: Annotated[int, typer.Option("--lines", "-n", help="How many past events.")] = 40,
-    level: Annotated[str, typer.Option(help="Minimum level: info, warning, error.")] = "info",
-    run: Annotated[
-        str | None, typer.Option(help="Only this run_id (a prefix is enough) or `last`.")
-    ] = None,
-    event: Annotated[str | None, typer.Option(help="Only events whose name contains this.")] = None,
-    http: Annotated[bool, typer.Option(help="Also show raw HTTP request lines.")] = False,
-) -> None:
-    """Журнал logs/mnogobase.jsonl в читаемом виде: последние события, с -f — новые."""
-    settings = _settings()
-    path = settings.logs_dir / "mnogobase.jsonl"
-    if level.lower() not in LEVELS:
-        console.print(f"[red]--level must be one of {', '.join(LEVELS)}.[/red]")
-        raise typer.Exit(2)
-    run_id = last_run_id(path) if run == "last" and path.exists() else run
-    flt = LogFilter(level=level.lower(), run_id=run_id, event=event, http=http)
-    past = tail(path, lines, flt)
-    dated = needs_dates(past)
-    for record in past:
-        console.print(render(record, show_date=dated), soft_wrap=True, highlight=False)
-    if not follow:
-        if not past:
-            console.print(f"No events in {escape(str(path))}.", style="dim", soft_wrap=True)
-        return
-    console.print(f"Following {escape(str(path))} (Ctrl+C to stop)…", style="dim", soft_wrap=True)
-    try:
-        for record in log_follow(path, flt):
-            console.print(render(record), soft_wrap=True, highlight=False)
-    except KeyboardInterrupt:
-        pass
-
-
 RolesArg = Annotated[
     list[str] | None,
     typer.Argument(help="Roles: embedder, rerank, vision, llm (default: all served)."),
@@ -650,29 +605,25 @@ def models_up(
         console.print("Nothing to start: every role is serve: api (or disabled).")
         return
     where = resolve_runner(_runner(runner))
-    console.print(
-        f"Starting {', '.join(s.role for s in served)} ({where}); "
-        "server logs: `mnogobase models logs <role> -f`",
-        soft_wrap=True,
-    )
-    watch = ModelWatch(served, model_runner)
-    reporter = UpReporter(console)
-    try:
-        # первый опрос — после запуска: до него на порту может отвечать сервер со старым конфигом
-        with reporter.live():
-            # `models up vision` не трогает серверы других ролей из конфига
-            bring_up(
-                served,
-                model_runner,
-                timeout,
-                lambda s, elapsed: reporter.update(watch.poll()),
-                keep=everything,
+    for s in served:
+        console.print(
+            f"{s.role}: {escape(s.settings.weights)} on {s.backend} ({where}) → {s.settings.url}",
+            soft_wrap=True,
+        )
+
+    def waiting(s: Served, elapsed: float) -> None:
+        if int(elapsed) % 60 < 5:  # раз в минуту, а не каждые 5 с
+            console.print(
+                f"  waiting for {s.role} ({int(elapsed)} s; the first start downloads the model, "
+                f"see `mnogobase models logs {s.role}`)",
+                soft_wrap=True,
             )
-            reporter.update(watch.poll())
+
+    try:
+        # `models up vision` не трогает серверы других ролей из конфига
+        bring_up(served, model_runner, timeout, waiting, keep=everything)
     except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
         _fail_cleanly(exc)
-    for s in served:
-        console.print(f"{s.role} → {s.settings.url}", soft_wrap=True, highlight=False)
     console.print("[green]All model servers are ready.[/green]")
 
 
@@ -710,39 +661,6 @@ def models_status() -> None:
             state = "[green]ready[/green]" if is_ready(Served(role, s)) else "[red]down[/red]"
         table.add_row(role, s.serve, escape(s.weights), escape(s.url), state)
     console.print(table)
-
-
-@models_app.command("top")
-def models_top(
-    interval: Annotated[float, typer.Option(help="Seconds between refreshes.")] = 2.0,
-    once: Annotated[bool, typer.Option("--once", help="Print one snapshot and exit.")] = False,
-    runner: RunnerOpt = "auto",
-) -> None:
-    """Нагрузка серверов моделей вживую: слоты, очередь, токены/с, память, видеокарты."""
-    settings = _settings()
-    try:
-        model_runner: ModelRunner | None = make_runner(_runner(runner), settings)
-    except ServeError:  # нет docker-compose.models.yml: память серверов не показывается
-        model_runner = None
-    pid_of = model_runner.pid if isinstance(model_runner, NativeRunner) else (lambda role: None)
-    top = ModelTop(settings, pid_of=pid_of)
-    if once or not console.is_terminal:
-        top.poll()  # скорости считаются по разнице двух опросов
-        time.sleep(min(interval, 2.0))
-        console.print(top_view(*top.poll(), console.width))
-        return
-    try:
-        with Live(console=console, refresh_per_second=4, screen=False) as live:
-            while True:
-                live.update(
-                    Group(
-                        top_view(*top.poll(), console.width),
-                        Text(f"every {interval:g} s · Ctrl+C to exit", style="dim"),
-                    )
-                )
-                time.sleep(interval)
-    except KeyboardInterrupt:
-        pass
 
 
 @models_app.command("logs")
