@@ -65,8 +65,8 @@ def test_extraction_cache_dirty_meta(reg):
     assert sorted(reg.dirty()) == ["e1", "e2"]
     reg.clear_dirty(["e1"])
     assert reg.dirty() == ["e2"]
-    reg.set_meta("embedder", "ollama:x:768")
-    assert reg.get_meta("embedder") == "ollama:x:768"
+    reg.set_meta("embedder", "openai:x:768")
+    assert reg.get_meta("embedder") == "openai:x:768"
     reg.wipe()
     assert reg.dirty() == [] and reg.get_meta("embedder") is None
 

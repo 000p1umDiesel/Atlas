@@ -24,8 +24,9 @@ def clean_env(monkeypatch):
 def test_defaults_without_config_file(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
     s = load_settings()
-    assert s.embedder.model == "embeddinggemma-2:740m"
-    assert s.embedder.dim == 768
+    assert s.embedder.model == "qwen3-embedding-4b"
+    assert s.embedder.dim == 2560
+    assert s.embedder.base_url == "http://localhost:8001/v1"
     assert s.qdrant.prefix == "mb_"
     assert s.llm.model == "gpt-6-luna"
     assert s.llm.model_for("extract") == "gpt-6-luna"
@@ -56,9 +57,9 @@ def test_secrets_from_dotenv(tmp_path, clean_env):
     assert s.neo4j.password() == "pw"
 
 
-def test_api_key_placeholder_for_ollama(tmp_path, clean_env):
+def test_api_key_placeholder_for_local_servers(tmp_path, clean_env):
     clean_env.chdir(tmp_path)
-    assert load_settings().llm.api_key() == "ollama"
+    assert load_settings().llm.api_key() == "local"
 
 
 def test_explicit_missing_config_raises(tmp_path, clean_env):

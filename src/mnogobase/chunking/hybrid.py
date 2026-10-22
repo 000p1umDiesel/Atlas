@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
-from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 
 from mnogobase.chunking.tokenizer import load_tokenizer
 from mnogobase.config import ChunkingSettings, EmbedderSettings
@@ -17,14 +17,11 @@ class Chunker:
         self._s = settings
         self._embedder = embedder
         self._chunker: HybridChunker | None = None
-        self._tokenizer: HuggingFaceTokenizer | None = None
+        self._tokenizer: BaseTokenizer | None = None
 
-    def _get(self) -> tuple[HybridChunker, HuggingFaceTokenizer]:
+    def _get(self) -> tuple[HybridChunker, BaseTokenizer]:
         if self._chunker is None:
-            self._tokenizer = HuggingFaceTokenizer(
-                tokenizer=load_tokenizer(self._s.tokenizer, self._embedder),
-                max_tokens=self._s.max_tokens,
-            )
+            self._tokenizer = load_tokenizer(self._s, self._embedder)
             self._chunker = HybridChunker(tokenizer=self._tokenizer, merge_peers=True)
         return self._chunker, self._tokenizer
 

@@ -7,7 +7,7 @@ from mnogobase.chunking.tokenizer import TokenizerError
 from mnogobase.config import EmbedderSettings, RerankSettings, Settings
 from mnogobase.doctor import run_checks
 from mnogobase.embedding.base import embedder_signature
-from mnogobase.embedding.ollama import OllamaEmbedder
+from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.extraction.extractor import PROMPT_VERSION, entity_types_signature
 from mnogobase.registry import Registry
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -29,21 +29,21 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     assert fresh.ok and fresh.detail == "no index yet"
     assert not (tmp_path / ".mb" / "state.db").exists()
 
-    store_signature(tmp_path, "ollama:embeddinggemma-2:740m:768")  # старый формат: без шаблонов
+    store_signature(tmp_path, "openai:qwen3-embedding-4b:2560")  # старый формат: без шаблонов
     [same] = run_checks(settings, only=["index"])
     assert same.ok
 
-    store_signature(tmp_path, "ollama:qwen3-embedding:0.6b:1024")
+    store_signature(tmp_path, "ollama:qwen3-embedding:4b:2560:tpl-dbe41d80")  # индекс до llama.cpp
     [changed] = run_checks(settings, only=["index"])
     assert not changed.ok
-    assert "qwen3-embedding:0.6b:1024" in changed.detail
-    assert "ollama:embeddinggemma-2:740m:768" in changed.detail
+    assert "ollama:qwen3-embedding:4b:2560" in changed.detail
+    assert "openai:qwen3-embedding-4b:2560" in changed.detail
     assert "mnogobase reindex" in changed.detail
 
 
 def test_index_check_fails_when_only_the_templates_changed(tmp_path):
     settings = make_settings(tmp_path)
-    store_signature(tmp_path, embedder_signature(OllamaEmbedder(settings.embedder)))
+    store_signature(tmp_path, embedder_signature(OpenAICompatEmbedder(settings.embedder)))
     [same] = run_checks(settings, only=["index"])
     assert same.ok, same.detail
 
@@ -65,29 +65,45 @@ def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path, monkeypatch
     assert not checks[0].ok and "ConnectError" in checks[0].detail
 
 
-def _tags(monkeypatch, models: list[str]) -> None:
+def _served(monkeypatch, servers: dict[str, list[dict]]) -> list[str]:
+    """`GET <base_url>/models` каждого сервера; ключ — base_url."""
+    seen: list[str] = []
+
     def fake_get(url, **kwargs):
-        payload = {"models": [{"name": m} for m in models]}
-        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+        seen.append(url)
+        data = servers[url.removesuffix("/models")]
+        return httpx.Response(200, json={"data": data}, request=httpx.Request("GET", url))
 
     monkeypatch.setattr(doctor.httpx, "get", fake_get)
+    return seen
 
 
 def test_models_check_requires_the_reranker_only_when_enabled(tmp_path, monkeypatch):
-    _tags(monkeypatch, ["qwen3-embedding:4b"])
-    embedder = EmbedderSettings(model="qwen3-embedding:4b")
+    # один сервер для обеих ролей; у llama.cpp имя модели — её --alias
+    url = "http://gpu:8001/v1"
+    _served(monkeypatch, {url: [{"id": "/models/emb.gguf", "aliases": ["emb"]}]})
+    embedder = EmbedderSettings(base_url=url + "/", model="emb")
     [plain] = run_checks(make_settings(tmp_path, embedder=embedder), only=["models"])
-    assert plain.ok and plain.detail == "embedder qwen3-embedding:4b available"
+    assert plain.ok and plain.detail == "embedder emb available"
 
-    rerank = RerankSettings(enabled=True, model="rr:4b")
+    rerank = RerankSettings(enabled=True, base_url=url, model="rr")
     [missing] = run_checks(
         make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"]
     )
-    assert not missing.ok and "`ollama pull rr:4b`" in missing.detail
+    assert not missing.ok
+    assert missing.detail == f"rr is not served by {url} (it serves /models/emb.gguf, emb)"
 
-    _tags(monkeypatch, ["qwen3-embedding:4b", "rr:4b"])
-    [both] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"])
-    assert both.ok and "reranker rr:4b" in both.detail
+
+def test_models_check_asks_each_server(tmp_path, monkeypatch):
+    seen = _served(
+        monkeypatch,
+        {"http://a:8001/v1": [{"id": "emb"}], "http://b:8002/v1": [{"id": "rr"}]},
+    )
+    embedder = EmbedderSettings(base_url="http://a:8001/v1", model="emb")
+    rerank = RerankSettings(enabled=True, base_url="http://b:8002/v1", model="rr")
+    [ok] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"])
+    assert ok.ok and ok.detail == "embedder emb, reranker rr available"
+    assert seen == ["http://a:8001/v1/models", "http://b:8002/v1/models"]
 
 
 def _models_endpoint(monkeypatch, status: int, payload: dict | None = None) -> list[str]:
@@ -151,52 +167,32 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
     QdrantStore(client, "mb_", 64).ensure_collections()
     monkeypatch.setattr(client, "close", lambda: None)  # run_checks закрывает свой клиент
     monkeypatch.setattr(doctor, "QdrantClient", lambda **kwargs: client)
-    settings = make_settings(tmp_path)  # embedder.dim 768
+    settings = make_settings(tmp_path)  # embedder.dim 2560
 
     [strict] = run_checks(settings, only=["qdrant"])
     assert not strict.ok
-    assert "mb_chunks has dim 64, config 768" in strict.detail and "reindex" in strict.detail
+    assert "mb_chunks has dim 64, config 2560" in strict.detail and "reindex" in strict.detail
 
     [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # то, что запускает reindex
     assert lenient.ok, lenient.detail
-    assert "dim 64" in lenient.detail and "768" in lenient.detail
+    assert "dim 64" in lenient.detail and "2560" in lenient.detail
 
 
 def test_tokenizer_check_reports_the_source_or_why_it_failed(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
-    monkeypatch.setattr(doctor, "load_tokenizer", lambda name, embedder: ["t"] * 7)
-    [ok] = run_checks(settings, only=["tokenizer"])
-    assert ok.ok and ok.detail == "embeddinggemma-2:740m from Ollama (7 tokens)"
 
-    def unavailable(name, embedder):
+    class Tok:
+        def count_tokens(self, text):
+            return 3
+
+    monkeypatch.setattr(doctor, "load_tokenizer", lambda chunking, embedder: Tok())
+    monkeypatch.setattr(doctor, "tokenizer_source", lambda tok: "http://localhost:8001/tokenize")
+    [ok] = run_checks(settings, only=["tokenizer"])
+    assert ok.ok and ok.detail == "auto: http://localhost:8001/tokenize"
+
+    def unavailable(chunking, embedder):
         raise TokenizerError("no tokenizer: set chunking.tokenizer")
 
     monkeypatch.setattr(doctor, "load_tokenizer", unavailable)
     [failed] = run_checks(settings, only=["tokenizer"])
     assert not failed.ok and "chunking.tokenizer" in failed.detail
-
-
-def test_models_check_asks_each_server_with_its_own_api(tmp_path, monkeypatch):
-    seen: list[str] = []
-
-    def fake_get(url, **kwargs):
-        seen.append(url)
-        if url.endswith("/api/tags"):
-            payload = {"models": [{"name": "rr:4b"}]}
-        else:  # llama.cpp server: имя модели — её --alias
-            payload = {"data": [{"id": "/models/emb.gguf", "aliases": ["emb"]}]}
-        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(doctor.httpx, "get", fake_get)
-    embedder = EmbedderSettings(provider="openai", base_url="http://gpu:8001/v1/", model="emb")
-    rerank = RerankSettings(enabled=True, base_url="http://other:11434", model="rr:4b")
-    settings = make_settings(tmp_path, embedder=embedder, rerank=rerank)
-    [ok] = run_checks(settings, only=["models"])
-    assert ok.ok and ok.detail == "embedder emb, reranker rr:4b available"
-    assert seen == ["http://gpu:8001/v1/models", "http://other:11434/api/tags"]
-
-    embedder = embedder.model_copy(update={"model": "Qwen/Qwen3-Embedding-4B"})
-    [missing] = run_checks(make_settings(tmp_path, embedder=embedder), only=["models"])
-    assert not missing.ok
-    assert "Qwen/Qwen3-Embedding-4B is not served by http://gpu:8001/v1" in missing.detail
-    assert "/models/emb.gguf" in missing.detail

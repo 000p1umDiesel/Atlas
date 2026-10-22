@@ -1,6 +1,11 @@
+import json
 from pathlib import Path
 
+import httpx
+
+from mnogobase.chunking import hybrid
 from mnogobase.chunking.hybrid import Chunker
+from mnogobase.chunking.tokenizer import ServerTokenizer
 from mnogobase.config import ChunkingSettings, EmbedderSettings, ParsingSettings
 from mnogobase.parsing.docling_parser import DoclingParser
 
@@ -31,7 +36,7 @@ def test_title_falls_back_to_file_stem(tmp_path):
 def test_chunker_records(tmp_path):
     parser = DoclingParser(ParsingSettings(), "cpu", tmp_path)
     parsed = parser.parse(FIXTURES / "vnimanie_ru.md", DOC)
-    settings = ChunkingSettings(tokenizer="google/embeddinggemma-2", max_tokens=64)
+    settings = ChunkingSettings(tokenizer="Qwen/Qwen3-Embedding-4B", max_tokens=64)
     chunks = Chunker(settings, EmbedderSettings()).chunk(parsed, DOC, "/x/vnimanie_ru.md")
     assert len(chunks) >= 2
     assert [c.idx for c in chunks] == list(range(len(chunks)))
@@ -43,3 +48,20 @@ def test_chunker_records(tmp_path):
     assert first.headings and first.context_text.startswith(first.headings[0])
     assert all(c.path == "/x/vnimanie_ru.md" and c.doc_id == DOC for c in chunks)
     assert all(c.page_start is None for c in chunks)  # у markdown нет страниц
+
+
+def test_chunker_splits_long_text_with_a_server_tokenizer(tmp_path, monkeypatch):
+    # llama.cpp /tokenize: токен — слово; при 16 токенах длинные абзацы режет semchunk
+    def tokenize(request):
+        text = json.loads(request.content)["content"]
+        return httpx.Response(200, json={"tokens": list(range(len(text.split())))})
+
+    client = httpx.Client(base_url="http://llama:8001", transport=httpx.MockTransport(tokenize))
+    tokenizer = ServerTokenizer(client=client, max_tokens=16)
+    monkeypatch.setattr(hybrid, "load_tokenizer", lambda settings, embedder: tokenizer)
+    parsed = DoclingParser(ParsingSettings(), "cpu", tmp_path).parse(
+        FIXTURES / "attention_en.md", DOC
+    )
+    chunks = Chunker(ChunkingSettings(max_tokens=16), EmbedderSettings()).chunk(parsed, DOC, "/x")
+    assert len(chunks) > 5
+    assert all(0 < c.n_tokens <= 16 for c in chunks)

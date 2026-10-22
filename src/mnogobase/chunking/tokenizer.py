@@ -1,137 +1,112 @@
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import httpx
+from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from pydantic import ConfigDict, PrivateAttr
 
-from mnogobase.config import EmbedderSettings
-from mnogobase.embedding.http import auth_headers
-
-if TYPE_CHECKING:
-    from transformers import PreTrainedTokenizerBase
+from mnogobase.config import ChunkingSettings, EmbedderSettings
+from mnogobase.embedding.http import auth_headers, server_root
 
 AUTO = "auto"
 _HF_HINT = "set chunking.tokenizer to the model's Hugging Face repo"
+_CACHE_SIZE = 50_000
 
 
 class TokenizerError(RuntimeError):
-    """Токенизатор модели эмбеддера не удаётся получить из Ollama."""
+    """Токенизатор модели эмбеддера не удаётся получить с её сервера."""
+
+
+class ServerTokenizer(BaseTokenizer):
+    """Подсчёт токенов через `POST /tokenize` llama.cpp server: работает только токенизатор,
+    модель не прогоняется. HybridChunker считает одни и те же тексты много раз, поэтому
+    ответы кэшируются."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    client: httpx.Client  # base_url — корень сервера, без /v1
+    max_tokens: int
+    _cache: dict[str, int] = PrivateAttr(default_factory=dict)
+
+    def count_tokens(self, text: str) -> int:
+        if text not in self._cache:
+            if len(self._cache) >= _CACHE_SIZE:
+                self._cache.clear()
+            response = self.client.post("/tokenize", json={"content": text, "add_special": False})
+            response.raise_for_status()
+            self._cache[text] = len(response.json()["tokens"])
+        return self._cache[text]
+
+    def get_max_tokens(self) -> int:
+        return self.max_tokens
+
+    def get_tokenizer(self) -> Callable[[str], int]:
+        # HybridChunker отдаёт его semchunk для дробления длинных текстов: тот принимает
+        # HF-токенизатор или функцию подсчёта токенов
+        return self.count_tokens
 
 
 def load_tokenizer(
-    name: str,
-    embedder: EmbedderSettings,
-    *,
-    client: httpx.Client | None = None,
-    models_dir: Path | None = None,
-) -> PreTrainedTokenizerBase:
-    """Токенизатор для подсчёта токенов чанка: HF-репозиторий `name` или, при `auto`, токенизатор
-    самой модели эмбеддера, чтобы он всегда соответствовал `embedder.model`: из Ollama или, у
-    OpenAI-совместимого сервера, по HF-репозиторию, который он сообщает (vLLM)."""
-    if name != AUTO:
-        return _from_hf(name)
+    settings: ChunkingSettings, embedder: EmbedderSettings, *, client: httpx.Client | None = None
+) -> BaseTokenizer:
+    """Токенизатор для подсчёта токенов чанка: HF-репозиторий `chunking.tokenizer` или, при
+    `auto`, токенизатор самой модели эмбеддера, чтобы он всегда соответствовал
+    `embedder.model`: по HF-репозиторию, который сообщает сервер (vLLM), или `/tokenize`
+    сервера (llama.cpp). `client` — клиент корня сервера (тесты)."""
+    if settings.tokenizer != AUTO:
+        return _from_hf(settings.tokenizer, settings.max_tokens)
     if client is None:
-        headers = auth_headers(embedder.api_key_env)
-        with httpx.Client(base_url=embedder.base_url, timeout=60, headers=headers) as own:
-            return load_tokenizer(name, embedder, client=own, models_dir=models_dir)
-    if embedder.provider == "openai":
-        return _from_hf(_served_repo(embedder.model, client))
-    return _from_ollama(embedder.model, client, models_dir or _models_dir())
+        client = httpx.Client(
+            base_url=server_root(embedder.base_url),
+            timeout=60,
+            headers=auth_headers(embedder.api_key_env),
+        )
+    repo = _served_repo(embedder.model, client)
+    if repo:
+        return _from_hf(repo, settings.max_tokens)
+    tokenizer = ServerTokenizer(client=client, max_tokens=settings.max_tokens)
+    try:
+        tokenizer.count_tokens("tokenizer probe")
+    except httpx.HTTPStatusError as exc:
+        raise TokenizerError(
+            f"{embedder.model} has no Hugging Face repo in /v1/models and its server has no "
+            f"/tokenize (HTTP {exc.response.status_code}): {_HF_HINT}"
+        ) from exc
+    return tokenizer
 
 
-def _from_hf(repo: str) -> PreTrainedTokenizerBase:
+def tokenizer_source(tokenizer: BaseTokenizer) -> str:
+    """Откуда токенизатор, для `doctor`."""
+    if isinstance(tokenizer, ServerTokenizer):
+        return str(tokenizer.client.base_url.join("/tokenize"))
+    return tokenizer.get_tokenizer().name_or_path
+
+
+def _from_hf(repo: str, max_tokens: int) -> HuggingFaceTokenizer:
     from transformers import AutoTokenizer
 
-    return AutoTokenizer.from_pretrained(repo)
+    try:
+        return HuggingFaceTokenizer(
+            tokenizer=AutoTokenizer.from_pretrained(repo), max_tokens=max_tokens
+        )
+    except OSError as exc:  # нет такого репозитория, нет доступа или сети
+        raise TokenizerError(f"cannot load the tokenizer {repo!r}: {exc}") from exc
 
 
-def _served_repo(model: str, client: httpx.Client) -> str:
-    """HF-репозиторий модели `model` по `/models` сервера: vLLM пишет его в `root`."""
-    response = client.get("/models")
+def _served_repo(model: str, client: httpx.Client) -> str | None:
+    """HF-репозиторий модели `model` по `/v1/models`: vLLM пишет его в `root`; у llama.cpp его
+    нет (None)."""
+    response = client.get("/v1/models")
     response.raise_for_status()
     for entry in response.json().get("data", []):
         if model in (entry.get("id"), *(entry.get("aliases") or [])):
             root = entry.get("root")
-            # llama.cpp server `root` не отдаёт, а vLLM с локальной моделью отдаёт путь на сервере
-            if root and not root.startswith(("/", ".")):
-                return root
-            raise TokenizerError(
-                f"the server does not report the Hugging Face repo of {model} "
-                f"(root: {root!r}): {_HF_HINT}"
-            )
+            if not root:
+                return None
+            # vLLM с локальной моделью отдаёт путь на сервере, а не репозиторий
+            if root.startswith(("/", ".")):
+                raise TokenizerError(f"{model} is served from a local path {root!r}: {_HF_HINT}")
+            return root
     raise TokenizerError(f"{model} is not served by {client.base_url}: check embedder.model")
-
-
-def _from_ollama(model: str, client: httpx.Client, models_dir: Path) -> PreTrainedTokenizerBase:
-    from transformers import PreTrainedTokenizerFast
-
-    response = client.post("/api/show", json={"model": model, "verbose": True})
-    response.raise_for_status()
-    info = response.json().get("model_info") or {}
-    # GGUF-модели отдают словарь и merges в метаданных; safetensors-модели (новый движок Ollama)
-    # их не отдают, но хранят tokenizer.json отдельным слоем в локальном хранилище
-    if "tokenizer.ggml.tokens" in info:
-        return PreTrainedTokenizerFast(tokenizer_object=_gguf_backend(model, info))
-    path = _tokenizer_file(model, models_dir)
-    if path is None:
-        raise TokenizerError(
-            f"Ollama exposes no tokenizer for {model} and its tokenizer.json is not under "
-            f"{models_dir} (Ollama on another host? set OLLAMA_MODELS): {_HF_HINT}"
-        )
-    return PreTrainedTokenizerFast(tokenizer_file=str(path))
-
-
-def _gguf_backend(model: str, info: dict):
-    # внутренний модуль transformers (тот же код, что у from_pretrained(gguf_file=...)); если он
-    # переедет при обновлении, это поймает tests/unit/test_tokenizer.py, а здесь будет понятная
-    # ошибка вместо traceback
-    try:
-        from transformers.integrations.gguf.gguf_tokenizer_mapping import (
-            GGUF_TOKENIZER_MAPPING,
-            convert_gguf_tokenizer,
-        )
-    except ImportError as exc:  # в т.ч. ModuleNotFoundError и отсутствующее имя
-        raise TokenizerError(
-            f"this transformers version cannot rebuild the tokenizer of {model} from GGUF "
-            f"({exc}); {_HF_HINT}"
-        ) from exc
-
-    try:
-        fields = {
-            name: info[f"tokenizer.{key}"]
-            for key, name in GGUF_TOKENIZER_MAPPING["tokenizer"].items()
-            if f"tokenizer.{key}" in info
-        }
-        backend, _ = convert_gguf_tokenizer(info.get("general.architecture", ""), fields)
-    # ValueError — неподдерживаемый тип токенайзера, KeyError/TypeError — сменилась форма API
-    except (ValueError, KeyError, TypeError) as exc:
-        raise TokenizerError(f"cannot rebuild the tokenizer of {model}: {exc}; {_HF_HINT}") from exc
-    return backend
-
-
-def _models_dir() -> Path:
-    return Path(os.environ.get("OLLAMA_MODELS") or Path.home() / ".ollama" / "models")
-
-
-def _manifest_path(models_dir: Path, model: str) -> Path:
-    """`[host/][namespace/]name[:tag]` -> manifests/host/namespace/name/tag, как хранит Ollama."""
-    repo, sep, tag = model.rpartition(":")
-    if not sep or "/" in tag:  # без тега (двоеточие может быть только портом хоста)
-        repo, tag = model, "latest"
-    parts = repo.split("/")
-    parts = ["registry.ollama.ai", "library"][: max(0, 3 - len(parts))] + parts
-    return models_dir.joinpath("manifests", *parts, tag)
-
-
-def _tokenizer_file(model: str, models_dir: Path) -> Path | None:
-    manifest = _manifest_path(models_dir, model)
-    if not manifest.is_file():
-        return None
-    for layer in json.loads(manifest.read_text(encoding="utf-8")).get("layers", []):
-        if layer.get("name") == "tokenizer.json":
-            blob = models_dir / "blobs" / layer["digest"].replace(":", "-")
-            return blob if blob.is_file() else None
-    return None

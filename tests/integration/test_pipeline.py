@@ -51,7 +51,7 @@ def make_app(graph, tmp_path):
             "data_dir": tmp_path / ".mb",
             "logs_dir": tmp_path / "logs",
             "wiki": WikiSettings(dir=tmp_path / "wiki", min_mentions=1),
-            "chunking": ChunkingSettings(tokenizer="google/embeddinggemma-2", max_tokens=128),
+            "chunking": ChunkingSettings(tokenizer="Qwen/Qwen3-Embedding-4B", max_tokens=128),
         }
         if entity_types is not None:
             update["extract"] = ExtractSettings(entity_types=entity_types)

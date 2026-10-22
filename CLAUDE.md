@@ -11,7 +11,8 @@ Run everything from the repo root: `config.yaml` and `.env` are read from the CW
 ```bash
 uv sync                                   # install deps (editable) into .venv
 docker compose up -d                      # Qdrant :6333, Neo4j :7474/:7687 (docker-compose.cuda.yml for GPU)
-uv run mnogobase doctor                   # check device, ollama, llm, qdrant, neo4j, index, types
+scripts/llama-local.sh start [llm]        # Mac: native llama-server, embedder :8001, reranker :8002 (+ LLM :8000)
+uv run mnogobase doctor                   # check device, models, tokenizer, llm, qdrant, neo4j, index, types
 
 uv run mnogobase ingest tests/fixtures/   # small RU+EN sample corpus
 uv run mnogobase status | wiki build [--all] | reindex | reset [--yes]
@@ -22,7 +23,7 @@ uv run mnogobase -c other.yaml status     # global --config goes BEFORE the subc
 uv run pytest                             # unit tests only (addopts excludes integration/e2e)
 uv run pytest tests/unit/test_cli.py::test_name
 uv run pytest -m integration              # needs Docker; testcontainers spin up their own Neo4j + Qdrant
-uv run pytest -m e2e -s                   # Docker + Ollama + real LLM (spends LLM calls)
+uv run pytest -m e2e -s                   # Docker + llama.cpp embedder/reranker + real LLM (spends LLM calls)
 uv run ruff check . && uv run ruff format --check .
 ```
 
@@ -32,7 +33,7 @@ Any config key can be overridden with `MNOGOBASE_<SECTION>__<KEY>` env vars (lis
 
 **Wiring.** `cli.py` → `app.py:build_app(settings, *, embedder, sparse, llm, vectors, graph)` builds and connects every component. Anything not passed in is created from settings. This is the single injection point that tests use to pass in fakes. Retrieval modes come from `retrieval/__init__.py:build_retrievers` as `{mode: Retriever}`.
 
-**Swappable parts are `typing.Protocol`s:** `Embedder` / `SparseEncoder` (`embedding/base.py`), `Reranker` (`retrieval/rerank.py`, optional, used by `RagRetriever`), `LLMClient` (`llm/client.py`, with `task` ∈ extract/resolve/wiki/answer/query selecting the model via `llm.overrides`) and `Retriever` (`retrieval/base.py`; `alt_queries` carries the English translation of a non-English question from `retrieval/translate.py`). Stores, `Registry`, `DoclingParser` and `Chunker` are concrete classes. Embedder and reranker implementations are picked by `provider` in `embedding/__init__.py:build_embedder` and `retrieval/rerank.py:build_reranker`: `ollama`, or `openai` for any OpenAI-compatible server (vLLM, llama.cpp server; `base_url` includes `/v1`). Compose overlays `docker-compose.vllm.yml` / `docker-compose.llamacpp.yml` run them. All Qdrant code lives in `stores/qdrant_store.py`, and all Cypher in `stores/graph_store.py`.
+**Swappable parts are `typing.Protocol`s:** `Embedder` / `SparseEncoder` (`embedding/base.py`), `Reranker` (`retrieval/rerank.py`, optional, used by `RagRetriever`), `LLMClient` (`llm/client.py`, with `task` ∈ extract/resolve/wiki/answer/query selecting the model via `llm.overrides`) and `Retriever` (`retrieval/base.py`; `alt_queries` carries the English translation of a non-English question from `retrieval/translate.py`). Stores, `Registry`, `DoclingParser` and `Chunker` are concrete classes. Embedder (`embedding/openai_compat.py`), reranker (`ApiReranker`) and LLM all talk to OpenAI-compatible servers (`/embeddings`, `/rerank`, `/chat/completions`; `base_url` includes `/v1`): llama.cpp server by default (`scripts/llama-local.sh` on Mac, `docker-compose.llamacpp.yml` on a server), vLLM via `docker-compose.vllm.yml`. One model per server process, ports 8000 LLM / 8001 embedder / 8002 reranker; on llama.cpp the model name in config is its `--alias`. All Qdrant code lives in `stores/qdrant_store.py`, and all Cypher in `stores/graph_store.py`.
 
 **Ingest pipeline** (`pipeline.py`): runs per document through `parse → chunk → embed → extract → graph`, then an incremental `wiki build`. Per-stage status lives in the SQLite registry (`.mnogobase/state.db`, `registry.py`). A stage is marked `done` only after all of its writes. `running` stages left by a crash reset to `pending` on the next run, and `failed` stages only rerun with `--retry-failed`. Writing commands share a file lock (`.mnogobase/ingest.lock`).
 
@@ -58,6 +59,6 @@ Any config key can be overridden with `MNOGOBASE_<SECTION>__<KEY>` env vars (lis
 
 ## Environment notes
 
-- On Windows with a system proxy (registry), httpx routes even `localhost` through it, which shows up as 503 from Ollama/Qdrant. `config.load_settings` adds local hosts to `NO_PROXY` to prevent this. Code paths that build `Settings` without `load_settings` (some tests) are not covered.
-- `config.yaml` currently uses the `qwen3-embedding:4b` (dim 2560) embedder with `chunking.tokenizer: auto` (the embedder's own tokenizer, rebuilt from Ollama by `chunking/tokenizer.py`) and enables the `dengcao/Qwen3-Reranker-4B:Q4_K_M` reranker (both in Ollama), while the README's defaults describe `embeddinggemma-2`. The reranker uses `/api/generate` logprobs, as Ollama has no rerank endpoint.
+- On Windows with a system proxy (registry), httpx routes even `localhost` through it, which shows up as 503 from llama.cpp/Qdrant. `config.load_settings` adds local hosts to `NO_PROXY` to prevent this. Code paths that build `Settings` without `load_settings` (some tests) are not covered.
+- `config.yaml` uses Qwen3-Embedding-4B (alias `qwen3-embedding-4b`, dim 2560) and Qwen3-Reranker-4B (`qwen3-reranker-4b`, a GGUF converted with the classifier head, e.g. `gorse-io/...`; older conversions load but score garbage) on llama.cpp, and `chunking.tokenizer: auto`: the tokenizer comes from the embedder's server (`root` in vLLM's `/v1/models`, else llama.cpp `/tokenize` via `ServerTokenizer` in `chunking/tokenizer.py`). The index signature is `openai:<model>:<dim>:tpl-...`; indexes from the Ollama era (`ollama:...`) need `reindex`.
 - Commit prefixes: `feat:`, `fix:`, `docs:`. Derived data (`.mnogobase/`, `logs/`, `runs/`, `wiki/`, `documents/`) is gitignored.

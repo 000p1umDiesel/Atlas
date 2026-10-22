@@ -1,5 +1,5 @@
 # docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d   (Linux + NVIDIA Container Toolkit)
-# Параллелизм Ollama: задайте OLLAMA_NUM_PARALLEL в shell или в .env (по умолчанию 4).
+# Qdrant с GPU-индексацией. Модели — оверлей docker-compose.llamacpp.yml или docker-compose.vllm.yml.
 services:
   qdrant:
     image: qdrant/qdrant:v1.19.2-gpu-nvidia
@@ -9,17 +9,3 @@ services:
       resources:
         reservations:
           devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
-
-  ollama:
-    image: ollama/ollama:latest
-    ports: ["11434:11434"]
-    environment:
-      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-4}"
-    volumes: ["ollama_data:/root/.ollama"]
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
-
-volumes:
-  ollama_data:

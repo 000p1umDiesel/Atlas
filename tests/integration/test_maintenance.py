@@ -47,7 +47,7 @@ def settings(tmp_path):
             "data_dir": tmp_path / ".mb",
             "logs_dir": tmp_path / "logs",
             "wiki": WikiSettings(dir=tmp_path / "wiki", min_mentions=1),
-            "chunking": ChunkingSettings(tokenizer="google/embeddinggemma-2", max_tokens=128),
+            "chunking": ChunkingSettings(tokenizer="Qwen/Qwen3-Embedding-4B", max_tokens=128),
         }
     )
 
@@ -178,7 +178,7 @@ def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs)
             f"data_dir: .mb\nqdrant:\n  url: {qdrant_url}\n  prefix: {prefix}\n"
             f"embedder:\n  dim: {dim}\n  doc_template: '{doc_template}'\n"
             "wiki:\n  dir: wiki\n  min_mentions: 1\n"
-            "chunking:\n  tokenizer: google/embeddinggemma-2\n  max_tokens: 128\n",
+            "chunking:\n  tokenizer: Qwen/Qwen3-Embedding-4B\n  max_tokens: 128\n",
             encoding="utf-8",
         )
 

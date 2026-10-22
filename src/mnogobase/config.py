@@ -96,25 +96,25 @@ class LLMSettings(BaseModel):
         return self.overrides.get(task) or self.model
 
     def api_key(self) -> str:
-        # Ollama игнорирует ключ, но OpenAI SDK не принимает пустой.
-        return os.environ.get(self.api_key_env) or "ollama"
+        # локальные серверы игнорируют ключ, но OpenAI SDK не принимает пустой
+        return os.environ.get(self.api_key_env) or "local"
 
 
 class EmbedderSettings(BaseModel):
-    # ollama — `/api/embed`; openai — `/embeddings` OpenAI-совместимого сервера (vLLM,
-    # llama.cpp server, ...), тогда `base_url` включает `/v1`
-    provider: Literal["ollama", "openai"] = "ollama"
-    base_url: str = "http://localhost:11434"
-    api_key_env: str | None = None  # переменная с Bearer-ключом сервера (vLLM/llama.cpp --api-key)
-    model: str = "embeddinggemma-2:740m"
-    dim: int = 768
+    """`/embeddings` OpenAI-совместимого сервера (llama.cpp server, vLLM, ...).
+
+    По умолчанию — Qwen3-Embedding-4B из `scripts/llama-local.sh` и
+    `docker-compose.llamacpp.yml` (имя модели — `--alias` llama.cpp)."""
+
+    base_url: str = "http://localhost:8001/v1"  # до /v1 включительно
+    api_key_env: str | None = None  # переменная с Bearer-ключом сервера (--api-key)
+    model: str = "qwen3-embedding-4b"
+    dim: int = 2560
     batch_size: int = 32
-    doc_template: str = "title: {title} | text: {text}"
-    query_template: str = "task: search result | query: {query}"
-    # Контекстное окно Ollama; None оставляет значение модели по умолчанию (Qwen3 грузится
-    # с ~40k токенов, и её KV-кэш может вытеснить другую модель из VRAM). Более длинный
-    # вход обрезается. У provider openai контекст задаётся при запуске сервера.
-    num_ctx: int | None = Field(default=None, ge=256)
+    doc_template: str = "{text}"
+    query_template: str = (
+        "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
+    )
 
 
 class SparseSettings(BaseModel):
@@ -127,7 +127,7 @@ class ParsingSettings(BaseModel):
 
 
 class ChunkingSettings(BaseModel):
-    # `auto` берёт токенизатор модели эмбеддера из Ollama; иначе это HF-репозиторий
+    # `auto` — токенизатор модели эмбеддера с её сервера; иначе это HF-репозиторий
     tokenizer: str = "auto"
     max_tokens: int = 512
 
@@ -201,20 +201,15 @@ class RetrievalSettings(BaseModel):
 
 
 class RerankSettings(BaseModel):
-    """Cross-encoder reranking хитов rag (Qwen3-Reranker)."""
+    """Cross-encoder reranking хитов rag: `/rerank` OpenAI-совместимого сервера (llama.cpp
+    server, vLLM) с Qwen3-Reranker."""
 
     enabled: bool = False
-    # ollama — промпт Qwen3-Reranker и logprobs через `/api/generate`; openai — `/rerank`
-    # OpenAI-совместимого сервера (vLLM, llama.cpp server), `base_url` включает `/v1`
-    provider: Literal["ollama", "openai"] = "ollama"
-    base_url: str = "http://localhost:11434"
+    base_url: str = "http://localhost:8002/v1"  # до /v1 включительно
     api_key_env: str | None = None  # переменная с Bearer-ключом сервера
-    model: str = "dengcao/Qwen3-Reranker-4B:Q4_K_M"
+    model: str = "qwen3-reranker-4b"
     candidates: int = Field(default=30, ge=1)  # гибридных хитов на скоринг; остаются лучшие k
-    concurrency: int = Field(default=4, ge=1)  # ollama: параллельных запросов на скоринг
-    max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для промпта reranker
-    num_ctx: int = Field(default=4096, ge=512)  # контекстное окно Ollama (промпт + max_chars)
-    instruction: str = "Given a question, retrieve passages that answer it"
+    max_chars: int = Field(default=4000, ge=100)  # обрезка текста документа для реранкера
 
 
 class GraphSettings(BaseModel):
@@ -299,7 +294,7 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def _bypass_proxy_for_local_hosts() -> None:
-    """Не пускает запросы к локальным сервисам (Ollama, Qdrant) через системный прокси.
+    """Не пускает запросы к локальным сервисам (llama.cpp, Qdrant) через системный прокси.
 
     На Windows httpx при отсутствии env-переменных *_PROXY берёт прокси из реестра, но
     игнорирует список исключений из реестра, поэтому запросы к localhost идут в прокси (503).
