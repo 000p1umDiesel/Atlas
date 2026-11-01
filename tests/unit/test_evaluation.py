@@ -37,6 +37,15 @@ class Retriever:
         return [ContextItem(kind="chunk", ref="c1", text="Because.")]
 
 
+class RecordingRetriever(Retriever):
+    def __init__(self):
+        self.calls = []
+
+    def retrieve(self, query, k, alt_queries=()):
+        self.calls.append((query, k, alt_queries))
+        return super().retrieve(query, k, alt_queries)
+
+
 async def test_answer_preserves_only_full_blocks_sent_to_model():
     llm = FakeLLM(lambda task, prompt: "Answer [1]")
     text = "long evidence\n\nwith paragraphs " * 20
@@ -99,6 +108,144 @@ def test_manifest_blocks_changed_config_and_dataset(tmp_path):
         core.prepare_run(path, run, Settings(), limit=2)
     with pytest.raises(ValueError, match="configuration changed"):
         core.prepare_run(path, run, Settings(), limit=1, k=19)
+
+
+@pytest.mark.parametrize("existing_run", [False, True], ids=["new-run", "existing-run"])
+@pytest.mark.parametrize(
+    "options, match",
+    [
+        pytest.param({"modes": []}, "distinct modes", id="empty-modes"),
+        pytest.param({"modes": ["rag", "rag"]}, "distinct modes", id="duplicate-modes"),
+        pytest.param({"modes": ["rag", "unknown"]}, "distinct modes", id="unknown-mode"),
+        pytest.param({"limit": 0}, "limit must be positive", id="zero-limit"),
+        pytest.param({"limit": -1}, "limit must be positive", id="negative-limit"),
+        pytest.param({"k": 0}, "k must be positive", id="zero-k"),
+        pytest.param({"k": -1}, "k must be positive", id="negative-k"),
+    ],
+)
+def test_invalid_run_options_do_not_create_or_replace_manifest(
+    tmp_path, existing_run, options, match
+):
+    core = evaluation()
+    questions = dataset(tmp_path)
+    run = tmp_path / "run"
+    manifest_path = run / "run.json"
+    if existing_run:
+        core.prepare_run(questions, run, Settings())
+    before = manifest_path.read_bytes() if existing_run else None
+
+    with pytest.raises(ValueError, match=match):
+        core.prepare_run(questions, run, Settings(), **options)
+
+    if existing_run:
+        assert manifest_path.read_bytes() == before
+        assert {path.name for path in run.iterdir()} == {"run.json"}
+    else:
+        assert not run.exists()
+
+
+def test_run_accepts_positive_option_boundaries_and_distinct_all_mode(tmp_path):
+    core = evaluation()
+    run = tmp_path / "run"
+    core.prepare_run(dataset(tmp_path), run, Settings(), modes=["rag", "all"], limit=1, k=1)
+
+    config = core.load_run(run)["config"]
+    assert config["questions"] == [
+        {"id": "q1", "question": "Why?", "reference": "Because.", "language": "en"}
+    ]
+    assert config["modes"] == ["rag", "all"]
+    assert config["k"] == 1
+
+
+@pytest.mark.parametrize("tampered", ["fingerprint", "config"], ids=["digest", "config-body"])
+async def test_tampered_manifest_blocks_resume_before_retrieval_and_preserves_files(
+    tmp_path, tampered
+):
+    core = evaluation()
+    run = tmp_path / "run"
+    core.prepare_run(dataset(tmp_path), run, Settings(), modes=["rag"])
+    manifest_path = run / "run.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if tampered == "fingerprint":
+        manifest["fingerprint"] = "0" * 64
+    else:
+        manifest["config"]["questions"][0]["question"] = "Altered question?"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_bytes()
+    retriever = RecordingRetriever()
+    llm = FakeLLM(lambda *a: "Answer")
+
+    with pytest.raises(ValueError, match="invalid manifest fingerprint"):
+        core.load_run(run)
+    with pytest.raises(ValueError, match="invalid manifest fingerprint"):
+        await core.run_answers(run, {"rag": retriever}, Answerer(llm, 1000))
+
+    assert retriever.calls == []
+    assert llm.calls == []
+    assert manifest_path.read_bytes() == before
+    assert {path.name for path in run.iterdir()} == {"run.json"}
+
+
+@pytest.mark.parametrize(
+    "changes, omitted, match",
+    [
+        pytest.param(
+            {"question": "Another question?"},
+            None,
+            "Answer does not match dataset: q1 / rag",
+            id="mismatched-question",
+        ),
+        pytest.param(
+            {"reference": "Another reference."},
+            None,
+            "Answer does not match dataset: q1 / rag",
+            id="mismatched-reference",
+        ),
+        pytest.param(
+            {}, "reference", "Answer does not match dataset: q1 / rag", id="missing-reference"
+        ),
+        pytest.param({"text": ""}, None, "Empty answer: q1 / rag", id="empty-answer"),
+        pytest.param({"text": " \n\t "}, None, "Empty answer: q1 / rag", id="whitespace-answer"),
+        pytest.param({}, "contexts", "Missing full contexts: q1 / rag", id="missing-contexts"),
+        pytest.param({"contexts": [7]}, None, "contexts", id="integer-context"),
+        pytest.param({"contexts": ["Evidence.", None]}, None, "contexts", id="mixed-context-types"),
+        pytest.param({"contexts": "Evidence."}, None, "contexts", id="string-context-container"),
+        pytest.param({"contexts": None}, None, "contexts", id="null-contexts"),
+    ],
+)
+async def test_invalid_saved_answer_blocks_pending_retry_and_preserves_artifacts(
+    tmp_path, changes, omitted, match
+):
+    from mnogobase.evaluation.artifacts import append_jsonl
+
+    core = evaluation()
+    run = tmp_path / "run"
+    core.prepare_run(dataset(tmp_path), run, Settings(), modes=["rag"])
+    assert (
+        await core.run_answers(
+            run, {"rag": Retriever()}, Answerer(FakeLLM(lambda *a: "Because [1]."), 1000)
+        )
+        == 1
+    )
+    answers_path = run / "answers.jsonl"
+    rows = core.latest_records(answers_path, ("id", "mode"))
+    assert rows[("q2", "rag")]["status"] == "error"
+    invalid = {**rows[("q1", "rag")], **changes}
+    if omitted is not None:
+        invalid.pop(omitted)
+    append_jsonl(answers_path, invalid)
+    before = {path.name: path.read_bytes() for path in run.iterdir()}
+    retriever = RecordingRetriever()
+    llm = FakeLLM(lambda *a: "Answer")
+
+    with pytest.raises(ValueError, match=match):
+        core.planned_answers(run)
+    with pytest.raises(ValueError, match=match):
+        await core.run_answers(run, {"rag": retriever}, Answerer(llm, 1000))
+
+    assert retriever.calls == []
+    assert llm.calls == []
+    assert {path.name: path.read_bytes() for path in run.iterdir()} == before
 
 
 def test_jsonl_recovers_utf8_tail_but_rejects_middle_corruption(tmp_path):

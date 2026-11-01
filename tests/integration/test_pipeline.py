@@ -584,6 +584,67 @@ def _fail_once(monkeypatch, target, name: str, after_call: bool = False) -> None
 @pytest.mark.parametrize(
     ("where", "name", "after_call"),
     [
+        ("graph", "delete_document", False),
+        ("graph", "delete_document", True),
+        ("vectors", "delete_entities", False),
+    ],
+    ids=["before-graph-commit", "after-graph-commit", "during-vector-cleanup"],
+)
+async def test_changed_duplicates_resume_the_same_removal_journal(
+    make_app, tmp_path, monkeypatch, where, name, after_call
+):
+    folder = tmp_path / "duplicates"
+    folder.mkdir()
+    first, second = folder / "a.md", folder / "b.md"
+    text = "# Notes\n\nSoftmax turns scores into probabilities.\n"
+    for path in (first, second):
+        path.write_text(text, encoding="utf-8")
+    app = make_app()
+    initial = await app.pipeline.ingest([folder])
+    assert initial.failed == {} and len(initial.skipped) == 1
+    old = file_doc_id(first)
+    softmax = entity_id("Concept", "Softmax")
+    page = tmp_path / "wiki" / "entities" / "softmax.md"
+    assert page.exists() and chunk_count(app, old) > 0
+
+    first.write_text("# Notes\n\nNothing to see here.\n", encoding="utf-8")
+    second.write_text("# Models\n\nThe Transformer is a network.\n", encoding="utf-8")
+    _fail_once(monkeypatch, getattr(app, where), name, after_call)
+
+    # The first path leaves a journal; the second still refers to the same old
+    # document and must finish that plan, including after the graph commit.
+    interrupted = await app.pipeline.ingest([folder])
+    assert list(interrupted.failed) == [str(first.resolve())]
+    assert interrupted.processed == [str(second.resolve())]
+    assert interrupted.wiki.failed == [] and interrupted.wiki.deleted == ["Softmax"]
+    assert app.registry.pending_removals() == []
+    assert not app.graph.has_document(old)
+    assert app.graph.get_entity(softmax) is None
+    assert app.graph.wiki_page(softmax) is None
+    assert chunk_count(app, old) == 0
+    assert _points(app, app.vectors.entities, "entity_id", softmax) == 0
+    assert _points(app, app.vectors.wiki, "page_id", softmax) == 0
+    assert not page.exists()
+    assert not app.pipeline.chunks_path(old).exists()
+    assert not app.parser.cache_path(old).exists()
+
+    recovered = await app.pipeline.ingest([folder])
+    assert recovered.failed == {} and recovered.processed == [str(first.resolve())]
+    for path in (first, second):
+        row = app.registry.get_file(str(path.resolve()))
+        assert row.doc_id == file_doc_id(path) and row.status == "done"
+    assert app.graph.counts()["Document"] == 2
+    before = app.graph.counts()
+    extraction_calls = len(app.llm.calls_for("extract"))
+    again = await app.pipeline.ingest([folder])
+    assert again.failed == {} and len(again.skipped) == 2
+    assert app.graph.counts() == before
+    assert len(app.llm.calls_for("extract")) == extraction_calls
+
+
+@pytest.mark.parametrize(
+    ("where", "name", "after_call"),
+    [
         ("vectors", "delete_entities", False),  # Qdrant падает посреди очистки
         ("vectors", "delete_wiki_page", False),
         ("graph", "delete_document", True),  # транзакция графа закоммичена, затем падение

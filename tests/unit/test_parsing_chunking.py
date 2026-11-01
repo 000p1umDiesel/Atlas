@@ -1,14 +1,34 @@
+import base64
+import io
 import json
 from pathlib import Path
 
 import httpx
 import pytest
-from docling.datamodel.base_models import InputFormat
+from docling.backend.image_backend import ImageDocumentBackend
+from docling.datamodel.base_models import ConversionStatus, InputFormat
+from docling.datamodel.document import ConversionResult, InputDocument
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling_core.transforms.chunker.hierarchical_chunker import ChunkingDocSerializer
-from docling_core.types.doc import DescriptionMetaField, DoclingDocument, PictureItem, PictureMeta
+from docling_core.types.doc import (
+    BoundingBox,
+    CoordOrigin,
+    DescriptionMetaField,
+    DoclingDocument,
+    DocumentOrigin,
+    ImageRef,
+    PictureItem,
+    PictureMeta,
+    ProvenanceItem,
+    Size,
+)
 from docling_core.types.doc.labels import PictureClassificationLabel
+from docx import Document
 from PIL import Image
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+from transformers import PreTrainedTokenizerFast
 
 from mnogobase.chunking import hybrid
 from mnogobase.chunking.hybrid import Chunker
@@ -39,6 +59,93 @@ def test_title_falls_back_to_file_stem(tmp_path):
     src.write_text("Just a paragraph without headings.\n", encoding="utf-8")
     parsed = DoclingParser(ParsingSettings(), "cpu", tmp_path / "cache").parse(src, DOC)
     assert parsed.title == "notes"
+
+
+def test_parse_docx_saves_embedded_image_and_loads_its_pixels_from_cache(tmp_path):
+    image_path = tmp_path / "stock.png"
+    image = Image.new("RGB", (12, 8), (12, 90, 160))
+    image.putpixel((0, 0), (200, 5, 80))
+    image.save(image_path)
+    source = tmp_path / "stock.docx"
+    office = Document()
+    office.add_heading("Warehouse stock", 0)
+    office.add_paragraph("The stock diagram is embedded below.")
+    office.add_picture(str(image_path))
+    office.save(source)
+
+    parser = DoclingParser(ParsingSettings(ocr=False), "cpu", tmp_path / "cache")
+    parsed = parser.parse(source, DOC)
+    assert parsed.title == "Warehouse stock"
+    assert parsed.mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert parsed.n_pages is None  # DOCX does not carry page provenance in Docling
+    images_dir = tmp_path / "cache" / DOC / "images"
+    assert json.loads((images_dir / "images.json").read_text(encoding="utf-8")) == [
+        {"file": "img_0000.png", "caption": "", "page": None}
+    ]
+    with Image.open(images_dir / "img_0000.png") as saved:
+        assert saved.size == (12, 8)
+        assert saved.getpixel((0, 0)) == (200, 5, 80)
+        assert saved.getpixel((11, 7)) == (12, 90, 160)
+
+    image_path.unlink()
+    source.unlink()
+    loaded = parser.load(DOC, source)
+    assert loaded.title == "Warehouse stock"
+    assert "The stock diagram is embedded below." in loaded.doc.export_to_markdown()
+    [picture] = loaded.doc.pictures
+    restored = picture.get_image(loaded.doc)
+    assert restored is not None and restored.size == (12, 8)
+    assert restored.getpixel((0, 0)) == (200, 5, 80)
+    assert restored.getpixel((11, 7)) == (12, 90, 160)
+
+    parser.drop_cache(DOC)
+    assert not parser.cache_path(DOC).exists()
+    assert not images_dir.parent.exists()
+
+
+def test_save_images_skips_unavailable_pixels_and_keeps_captions_and_pages(tmp_path):
+    doc = DoclingDocument(name="stock")
+    doc.add_text(label="text", text="Stock diagrams")
+    doc.add_picture()  # no image bytes and no page image to crop
+    caption = doc.add_text(label="caption", text="Рисунок 1: остаток склада")
+    doc.add_picture(
+        image=ImageRef.from_pil(Image.new("RGB", (4, 3), (20, 40, 60)), dpi=72),
+        caption=caption,
+        prov=ProvenanceItem(
+            page_no=3,
+            bbox=BoundingBox(l=0, t=0, r=4, b=3, coord_origin=CoordOrigin.TOPLEFT),
+            charspan=(0, 0),
+        ),
+    )
+    doc.add_picture()  # skipped pictures must not leave gaps in saved file names
+    doc.add_picture(image=ImageRef.from_pil(Image.new("RGB", (2, 5), "yellow"), dpi=72))
+
+    images_dir = tmp_path / "images"
+    assert docling_parser._save_images(doc, images_dir) == 2
+    assert json.loads((images_dir / "images.json").read_text(encoding="utf-8")) == [
+        {"file": "img_0000.png", "caption": "Рисунок 1: остаток склада", "page": 3},
+        {"file": "img_0001.png", "caption": "", "page": None},
+    ]
+    assert {file.name for file in images_dir.iterdir()} == {
+        "images.json",
+        "img_0000.png",
+        "img_0001.png",
+    }
+    for name, size, color in (
+        ("img_0000.png", (4, 3), (20, 40, 60)),
+        ("img_0001.png", (2, 5), (255, 255, 0)),
+    ):
+        with Image.open(images_dir / name) as saved:
+            assert saved.size == size
+            assert saved.tobytes() == bytes(color) * (size[0] * size[1])
+
+
+def test_unavailable_picture_pixels_do_not_create_an_empty_image_manifest(tmp_path):
+    doc = DoclingDocument(name="stock")
+    doc.add_picture()
+    images_dir = tmp_path / "images"
+    assert docling_parser._save_images(doc, images_dir) == 0
+    assert not images_dir.exists()
 
 
 def test_chunker_records(tmp_path):
@@ -76,6 +183,131 @@ def test_chunker_splits_long_text_with_a_server_tokenizer(tmp_path, monkeypatch)
 
 
 VISION = VisionSettings(enabled=True, base_url="http://vl:8003/v1", model="vl", skip=["logo"])
+
+
+@pytest.fixture
+def image_parser(tmp_path, monkeypatch):
+    """Keep real image/document data while avoiding the heavyweight layout models."""
+    source = tmp_path / "shot.png"
+    image = Image.new("RGBA", (16, 8), (12, 90, 160, 255))
+    image.putpixel((0, 0), (200, 5, 80, 255))
+    image.save(source)
+    doc = DoclingDocument(
+        name="shot",
+        origin=DocumentOrigin(filename="shot.png", mimetype="image/png", binary_hash=0),
+    )
+    doc.add_page(
+        page_no=1,
+        size=Size(width=80, height=40),
+        image=ImageRef.from_pil(image.convert("RGB"), dpi=72),
+    )
+    doc.add_text(
+        label="text",
+        text="OCR text: stock count 1240.",
+        prov=ProvenanceItem(
+            page_no=1,
+            bbox=BoundingBox(l=0, t=0, r=80, b=40, coord_origin=CoordOrigin.TOPLEFT),
+            charspan=(0, 27),
+        ),
+    )
+    input_doc = InputDocument(source, InputFormat.IMAGE, ImageDocumentBackend)
+    result = ConversionResult(input=input_doc, document=doc, status=ConversionStatus.SUCCESS)
+    parser = DoclingParser(ParsingSettings(ocr=False), "cpu", tmp_path / "cache", VISION)
+
+    def convert(path, *, raises_on_error):
+        assert path == source and raises_on_error is True
+        return result
+
+    monkeypatch.setattr(parser._get_converter(), "convert", convert)
+    try:
+        yield parser, source
+    finally:
+        input_doc._backend.unload()
+
+
+def test_parse_image_caches_whole_image_description_before_chunking(
+    image_parser, tmp_path, monkeypatch
+):
+    parser, source = image_parser
+    requests = []
+    clients = []
+    real_client = httpx.Client
+
+    def respond(request):
+        assert str(request.url) == "http://vl:8003/v1/chat/completions"
+        body = json.loads(request.content)
+        assert body["model"] == "vl" and body["max_tokens"] == 400
+        encoded_image, prompt = body["messages"][0]["content"]
+        assert prompt == {"type": "text", "text": VISION.prompt}
+        prefix, encoded = encoded_image["image_url"]["url"].split(",", 1)
+        assert prefix == "data:image/png;base64"
+        with Image.open(io.BytesIO(base64.b64decode(encoded))) as sent:
+            assert sent.mode == "RGB" and sent.size == (16, 8)
+            assert sent.getpixel((0, 0)) == (200, 5, 80)
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "Bearing 6205: 1240 units in stock."}}]},
+        )
+
+    def client(**kwargs):
+        http = real_client(**kwargs, transport=httpx.MockTransport(respond))
+        clients.append(http)
+        return http
+
+    monkeypatch.setattr(docling_parser.httpx, "Client", client)
+    parsed = parser.parse(source, DOC)
+    assert parsed.mime == "image/png" and parsed.n_pages == 1
+    assert len(requests) == 1 and all(http.is_closed for http in clients)
+    first = parsed.doc.body.children[0].resolve(parsed.doc)
+    assert isinstance(first, PictureItem)
+    assert first.prov[0].page_no == 1
+    assert first.prov[0].bbox.as_tuple() == (0, 0, 80, 40)
+    images_dir = tmp_path / "cache" / DOC / "images"
+    assert json.loads((images_dir / "images.json").read_text(encoding="utf-8")) == [
+        {"file": "img_0000.png", "caption": "", "page": 1}
+    ]
+    with Image.open(images_dir / "img_0000.png") as saved:
+        assert saved.size == (16, 8)
+        assert saved.getpixel((0, 0)) == (200, 5, 80)
+
+    source.unlink()
+    loaded = parser.load(DOC, source)
+    serialized = ChunkingDocSerializer(doc=loaded.doc).serialize().text
+    assert serialized.index("Bearing 6205: 1240 units in stock.") < serialized.index("OCR text")
+    tokenizer = Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    tokenizer_dir = tmp_path / "tokenizer"
+    PreTrainedTokenizerFast(tokenizer_object=tokenizer, unk_token="[UNK]").save_pretrained(
+        tokenizer_dir
+    )
+    chunks = Chunker(
+        ChunkingSettings(tokenizer=str(tokenizer_dir), max_tokens=64), EmbedderSettings()
+    ).chunk(loaded, DOC, str(source))
+    assert chunks and chunks[0].text.startswith("Bearing 6205: 1240 units in stock.")
+    assert any("OCR text: stock count 1240." in chunk.text for chunk in chunks)
+    assert all(chunk.page_start == chunk.page_end == 1 for chunk in chunks)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "error"),
+    [
+        (400, {"error": "invalid image"}, "HTTPStatusError"),
+        (200, {"choices": [{"message": {"content": ""}}]}, "empty description"),
+        (200, {"choices": []}, "IndexError"),
+    ],
+)
+def test_parse_image_does_not_cache_failed_descriptions(
+    image_parser, monkeypatch, status, body, error
+):
+    parser, source = image_parser
+    http = _vlm(lambda request: httpx.Response(status, json=body))
+    monkeypatch.setattr(docling_parser.httpx, "Client", lambda **kwargs: http)
+    with pytest.raises(VisionError, match=error):
+        parser.parse(source, DOC)
+    assert http.is_closed
+    assert not parser.cache_path(DOC).exists()
+    assert not (parser.cache_path(DOC).parent / DOC).exists()
 
 
 def test_vision_sends_pictures_to_the_vlm_server(tmp_path):
