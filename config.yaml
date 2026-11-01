@@ -108,3 +108,15 @@ neo4j:
   uri: bolt://localhost:7687
   user: neo4j
   password_env: NEO4J_PASSWORD
+
+# eval score: null наследует подключение llm / embedder; ключи — только имена env.
+evaluation:
+  base_url: null
+  model: null
+  api_key_env: null
+  embedding_url: null
+  embedding_model: null
+  embedding_api_key_env: null
+  timeout_s: 360
+  temperature: 0
+  strictness: 3

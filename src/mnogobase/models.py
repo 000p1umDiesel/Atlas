@@ -158,6 +158,7 @@ class Answer(BaseModel):
     mode: str
     text: str
     sources: list[Source] = Field(default_factory=list)
+    contexts: list[str] = Field(default_factory=list)  # полные блоки из промпта после бюджета
     alt_queries: list[str] = Field(default_factory=list)  # напр., английский перевод для поиска
     latency_ms: int = 0
     tokens_in: int = 0

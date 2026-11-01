@@ -24,6 +24,13 @@ def _label(item: ContextItem) -> str:
 
 
 def build_context(items: list[ContextItem], max_tokens: int) -> tuple[str, list[Source], int]:
+    blocks, sources, used = _context_blocks(items, max_tokens)
+    return "\n\n".join(blocks), sources, used
+
+
+def _context_blocks(
+    items: list[ContextItem], max_tokens: int
+) -> tuple[list[str], list[Source], int]:
     """Нумерует элементы блоками `[n] (label)\\ntext`, пока не исчерпан бюджет токенов.
 
     Первый элемент сохраняется всегда, даже сверх бюджета, чтобы непустой поиск никогда
@@ -49,7 +56,7 @@ def build_context(items: list[ContextItem], max_tokens: int) -> tuple[str, list[
             )
         )
         used += cost
-    return "\n\n".join(blocks), sources, used
+    return blocks, sources, used
 
 
 class Answerer:
@@ -65,7 +72,8 @@ class Answerer:
 
     async def answer(self, question: str, mode: str, items: list[ContextItem]) -> Answer:
         start = time.perf_counter()
-        context, sources, context_tokens = build_context(items, self._max)
+        blocks, sources, context_tokens = _context_blocks(items, self._max)
+        context = "\n\n".join(blocks)
         if not sources:
             return Answer(
                 question=question,
@@ -84,6 +92,7 @@ class Answerer:
             mode=mode,
             text=text,
             sources=sources,
+            contexts=blocks,
             latency_ms=int((time.perf_counter() - start) * 1000),
             tokens_in=self._llm.usage.tokens_in - before_in,
             tokens_out=self._llm.usage.tokens_out - before_out,

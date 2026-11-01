@@ -31,6 +31,7 @@ from rich.text import Text
 from mnogobase.app import App, build_app
 from mnogobase.config import Settings, load_settings
 from mnogobase.doctor import Check, run_checks
+from mnogobase.evaluation.cli import app as evaluation_app
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.log import configure_logging, new_run_id
 from mnogobase.maintenance import ReindexError
@@ -65,6 +66,7 @@ from mnogobase.wiki.builder import WikiReport
 app = typer.Typer(no_args_is_help=True, help="mnogobase — LLM Wiki core: ingest, wiki, retrieval.")
 wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
 app.add_typer(wiki_app, name="wiki")
+app.add_typer(evaluation_app, name="eval")
 models_app = typer.Typer(
     no_args_is_help=True,
     help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",

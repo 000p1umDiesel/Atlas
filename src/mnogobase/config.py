@@ -377,6 +377,18 @@ class _YamlSource(YamlConfigSettingsSource):
         return data
 
 
+class EvaluationSettings(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key_env: str | None = None
+    embedding_url: str | None = None
+    embedding_model: str | None = None
+    embedding_api_key_env: str | None = None
+    timeout_s: float = Field(default=360, gt=0)
+    temperature: float = Field(default=0, ge=0, le=2)
+    strictness: PositiveInt = 3
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MNOGOBASE_", env_nested_delimiter="__", extra="ignore"
@@ -400,6 +412,7 @@ class Settings(BaseSettings):
     graph: GraphSettings = Field(default_factory=GraphSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     neo4j: Neo4jSettings = Field(default_factory=Neo4jSettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
 
     @classmethod
     def settings_customise_sources(
