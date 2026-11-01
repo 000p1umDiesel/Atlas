@@ -131,6 +131,9 @@ class WikiBuilder:
             dirty |= linking
             report.deleted += self._delete_pages(dropped)
         candidates = [e for e in eligible if rebuild_all or e.entity_id in dirty]
+        # Full rebuilds also need durable retry state if any later write fails.
+        dirty.update(e.entity_id for e in candidates)
+        self._registry.mark_dirty(dirty)
 
         # сначала подтверждения: кандидат без них не получает страницу, и ссылаться на него нельзя
         evidence: dict[str, list[SearchHit]] = {}
@@ -164,18 +167,29 @@ class WikiBuilder:
         progress.step("wiki draft", len(writable))
         drafts = [d for d in await asyncio.gather(*map(draft_safely, writable)) if d is not None]
         # ссылки могут вести только на существующие страницы или записываемые в этом запуске
-        drafted = {d.entity.entity_id for d in drafts}
-        lookup = self._page_lookup([e for e in writable if e.entity_id in drafted], slugs)
         built: list[_Built] = []
         progress.step("wiki write", len(drafts))
-        for draft in drafts:
-            try:
-                built.append(self._write(draft, lookup))
-            except Exception as exc:  # одна плохая сущность не должна ронять весь build
-                self._record_failure(report, failed_ids, draft.entity, exc)
-                progress.advance(failed=True)
-            else:
-                progress.advance()
+        while drafts:
+            drafted = {d.entity.entity_id for d in drafts}
+            lookup = self._page_lookup([e for e in writable if e.entity_id in drafted], slugs)
+            built, surviving = [], []
+            lost_target = False
+            for draft in drafts:
+                try:
+                    built.append(self._write(draft, lookup))
+                    surviving.append(draft)
+                except Exception as exc:  # одна плохая сущность не должна ронять весь build
+                    self._record_failure(report, failed_ids, draft.entity, exc)
+                    lost_target |= draft.previous is None
+                    progress.advance(failed=True)
+                else:
+                    progress.advance()
+            if not lost_target:
+                break
+            # A new target failed to persist. Render survivors again without links
+            # to it, using the same LLM drafts; no additional generation calls.
+            drafts = surviving
+            progress.step("wiki repair links", len(drafts))
         # два прохода, чтобы LINKS_TO мог указывать на страницы, созданные в этом же запуске
         for b in built:
             self._graph.upsert_wiki_page(b.record, b.entity.entity_id, [], b.cited)

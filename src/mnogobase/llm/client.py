@@ -172,8 +172,10 @@ class OpenAICompatLLM:
                 last_error = str(exc)
                 self._log.warning("llm_invalid_json", task=task, error=last_error[:300])
                 history = [
-                    *history,
-                    {"role": "assistant", "content": content},
+                    *messages,
+                    # A truncated/looping reply can fill the model's whole
+                    # context. Keep only its beginning and the latest error.
+                    {"role": "assistant", "content": content[:2000]},
                     {
                         "role": "user",
                         "content": "Your previous reply was not valid JSON for the schema: "

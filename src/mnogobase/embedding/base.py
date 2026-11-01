@@ -42,7 +42,9 @@ def truncate_normalize(vec: Sequence[float], dim: int) -> list[float]:
     if len(vec) < dim:
         raise ValueError(f"model returned {len(vec)} dims, config expects {dim}")
     head = list(vec[:dim])
-    norm = math.sqrt(sum(x * x for x in head)) or 1.0
+    norm = math.sqrt(sum(x * x for x in head))
+    if not norm or not math.isfinite(norm):
+        raise ValueError("embedding is zero or nonfinite")
     return [x / norm for x in head]
 
 

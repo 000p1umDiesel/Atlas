@@ -516,7 +516,7 @@ def _answer_setup(
 def ask(
     question: Annotated[str, typer.Argument(help="Question to answer from the knowledge base.")],
     mode: Annotated[Mode, typer.Option("--mode", "-m", help="rag | wiki | graph | all")] = Mode.ALL,
-    k: Annotated[int | None, typer.Option("--k", help="Results per retriever.")] = None,
+    k: Annotated[int | None, typer.Option("--k", min=1, help="Results per retriever.")] = None,
 ) -> None:
     """Ответить на вопрос со ссылками на источники в одном режиме retrieval."""
     settings = _settings(project=True)
@@ -542,7 +542,7 @@ def ask(
 @app.command()
 def compare(
     question: Annotated[str, typer.Argument(help="Question to answer in all four modes.")],
-    k: Annotated[int | None, typer.Option("--k", help="Results per retriever.")] = None,
+    k: Annotated[int | None, typer.Option("--k", min=1, help="Results per retriever.")] = None,
 ) -> None:
     """Ответить в режимах rag / wiki / graph / all и записать сравнение в runs/compare.jsonl."""
     settings = _settings(project=True)

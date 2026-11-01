@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
 from mnogobase.embedding.base import embedder_signature
-from mnogobase.maintenance import reindex, reset
+from mnogobase.maintenance import ReindexError, reindex, reset
 from mnogobase.pipeline import EmbedderMismatchError
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import (
@@ -158,6 +158,47 @@ async def test_interrupted_reindex_must_be_rerun(graph, docs, settings):
     assert reindex(healed)["chunks"] > 0
     healed.pipeline.prepare()  # завершённый reindex снова записывает сигнатуру
     healed.registry.close()
+
+
+@pytest.mark.parametrize("missing", ["document", "wiki", "corrupt_document", "corrupt_wiki"])
+async def test_reindex_refuses_missing_inputs_before_dropping_index(graph, docs, settings, missing):
+    app = make_app(settings, graph, QdrantClient(":memory:"), FakeEmbedder(64))
+    try:
+        await app.pipeline.ingest([docs])
+        before = chunk_payloads(app)
+        signature = app.registry.get_meta("embedder")
+        if missing in ("document", "corrupt_document"):
+            doc_id = app.registry.files()[0].doc_id
+            if missing == "document":
+                app.pipeline.chunks_path(doc_id).unlink()
+            else:
+                app.pipeline.chunks_path(doc_id).write_text("{")
+            graph._run("MATCH (d:Document {doc_id: $id}) DETACH DELETE d", id=doc_id)
+        else:
+            page = graph.wiki_pages()[0]
+            if missing == "wiki":
+                (settings.wiki.dir / page.path).unlink()
+            else:
+                (settings.wiki.dir / page.path).write_bytes(b"\xff")
+        with pytest.raises(ReindexError, match="missing|unreadable"):
+            reindex(app)
+        assert chunk_payloads(app) == before
+        assert app.registry.get_meta("embedder") == signature
+    finally:
+        app.registry.close()
+
+
+async def test_reindex_recovers_corrupt_chunk_cache_from_graph(graph, docs, settings):
+    app = make_app(settings, graph, QdrantClient(":memory:"), FakeEmbedder(64))
+    try:
+        await app.pipeline.ingest([docs])
+        before = chunk_payloads(app)
+        app.pipeline.chunks_path(app.registry.files()[0].doc_id).write_text("{")
+        assert reindex(app)["chunks"] == len(before)
+        assert set(chunk_payloads(app)) == set(before)
+        app.pipeline.prepare()
+    finally:
+        app.registry.close()
 
 
 @pytest.fixture

@@ -222,6 +222,39 @@ async def test_failed_entity_with_existing_page_keeps_links(world, graph):
     assert w.registry.dirty() == ["e2"]
 
 
+async def test_failed_page_write_does_not_leave_links_to_absent_page(world, graph, monkeypatch):
+    w = world()
+    original = w.builder.index_page
+
+    def fail_softmax(page_id, *args):
+        if page_id == "e2":
+            raise RuntimeError("index unavailable")
+        return original(page_id, *args)
+
+    monkeypatch.setattr(w.builder, "index_page", fail_softmax)
+    report = await w.builder.build()
+    assert report.failed == ["Softmax"]
+    assert graph.wiki_page("e2") is None
+    assert "[[softmax|" not in (w.wiki / "entities" / "transformer.md").read_text()
+    assert w.registry.dirty() == ["e2"]
+
+
+async def test_failed_full_rebuild_is_retried_by_incremental_build(world, monkeypatch):
+    w = world()
+    await w.builder.build()
+    original = w.builder._evidence
+
+    def fail(*_):
+        raise RuntimeError("Qdrant unavailable")
+
+    monkeypatch.setattr(w.builder, "_evidence", fail)
+    report = await w.builder.build(rebuild_all=True)
+    assert report.failed == ["Softmax", "Transformer"]
+    assert w.registry.dirty() == ["e1", "e2"]
+    monkeypatch.setattr(w.builder, "_evidence", original)
+    assert sorted((await w.builder.build()).updated) == ["Softmax", "Transformer"]
+
+
 async def test_failed_list_is_sorted(world):
     def handler(task: str, prompt: str) -> str:
         if task == "wiki":

@@ -89,6 +89,16 @@ class NotebookRunner:
 
 
 class NotebookWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_judge_cleanup_after_partial_initialization(self):
+        runner = NotebookRunner("03_hybrid_rag_ragas.ipynb")
+        await runner.tag("close")
+        from unittest.mock import AsyncMock
+
+        client = SimpleNamespace(close=AsyncMock())
+        runner.ns["judge_client"] = client
+        await runner.tag("close")
+        client.close.assert_awaited_once()
+
     async def test_cells_search_generation_and_all_metrics_resume(self):
         import httpx
         import numpy as np

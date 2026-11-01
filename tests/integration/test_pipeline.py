@@ -113,6 +113,31 @@ async def test_ingest_builds_vectors_graph_and_wiki(make_app, docs, tmp_path):
     assert all(path in log for path in report.processed)
 
 
+@pytest.mark.parametrize("failure", ["embedding", "qdrant"])
+async def test_failed_indexing_leaves_graph_untouched_and_can_retry(
+    make_app, docs, monkeypatch, failure
+):
+    app = make_app()
+
+    def fail(*_):
+        raise RuntimeError("index unavailable")
+
+    with monkeypatch.context() as patch:
+        target, name = (
+            (app.embedder, "embed_documents")
+            if failure == "embedding"
+            else (app.vectors, "upsert_chunks")
+        )
+        patch.setattr(target, name, fail)
+        report = await app.pipeline.ingest([docs], build_wiki=False)
+    assert len(report.failed) == 2
+    assert app.graph.counts()["Document"] == 0
+    assert app.graph.counts()["Chunk"] == 0
+    retried = await app.pipeline.ingest([docs], retry_failed=True, build_wiki=False)
+    assert retried.failed == {} and len(retried.processed) == 2
+    assert app.graph.counts()["Document"] == 2
+
+
 async def test_ingest_reports_progress(make_app, tmp_path):
     folder = tmp_path / "one"
     folder.mkdir()

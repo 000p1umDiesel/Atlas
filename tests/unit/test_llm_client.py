@@ -97,6 +97,19 @@ async def test_structured_repairs_invalid_json():
     assert "not valid JSON" in requests[1]["messages"][-1]["content"]
 
 
+async def test_structured_repairs_do_not_resend_unbounded_invalid_output():
+    llm, requests = make_llm(["x" * 50000, "y" * 50000, '{"items": [], "count": 2}'])
+    original = [{"role": "user", "content": "extract this document"}]
+    try:
+        result = await llm.structured(original, Box, task="extract")
+        assert result.count == 2
+        for request in requests[1:]:
+            assert request["messages"][0] == original[0]
+            assert sum(len(m["content"]) for m in request["messages"]) < 4000
+    finally:
+        await llm._client.close()
+
+
 async def test_structured_gives_up_after_repairs():
     llm, requests = make_llm(["nope", "nope", "nope"])
     with pytest.raises(StructuredOutputError):

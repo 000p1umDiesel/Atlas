@@ -58,15 +58,18 @@ class OpenAICompatEmbedder:
                 )
                 response.raise_for_status()
         data = sorted(response.json()["data"], key=lambda d: d["index"])
+        if [item["index"] for item in data] != list(range(len(inputs))):
+            raise ValueError("embedding API returned missing/duplicate indexes")
         self._log.debug(
             "embed_batch",
             model=self._s.model,
             batch_size=len(inputs),
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
-        if self._dim is None:
-            self._dim = len(data[0]["embedding"])
-        return [truncate_normalize(item["embedding"], self._dim) for item in data]
+        dim = self._dim if self._dim is not None else len(data[0]["embedding"])
+        vectors = [truncate_normalize(item["embedding"], dim) for item in data]
+        self._dim = dim
+        return vectors
 
     def embed_documents(self, items: Sequence[EmbedInput]) -> list[list[float]]:
         texts = [format_document(item, self._s.doc_template) for item in items]

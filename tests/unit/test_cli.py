@@ -138,6 +138,17 @@ def make_project(root: Path) -> None:
     Registry(root / ".mnogobase" / "state.db").close()
 
 
+@pytest.mark.parametrize("command", ["ask", "compare"])
+@pytest.mark.parametrize("k", ["0", "-1"])
+def test_query_rejects_nonpositive_k_before_connecting(tmp_path, monkeypatch, command, k):
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda *_: pytest.fail("services contacted"))
+    result = runner.invoke(cli.app, [command, "question", "--k", k])
+    assert result.exit_code == 2, result.output
+    assert "Invalid value" in result.output
+
+
 def test_status_on_empty_project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     make_project(tmp_path)

@@ -34,6 +34,19 @@ def _check_embedder(app: App) -> None:
         )
 
 
+def _document_input(app: App, doc_id: str):
+    """Recover unusable chunk caches from graph data before touching the index."""
+    try:
+        return app.pipeline.load_chunks(doc_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        stored = app.graph.doc_chunks(doc_id)
+        if stored is None:
+            raise ReindexError(
+                f"missing or unreadable document {doc_id}; restore its cache or graph data"
+            ) from None
+        return stored
+
+
 def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     """Пересчитывает все векторы текущим embedder; граф и файлы wiki не трогаются.
 
@@ -41,6 +54,22 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     индекс на другую размерность."""
     log = get_logger(__name__)
     _check_embedder(app)
+    # Refuse unrecoverable inputs before dropping the usable index.
+    doc_ids = sorted({f.doc_id for f in app.registry.files()})
+    doc_ids = [d for d in doc_ids if app.registry.stage_status(d, "embed") == "done"]
+    for doc_id in doc_ids:
+        try:
+            _document_input(app, doc_id)
+        except ReindexError as exc:
+            raise ReindexError(f"{exc}; nothing was changed") from exc
+    pages = app.graph.wiki_pages()
+    for row in pages:
+        try:
+            (app.settings.wiki.dir / row.path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ReindexError(
+                f"missing or unreadable wiki page {row.path}; restore it before reindex; nothing was changed"
+            ) from exc
     app.registry.set_meta("embedder", REINDEX_IN_PROGRESS)
     app.vectors.drop_collections()
     app.vectors.ensure_collections()
@@ -48,19 +77,9 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     stats = {"chunks": 0, "entities": 0, "wiki_sections": 0}
 
     # каждый документ, чанки которого хоть раз были заэмбеддены, что бы ни было на поздних стадиях
-    doc_ids = sorted({f.doc_id for f in app.registry.files()})
-    doc_ids = [d for d in doc_ids if app.registry.stage_status(d, "embed") == "done"]
     progress.step("reindex chunks", len(doc_ids))
     for doc_id in doc_ids:
-        if app.pipeline.chunks_path(doc_id).exists():
-            doc, chunks = app.pipeline.load_chunks(doc_id)
-        else:
-            stored = app.graph.doc_chunks(doc_id)
-            if stored is None:
-                log.warning("reindex_document_missing", doc_id=doc_id)
-                progress.advance(failed=True)
-                continue
-            doc, chunks = stored
+        doc, chunks = _document_input(app, doc_id)
         app.pipeline.index_chunks(doc, chunks)
         for chunk_id, entity_ids in app.graph.chunk_entity_ids(doc_id).items():
             if entity_ids:
@@ -77,14 +96,13 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
         progress.advance(len(batch))
     stats["entities"] = len(entities)
 
-    pages = app.graph.wiki_pages()
     progress.step("reindex wiki", len(pages))
     for row in pages:
         file = app.settings.wiki.dir / row.path
         if not file.exists():
-            log.warning("reindex_wiki_page_missing", page_id=row.page_id, path=row.path)
-            progress.advance(failed=True)
-            continue
+            raise ReindexError(
+                f"wiki page {row.path} disappeared during reindex; restore it and rerun reindex"
+            )
         # page_id == entity_id: одна страница на сущность
         text = file.read_text(encoding="utf-8")
         stats["wiki_sections"] += app.wiki.index_page(row.page_id, row.page_id, row.path, text)

@@ -125,6 +125,24 @@ def test_embedder_rejects_too_small_vectors():
         emb.embed_query("x")
 
 
+@pytest.mark.parametrize("indexes", [[0, 0], [0], [0, 2], []])
+def test_embedder_rejects_missing_or_duplicate_response_indexes(indexes):
+    def handler(request):
+        return httpx.Response(
+            200, json={"data": [{"index": i, "embedding": [1.0, 0.0]} for i in indexes]}
+        )
+
+    emb = OpenAICompatEmbedder(EmbedderSettings(dim=2), client=_client(handler))
+    with pytest.raises(ValueError, match="indexes"):
+        emb.embed_documents([EmbedInput(text="first"), EmbedInput(text="second")])
+
+
+@pytest.mark.parametrize("vector", [[0.0, 0.0], [float("nan"), 1.0], [float("inf"), 1.0]])
+def test_normalization_rejects_invalid_vectors(vector):
+    with pytest.raises(ValueError, match="zero or nonfinite"):
+        truncate_normalize(vector, 2)
+
+
 def test_auto_dim_is_the_length_of_the_first_vector():
     bodies = []
 

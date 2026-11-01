@@ -567,10 +567,10 @@ class Pipeline:
 
     def _embed(self, doc_id: str) -> None:
         doc, chunks = self.load_chunks(doc_id)
+        self.index_chunks(doc, chunks)
         self._graph.upsert_document(doc)
         if not chunks:
             return
-        self.index_chunks(doc, chunks)
         self._graph.upsert_chunks(chunks)
 
     async def _extract(self, doc_id: str, progress: ProgressSink) -> None:
