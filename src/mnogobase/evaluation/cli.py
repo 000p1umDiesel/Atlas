@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -13,6 +14,8 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from mnogobase.processing import corpus_snapshot, measured_ingest
+from mnogobase.registry import ingest_lock
 from mnogobase.retrieval import Mode
 
 from .core import load_questions, load_run, prepare_run, report, run_answers, score_run
@@ -99,19 +102,20 @@ def run(
     try:
         load_questions(dataset)  # reject invalid input before any services/configuration
         settings = cli._settings(project=True)
-        with _lock(output):
-            prepare_run(
-                dataset,
-                output,
-                settings,
-                modes=[m.value for m in mode] if mode else None,
-                limit=limit,
-                k=k,
-            )
+        with _lock(output), ingest_lock(settings.data_dir):
             cli._preflight(settings)
             application = cli.build_app(settings)
             try:
                 retrievers, answerer, translator = cli._answer_setup(application)
+                prepare_run(
+                    dataset,
+                    output,
+                    settings,
+                    modes=[m.value for m in mode] if mode else None,
+                    limit=limit,
+                    k=k,
+                    corpus=corpus_snapshot(settings),
+                )
                 with _progress(cli.console) as progress:
                     failed = asyncio.run(
                         run_answers(output, retrievers, answerer, translator, progress=progress)
@@ -165,3 +169,69 @@ def report_command(output: Annotated[Path, typer.Argument(help="Saved run direct
             _print_summary(output, cli.console)
     except (OSError, ValueError, filelock.Timeout) as exc:
         cli._fail_cleanly(exc)
+
+
+class Phase(StrEnum):
+    BUILD = "build"
+    UPDATE = "update"
+
+
+@app.command("ingest")
+def ingest_measured(
+    paths: Annotated[list[Path], typer.Argument(help="Sources to ingest and measure.")],
+    output: Annotated[Path, typer.Option("--output", "-o", help="Experiment directory.")],
+    phase: Annotated[
+        Phase, typer.Option(help="Label initial construction or later changes.")
+    ] = Phase.BUILD,
+) -> None:
+    """Measure shared preprocessing, keeping failed attempts in processing.jsonl."""
+    from mnogobase import cli
+
+    settings = cli._settings()
+    try:
+        with _lock(output), ingest_lock(settings.data_dir):
+            if (output / "run.json").exists():
+                raise ValueError(
+                    "This experiment already has an answer plan; use a new output directory for updates"
+                )
+            cli._preflight(settings, cli.INGEST_CHECKS)
+            application = cli.build_app(settings)
+            try:
+                with cli._progress() as progress:
+                    result = asyncio.run(
+                        measured_ingest(
+                            application,
+                            paths,
+                            settings=settings,
+                            phase=phase.value,
+                            output=output / "processing.jsonl",
+                            progress=progress,
+                            retry_failed=True,
+                        )
+                    )
+            finally:
+                application.close()
+    except (OSError, ValueError, RuntimeError, filelock.Timeout) as exc:
+        cli._fail_cleanly(exc)
+    cli.console.print(f"Processing measurements: {escape(str(output / 'processing.jsonl'))}")
+    if result.failed or (result.wiki and result.wiki.failed):
+        raise typer.Exit(1)
+
+
+@app.command()
+def benchmark(
+    dataset: Annotated[Path, typer.Argument(help="Question dataset JSONL.")],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    mode: Annotated[list[Mode] | None, typer.Option("--mode", "-m")] = None,
+    limit: Annotated[int | None, typer.Option(min=1)] = None,
+    k: Annotated[int | None, typer.Option(min=1)] = None,
+    skip_score: Annotated[
+        bool, typer.Option(help="Save answers/report without calling a judge.")
+    ] = False,
+) -> None:
+    """Run answers, Ragas scoring and reports; rerun the same command to resume."""
+    run(dataset, output, mode=mode, limit=limit, k=k)
+    if skip_score:
+        report_command(output)
+    else:
+        score(output)

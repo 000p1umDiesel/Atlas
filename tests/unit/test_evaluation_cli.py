@@ -89,3 +89,78 @@ def test_dataset_copy_is_standalone():
     assert (root / "eval/questions.jsonl").read_bytes() == (
         root / "hybrid_rag_notebooks/data/questions.jsonl"
     ).read_bytes()
+
+
+def test_eval_ingest_saves_processing_and_closes_app(offline, tmp_path, monkeypatch):
+    closed = []
+
+    async def ingest(paths, progress, **kwargs):
+        progress.step("parse")
+        return SimpleNamespace(processed=paths, skipped=[], failed={}, wiki=None)
+
+    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(
+        cli,
+        "build_app",
+        lambda *a: SimpleNamespace(
+            pipeline=SimpleNamespace(ingest=ingest), close=lambda: closed.append(1)
+        ),
+    )
+    result = runner.invoke(
+        cli.app, ["eval", "ingest", str(offline), "--phase", "build", "--output", "run"]
+    )
+    assert result.exit_code == 0, result.output
+    rows = core.latest_records(tmp_path / "run/processing.jsonl")
+    assert next(iter(rows.values()))["phase"] == "build" and closed == [1]
+
+
+def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, monkeypatch):
+    from filelock import Timeout
+
+    from mnogobase.registry import ingest_lock
+
+    Registry(tmp_path / ".mnogobase/state.db").close()
+    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "build_app", lambda *a: SimpleNamespace(close=lambda: None))
+    llm = FakeLLM(lambda *a: "Answer [1]")
+
+    class Retriever:
+        def retrieve(self, query, k, alt_queries=()):
+            with pytest.raises(Timeout):
+                ingest_lock(tmp_path / ".mnogobase").acquire()
+            return [ContextItem(kind="chunk", ref="c", text="Answer")]
+
+    class Judge:
+        def __init__(self, *a):
+            pass
+
+        def metrics(self, names):
+            class Metric:
+                async def ascore(self, **kwargs):
+                    return SimpleNamespace(value=1.0)
+
+            return {name: Metric() for name in names}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(core, "RagasJudge", Judge)
+    monkeypatch.setattr(
+        cli,
+        "_answer_setup",
+        lambda app: ({m: Retriever() for m in ("rag", "wiki", "graph")}, Answerer(llm, 1000), None),
+    )
+    args = ["eval", "benchmark", str(offline), "--output", "run"]
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert len(llm.calls) == 3
+    assert (tmp_path / "run/paired.csv").is_file()
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert len(llm.calls) == 3
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "changed.md").write_text("changed")
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2, result.output
+    assert "configuration changed" in result.output

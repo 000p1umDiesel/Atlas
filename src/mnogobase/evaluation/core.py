@@ -25,6 +25,7 @@ def prepare_run(
     modes=None,
     limit: int | None = None,
     k: int | None = None,
+    corpus: dict | None = None,
 ) -> dict:
     questions = load_questions(dataset)
     modes = list(("rag", "wiki", "graph") if modes is None else modes)
@@ -46,6 +47,8 @@ def prepare_run(
             "answer", question="$question", context="$context", language="$language"
         ),
     }
+    if corpus is not None:
+        config["corpus"] = corpus
     return ensure_manifest(output / "run.json", config)
 
 

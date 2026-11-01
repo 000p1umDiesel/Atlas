@@ -8,6 +8,7 @@ from pathlib import Path
 from statistics import mean
 
 from .artifacts import fingerprint, latest_records
+from .comparison import comparison_reports
 from .core import planned_answers
 from .ragas import METRIC_NAMES
 
@@ -123,5 +124,6 @@ def report(output: Path) -> list[dict]:
             "A skipped metric has no numeric value; inspect details.csv for the reason.",
         ]
     )
+    lines.extend(comparison_reports(output, manifest, answers, details))
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return summary

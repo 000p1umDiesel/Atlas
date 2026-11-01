@@ -29,6 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from mnogobase.app import App, build_app
+from mnogobase.background.cli import jobs_app, worker_app
 from mnogobase.config import Settings, load_settings
 from mnogobase.doctor import Check, run_checks
 from mnogobase.evaluation.cli import app as evaluation_app
@@ -39,6 +40,7 @@ from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
 from mnogobase.models import Answer
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
+from mnogobase.processing import measured_ingest
 from mnogobase.registry import STAGES, Registry, ingest_lock
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import Answerer
@@ -67,6 +69,8 @@ app = typer.Typer(no_args_is_help=True, help="mnogobase — LLM Wiki core: inges
 wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
 app.add_typer(wiki_app, name="wiki")
 app.add_typer(evaluation_app, name="eval")
+app.add_typer(jobs_app, name="jobs")
+app.add_typer(worker_app, name="worker")
 models_app = typer.Typer(
     no_args_is_help=True,
     help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",
@@ -347,8 +351,10 @@ def ingest(
             with _progress() as progress:
                 try:
                     report = asyncio.run(
-                        application.pipeline.ingest(
+                        measured_ingest(
+                            application,
                             targets,
+                            settings=settings,
                             build_wiki=not no_wiki,
                             retry_failed=retry_failed,
                             run_id=run_id,

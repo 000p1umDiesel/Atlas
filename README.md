@@ -1,6 +1,18 @@
 # mnogobase
 
-Ядро проекта **LLM Wiki**: Python-пакет и CLI, который превращает папку документов на русском и английском в три связанных слоя знаний и отвечает по ним на вопросы со ссылками на источники.
+**Документы → гибридный поиск, граф знаний и постоянная wiki → ответы с источниками.**
+
+`mnogobase` — Python-пакет и CLI для работы с собственным корпусом документов на русском и английском. Он разбирает файлы, связывает сущности из разных источников, обновляет Markdown-wiki и позволяет сравнивать четыре способа поиска на одних данных. Текущая версия — `0.1.0`; основной интерфейс — терминал.
+
+| Ваша задача | С чего начать |
+|---|---|
+| Получить первый ответ | [Установка](#2-установка-и-первый-запуск) → [первый документ](#25-первый-документ-и-ответ) |
+| Понять разницу между RAG, wiki и графом | [Выбор режима](#11-какой-режим-выбрать) → [схема поиска](#57-поиск-и-ответ) |
+| Настроить модели и параметры | [Текущая конфигурация](#26-что-задано-в-configyaml) → [все настройки](#6-справочник-настроек) |
+| Обрабатывать новые файлы автоматически | [Очередь и worker](#15-фоновая-обработка-и-воспроизводимые-эксперименты) |
+| Измерить качество и затраты | [Оценка Ragas](#14-оценка-hybrid-rag-wikillm-и-graphrag) → [измерение build/update](#152-измерение-build-и-update) |
+| Изучить Hybrid RAG по шагам | [Учебные ноутбуки](#16-учебные-ноутбуки) |
+| Изменить реализацию | [Архитектура](#5-как-это-устроено-внутри) → [карта модулей](#81-карта-модулей) |
 
 ## Содержание
 
@@ -18,6 +30,8 @@
 12. [Структура репозитория](#12-структура-репозитория)
 13. [Что дальше](#13-что-дальше)
 14. [Оценка Hybrid RAG, WikiLLM и GraphRAG](#14-оценка-hybrid-rag-wikillm-и-graphrag)
+15. [Фоновая обработка и воспроизводимые эксперименты](#15-фоновая-обработка-и-воспроизводимые-эксперименты)
+16. [Учебные ноутбуки](#16-учебные-ноутбуки)
 
 ---
 
@@ -31,23 +45,40 @@
 
 По этим слоям можно задавать вопросы в четырёх режимах (`rag`, `wiki`, `graph`, `all`) и получать ответ с нумерованными цитатами: файл, страница, id чанка или раздела wiki. Команда `compare` отвечает во всех режимах сразу и сохраняет ответы, время и токены. Для оценки качества на датасете есть [`eval run / score / report`](#14-оценка-hybrid-rag-wikillm-и-graphrag) с пятью метриками Ragas.
 
-Общая схема: документы проходят разбор и чанкирование, затем расходятся в векторный индекс и в граф, из графа собирается wiki, а вопросы обслуживаются всеми тремя слоями.
+Обработка документов строит три связанных представления одного корпуса. На схеме показаны основные записи; подробный порядок операций и восстановления — в [разделе 5](#5-как-это-устроено-внутри). Поиск использует подготовленные данные и описан [отдельно](#57-поиск-и-ответ).
+
+Для просмотра схем используйте Markdown-просмотрщик с поддержкой Mermaid.
 
 ```mermaid
-flowchart LR
-    DOCS["documents/"] --> PARSE["Docling<br/>разбор и OCR"]
-    PARSE --> CHUNK["HybridChunker<br/>чанки до 512 токенов"]
-    CHUNK --> EMB["Qwen3-Embedding<br/>и BM25"]
-    EMB --> QD[("Qdrant")]
-    CHUNK --> EXT["LLM<br/>сущности и связи"]
-    EXT --> RES["слияние дублей<br/>в том числе RU и EN"]
-    RES --> NEO[("Neo4j")]
-    NEO --> WIKI["wiki/*.md<br/>Obsidian"]
-    WIKI --> QD
-    Q["вопрос"] --> MODES{"rag, wiki, graph, all"}
-    QD --> MODES
-    NEO --> MODES
-    MODES --> ANS["ответ с цитатами"]
+flowchart TB
+    subgraph INPUT["01 · Разбор документов"]
+        DOCS["PDF · Office · HTML<br/>Markdown · изображения"] --> PARSE["Docling<br/>текст · таблицы · OCR · VLM"]
+        PARSE --> CHUNK["HybridChunker<br/>структурные чанки"]
+    end
+
+    subgraph KNOWLEDGE["02 · Представления знаний"]
+        EMB["Dense + BM25"] --> VECTORS[("Qdrant<br/>индекс исходных чанков")]
+        EXTRACT["LLM + entity resolution"] --> GRAPH[("Neo4j · граф<br/>Qdrant · индекс сущностей")]
+        BUILD["WikiBuilder + LLM"] --> WIKI["Markdown-wiki<br/>страницы и ссылки на источники"]
+    end
+    CHUNK --> EMB
+    CHUNK --> EXTRACT
+    CHUNK -->|"документы и чанки"| GRAPH
+    GRAPH --> BUILD
+    WIKI --> INDEX["Qdrant · поиск по разделам wiki<br/>Neo4j · связи страниц и цитаты"]
+    WIKI --> OBSIDIAN["Obsidian<br/>чтение и граф страниц"]
+    INPUT -. "этапы и кэш" .-> STATE[("SQLite · state.db<br/>прогресс и возобновление")]
+
+    classDef source fill:#eff6ff,stroke:#2563eb,color:#172554
+    classDef rag fill:#ecfdf5,stroke:#059669,color:#064e3b
+    classDef graphLayer fill:#f5f3ff,stroke:#7c3aed,color:#3b0764
+    classDef wiki fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+    classDef state fill:#f8fafc,stroke:#64748b,color:#0f172a
+    class DOCS,PARSE,CHUNK source
+    class EMB,VECTORS rag
+    class EXTRACT,GRAPH graphLayer
+    class BUILD,WIKI,INDEX,OBSIDIAN wiki
+    class STATE state
 ```
 
 **Ключевые решения**
@@ -59,14 +90,29 @@ flowchart LR
 | Граф | Neo4j 5 Community с APOC и GDS | Cypher и Neo4j Browser для исследования графа. APOC нужен только для запроса раскраски в разделе 4.1, GDS кодом пока не используется |
 | Извлечение графа | свой конвейер, не LightRAG/Graphiti | полный контроль над чанками Docling, wiki и поиском; три подхода сравниваются на одних данных |
 | Разбор и чанкинг | Docling `DocumentConverter` и `HybridChunker` | структурный и токен-осознанный чанкинг, много форматов, OCR |
-| Эмбеддер и реранкер | Qwen3-Embedding-4B (2560 измерений) и Qwen3-Reranker-4B на llama.cpp server через OpenAI-совместимый API | мультиязычные модели; один и тот же llama.cpp на Mac (Metal) и на сервере (Docker с CUDA), GGUF качаются сами; vLLM и другие OpenAI-совместимые серверы подключаются правкой конфига |
+| Эмбеддер и реранкер | в `config.yaml` — Qwen3-Embedding-0.6B и Qwen3-Reranker-0.6B на llama.cpp; размерность эмбеддингов определяется автоматически | модели и бэкенды меняются через настройки; llama.cpp работает нативно на Mac или в Docker с CUDA на сервере; доступен и vLLM |
 | LLM | один клиент для любого OpenAI-совместимого API | llama.cpp, vLLM, LM Studio, OpenRouter, OpenAI и прокси подключаются правкой конфига. Структурированный вывод через строгую JSON Schema |
 | Состояние | SQLite `.mnogobase/state.db` | файлы, этапы, ошибки, кэш извлечения, очередь wiki; на нём держатся возобновление и инкрементальность |
 | Интерфейс | пакет и CLI на Typer | UI, API и MCP можно навесить поверх того же пакета |
 | Язык wiki | английский по умолчанию | канонические английские имена сущностей склеивают русские и английские упоминания |
 | Логи | structlog: консоль и JSONL-файл | формат готов для Loki/Grafana и трейсинга |
 
-> **Конфиденциальность.** По умолчанию LLM — `gpt-6-luna` на `https://codex.sale/v1`, то есть **текст документов уходит на сторонний сервер** (извлечение, wiki, ответы). Для закрытых документов переключитесь на локальную модель (раздел [7.1](#71-локальная-llm)). Эмбеддинги всегда считаются локально.
+> **Куда отправляются документы.** В текущем `config.yaml` LLM — `gpt-6-luna` на `https://codex.sale/v1`: извлечение, объединение сущностей, генерация wiki и ответов передают текст этому сервису. Эмбеддер, реранкер и VLM настроены локально. Все роли можно перенастроить, поэтому фактический маршрут данных определяется вашим конфигом и переменными окружения. Локальная LLM — в [разделе 7.1](#71-локальная-llm).
+
+### 1.1 Какой режим выбрать
+
+| Режим | Из чего собирается контекст | Когда пробовать | Что учитывать |
+|---|---|---|---|
+| `rag` — Hybrid RAG | исходные чанки: dense + BM25 → RRF → реранкер → соседние чанки | найти формулировку, число или объяснение в документах | реранкер и соседи управляются настройками |
+| `wiki` — WikiLLM | разделы сгенерированных wiki-страниц и цитируемые ими исходные чанки | получить обзор сущности по нескольким упоминаниям | нужна собранная wiki; не каждая сущность проходит `min_mentions` |
+| `graph` — GraphRAG | стартовые сущности → окрестность связей → чанки-доказательства | исследовать отношения между объектами | зависит от качества извлечения и поиска стартовых сущностей |
+| `all` | три вида контекста с долями общего бюджета и удалением повторов | проверить, помогает ли объединение на вашем вопросе | бюджет делится между режимами; результат оценивайте на своих данных |
+
+Здесь GraphRAG — собственная реализация поиска по графу. В ней нет community summaries и конвейера Microsoft GraphRAG. Все режимы используют один генератор ответа; `compare` помогает увидеть различия, а `eval` — измерить их на наборе вопросов.
+
+### 1.2 Термины за минуту
+
+**Ingest** — загрузка документа в базу знаний. **Чанк** — фрагмент документа с заголовками и страницами. **Dense** — поиск по смысловой близости векторов; **BM25** — поиск по словам. **RRF** объединяет позиции результатов этих двух поисков, **реранкер** заново оценивает найденные фрагменты относительно вопроса. **Entity resolution** объединяет упоминания одной сущности. **Evidence** — исходные чанки, подтверждающие связь или wiki-страницу. **Retrieval** — подбор контекста перед генерацией ответа.
 
 ---
 
@@ -81,15 +127,18 @@ flowchart LR
 | [uv](https://docs.astral.sh/uv/) | Python 3.12 и зависимости | `uv --version` |
 | [Obsidian](https://obsidian.md) (по желанию) | смотреть wiki и её граф | — |
 
+Python нужен версии **3.12** (`>=3.12,<3.13` в `pyproject.toml`); окружением `.venv` управляет `uv`. Дальнейшие shell-примеры рассчитаны на macOS/Linux. На Linux с NVIDIA используйте [инструкцию сервера](#11-развёртывание-на-сервере). В Windows меняются shell-команды, а бэкенд моделей выбирается явно: `models up` по умолчанию использует Docker вне macOS; для установленного `llama-server` можно указать `--runner native`.
+
 ### 2.2 Первый запуск (один раз)
 
 Все команды выполняются **из корня репозитория**: оттуда читаются `config.yaml` и `.env`, и относительно текущей папки считаются пути `.mnogobase/`, `wiki/`, `logs/`, `runs/`.
 
 ```bash
-# 1. Секреты
+# 1. Для новой копии проекта создайте .env; существующий .env сохраните
 cp .env.example .env
 #    откройте .env и впишите LLM_API_KEY=<ваш ключ>
-#    NEO4J_PASSWORD оставьте mnogobase-dev (так же он задан в docker-compose.yml)
+#    NEO4J_PASSWORD=mnogobase-dev соответствует локальному Compose
+#    вне Mac добавьте MNOGOBASE_DEVICE=auto: в config.yaml задано mps
 
 # 2. Базы данных: Qdrant (:6333) и Neo4j (:7474, :7687)
 docker compose up -d
@@ -99,7 +148,6 @@ uv sync
 
 # 4. Эмбеддер (:8001), реранкер (:8002) и VLM для картинок (:8003) по config.yaml: на Mac —
 #    нативный llama.cpp, на Linux-сервере — Docker (раздел 11). Первый старт качает модели
-#    (~2.5 ГБ эмбеддер и реранкер, ~2 ГБ VLM)
 uv run mnogobase models up
 
 # 5. Проверка: всё должно быть зелёным
@@ -135,6 +183,48 @@ uv run mnogobase doctor
 | `types` | менялись ли типы сущностей после загрузки документов | только `warn`, см. раздел [6.3](#63-типы-сущностей) |
 
 Команды `ingest`, `wiki build`, `ask` и `compare` перед стартом сами выполняют облегчённую проверку (`models`, `llm`, `qdrant`, `neo4j`; `ingest` — ещё и `tokenizer`), `reindex` — без `llm` и без сверки размерности коллекций (он их пересоздаёт), `reset` — только `qdrant` и `neo4j`. Если сервис недоступен, команда печатает причину, советует `mnogobase doctor` и завершается с кодом 2.
+
+---
+
+### 2.5 Первый документ и ответ
+
+Когда `doctor` проходит, загрузите небольшой встроенный корпус на русском и английском. Это реальная обработка с вызовами настроенной LLM; примеры попадут в текущую базу знаний.
+
+```bash
+uv run mnogobase ingest tests/fixtures/
+uv run mnogobase status
+uv run mnogobase ask "Что такое multi-head attention?" --mode rag
+uv run mnogobase compare "Что такое multi-head attention?"
+```
+
+Успешный `ingest` печатает итог по файлам и wiki. `status` показывает завершённые этапы; `ask` выводит ответ с номерами `[1]`, `[2]` и таблицу источников. У короткого корпуса wiki может содержать мало страниц из-за порога `wiki.min_mentions`. Точные ответы и сущности зависят от модели.
+
+Дальше положите свои файлы в `documents/` и выполните `uv run mnogobase ingest documents/`. Wiki собирается в конце `ingest` автоматически; отдельный `wiki build` нужен после `--no-wiki`, ошибок страниц или изменения настроек wiki.
+
+| Что посмотреть после запуска | Где |
+|---|---|
+| Ответ и процитированные фрагменты | вывод `ask` / `compare` в терминале |
+| Страницы wiki | `wiki/index.md`, `wiki/entities/*.md`; [открытие в Obsidian](#43-wiki-в-obsidian) |
+| Граф знаний | [Neo4j Browser](http://localhost:7474), логин `neo4j`, пароль из `.env` |
+| Коллекции и payload чанков | [Qdrant Dashboard](http://localhost:6333/dashboard) |
+| Ошибки и незавершённые этапы | `uv run mnogobase status`, `logs/mnogobase.jsonl` |
+
+### 2.6 Что задано в config.yaml
+
+Это параметры [поставляемого файла](config.yaml). Они отличаются от некоторых значений по умолчанию в Python-классах, приведённых в [разделе 6](#6-справочник-настроек). `.env`, переменные окружения и `--config` могут изменить итоговые настройки.
+
+| Компонент | Настройка в config.yaml | Назначение |
+|---|---|---|
+| LLM | `gpt-6-luna`, `serve: api`, `https://codex.sale/v1` | извлечение, слияние сущностей, wiki, перевод вопроса, ответ |
+| Эмбеддер | `mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0`, llama.cpp, порт `8001` | dense-векторы; размерность `auto` |
+| Реранкер | `gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0`, llama.cpp, порт `8002` | переоценка 30 кандидатов перед выбором `k` |
+| Vision | `unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M`, llama.cpp, порт `8003` | текстовые описания изображений; включено |
+| Разбор | `device: mps`, OCR RU/EN | на другой платформе задайте `MNOGOBASE_DEVICE=auto` |
+| Чанки | `max_tokens: 512`, токенайзер `auto` | лимит при разбиении документов |
+| Поиск | `k: 8`, `neighbors: 2`, `translate: true` | гибридный поиск и расширение найденных фрагментов |
+| Контекст и язык | `context_tokens: 20000`, `answer_language: ru`, `wiki.language: en` | бюджет оценивается по длине текста; это не размер окна модели |
+| Режим `all` | `rag: 0.2`, `wiki: 0.2`, `graph: 0.6` | доли общего бюджета контекста |
+| Параллельность LLM | `concurrency: 16`, `temperature: 0.1`, `timeout_s: 360` | нагрузка и ожидание ответов |
 
 ---
 
@@ -278,10 +368,12 @@ uv run mnogobase reset            # покажет, что удалит, и сп
 uv run mnogobase reset --yes      # без вопроса
 ```
 
-`reset` безопасен:
+Область действия `reset`:
 
 - вне проекта (нет `.mnogobase/state.db`) он отказывается работать даже с `--yes` (код 2): неверная папка или `--config` не должны стереть чужие данные;
 - перед подтверждением показывает, что именно удалит: **все узлы в базе Neo4j по умолчанию** (держите отдельный Neo4j на проект), коллекции Qdrant с префиксом `mb_`, состояние и кэши в `.mnogobase/` (таблицы очищаются, сам `state.db` остаётся, папка `cache/` удаляется), а из wiki — только то, что создал сам: `entities/`, `index.md`, `log.md`. Другие файлы в `wiki/` (например, ваши заметки и настройки Obsidian в `.obsidian/`) не трогаются, папка удаляется, только если опустела.
+
+Очередь `jobs.db`, измерения `processing.jsonl`, логи и сохранённые отчёты остаются. Перед сбросом остановите worker; повторная постановка неизменённых файлов описана в [разделе 15.1](#151-очередь-и-наблюдение).
 
 Отказ на вопросе подтверждения завершает команду с кодом 1.
 
@@ -298,18 +390,29 @@ uv run mnogobase reset --yes      # без вопроса
 | `ask "ВОПРОС" [--mode/-m rag\|wiki\|graph\|all] [--k N]` | ответ с цитатами в одном режиме | models, llm, qdrant, neo4j | нет |
 | `compare "ВОПРОС" [--k N]` | все 4 режима рядом и запись в `runs/compare.jsonl` | models, llm, qdrant, neo4j | нет |
 | `reindex` | пересчитать все векторы после смены эмбеддера | models, qdrant, neo4j | да |
-| `reset [--yes]` | удалить все данные проекта | qdrant, neo4j | да |
+| `reset [--yes]` | очистить индексы, граф, registry, кэш документов и сгенерированную wiki | qdrant, neo4j | да |
 | `models up [РОЛИ...] [--runner auto\|docker\|native]` | поднять серверы ролей с `serve: llamacpp \| vllm` и дождаться готовности (раздел 7.15) | — | нет |
 | `models down` / `status` / `logs РОЛЬ [-f]` | остановить серверы моделей / где какая модель и готова ли / лог сервера роли | — | нет |
+| `jobs enqueue PATH... [--force]` | поставить файлы в постоянную очередь | нет | транзакция очереди |
+| `jobs list [--limit N]` / `jobs retry [--id N]` | посмотреть очередь / вернуть ошибочные задания на повтор | нет | транзакция очереди |
+| `worker run [--watch PATH]` | обрабатывать очередь; с `--watch` также отслеживать папку | как у ingest, перед заданием | один worker; ingest.lock на обработку |
+| `worker run --once` | обработать готовые задания и завершиться | как у ingest | как у worker |
+| `eval ingest PATH... --phase build\|update --output DIR` | загрузить документы и измерить общий preprocessing | как у ingest | ingest.lock и каталог эксперимента |
+| `eval run DATASET --output DIR [--mode MODE] [--limit N] [--k N]` | сохранить ответы выбранных режимов; по умолчанию rag, wiki, graph | models, llm, qdrant, neo4j | ingest.lock и каталог эксперимента |
+| `eval score DIR [--metric NAME]` | оценить сохранённые ответы метриками Ragas | подключения судьи и его embeddings | каталог эксперимента |
+| `eval report DIR` | построить CSV и Markdown по сохранённым данным | нет | каталог эксперимента |
+| `eval benchmark DATASET --output DIR [--skip-score]` | выполнить run → score → report; без судьи при `--skip-score` | по фазам | по фазам |
 
-Одновременно может работать только одна из команд `ingest` / `wiki build` / `reindex` / `reset` (файловая блокировка `.mnogobase/ingest.lock`). Вторая сразу завершается с сообщением `Another ingest / wiki / reindex / reset run is in progress.`
+Команды `ingest`, `wiki build`, `reindex`, `reset`, `eval ingest`, `eval run` и обработка задания worker используют общую `.mnogobase/ingest.lock`. Это не позволяет менять корпус во время экспериментальной генерации ответов. Обычные пишущие команды при занятой блокировке завершаются; worker откладывает обработку, наблюдатель продолжает пополнять очередь. `ask` и `compare` блокировку не берут, поэтому во время записи могут видеть промежуточное состояние.
+
+В каталоге эксперимента `eval` используется отдельная `.eval.lock`. Один worker на проект обеспечивается `.mnogobase/worker.lock`; очередь хранится в `jobs.db`, независимо от `state.db`. Для нескольких наблюдаемых папок повторяйте `--watch`, для режимов и метрик — `--mode` и `--metric`. Полные опции доступны через `uv run mnogobase COMMAND --help`.
 
 **Коды выхода:**
 
 | Код | Когда |
 |---|---|
 | 0 | успех; `status` вне проекта |
-| 1 | `doctor` нашёл проблему; в `ingest` упал файл или wiki-страница; в `wiki build` упала страница; отказ в подтверждении `reset` |
+| 1 | `doctor` нашёл проблему; в `ingest` / `wiki build` есть ошибки; отказ в подтверждении `reset`; в `eval run` / `score` / `benchmark` есть неполные/ошибочные результаты; `worker --once` оставил незавершённые задания |
 | 2 | ошибка конфига; сервис недоступен на предварительной проверке; блокировка занята; нет проекта (`ask`, `compare`, `reset`); индекс построен другим эмбеддером, другой размерности или с другими шаблонами; `reindex`: эмбеддер выдаёт не ту размерность; не удаётся завершить удаление старой версии документа |
 
 ---
@@ -520,7 +623,7 @@ flowchart TD
 
 - **parse** — `DocumentConverter` с OCR из `parsing.ocr` / `parsing.ocr_lang` и ускорителем из `device` (эти опции заданы для PDF и картинок; на CUDA увеличены размеры батчей). При `vision.enabled` картинки PDF, DOCX и PPTX описывает VLM (раздел [7.16](#716-картинки-и-графики-vision)), а файл-картинка описывается ещё и целиком. Заголовок документа — первый элемент Docling с меткой `TITLE`, иначе имя файла.
 - **chunk** — `HybridChunker(merge_peers=True)` с токенайзером из `chunking.tokenizer` (`chunking/tokenizer.py`) и пределом `chunking.max_tokens`. При `auto` у `serve: llamacpp` это `POST /tokenize` сервера эмбеддера (`ServerTokenizer` с кэшем): токенайзер зашит в GGUF, исходный HF-репозиторий не нужен (число токенов совпадает с HF-токенайзером, проверено на Qwen3-Embedding-0.6B); у `vllm` — HF-токенайзер `embedder.model`; у `api` — репозиторий из `root` в `/v1/models` (vLLM) или `POST /tokenize` сервера (llama.cpp). Для эмбеддинга используется `contextualize(chunk)` (заголовки раздела и текст), в payload и граф кладётся чистый текст, заголовки и страницы. Пустые чанки отбрасываются.
-- **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` (при `auto` — без обрезки) и нормировка; BM25 через fastembed. Шаблон документа: `title: {title} | text: {text}`.
+- **embed** — плотные векторы батчами по `embedder.batch_size` через `POST /embeddings` OpenAI-совместимого сервера, обрезка до `embedder.dim` (при `auto` — без обрезки) и нормировка; BM25 через fastembed. Шаблон задаёт `embedder.doc_template`; в текущем конфиге это `{text}`, где текст чанка уже дополнен заголовками раздела через `contextualize`.
 - **extract** — для каждого чанка промпт `extract.md` и строгая JSON Schema `{entities: [{name, type, description, aliases}], relations: [{source, target, predicate, description, strength}]}`. Измерения, координаты, даты и безымянные гипотетические объекты («ring at 144 au», «an unseen planet») промпт просит не делать сущностями. Ответ чистится: неизвестный тип → `Other`, дубли имён сливаются, предикат → `snake_case`, `strength` ограничивается 1–10, связи с неизвестными концами отбрасываются. Результат кэшируется по `(chunk_id, prompt_version, model)`.
 - **graph** — по каждому чанку: слияние каждой сущности (раздел 5.5), `MENTIONS` от чанка к сущностям, `entity_ids` в payload чанка, `RELATED` по `(src, dst, predicate)` с дописыванием `evidence` и `weight += strength`. Все затронутые сущности попадают в `dirty_entities`. Если у документа больше `max_failed_ratio` чанков без кэша извлечения, `graph` падает, а `extract` возвращается в `pending`.
 
@@ -651,7 +754,7 @@ erDiagram
 | Коллекция | Векторы | Индексы payload | Что эмбеддится | ID точки |
 |---|---|---|---|---|
 | `mb_chunks` | `dense`, `bm25` | `chunk_id`, `doc_id`, `entity_ids`, `modality` | заголовки раздела и текст чанка | `uuid5(chunk_id)` |
-| `mb_entities` | `dense` | `entity_id`, `type` | `"{name}: {description}"` | `uuid5(entity_id)` |
+| `mb_entities` | `dense` | `entity_id`, `type`, `name_keys` | `"{name}: {description}"` | `uuid5(entity_id)` |
 | `mb_wiki_pages` | `dense`, `bm25` | `page_id`, `entity_id` | раздел страницы без сносок, с заголовком `Название — Раздел` | `uuid5("{page_id}#{номер раздела}")` |
 
 **Детерминированные ID** (`src/mnogobase/ids.py`) — на них держатся идемпотентность и дедупликация:
@@ -735,20 +838,28 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Q["вопрос"] --> RAG["rag: dense и BM25 по mb_chunks,<br/>RRF, top k"]
-    Q --> WIKI["wiki: dense и BM25 по mb_wiki_pages,<br/>разделы и их chunk_ids"]
-    Q --> SEEDS["graph: seeds из mb_entities<br/>и полнотекстового entity_names"]
-    SEEDS --> HOPS["окрестность по RELATED на hops шагов,<br/>сортировка по weight и степени"]
-    HOPS --> GCTX["сущности, тройки,<br/>evidence-чанки"]
-    RAG --> ALL["all: доли retrieval.budget,<br/>без повторов"]
-    WIKI --> ALL
-    GCTX --> ALL
-    RAG --> ANS["Answerer: источники 1..n<br/>в пределах context_tokens"]
-    WIKI --> ANS
-    GCTX --> ANS
-    ALL --> ANS
-    ANS --> PROMPT["LLM answer.md"]
-    PROMPT --> OUT["ответ и таблица источников,<br/>cited по номерам в тексте"]
+    Q["Вопрос + перевод на английский<br/>если включён retrieval.translate"]
+    Q --> RAG["rag · Qdrant mb_chunks<br/>dense + BM25 → RRF"]
+    RAG --> RERANK["Реранкер → top k → соседи<br/>при включённых настройках"]
+    Q --> WIKI["wiki · Qdrant mb_wiki_pages<br/>dense + BM25 → разделы страниц"]
+    WIKI --> WCTX["Разделы + цитируемые чанки<br/>доказательства из Neo4j"]
+    Q --> SEEDS["graph · стартовые сущности<br/>Qdrant mb_entities + Neo4j fulltext"]
+    SEEDS --> HOPS["Neo4j · окрестность RELATED<br/>сущности, тройки и чанки-доказательства"]
+    RERANK --> SELECT["Контекст выбранного режима<br/>all: три ветки, доли бюджета, без повторов"]
+    WCTX --> SELECT
+    HOPS --> SELECT
+    SELECT --> ANS["Answerer<br/>бюджет контекста · нумерация источников"]
+    ANS --> PROMPT["LLM · answer.md"]
+    PROMPT --> OUT["Ответ с номерами цитат<br/>+ таблица источников"]
+
+    classDef rag fill:#ecfdf5,stroke:#059669,color:#064e3b
+    classDef wiki fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+    classDef graphLayer fill:#f5f3ff,stroke:#7c3aed,color:#3b0764
+    classDef shared fill:#eff6ff,stroke:#2563eb,color:#172554
+    class RAG,RERANK rag
+    class WIKI,WCTX wiki
+    class SEEDS,HOPS graphLayer
+    class Q,SELECT,ANS,PROMPT,OUT shared
 ```
 
 - **Перевод запроса.** Если вопрос не на английском и `retrieval.translate: true`, `QueryTranslator` (`retrieval/translate.py`, промпт `translate_query.md`, задача `query`) один раз переводит его на английский; все режимы ищут и по оригиналу, и по переводу (`alt_queries`). Источники, wiki и имена сущностей в основном английские, а BM25 не сопоставляет русский запрос с английским текстом. Ошибка перевода не прерывает ответ: поиск идёт по оригиналу.
@@ -758,6 +869,8 @@ flowchart TD
 - **graph** — seeds: до `graph.seeds` сущностей по вектору вопроса с косинусом не ниже `graph.seed_threshold` плюс полнотекстовый поиск по именам и алиасам, по каждой формулировке вопроса (всего не больше `2 * seeds`; векторные seeds — по убыванию сходства). Окрестность на `graph.hops` шагов (в коде ограничено 1–3), до `graph.max_relations` связей; контекст — описания seed-сущностей, тройки `A —predicate→ B` и до `k` чанков-доказательств.
 - **all** — режимы по очереди заполняют свою долю `retrieval.context_tokens` (`retrieval.budget`), повторы по `(kind, ref)` пропускаются.
 - **Answerer** нумерует элементы `[1]..[n]`, пока не исчерпан `retrieval.context_tokens` (первый элемент берётся всегда; токены оцениваются как символы / 4), отправляет промпт `answer.md` и отмечает `cited` у источников, номера которых встречаются в ответе.
+
+На схеме показаны возможные ветки: `ask -m rag/wiki/graph` выполняет выбранную, `all` объединяет три. Наличие номера цитаты означает, что модель сослалась на источник; соответствие утверждения источнику отдельно оценивается метриками и ручной проверкой.
 
 ### 5.8 Гарантии согласованности
 
@@ -780,6 +893,8 @@ flowchart TD
 Приоритет источников: переменные `MNOGOBASE_*` (в том числе из `.env`) → файл конфига → значения по умолчанию. Ошибка в конфиге (неверный YAML, неизвестное значение, некорректный тип сущности) останавливает любую команду с `Invalid configuration: ...` и кодом 2; явно указанный, но отсутствующий файл — `Config file not found: ...`. Относительные пути (`data_dir`, `logs_dir`, `runs_dir`, `wiki.dir`) считаются от текущей папки, а не от файла конфига.
 
 ### 6.1 Все ключи config.yaml
+
+Колонка «По умолчанию» описывает классы настроек в `src/mnogobase/config.py`. Значения в поставляемом `config.yaml` имеют более высокий приоритет; различия, включая модели 0.6B, устройство MPS и контекст 20000, собраны в [разделе 2.6](#26-что-задано-в-configyaml).
 
 | Ключ | По умолчанию | Что делает | После изменения |
 |---|---|---|---|
@@ -859,6 +974,15 @@ flowchart TD
 | `neo4j.uri` | `bolt://localhost:7687` | адрес Neo4j | это другой граф |
 | `neo4j.user` | `neo4j` | пользователь | сразу |
 | `neo4j.password_env` | `NEO4J_PASSWORD` | имя переменной с паролем | сразу |
+| `evaluation.base_url` | `null` → `llm.url` | адрес OpenAI-совместимого API судьи | новый каталог оценки при смене судьи |
+| `evaluation.model` | `null` → модель LLM для `answer` | модель-судья | новый каталог оценки |
+| `evaluation.api_key_env` | `null` → `llm.api_key_env` | имя переменной ключа судьи; `""` — без ключа | новые вызовы; имя входит в манифест судьи |
+| `evaluation.embedding_url` | `null` → `embedder.url` | адрес embeddings для `answer_relevancy` | новый каталог оценки |
+| `evaluation.embedding_model` | `null` → `embedder.model` | модель embeddings судьи | новый каталог оценки |
+| `evaluation.embedding_api_key_env` | `null` → `embedder.api_key_env` | имя переменной ключа embeddings; `""` — без ключа | новые вызовы; имя входит в манифест судьи |
+| `evaluation.timeout_s` | `360` | таймаут запросов судьи | новый каталог оценки |
+| `evaluation.temperature` | `0` | температура судьи | новый каталог оценки |
+| `evaluation.strictness` | `3` | число вопросов для `answer_relevancy` | новый каталог оценки |
 
 «Новые и изменённые файлы» значит: уже загруженные документы не пересчитываются сами (их этапы `done`). Чтобы применить настройку ко всем, нужен `uv run mnogobase reset` и повторный `ingest` (LLM будет вызвана заново для всех чанков).
 
@@ -931,9 +1055,11 @@ extract:
 llm:
   model: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M     # llama.cpp: GGUF с квантом, ~18 ГБ
   serve: llamacpp
+  base_url: null  # использовать localhost:8000/v1 вместо адреса внешней LLM
   # vLLM (только Linux + NVIDIA): serve: vllm, model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
-  # base_url уберите: локальный сервер слушает http://localhost:8000/v1
 ```
+
+Для LLM задайте `base_url: null` явно: если просто удалить поле, вернётся внешний адрес из значений по умолчанию класса настроек. Через `.env` эквивалент — `MNOGOBASE_LLM__BASE_URL=`.
 
 Затем `uv run mnogobase models up` поднимет и LLM. Ключ не нужен. Проверка: `uv run mnogobase doctor` (строка `llm`). Последствия: модель входит в ключ кэша извлечения, поэтому новые и изменённые документы извлекаются новой моделью, а уже загруженные остаются как есть; для полного переизвлечения — `reset` и `ingest`. Параллелизм ограничивают и `llm.concurrency`, и число слотов сервера (у llama.cpp — `--parallel`, задаётся в `llm.server.args`). `llm.overrides` с другими именами моделей работает только с `api`: локальный сервер держит одну модель.
 
@@ -958,7 +1084,7 @@ llm:
   overrides: {extract: <дешёвая модель>, resolve: null, wiki: null, answer: <сильная модель>}
 ```
 
-Задачи: `extract` (сущности и связи по чанкам — больше всего вызовов), `resolve` (проверка «одна ли сущность» и сжатие описаний), `wiki` (страницы), `answer` (ответы). Override меняет только имя модели: адрес и ключ общие (`llm.base_url`). Смена модели `extract` меняет ключ кэша, как в 7.1.
+Задачи: `extract` (сущности и связи по чанкам — больше всего вызовов), `resolve` (проверка «одна ли сущность» и сжатие описаний), `wiki` (страницы), `answer` (ответы), `query` (перевод вопроса). Override меняет только имя модели: адрес и ключ общие (`llm.base_url`). Смена модели `extract` меняет ключ кэша, как в 7.1.
 
 ### 7.4 Сменить эмбеддер или размерность
 
@@ -1194,6 +1320,9 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `doctor.py` | проверки окружения и предварительные проверки команд |
 | `serving.py` | `mnogobase models`: роли с `serve`, команды llama.cpp и vLLM (`server_args`), запуск в Docker (`DockerRunner`) и нативно (`NativeRunner`), ожидание `/health` |
 | `maintenance.py` | `reindex`, `reset` |
+| `background/` | `queue.py` — очередь SQLite; `watch.py` — стабильность и обнаружение файлов; `worker.py` — обработка/повторы; `cli.py` — команды jobs/worker |
+| `processing.py` | измерения этапов, успешных токенов LLM и снимок индексированного корпуса |
+| `evaluation/` | CLI run/score/report/benchmark, артефакты и возобновление, Ragas-судья, сводные и парные сравнения |
 
 Зависимости между пакетами (общие `config`, `models`, `ids`, `log` используются всеми и на схеме опущены):
 
@@ -1254,7 +1383,9 @@ class LLMClient(Protocol):
 
 # retrieval/base.py
 class Retriever(Protocol):
-    def retrieve(self, query: str, k: int) -> list[ContextItem]: ...
+    def retrieve(
+        self, query: str, k: int, alt_queries: Sequence[str] = ()
+    ) -> list[ContextItem]: ...
 ```
 
 `EmbedInput` (`models.py`) — `modality` (`text`; `image` и `audio` зарезервированы), `text`, `path`, `title`. `task` у LLM — одно из `extract`, `resolve`, `wiki`, `answer`, `query`: выбирает модель через `llm.overrides` и попадает в логи.
@@ -1386,6 +1517,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 
 ```bash
 docker compose up -d
+uv run mnogobase models up
 uv run mnogobase doctor
 uv run mnogobase ingest tests/fixtures/
 uv run mnogobase status
@@ -1415,7 +1547,7 @@ uv run ruff check . && uv run ruff format --check .
 
 ## 11. Развёртывание на сервере
 
-Типовая схема — один Linux-сервер с NVIDIA GPU. В Docker работают Qdrant и Neo4j (`docker compose`) и серверы моделей (`mnogobase models up`: каждая роль на своём бэкенде из `config.yaml` — llama.cpp или vLLM, LLM при желании по внешнему API). Сам `mnogobase` — CLI из этого же репозитория на сервере: вы заходите по SSH и запускаете команды, а они обращаются к сервисам по `localhost`. Все порты моделей и баз остаются внутри сервера.
+Типовая схема — один Linux-сервер с NVIDIA GPU. В Docker работают Qdrant и Neo4j (`docker compose`) и серверы моделей (`mnogobase models up`: каждая роль на своём бэкенде из `config.yaml` — llama.cpp или vLLM, LLM при желании по внешнему API). Сам `mnogobase` — CLI из этого же репозитория на сервере: вы заходите по SSH и запускаете команды, а они обращаются к сервисам по `localhost`. Адреса публикации портов и доступ с ноутбука описаны в [разделе 11.3](#113-работа-с-сервером).
 
 ```mermaid
 flowchart LR
@@ -1437,7 +1569,7 @@ flowchart LR
 
 - Linux с драйвером NVIDIA, Docker с Compose v2 и [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). Проверка: `docker run --rm --gpus all ubuntu nvidia-smi`.
 - `git` и [uv](https://docs.astral.sh/uv/).
-- Диск: образы Docker (несколько ГБ), GGUF эмбеддера и реранкера (~2.5 ГБ каждая), VLM (~2 ГБ), локальная LLM — ещё ~18 ГБ (llama.cpp, Q4_K_M) или ~31 ГБ (vLLM, FP8), плюс Qdrant и Neo4j.
+- Диск: место для образов Docker, весов выбранных моделей, кэша Docling/OCR, исходных документов и хранилищ Qdrant/Neo4j. Размер зависит от `model` и `gguf`; переход на модели 4B или локальную LLM увеличит требования относительно текущих моделей 0.6B.
 
 ### 11.2 Первый запуск
 
@@ -1476,6 +1608,7 @@ MNOGOBASE_LLM__MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
 MNOGOBASE_LLM__BASE_URL=                     # пусто: локальный сервер, http://localhost:8000/v1
 # эмбеддер тоже на vLLM (быстрее под нагрузкой, больше памяти) — после этого `mnogobase reindex`:
 # MNOGOBASE_EMBEDDER__SERVE=vllm
+# MNOGOBASE_EMBEDDER__MODEL=Qwen/Qwen3-Embedding-0.6B
 ```
 
 После правки — `uv run mnogobase models up`: он перезапустит только изменившиеся роли. Смена бэкенда или кванта эмбеддера меняет векторы, поэтому после неё нужен `uv run mnogobase reindex`. Доли видеопамяти vLLM — `<роль>.server.gpu_memory` (раздел 7.15).
@@ -1505,7 +1638,7 @@ uv run mnogobase ask "что такое механизм внимания?"
 
 **Сеть и доступ.** Порты моделей `docker-compose.models.yml` публикует только на `127.0.0.1` (`MODELS_BIND` в `.env`, чтобы открыть): у llama.cpp и vLLM без `--api-key` нет авторизации. `docker-compose.yml` публикует Qdrant (без авторизации) и Neo4j на все интерфейсы — закройте 6333, 6334, 7474 и 7687 файрволом или ходите к ним через туннель.
 
-**Память.** Жёстких лимитов (`mem_limit`) у контейнеров нет намеренно: при нехватке памяти OOM-killer убил бы Qdrant или Neo4j посреди записи. Neo4j ограничен своими настройками в `docker-compose.yml`: куча 2 ГБ и page cache 1 ГБ (без явного page cache он занял бы около половины RAM хоста, рядом с моделями). Для большого графа увеличьте `NEO4J_server_memory_pagecache_size` и пересоздайте контейнер: `docker compose up -d neo4j`. Qdrant читает данные через mmap, поэтому `docker stats` показывает у него больше памяти, чем ему нужно на самом деле. Видеопамять vLLM задаёт `server.gpu_memory`.
+**Ресурсы.** В текущем `docker-compose.yml` у Qdrant заданы `mem_limit: 2g`, `cpus: 1.5`, у Neo4j — `mem_limit: 4g`, `cpus: 2.0`. У Neo4j дополнительно ограничены heap (2 ГБ) и page cache (1 ГБ). Для большого корпуса пересмотрите лимит контейнера вместе с этими настройками: лимит должен оставлять место и для прочих расходов процесса. После изменения пересоздайте нужный сервис через `docker compose up -d`. Память локальных моделей учитывается отдельно; долю видеопамяти vLLM задаёт `<роль>.server.gpu_memory`.
 
 ### 11.4 Обновление и обслуживание
 
@@ -1533,32 +1666,45 @@ mnogobase/
 ├── docker-compose.yml         # Qdrant + Neo4j (APOC, GDS)
 ├── docker-compose.cuda.yml    # override для NVIDIA: Qdrant с GPU (раздел 11)
 ├── docker-compose.models.yml  # серверы моделей для `mnogobase models up` (llama.cpp, vLLM)
-├── docs/neo4j/mnogobase.grass # стиль Neo4j Browser
+├── docs/neo4j/mnogobase.grass     # стиль Neo4j Browser
+├── eval/questions.jsonl           # 40 вопросов по Attention Is All You Need
+├── hybrid_rag_notebooks/          # самостоятельный учебный маршрут, 3 ноутбука
 ├── src/mnogobase/
 │   ├── cli.py  app.py  pipeline.py  registry.py  config.py
 │   ├── models.py  ids.py  log.py  device.py  doctor.py  maintenance.py  serving.py
+│   ├── processing.py             # измерения обработки и снимок корпуса
+│   ├── background/               # CLI, очередь SQLite, watcher, worker
+│   ├── evaluation/               # CLI, Ragas, отчёты и парные сравнения
 │   ├── parsing/docling_parser.py
 │   ├── chunking/    hybrid.py  tokenizer.py
 │   ├── embedding/   base.py  http.py  openai_compat.py  sparse.py
 │   ├── llm/         client.py  templates.py  prompts/*.md
 │   ├── extraction/  extractor.py  resolver.py
 │   ├── stores/      qdrant_store.py  graph_store.py
-│   ├── wiki/        builder.py  render.py  validate.py
-│   └── retrieval/   base.py  rag.py  wiki.py  graph.py  combined.py  answer.py  compare.py
+│   ├── wiki/        builder.py  render.py  validate.py  obsidian.py
+│   └── retrieval/   base.py  rag.py  wiki.py  graph.py  combined.py  answer.py  compare.py  rerank.py  translate.py
 ├── tests/
 │   ├── unit/  integration/  e2e/
 │   ├── fixtures/              # attention_en.md, vnimanie_ru.md
 │   └── fakes.py  conftest.py
 ├── documents/                 # ваши документы (в .gitignore)
 ├── wiki/                      # сгенерированная wiki (в .gitignore)
-├── .mnogobase/                # state.db, cache/, ingest.lock (в .gitignore)
+├── .mnogobase/                # state.db, jobs.db, cache/, processing.jsonl, locks
 ├── logs/mnogobase.jsonl       # (в .gitignore)
-└── runs/compare.jsonl         # (в .gitignore)
+└── runs/                     # compare.jsonl, eval/<эксперимент>/ (в .gitignore)
 ```
 
 ---
 
 ## 13. Что дальше
+
+Текущие ограничения, которые стоит учитывать при использовании:
+
+- Удалённый с диска файл остаётся в базе: отдельной команды удаления ещё нет. Изменение существующего файла и переименование без правки обрабатываются инкрементально.
+- Изображения ищутся через текстовые описания VLM; поиск по собственным визуальным эмбеддингам не реализован.
+- Извлечение сущностей, wiki и ответы зависят от качества LLM. Номера цитат и наличие evidence помогают проверке, но не гарантируют достоверность каждой фразы.
+- Wiki может содержать мало страниц на маленьком корпусе из-за `wiki.min_mentions`; graph может вернуть пустой контекст, если стартовые сущности не найдены.
+- Оценка сравнивает режимы одного приложения с общей подготовкой знаний. Эти измерения не являются независимыми затратами трёх отдельно построенных систем.
 
 Вне текущего этапа:
 
@@ -1566,12 +1712,37 @@ mnogobase/
 - Поиск пробелов и противоречий в знаниях, community summaries (GDS), нормализация предикатов.
 - Мультимодальные эмбеддинги картинок и аудио — поиск картинки по вопросу без текстового описания (задел: `EmbedInput.modality`, поле `modality` в payload; Docling уже сохраняет картинки в `.mnogobase/cache/<doc_id>/images/`). Сейчас картинки попадают в поиск через описания VLM (раздел 7.16).
 - Langfuse-трейсинг, учёт токенов на этапах `ingest`, импорт старых `runs/compare.jsonl` в оценку.
-- Команда удаления из индекса файлов, удалённых с диска; watch-папка и фоновая очередь.
+- Команда удаления из индекса файлов, удалённых с диска.
 - Веб-страницы как источник (URL → HTML → Docling).
 
 ## 14. Оценка Hybrid RAG, WikiLLM и GraphRAG
 
 Оценка работает через пакет и CLI, независимо от ноутбуков. По умолчанию сравниваются **существующие реализации проекта**: `rag` (Hybrid RAG), `wiki` (WikiLLM), `graph` (GraphRAG). Режим `graph` использует текущий поиск по графу проекта; эта оценка не добавляет алгоритмы Microsoft GraphRAG. Объединённый `all` можно включить явно.
+
+```mermaid
+flowchart TD
+    CORPUS["Документы"] --> INGEST["eval ingest<br/>общая подготовка и измерения"]
+    INGEST --> SNAPSHOT["Зафиксированный корпус<br/>индексы · граф · wiki"]
+    DATASET["questions.jsonl<br/>вопросы + эталоны"] --> RUN["eval run<br/>ответы в выбранных режимах"]
+    SNAPSHOT --> RUN
+    RUN --> ANSWERS["answers.jsonl<br/>ответы + точные контексты"]
+    ANSWERS --> SCORE["eval score<br/>LLM-судья + Ragas"]
+    SCORE --> SCORES["scores.jsonl<br/>значения и статусы"]
+    SCORES --> REPORT["eval report<br/>Markdown + CSV"]
+    ANSWERS --> REPORT
+    INGEST -. "processing.jsonl" .-> REPORT
+
+    classDef data fill:#eff6ff,stroke:#2563eb,color:#172554
+    classDef step fill:#ecfdf5,stroke:#059669,color:#064e3b
+    classDef judge fill:#f5f3ff,stroke:#7c3aed,color:#3b0764
+    classDef output fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+    class CORPUS,DATASET,SNAPSHOT,ANSWERS,SCORES data
+    class INGEST,RUN step
+    class SCORE judge
+    class REPORT output
+```
+
+`eval benchmark` объединяет `run → score → report`. Судья вызывается на этапе `score`; `report` строится по файлам без моделей и сети. Схема показывает состав эксперимента, без результатов измерений: сравнение качества появляется после запуска на вашем корпусе.
 
 ### Подготовка и запуск
 
@@ -1583,7 +1754,6 @@ mnogobase/
 docker compose up -d
 uv run mnogobase models up
 uv run mnogobase ingest "documents/Attention is all you need.pdf"
-uv run mnogobase wiki build
 uv run mnogobase doctor
 
 # Пробный запуск: 2 вопроса × 3 подхода. Оценка вызывает модель-судью.
@@ -1598,7 +1768,9 @@ uv run mnogobase eval score runs/eval/attention
 uv run mnogobase eval report runs/eval/attention
 ```
 
-Используйте одинаковый корпус и неизменные индексы, граф и wiki для всех подходов и при возобновлении. Если в базе есть другие документы, это оценка по всей текущей базе. Для опыта только по статье подготовьте отдельный проект с отдельными `data_dir`, `wiki.dir`, префиксом коллекций Qdrant и отдельной базой Neo4j. Не удаляйте рабочую базу ради примера.
+Используйте одинаковый корпус и неизменные индексы, граф и wiki для всех подходов и при возобновлении. Если в базе есть другие документы, это оценка по всей текущей базе. Для опыта только по статье подготовьте отдельный проект с отдельными `data_dir`, `wiki.dir`, префиксом коллекций Qdrant и отдельным экземпляром Neo4j. Не удаляйте рабочую базу ради примера.
+
+`run.json` фиксирует снимок локального реестра и wiki; изменение снимка запрещает продолжать этот запуск в том же каталоге. Во время генерации удерживается `ingest.lock`. Прямые изменения в Qdrant/Neo4j внешними инструментами снимок может не обнаружить, поэтому на время опыта их тоже исключите. Порядок измерений build/update — в [разделе 15.2](#152-измерение-build-и-update).
 
 `--mode` можно повторять: `--mode rag --mode graph --mode all`. `--k 8` задаёт число результатов retrieval. Для выбора метрик используйте повторяемый `eval score ... --metric faithfulness --metric factual_correctness`; последующий запуск без `--metric` досчитает остальные. Глобальный `--config` передаётся **до** `eval`.
 
@@ -1621,10 +1793,10 @@ evaluation:
 
 В `.env` запишите `JUDGE_API_KEY=...`. Если имя переменной ключа задано, но значение отсутствует, команда сообщает ошибку; чужой ключ не подставляется. Пустое имя (`""`) означает локальный сервер без авторизации. Все настройки доступны через `MNOGOBASE_EVALUATION__...` (примеры в `.env.example`). В манифестах сохраняются имена переменных, без значений ключей.
 
-| Метрика | Что проверяет | Требования |
+| Метрика | Что проверяет | Помимо LLM-судьи |
 |---|---|---|
 | `faithfulness` | Подтверждаются ли утверждения ответа переданным контекстом | Контекст |
-| `answer_relevancy` | Насколько ответ соответствует вопросу | LLM и embeddings судьи |
+| `answer_relevancy` | Насколько ответ соответствует вопросу | Embeddings судьи |
 | `context_precision_with_reference` | Полезность и порядок контекстов относительно эталона | Контекст и эталон |
 | `context_recall` | Покрывает ли контекст факты эталона | Контекст и эталон |
 | `factual_correctness` | Совпадение фактов ответа с эталоном, F1 | Эталон |
@@ -1639,10 +1811,14 @@ evaluation:
 - `answers.jsonl`: ответы, полные контексты после ограничения бюджета, источники, время, токены и ошибки. Старый `compare.jsonl` не содержит полных контекстов, поэтому его нельзя использовать вместо этого файла.
 - `judge.json`, `scores.jsonl`: настройки/версия судьи и оценки каждой пары. Для смены судьи нужен новый каталог запуска. Оценки изменившегося ответа считаются устаревшими.
 - `details.csv`: оценки и статусы по каждому вопросу, режиму и метрике; `summary.csv` и `report.md`: сводное сравнение подходов, время и токены.
+- `paired.csv`, `by_category.csv`: парные сравнения на общих успешно оценённых вопросах и разбивка по `category`.
+- `processing.jsonl`, `processing.csv`, `processing_stages.csv`: попытки измеренной подготовки базы и затраты по этапам, если эксперимент содержит такие измерения.
 
 `score` читает сохранённые контексты: повторного поиска и генерации нет, Qdrant и Neo4j ему не нужны. `report` полностью работает без сети и моделей, в том числе до начала расчёта метрик.
 
 Сравнивайте средние вместе с числом успешных оценок: большее значение означает лучшее качество по соответствующей метрике, но разные пропуски меняют состав выборки. Отсутствие эталона/контекста даёт `skipped` с причиной, сбой API — `error`, нечисловая оценка — `undefined`; эти случаи не подменяются нулями. Время включает перевод, поиск и генерацию. Токены учитывают успешные ответы; вызовы судьи и неудачные попытки в эти суммы не входят.
+
+В `paired.csv` разность B − A вычисляется на одинаковых успешно оценённых вопросах; 95% интервал строится paired bootstrap по 1000 перевыборкам с фиксированным seed. Для менее двух общих вопросов интервал не рассчитывается. Маленькая выборка или единичный прогон с автоматическим судьёй не доказывают превосходство режима. Проверьте часть ответов и цитат вручную; для более широкого эксперимента добавьте документы и вопросы на объединение источников, связи и ожидаемый отказ при отсутствии ответа.
 
 Коды выхода: `0` — выбранная работа выполнена; `1` — остались ошибки/неполные ответы или выбранные оценки; `2` — некорректный вход, конфигурация, занятый каталог или ошибка предварительной проверки. `report` возвращает `0`, если отчёт построен, даже для неполного запуска. При 401/403 расчёт останавливается после сохранения ошибки; исправьте ключ/доступ и повторите команду.
 
@@ -1664,3 +1840,105 @@ uv run ruff format --check .
 uv lock --check
 git diff --check
 ```
+
+## 15. Фоновая обработка и воспроизводимые эксперименты
+
+### 15.1 Очередь и наблюдение
+
+Worker запускается отдельным процессом и использует те же настройки и конвейер, что обычный `ingest`. Сначала выполните [подготовку сервисов](#22-первый-запуск-один-раз); затем:
+
+```bash
+mkdir -p documents
+uv run mnogobase worker run --watch documents/
+```
+
+Пока worker работает, в другом терминале можно посмотреть очередь и повторить задания, исчерпавшие попытки:
+
+```bash
+uv run mnogobase jobs list
+uv run mnogobase jobs retry
+```
+
+```mermaid
+flowchart TD
+    FILE["Новый или изменённый файл"] --> STABLE["Watcher<br/>период стабильности"]
+    STABLE --> QUEUE[("jobs.db<br/>постоянная очередь")]
+    MANUAL["jobs enqueue"] --> QUEUE
+    QUEUE --> WORKER["Один worker<br/>блокировка ingest.lock"]
+    WORKER --> PIPELINE["Существующий ingest<br/>parse → chunk → embed → extract → graph → wiki"]
+    PIPELINE -->|"успех"| DONE["Задание done"]
+    PIPELINE -->|"ошибка"| RETRY{"Остались попытки?"}
+    RETRY -->|"да · задержка"| QUEUE
+    RETRY -->|"нет"| FAILED["Задание failed<br/>jobs retry для повтора"]
+
+    classDef input fill:#eff6ff,stroke:#2563eb,color:#172554
+    classDef work fill:#ecfdf5,stroke:#059669,color:#064e3b
+    classDef retry fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+    class FILE,STABLE,QUEUE,MANUAL input
+    class WORKER,PIPELINE,DONE work
+    class RETRY,FAILED retry
+```
+
+Для разовой обработки очереди выполните `jobs enqueue documents/`, затем `worker run --once`. По умолчанию watcher опрашивает папки каждые 2 секунды и ждёт 2 секунды стабильности; worker допускает 3 попытки задания. При аварии незавершённые задания возвращаются в очередь, а этапы и кэш восстанавливает конвейер. Если содержимое изменилось после постановки, устаревшее задание заменяется новой ревизией.
+
+Ctrl+C или SIGTERM останавливает worker; для продолжения повторите команду запуска. После `reset` неизменённые файлы нужно поставить явно через `jobs enqueue documents/ --force`: история очереди сама не очищается. `--force` повторяет задание, но не сбрасывает завершённые этапы ingest. Перед административным сбросом остановите worker.
+
+| Параметр worker | По умолчанию | Назначение |
+|---|---|---|
+| `--watch PATH` | без наблюдения | повторяйте для нескольких существующих папок |
+| `--interval` | `2` с | интервал опроса |
+| `--settle` | `2` с | сколько должны оставаться стабильными размер и mtime файла |
+| `--max-attempts` | `3` | предел попыток задания |
+| `--retry-delay` | `10` с | первая пауза повтора; затем удваивается, максимум час |
+| `--once` | выключено | обработать готовую очередь и выйти; вместе с `--watch` не используется |
+
+Наблюдатель продолжает обнаруживать файлы во время ingest и повторяет обход после перезапуска. Скрытые файлы, симлинки, неподдерживаемые расширения и каталоги результатов исключены. Удаление файла не удаляет знания из индекса. Неудачная wiki-сборка считается ошибкой задания; при занятой `ingest.lock` попытка не расходуется. `worker --once` завершается с кодом 1, если остались ошибки или отложенные/незавершённые задания: повторите запуск, когда наступит время повтора. `jobs retry --id N` возвращает в очередь одно задание со статусом `failed`.
+
+Для работы после закрытия терминала на macOS/Linux можно запустить процесс так:
+
+```bash
+mkdir -p logs
+nohup .venv/bin/mnogobase worker run --watch documents/ > logs/worker.out 2>&1 &
+```
+
+Сохраните показанный shell PID; `kill -TERM <PID>` останавливает процесс. Тяжёлый разбор или хеширование может задержать остановку текущего вызова. Автозапуск после перезагрузки этой командой не устанавливается.
+
+### 15.2 Измерение build и update
+
+Для измерения обработки и сравнения качества:
+
+```bash
+uv run mnogobase eval ingest documents/ --phase build --output runs/eval/experiment-v1
+uv run mnogobase eval benchmark eval/questions.jsonl --output runs/eval/experiment-v1
+```
+
+`benchmark` объединяет `run → score → report`; `--skip-score` откладывает вызовы судьи.
+Новые запуски привязаны к снимку корпуса; во время генерации ответов изменения конвейером блокируются.
+Отчёт включает парные сравнения на одинаковых вопросах, категории и измерения общего preprocessing.
+Неудачные попытки сохраняются, пропуски не подменяются нулями.
+Затраты общего конвейера не выдаются за независимую стоимость каждой архитектуры.
+
+`--phase build` и `--phase update` — метки измерений: они не очищают базу. Если данные уже загружены, пропуск файлов не измеряет холодное построение. После фиксации `run.json` обновление корпуса измеряйте в новом каталоге эксперимента.
+
+Пример обновления после первого эксперимента:
+
+```bash
+uv run mnogobase eval ingest new-documents/ --phase update --output runs/eval/experiment-v2
+uv run mnogobase eval benchmark eval/questions.jsonl --output runs/eval/experiment-v2
+```
+
+Используйте неизменные вопросы, модель ответов, язык, промпт и предел контекста, чтобы сравнение отражало изменения корпуса. Полный холодный опыт требует отдельного проекта и пустых хранилищ ([раздел 7.14](#714-отдельные-проекты)).
+
+Обычный `ingest` и worker сохраняют измерения в `.mnogobase/processing.jsonl`; `eval ingest` — в каталоге эксперимента. Сохраняются все попытки, включая ошибки и прерывания. Время этапов уже входит в общее время; складывать их повторно нельзя. Учёт токенов охватывает успешные вызовы основной LLM; VLM, embeddings, реранкер, судья и неуспешные сетевые вызовы не включены. Денежная стоимость и энергопотребление не измеряются. Несоответствие измерений снимку корпуса отражается в отчёте; измерения другого проекта отклоняются.
+
+## 16. Учебные ноутбуки
+
+В [hybrid_rag_notebooks/](hybrid_rag_notebooks/README.md) находится самостоятельный учебный маршрут Hybrid RAG по статье *Attention Is All You Need*. Он помогает посмотреть на промежуточные данные и понять алгоритм до изменения основного приложения.
+
+| Ноутбук | Что разбирает |
+|---|---|
+| [01 — Документы и индекс](hybrid_rag_notebooks/01_hybrid_rag.ipynb) | Docling → структурные чанки → dense + BM25 → Qdrant; просмотр текста, таблиц, векторов и payload |
+| [02 — Поиск и inference](hybrid_rag_notebooks/02_hybrid_rag_inference.ipynb) | RRF → реранкер → соседи → контекст → генерация ответа с источниками |
+| [03 — Ragas](hybrid_rag_notebooks/03_hybrid_rag_ragas.ipynb) | одиночная метрика, пять метрик на наборе, ошибки, пропуски и сравнение запусков |
+
+У папки свои [зависимости и инструкция](hybrid_rag_notebooks/SETUP.md), `.env`, helpers и артефакты. Пакет `mnogobase`, Neo4j и wiki ей не требуются; для запуска нужны сервисы, перечисленные в SETUP. Ноутбуки не заменяют CLI-конвейер и не строят граф/wiki основного проекта. Выполнение ячеек с генерацией и оценкой делает реальные модельные вызовы.
