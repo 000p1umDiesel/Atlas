@@ -103,6 +103,48 @@ def describe_image(image, vision) -> str:
     return text.strip()
 
 
+def add_image_descriptions(doc, path: Path, vision, *, min_area: float, skip):
+    """Добавляем описания до сохранения Docling JSON и чанкирования."""
+    from docling_core.types.doc import DocItemLabel
+
+    if vision is None:
+        return doc
+    if path.suffix.lower() in IMAGES:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            text = describe_image(image, vision)
+        doc.add_text(label=DocItemLabel.TEXT, text="Image description: " + text)
+    else:
+        for picture in list(doc.pictures):
+            predictions = getattr(getattr(picture.meta, "classification", None), "predictions", [])
+            if any(str(p.class_name) in skip and (p.confidence or 0) >= 0.5 for p in predictions):
+                continue
+            if picture.prov:
+                prov = picture.prov[0]
+                page = doc.pages.get(prov.page_no)
+                if page and prov.bbox.area() / (page.size.width * page.size.height) < min_area:
+                    continue
+            image = picture.get_image(doc)
+            if image is None:
+                raise ValueError(f"{path}: no pixels available for picture {picture.self_ref}")
+            text = describe_image(image, vision)
+            parent = picture.parent.resolve(doc) if picture.parent else doc.body
+            doc.add_text(
+                label=DocItemLabel.TEXT,
+                text="Image description: " + text,
+                prov=picture.prov[0] if picture.prov else None,
+                parent=parent,
+            )
+            # Сохраняем раздел и страницу рисунка: описание идёт сразу после него.
+            description_ref = parent.children.pop()
+            picture_index = next(
+                index for index, ref in enumerate(parent.children) if ref.cref == picture.self_ref
+            )
+            parent.children.insert(picture_index + 1, description_ref)
+    return doc
+
+
 class DocumentParser:
     def __init__(
         self,
@@ -165,44 +207,9 @@ class DocumentParser:
         result = self.converter.convert(path, raises_on_error=True)
         if str(result.status.value) not in ("success",):
             raise ValueError(f"{path}: Docling status {result.status}; {result.errors}")
-        doc = result.document
-        if self.vision is None:
-            return doc
-        if path.suffix.lower() in IMAGES:
-            from PIL import Image
-
-            with Image.open(path) as image:
-                text = describe_image(image, self.vision)
-            doc.add_text(label=DocItemLabel.TEXT, text="Image description: " + text)
-        else:
-            for picture in list(doc.pictures):
-                predictions = getattr(
-                    getattr(picture.meta, "classification", None), "predictions", []
-                )
-                if any(
-                    str(p.class_name) in self.skip and (p.confidence or 0) >= 0.5
-                    for p in predictions
-                ):
-                    continue
-                if picture.prov:
-                    prov = picture.prov[0]
-                    page = doc.pages.get(prov.page_no)
-                    if (
-                        page
-                        and prov.bbox.area() / (page.size.width * page.size.height) < self.min_area
-                    ):
-                        continue
-                image = picture.get_image(doc)
-                if image is None:
-                    raise ValueError(f"{path}: no pixels available for picture {picture.self_ref}")
-                text = describe_image(image, self.vision)
-                # Добавляем описание отдельным текстовым узлом, чтобы HybridChunker включил его в индекс.
-                doc.add_text(
-                    label=DocItemLabel.TEXT,
-                    text="Image description: " + text,
-                    prov=picture.prov[0] if picture.prov else None,
-                )
-        return doc
+        return add_image_descriptions(
+            result.document, path, self.vision, min_area=self.min_area, skip=self.skip
+        )
 
 
 def chunk_document(doc, *, path: str, doc_id: str, tokenizer) -> list[dict]:

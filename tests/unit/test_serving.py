@@ -74,8 +74,8 @@ def test_llamacpp_args_name_the_model_like_vllm():
     assert "--embedding" not in llm and "--rerank" not in llm
     # VLM: проектор картинок (mmproj) -hf скачивает сам, отдельных флагов не нужно
     assert server_args(Served("vision", VisionSettings()), 8003)[:4] == [
-        "-hf", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M",
-        "--alias", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M",
+        "-hf", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K",
+        "--alias", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K",
     ]  # fmt: skip
 
 

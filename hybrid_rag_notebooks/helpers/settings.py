@@ -29,7 +29,7 @@ def rag_settings():
         "llm_url": os.getenv("LLM_BASE_URL", "https://codex.sale/v1"),
         "llm_model": os.getenv("LLM_MODEL", "gpt-6-luna"),
         "vision_url": os.getenv("VISION_BASE_URL", "http://localhost:8103/v1"),
-        "vision_model": os.getenv("VISION_MODEL", "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M"),
+        "vision_model": os.getenv("VISION_MODEL", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K"),
         "qdrant_url": os.getenv("QDRANT_URL", "http://localhost:6333"),
         "doc_template": "{text}",
         "query_template": "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}",
@@ -96,7 +96,7 @@ def model_server_commands(config, gpu_layers=999):
     for role, prefix, flags in (
         ("embeddings", "embed", ["--embedding", "--pooling", "last"]),
         ("reranker", "rerank", ["--embedding", "--rerank", "--pooling", "rank"]),
-        ("VLM", "vision", []),
+        ("VLM", "vision", ["--image-min-tokens", "1024"]),
     ):
         if prefix in ("rerank", "vision") and (not config[prefix]):
             continue

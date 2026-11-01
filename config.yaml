@@ -88,8 +88,10 @@ vision:
   # описание картинок при разборе (графики, схемы, скриншоты) VLM-моделью: описание
   # становится текстом документа и дальше ищется, извлекается в граф и цитируется
   enabled: true
-  model: unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M   # llamacpp: в репозитории есть проектор mmproj
+  model: prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K   # llamacpp: в репозитории есть проектор mmproj
   serve: llamacpp
+  server:
+    args: ["--image-min-tokens", "1024"]   # достаточно деталей для небольших картинок из PDF
   max_tokens: 400
   min_area: 0.05                     # картинки меньше этой доли страницы не описываются
   skip: [logo, icon, qr_code, bar_code, signature, stamp]   # классы картинок без описания

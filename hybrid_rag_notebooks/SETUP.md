@@ -6,8 +6,8 @@
 
 1. Создайте Python-окружение и скопируйте `.env.example` в `.env` (команды ниже).
 2. Заполните настройки генератора. Проверьте адреса и имена локальных моделей.
-3. Запустите Qdrant, embeddings и reranker. Для базового примера VLM не требуется.
-4. Откройте ноутбук 01, выполните настройки и печать команды embeddings. Ноутбук 02 дополнительно печатает команды reranker. Команды нужно выполнить в отдельных терминалах; сама ячейка ничего не запускает.
+3. Запустите Qdrant, embeddings, Xiaomi VLM и reranker. По умолчанию `vision=True`: картинки входят в индекс через свои описания.
+4. Откройте ноутбук 01, выполните настройки и печать команд embeddings и VLM. Ноутбук 02 дополнительно печатает команду reranker. Команды нужно выполнить в отдельных терминалах; сама ячейка ничего не запускает.
 5. В 01 проверьте соединения, разберите PDF и постройте индекс. Откройте 02 с тем же INDEX_NAME и получите один ответ.
 6. В ноутбуке 02 выполните пакетную ячейку, затем откройте ноутбук 03 с тем же `RUN_NAME`. Начните с трёх вопросов.
 
@@ -22,7 +22,7 @@
 | Embeddings | Превращает текст в векторы; сервер также предоставляет токенизатор | `EMBED_BASE_URL`, `EMBED_MODEL`, `EMBED_API_KEY` | Базовый маршрут, в том числе разбор с серверным токенизатором |
 | Reranker | Переставляет найденные фрагменты по соответствию вопросу | `RERANK_BASE_URL`, `RERANK_MODEL`, `RERANK_API_KEY` | В 02 при `SEARCH['rerank']=True` |
 | Генератор | Переводит запрос и пишет ответ по контексту | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Ноутбук 02 |
-| VLM | Добавляет текстовые описания изображений | `VISION_BASE_URL`, `VISION_MODEL`, `VISION_API_KEY` | В сохранённом расширенном маршруте DocumentParser |
+| VLM | Добавляет текстовые описания изображений до чанкирования | `VISION_BASE_URL`, `VISION_MODEL`, `VISION_API_KEY` | Основной маршрут ноутбука 01; по умолчанию `vision=True` |
 | Судья | Проверяет сохранённые ответы | `JUDGE_BASE_URL`, `JUDGE_MODEL`, `JUDGE_API_KEY` | Расчёт Ragas |
 | Embeddings судьи | Сравнивает вопросы для Answer Relevancy | `JUDGE_EMBED_BASE_URL`, `JUDGE_EMBED_MODEL`, `JUDGE_EMBED_API_KEY` | Answer Relevancy |
 
@@ -68,7 +68,7 @@ Windows PowerShell: вместо `source` используйте `.venv\Scripts\
 docker run -d --name notebook-rag-qdrant -p 6333:6333 -v notebook_rag_qdrant:/qdrant/storage qdrant/qdrant:v1.19.2
 ```
 
-Если порт 6333 занят существующим Qdrant, второй контейнер не нужен. Ноутбук создаёт отдельную коллекцию `notebook_attention_steps_v1`.
+Если порт 6333 занят существующим Qdrant, второй контейнер не нужен. Ноутбук создаёт отдельную коллекцию `notebook_attention_multimodal_v1`.
 
 Для ноутбуков по умолчанию выбраны отдельные порты: **embeddings 8101, reranker 8102, VLM 8103**. Любой из них можно поменять в `hybrid_rag_notebooks/.env` через `EMBED_BASE_URL`, `RERANK_BASE_URL`, `VISION_BASE_URL`. Команды формируются из текущего `CFG`, включая порты и имена моделей. Выполните настройки и ячейку печати команд, затем скопируйте их в отдельные терминалы. У работающего сервера порт изменится после перезапуска с новым `--port`.
 
@@ -83,17 +83,19 @@ llama-server -hf gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0 --alias gorse-io/Qwen3-R
 ```
 
 ```bash
-llama-server -hf unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M --alias unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M --host 127.0.0.1 --port 8103 --ctx-size 8192 --parallel 1 --n-gpu-layers 999
+llama-server -hf prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K --alias prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K --image-min-tokens 1024 --host 127.0.0.1 --port 8103 --ctx-size 8192 --parallel 1 --n-gpu-layers 999
 ```
 
 Для VLM нужен multimodal GGUF и проектор из того же репозитория; текущий llama.cpp загружает его через `-hf`. Если ваша сборка этого не делает, загрузите соответствующий проектор и задайте `--mmproj /path/to/mmproj.gguf`. Для CPU замените `--n-gpu-layers 999` на `--n-gpu-layers 0`; для VLM добавьте `--no-mmproj-offload`. Если не хватает памяти, уменьшите число GPU-слоёв или отключите VLM в `CFG`. `CFG['device']` управляет Docling, а устройство моделей выбирают флаги `llama-server`.
+
+Для Xiaomi-OCR-0 Q6_K сохраняйте `--image-min-tokens 1024`: при реальной проверке проекта без этого флага модель выдумывала содержимое небольшой схемы, выделенной из PDF. С флагом схема описывалась правильно. `model_server_commands(CFG)` добавляет этот параметр в команду VLM автоматически. Если сервер уже запущен, перезапустите его с новыми флагами.
 
 При первом старте `-hf` скачивает GGUF с Hugging Face; прогресс загрузки и ошибки видны в соответствующем терминале. Повторный запуск использует локальный кэш. Дождитесь готовности каждой используемой модели:
 
 ```bash
 curl --fail --show-error http://localhost:8101/health
 curl --fail --show-error http://localhost:8102/health
-# Только если включили VLM:
+# VLM включена по умолчанию в ноутбуке 01:
 curl --fail --show-error http://localhost:8103/health
 ```
 
@@ -107,17 +109,19 @@ curl --fail --show-error http://localhost:8103/health
 
 Если используете уже работающие серверы проекта, сверьте `EMBED_MODEL`, `RERANK_MODEL`, `VISION_MODEL` с `id` из `GET <BASE_URL>/models`: модели проекта могут отличаться от небольших моделей в примерах ноутбука. После изменения `.env` перезапустите kernel и выполните ячейки сверху вниз: уже созданные клиенты сохраняют прежние настройки, а переменные окружения процесса имеют приоритет над `.env`.
 
+Для уже запущенной проектной Xiaomi на порту 8003 задайте `VISION_BASE_URL=http://localhost:8003/v1` и `VISION_MODEL=prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K`. Основной маршрут использует `vision=True`: ноутбук 01 создаёт новый индекс `attention_multimodal_v1` с описаниями, 02 ищет по нему, а 03 читает новый запуск `attention_multimodal_hybrid_v1`. Изменение модели в `.env` само по себе не добавляет описания в существующий индекс. Прежние результаты сохранены; выполните 01 → 02 → 03 с новыми именами по умолчанию.
+
 Флаги запуска, `/health` и автоматический выбор проектора описаны в [документации llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md); настройка Qwen reranker — в [карточке модели](https://huggingface.co/gorse-io/Qwen3-Reranker-0.6B-GGUF#run-with-llamacpp).
 
 Ноутбук рассчитан на endpoints `/v1/embeddings`, `/v1/rerank`, `/v1/chat/completions`. Для GGUF токенизатор берётся через `/tokenize` сервера embeddings. Для vLLM задайте исходный HF-репозиторий модели в `CFG['tokenizer_hf']`. Не указывайте GGUF-репозиторий как HF-токенизатор.
 
-Новый маршрут без VLM использует `INDEX_NAME="attention_steps_v1"`, `COLLECTION="notebook_attention_steps_v1"`, `RUN_NAME="attention_steps_hybrid_v1"`. Прежние `attention_text_v1` и `attention_v1` остаются отдельными экспериментами. Для оценки их ответов задайте соответствующий `RUN_NAME` в 03.
+Мультимодальный маршрут использует `INDEX_NAME="attention_multimodal_v1"`, `COLLECTION="notebook_attention_multimodal_v1"`, `RUN_NAME="attention_multimodal_hybrid_v1"`. Прежние `attention_steps_v1`, `attention_text_v1` и их запуски остаются отдельными экспериментами. Для оценки прежних ответов задайте соответствующий `RUN_NAME` в 03.
 
 ## Документы и первый запуск
 
-Выполняйте ячейки сверху вниз: в 01 — подключение, разбор, чанкирование и индекс; в 02 — загрузка индекса, поиск, генерация и пакетный inference; в 03 — оценка сохранённых ответов. Сейчас корпус — `data/documents/Attention is all you need.pdf`: статья [Attention Is All You Need, arXiv v7](https://arxiv.org/abs/1706.03762v7), 15 страниц. Для неё подготовлен набор вопросов ниже. В базовом ноутбуке `CFG['vision'] = False`. Новый пошаговый парсер отклоняет `True`: для описаний рисунков используйте сохранённый `helpers.parsing.DocumentParser` и отдельный индекс. PDF содержит текстовый слой, а вопросы о рисунках опираются на подписи; в основном маршруте достаточно `vision=False`, OCR остаётся включённым. Для другого корпуса смените `DOCUMENTS_DIR` и набор вопросов.
+Выполняйте ячейки сверху вниз: в 01 — подключение, Docling + VLM, чанкирование и индекс; в 02 — загрузка индекса, поиск, генерация и пакетный inference; в 03 — оценка сохранённых ответов. Сейчас корпус — `data/documents/Attention is all you need.pdf`: статья [Attention Is All You Need, arXiv v7](https://arxiv.org/abs/1706.03762v7), 15 страниц. Для неё подготовлен набор вопросов ниже. По умолчанию `CFG['vision'] = True`: описания рисунков участвуют в индексе вместе с текстом и OCR. Для другого корпуса смените `DOCUMENTS_DIR` и набор вопросов.
 
-Основной новый маршрут показывает PDF и встроенные форматы DocumentConverter (например, Markdown). Для TXT, описания изображений через VLM и прежнего расширенного маршрута сохранён `helpers.parsing.DocumentParser`. Его поддерживаемые расширения: `pdf`, `docx`, `pptx`, `xlsx`, `html`, `htm`, `md`, `adoc`, `csv`, `txt`, `png`, `jpg`, `jpeg`, `tif`, `tiff`, `bmp`, `webp`. TXT читается как UTF-8; остальные форматы разбирает Docling. Для PDF и изображений включён OCR RU/EN. Изображения описываются VLM и добавляются в текстовый индекс. При отключении VLM текстовый поиск работает по OCR/извлечённому тексту. Битые, защищённые или пустые документы показываются как ошибки, без отметки об успешной загрузке.
+Основной маршрут разбирает PDF, картинки и встроенные форматы DocumentConverter (например, DOCX и Markdown). Описания картинок добавляются через общую функцию `add_image_descriptions`, рядом с рисунком в структуре документа. Для TXT и прежнего расширенного маршрута сохранён `helpers.parsing.DocumentParser`; он использует ту же функцию описания. Его поддерживаемые расширения: `pdf`, `docx`, `pptx`, `xlsx`, `html`, `htm`, `md`, `adoc`, `csv`, `txt`, `png`, `jpg`, `jpeg`, `tif`, `tiff`, `bmp`, `webp`. TXT читается как UTF-8; остальные форматы разбирает Docling. Для PDF и изображений включён OCR RU/EN. При отключении VLM текстовый поиск работает по OCR/извлечённому тексту. Битые, защищённые или пустые документы показываются как ошибки, без отметки об успешной загрузке.
 
 Первый запуск Docling/OCR и `Qdrant/bm25` скачивает модели. Для закрытых HF-репозиториев понадобится `HF_TOKEN`. Парсинг PDF может идти долго: следите за журналом Docling и полосой прогресса по файлам. API-запросы ограничены таймаутом и повторяются при сетевых ошибках, HTTP 429 и 5xx.
 

@@ -310,7 +310,7 @@ class VisionSettings(ServedModel):
     port: ClassVar[int] = 8003
 
     enabled: bool = False
-    model: str = "unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M"
+    model: str = "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K"
     prompt: str = DEFAULT_VISION_PROMPT
     max_tokens: int = Field(default=400, ge=16)
     # маленькие VLM на temperature 0 зацикливаются; presence_penalty — рекомендация Qwen3-VL

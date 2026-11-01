@@ -518,7 +518,7 @@ class ExplicitCellTests(unittest.IsolatedAsyncioTestCase):
                 await runner.tag("parse")
             self.assertFalse((root / "docling").exists())
 
-    async def test_basic_parser_rejects_unimplemented_vision_mode(self):
+    async def test_inventory_accepts_multimodal_index(self):
         runner = NotebookRunner("01_hybrid_rag.ipynb")
         from helpers.settings import rag_settings
 
@@ -533,11 +533,233 @@ class ExplicitCellTests(unittest.IsolatedAsyncioTestCase):
             ensure_manifest=lambda *args: None,
             pd=pd,
         )
-        with (
-            contextlib.redirect_stdout(io.StringIO()),
-            self.assertRaisesRegex(ValueError, "VLM"),
-        ):
+        with contextlib.redirect_stdout(io.StringIO()):
             await runner.tag("inventory")
+        self.assertTrue(runner.ns["INDEX_CONFIG"]["vision"])
+
+    async def test_multimodal_defaults_use_consistent_new_artifacts(self):
+        runners = [
+            NotebookRunner(name)
+            for name in (
+                "01_hybrid_rag.ipynb",
+                "02_hybrid_rag_inference.ipynb",
+                "03_hybrid_rag_ragas.ipynb",
+            )
+        ]
+        with contextlib.redirect_stdout(io.StringIO()):
+            for runner in runners:
+                runner.ns["ROOT"] = Path("unused")
+                await runner.tag("settings")
+        index, inference, scoring = runners
+        self.assertTrue(index.ns["CFG"]["vision"])
+        self.assertTrue(inference.ns["CFG"]["vision"])
+        self.assertIn("VLM", index.ns["commands"])
+        self.assertIn("--image-min-tokens 1024", index.ns["commands"]["VLM"])
+        self.assertEqual(index.ns["INDEX_NAME"], "attention_multimodal_v1")
+        self.assertEqual(index.ns["COLLECTION"], "notebook_attention_multimodal_v1")
+        self.assertEqual(index.ns["INDEX_NAME"], inference.ns["INDEX_NAME"])
+        self.assertEqual(inference.ns["RUN_NAME"], "attention_multimodal_hybrid_v1")
+        self.assertEqual(inference.ns["RUN_NAME"], scoring.ns["RUN_NAME"])
+
+    async def test_vision_description_precedes_cache_and_survives_chunking(self):
+        import httpx
+        from docling.datamodel.base_models import ConversionStatus
+        from docling_core.types.doc import (
+            BoundingBox,
+            CoordOrigin,
+            DoclingDocument,
+            ImageRef,
+            ProvenanceItem,
+            Size,
+        )
+        from helpers.artifacts import fingerprint, write_json
+        from helpers.model_clients import ModelAPI
+        from helpers.parsing import chunk_document, make_tokenizer
+        from helpers.settings import rag_settings
+        from PIL import Image
+
+        for description in ("The blue diagram says SIGNAL 42.", ""):
+            with self.subTest(description=description), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                path = root / "diagram.pdf"
+                doc = DoclingDocument(name="diagram")
+                doc.add_page(page_no=2, size=Size(width=600, height=300))
+                doc.add_picture(
+                    image=ImageRef.from_pil(Image.new("RGB", (300, 150), "blue"), dpi=72),
+                    prov=ProvenanceItem(
+                        page_no=2,
+                        bbox=BoundingBox(l=0, t=0, r=300, b=150, coord_origin=CoordOrigin.TOPLEFT),
+                        charspan=(0, 0),
+                    ),
+                )
+                result = SimpleNamespace(document=doc, status=ConversionStatus.SUCCESS)
+                calls = []
+
+                def handler(request, calls=calls, description=description):
+                    payload = json.loads(request.content)
+                    if request.url.path == "/tokenize":
+                        return httpx.Response(200, json={"tokens": payload["content"].split()})
+                    self.assertEqual(request.url.path, "/v1/chat/completions")
+                    self.assertEqual(payload["model"], "fixture-vlm")
+                    self.assertTrue(
+                        payload["messages"][0]["content"][0]["image_url"]["url"].startswith(
+                            "data:image/png;base64,"
+                        )
+                    )
+                    calls.append(payload)
+                    return httpx.Response(
+                        200, json={"choices": [{"message": {"content": description}}]}
+                    )
+
+                with ModelAPI(
+                    "http://fixture/v1", "fixture-vlm", transport=httpx.MockTransport(handler)
+                ) as vision:
+                    runner = NotebookRunner("01_hybrid_rag.ipynb")
+                    runner.ns.update(
+                        CFG={**rag_settings(), "ocr": False, "device": "cpu", "vision": True},
+                        vision=vision,
+                        paths=[path],
+                        inventory=[{"path": path.name}],
+                        INDEX_DIR=root / "index",
+                        write_json=write_json,
+                        fingerprint=fingerprint,
+                        tqdm=lambda items, **kwargs: items,
+                    )
+                    with (
+                        patch(
+                            "docling.document_converter.DocumentConverter",
+                            return_value=SimpleNamespace(
+                                convert=lambda path, result=result: result
+                            ),
+                        ),
+                        contextlib.redirect_stdout(io.StringIO()),
+                    ):
+                        if description:
+                            await runner.tag("parse")
+                            self.assertEqual(len(calls), 1)
+                            cache = next((root / "index" / "docling").glob("*.json"))
+                            loaded = DoclingDocument.model_validate_json(cache.read_text())
+                            chunks = chunk_document(
+                                loaded,
+                                path=str(path),
+                                doc_id="diagram",
+                                tokenizer=make_tokenizer(vision, max_tokens=64),
+                            )
+                            self.assertTrue(any(description in chunk["text"] for chunk in chunks))
+                            self.assertTrue(any(chunk["page"] == 2 for chunk in chunks))
+                            await runner.tag("parse")
+                            self.assertEqual(
+                                len(calls), 1, "cached descriptions must not call VLM again"
+                            )
+                        else:
+                            with self.assertRaisesRegex(ValueError, "empty picture description"):
+                                await runner.tag("parse")
+                            self.assertFalse((root / "index" / "docling").exists())
+
+    async def test_vision_clients_close_after_failed_connect_and_reconnect(self):
+        from helpers.settings import rag_settings
+
+        clients = []
+        fail_vision = True
+
+        class Client:
+            def __init__(self, model):
+                self.model = model
+                self.closed = False
+                clients.append(self)
+
+            def models(self):
+                return {
+                    "data": [] if fail_vision and self.model == "vision" else [{"id": self.model}]
+                }
+
+            def embed(self, texts):
+                return [[1.0, 0.0]]
+
+            def get_collections(self):
+                return []
+
+            def close(self):
+                self.closed = True
+
+        runner = NotebookRunner("01_hybrid_rag.ipynb")
+        runner.ns.update(
+            CFG={
+                **rag_settings(),
+                "vision": True,
+                "embed_model": "embed",
+                "vision_model": "vision",
+            },
+            ModelAPI=lambda url, model, key: Client(model),
+            make_tokenizer=lambda *args: SimpleNamespace(get_max_tokens=lambda: 512),
+        )
+        with (
+            patch("qdrant_client.QdrantClient", side_effect=lambda **kwargs: Client("qdrant")),
+            patch("fastembed.SparseTextEmbedding", return_value=object()),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, "VLM"):
+                    await runner.tag("connect")
+                self.assertTrue(all(client.closed for client in clients))
+            fail_vision = False
+            await runner.tag("connect")
+            first_success = list(clients)
+            await runner.tag("connect")
+            self.assertTrue(all(client.closed for client in first_success))
+            self.assertEqual(sum(not client.closed for client in clients), 3)
+            await runner.tag("close")
+            self.assertTrue(all(client.closed for client in clients))
+
+    async def test_picture_descriptions_stay_with_their_source_page(self):
+        import httpx
+        from docling_core.types.doc import (
+            BoundingBox,
+            CoordOrigin,
+            DoclingDocument,
+            ImageRef,
+            ProvenanceItem,
+            Size,
+        )
+        from helpers.model_clients import ModelAPI
+        from helpers.parsing import add_image_descriptions, make_tokenizer
+        from PIL import Image
+
+        doc = DoclingDocument(name="two-pages")
+        for page_no in (1, 2):
+            doc.add_page(page_no=page_no, size=Size(width=600, height=300))
+            prov = ProvenanceItem(
+                page_no=page_no,
+                bbox=BoundingBox(l=0, t=0, r=300, b=150, coord_origin=CoordOrigin.TOPLEFT),
+                charspan=(0, 0),
+            )
+            doc.add_heading(text=f"Figure section {page_no}", level=1, prov=prov)
+            doc.add_picture(
+                image=ImageRef.from_pil(Image.new("RGB", (300, 150), "blue"), dpi=72), prov=prov
+            )
+        descriptions = iter(["TREND120 is a chart.", "PIPELINEX is a diagram."])
+
+        def handler(request):
+            payload = json.loads(request.content)
+            if request.url.path == "/tokenize":
+                return httpx.Response(200, json={"tokens": payload["content"].split()})
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": next(descriptions)}}]}
+            )
+
+        with ModelAPI(
+            "http://fixture/v1", "fixture-vlm", transport=httpx.MockTransport(handler)
+        ) as vision:
+            doc = add_image_descriptions(doc, Path("two-pages.pdf"), vision, min_area=0.05, skip=[])
+            runner = NotebookRunner("01_hybrid_rag.ipynb")
+            await runner.tag("chunk_function")
+            chunks = runner.ns["split_document"](
+                doc, "two-pages.pdf", "two-pages", make_tokenizer(vision)
+            )
+        diagram = [chunk for chunk in chunks if "PIPELINEX" in chunk["text"]]
+        self.assertTrue(diagram)
+        self.assertTrue(all(chunk["page"] == 2 for chunk in diagram))
+        self.assertTrue(all("Figure section 2" in chunk["headings"] for chunk in diagram))
 
 
 if __name__ == "__main__":

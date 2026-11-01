@@ -131,7 +131,7 @@ class RAGLab:
             corpus=inventory,
             collection=self.collection,
             qdrant_url=self.config["qdrant_url"],
-            implementation=1,
+            implementation=2,
         )
         ensure_manifest(self.index_dir / "index.json", self.index_config)
         parser = DocumentParser(
