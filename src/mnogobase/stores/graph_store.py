@@ -417,7 +417,7 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
         tx.run(
             "MATCH ()-[r:RELATED]->() WHERE any(x IN r.evidence WHERE x IN $cids) "
             "WITH r, [i IN range(0, size(r.evidence) - 1) WHERE NOT r.evidence[i] IN $cids] AS keep "
-            "SET r.evidence = [i IN keep | r.evidence[i]], "
+            "SET r.description = '', r.evidence = [i IN keep | r.evidence[i]], "
             "    r.strengths = [i IN keep | r.strengths[i]] "
             "SET r.weight = reduce(s = 0.0, x IN r.strengths | s + x) "
             "WITH r WHERE size(r.evidence) = 0 DELETE r",

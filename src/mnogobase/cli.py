@@ -42,6 +42,7 @@ from mnogobase.models import Answer
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
 from mnogobase.processing import measured_ingest
 from mnogobase.registry import STAGES, Registry, ingest_lock
+from mnogobase.removal import select_removals
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
@@ -147,7 +148,9 @@ def _lock(settings: Settings) -> filelock.FileLock:
     try:
         lock.acquire()
     except filelock.Timeout:
-        console.print("[red]Another ingest / wiki / reindex / reset run is in progress.[/red]")
+        console.print(
+            "[red]Another ingest / remove / wiki / reindex / reset run is in progress.[/red]"
+        )
         raise typer.Exit(2) from None
     return lock
 
@@ -309,7 +312,7 @@ def status() -> None:
         console.print(f"pending document removals: {len(removals)}")
         if removals:
             console.print(
-                f"  unfinished: {', '.join(removals)} — the next ingest / wiki build retries "
+                f"  unfinished: {', '.join(removals)} — the next ingest / remove / wiki build retries "
                 "them first",
                 soft_wrap=True,
             )
@@ -379,6 +382,75 @@ def ingest(
         console.print(f"[red]✗[/red] {escape(path)}: {escape(error)}")
     if report.failed or (report.wiki and report.wiki.failed):
         raise typer.Exit(1)
+
+
+@app.command()
+def remove(
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Registered source files or folders; files on disk are preserved."),
+    ] = None,
+    missing: Annotated[
+        bool, typer.Option("--missing", help="Only forget missing sources, optionally under PATH.")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="List matching registered sources without deleting.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
+) -> None:
+    """Удалить знания об источниках, обновить индексы, граф и wiki; сохранить исходные файлы."""
+    settings = _settings(project=True)
+    lock = _lock(settings)
+    try:
+        registry = Registry(_state_db(settings))
+        try:
+            selected = select_removals(registry, list(paths or []), missing=missing)
+            recovery = bool(registry.pending_removals() or registry.dirty())
+        finally:
+            registry.close()
+        if not selected and not recovery:
+            console.print("No matching registered sources.")
+            return
+        console.print(f"Selected sources: {len(selected)} (original files are preserved)")
+        for row in selected:
+            console.print(f"  {escape(row.path)}", soft_wrap=True)
+        if recovery:
+            console.print("Pending removals and wiki updates will also be resumed.")
+        if dry_run:
+            return
+        if not yes and not typer.confirm("Remove this knowledge and update wiki?", default=False):
+            raise typer.Exit(1)
+        _preflight(settings)
+        application = build_app(settings)
+        try:
+            run_id = new_run_id()
+            with _progress() as progress:
+                report = asyncio.run(
+                    application.pipeline.remove(
+                        list(paths or []), missing=missing, run_id=run_id, progress=progress
+                    )
+                )
+        finally:
+            application.close()
+    except (
+        OSError,
+        ValueError,
+        PendingRemovalError,
+        EmbedderMismatchError,
+        DimensionMismatchError,
+    ) as exc:
+        _fail_cleanly(exc)
+    finally:
+        lock.release()
+    console.print(
+        f"run {run_id}: removed {len(report.removed)} source paths, "
+        f"retained {len(report.retained)} documents with another copy"
+    )
+    if report.wiki:
+        _print_wiki_report(report.wiki)
+        if report.wiki.failed:
+            console.print("Run `mnogobase wiki build` to retry the remaining pages.")
+            raise typer.Exit(1)
 
 
 @wiki_app.command("build")

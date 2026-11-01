@@ -804,3 +804,215 @@ async def test_changed_entity_types_warn_until_everything_is_reextracted(make_ap
     fresh = await stale.pipeline.ingest([docs], build_wiki=False)
     assert len(fresh.processed) == 3 and fresh.types_warning is None
     assert stale.graph.get_entity(entity_id("Method", "Attention Mechanism")) is not None
+
+
+async def test_remove_cleans_all_layers_and_relinks_wiki_without_deleting_source(
+    make_app, tmp_path
+):
+    gone, kept = tmp_path / "gone.md", tmp_path / "kept.md"
+    gone.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n")
+    kept.write_text("# Models\n\nThe Transformer is a network.\n")
+    app = make_app()
+    await app.pipeline.ingest([gone, kept])
+    doc_id, softmax = file_doc_id(gone), entity_id("Concept", "Softmax")
+    transformer_page = tmp_path / "wiki/entities/transformer.md"
+    assert "[[softmax|" in transformer_page.read_text()
+
+    report = await app.pipeline.remove([gone])
+
+    assert report.removed == [str(gone)] and report.retained == []
+    assert gone.is_file() and kept.is_file()
+    assert app.registry.get_file(str(gone)) is None
+    assert app.registry.get_file(str(kept)).status == "done"
+    assert not app.graph.has_document(doc_id)
+    assert chunk_count(app, doc_id) == 0
+    assert app.graph.get_entity(softmax) is None
+    assert _points(app, app.vectors.entities, "entity_id", softmax) == 0
+    assert _points(app, app.vectors.wiki, "page_id", softmax) == 0
+    assert not (tmp_path / "wiki/entities/softmax.md").exists()
+    assert not app.pipeline.chunks_path(doc_id).exists()
+    assert not app.parser.cache_path(doc_id).exists()
+    assert app.registry.chunk_extract_counts(doc_id) == {}
+    assert "Softmax" in report.wiki.deleted
+    assert "Transformer" in report.wiki.updated
+    assert "[[softmax|" not in transformer_page.read_text()
+    assert "[[softmax|" not in (tmp_path / "wiki/index.md").read_text()
+    assert app.registry.pending_removals() == [] and app.registry.dirty() == []
+    assert (await app.pipeline.remove([gone])).removed == []
+
+
+async def test_remove_preserves_other_registered_copy_and_repoints_citations(make_app, tmp_path):
+    source, copy = tmp_path / "a.md", tmp_path / "b.md"
+    source.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    shutil.copy(source, copy)
+    app = make_app()
+    await app.pipeline.ingest([source, copy])
+    doc_id = file_doc_id(source)
+    report = await app.pipeline.remove([source])
+    assert report.removed == [str(source)] and report.retained == [doc_id]
+    assert app.registry.paths_for_doc(doc_id) == [str(copy)]
+    assert app.graph.has_document(doc_id) and chunk_count(app, doc_id) > 0
+    assert document_path(app, doc_id) == str(copy)
+    assert chunk_paths(app, doc_id) == {str(copy)}
+    page = (tmp_path / "wiki/entities/softmax.md").read_text()
+    assert "*b.md*" in page and "*a.md*" not in page
+    assert source.is_file()
+
+
+async def test_remove_multiple_selected_copies_does_not_keep_selected_survivor(make_app, tmp_path):
+    folder = tmp_path / "copies"
+    folder.mkdir()
+    source, copy = folder / "a.md", folder / "b.md"
+    source.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    shutil.copy(source, copy)
+    app = make_app()
+    await app.pipeline.ingest([folder])
+    doc_id = file_doc_id(source)
+    report = await app.pipeline.remove([folder])
+    assert report.removed == [str(source), str(copy)] and report.retained == []
+    assert app.registry.files() == [] and not app.graph.has_document(doc_id)
+    assert chunk_count(app, doc_id) == 0
+    assert app.graph.counts()["WikiPage"] == 0
+    assert source.exists() and copy.exists()
+    # The original files can be explicitly imported again.
+    again = await app.pipeline.ingest([folder])
+    assert len(again.processed) == 1 and len(again.skipped) == 1
+
+
+async def test_remove_missing_only_forgets_absent_sources_in_selected_scope(make_app, tmp_path):
+    folder = tmp_path / "sources"
+    folder.mkdir()
+    gone, live, outside = folder / "gone.md", folder / "live.md", tmp_path / "outside.md"
+    gone.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    live.write_text("# Models\n\nTransformer uses attention.\n")
+    outside.write_text("# Other\n\nVaswani proposed the Transformer.\n")
+    app = make_app()
+    await app.pipeline.ingest([folder, outside])
+    gone_id = file_doc_id(gone)
+    gone.unlink()
+    outside.unlink()
+    report = await app.pipeline.remove([folder], missing=True)
+    assert report.removed == [str(gone)]
+    assert not app.graph.has_document(gone_id) and chunk_count(app, gone_id) == 0
+    assert app.registry.get_file(str(live)) is not None
+    assert app.registry.get_file(str(outside)) is not None
+
+
+@pytest.mark.parametrize(
+    ("where", "name", "after_call"),
+    [
+        ("graph", "delete_document", False),
+        ("graph", "delete_document", True),
+        ("vectors", "delete_doc", False),
+        ("registry", "drop_file", False),
+    ],
+)
+async def test_remove_recovers_explicit_intent_even_when_source_still_exists(
+    make_app, tmp_path, monkeypatch, where, name, after_call
+):
+    source = tmp_path / "a.md"
+    source.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    app = make_app()
+    await app.pipeline.ingest([source])
+    doc_id = file_doc_id(source)
+    _fail_once(monkeypatch, getattr(app, where), name, after_call)
+    with pytest.raises(PendingRemovalError, match=doc_id):
+        await app.pipeline.remove([source])
+    assert app.registry.pending_removals() and source.exists()
+
+    # wiki build and ingest already use this same recovery entry point.
+    deleted = app.pipeline.finish_pending_removals()
+    await app.wiki.build(deleted=deleted)
+    assert app.registry.pending_removals() == []
+    assert app.registry.get_file(str(source)) is None
+    assert not app.graph.has_document(doc_id) and chunk_count(app, doc_id) == 0
+    assert not (tmp_path / "wiki/entities/softmax.md").exists()
+
+
+async def test_remove_shared_entity_rebuilds_without_old_claims_or_deleted_sources(
+    make_app, tmp_path
+):
+    gone, kept = tmp_path / "gone.md", tmp_path / "kept.md"
+    gone.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    kept.write_text("# Details\n\nSoftmax returns probabilities.\n")
+    app = make_app()
+    await app.pipeline.ingest([gone, kept])
+    doc_id = file_doc_id(gone)
+    softmax = entity_id("Concept", "Softmax")
+    page = tmp_path / "wiki/entities/softmax.md"
+    page.write_text(
+        page.read_text().replace(
+            "# Softmax\n", f"# Softmax\n\nREMOVED_ONLY_CLAIM [^{doc_id}:00000].\n"
+        )
+    )
+    record = app.graph.get_entity(softmax)
+    record.description = "REMOVED_ONLY_DESCRIPTION"
+    record.descriptions = [record.description]
+    app.graph.upsert_entity(record)
+    before = len(app.llm.calls_for("wiki"))
+
+    report = await app.pipeline.remove([gone])
+
+    assert report.wiki.failed == [] and "Softmax" in report.wiki.updated
+    assert app.graph.get_entity(softmax).mention_count > 0
+    assert "REMOVED_ONLY_DESCRIPTION" not in app.graph.get_entity(softmax).description
+    prompts = "\n".join(app.llm.calls_for("wiki")[before:])
+    assert "REMOVED_ONLY_CLAIM" not in prompts and "REMOVED_ONLY_DESCRIPTION" not in prompts
+    assert doc_id not in page.read_text()
+    points, _ = app.vectors.client.scroll(app.vectors.wiki, limit=100, with_payload=True)
+    assert all(doc_id not in json.dumps(p.payload) for p in points)
+
+
+async def test_remove_keeps_failed_wiki_pages_dirty_for_retry(make_app, tmp_path):
+    gone, kept = tmp_path / "gone.md", tmp_path / "kept.md"
+    gone.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    kept.write_text("# Details\n\nSoftmax returns probabilities.\n")
+    app = make_app()
+    await app.pipeline.ingest([gone, kept])
+
+    def broken(task, prompt):
+        if task == "wiki":
+            raise RuntimeError("wiki unavailable")
+        return scripted_llm_handler(task, prompt)
+
+    app.llm.handler = broken
+    report = await app.pipeline.remove([gone])
+    assert report.wiki.failed == ["Softmax"]
+    assert app.registry.dirty() == [entity_id("Concept", "Softmax")]
+    app.llm.handler = scripted_llm_handler
+    assert (await app.wiki.build()).failed == []
+    assert app.registry.dirty() == []
+
+
+@pytest.mark.parametrize(
+    ("where", "method", "after_call"),
+    [
+        ("vectors", "set_doc_path", False),
+        ("registry", "drop_file", False),
+        ("graph", "set_document_path", True),
+    ],
+)
+async def test_remove_recovers_detaching_one_copy_without_deleting_shared_document(
+    make_app, tmp_path, monkeypatch, where, method, after_call
+):
+    source, copy = tmp_path / "a.md", tmp_path / "b.md"
+    source.write_text("# Notes\n\nSoftmax normalizes scores.\n")
+    shutil.copy(source, copy)
+    app = make_app()
+    await app.pipeline.ingest([source, copy])
+    doc_id = file_doc_id(source)
+    if where == "graph":
+        app.pipeline.chunks_path(doc_id).unlink()
+    _fail_once(monkeypatch, getattr(app, where), method, after_call=after_call)
+    with pytest.raises(PendingRemovalError):
+        await app.pipeline.remove([source])
+    assert app.registry.pending_removals()
+
+    await app.wiki.build(deleted=app.pipeline.finish_pending_removals())
+    assert app.registry.pending_removals() == []
+    assert app.registry.paths_for_doc(doc_id) == [str(copy)]
+    assert app.graph.has_document(doc_id) and chunk_count(app, doc_id) > 0
+    assert document_path(app, doc_id) == str(copy)
+    assert chunk_paths(app, doc_id) == {str(copy)}
+    page = (tmp_path / "wiki/entities/softmax.md").read_text()
+    assert "*b.md*" in page and "*a.md*" not in page

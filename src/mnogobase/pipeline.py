@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
@@ -16,13 +16,14 @@ from mnogobase.embedding.base import (
     signature_mismatch,
 )
 from mnogobase.extraction.extractor import TYPES_CHANGED, Extractor, stale_entity_types
-from mnogobase.extraction.resolver import EntityResolver
+from mnogobase.extraction.resolver import EntityResolver, entity_embed_input
 from mnogobase.ids import file_doc_id, normalize_name
 from mnogobase.log import bind_context, get_logger, log_stage, unbind_context
 from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput
 from mnogobase.parsing.docling_parser import DoclingParser
 from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
+from mnogobase.removal import RemovalReport, select_removals
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.builder import WikiBuilder, WikiReport
@@ -67,6 +68,8 @@ class _RemovalPlan(BaseModel):
     removed_pages: list[tuple[str, str]]  # (page_id, путь относительно wiki)
     dirty: list[str]  # оставшиеся сущности, чьи страницы нужно перегенерировать
     relinked: int  # сколько из них лишь ссылались на удалённую страницу
+    forgotten_paths: list[str] = Field(default_factory=list)
+    affected_entities: list[str] = Field(default_factory=list)
 
 
 def _holds(path: str, doc_id: str) -> bool:
@@ -208,6 +211,67 @@ class Pipeline:
         )
         return report
 
+    async def remove(
+        self,
+        paths: Sequence[Path],
+        *,
+        missing: bool = False,
+        run_id: str = "",
+        progress: ProgressSink = NULL_PROGRESS,
+    ) -> RemovalReport:
+        """Забывает зарегистрированные источники, сохраняя исходные файлы на диске.
+
+        Вызывается под ingest_lock, как ingest. Выбор идёт по registry, поэтому можно
+        передать уже удалённый файл или каталог. Оставшиеся копии сохраняют общее знание.
+        """
+        rows = select_removals(self._registry, paths, missing=missing)
+        self.prepare(resume=False)
+        deleted = self.finish_pending_removals()
+        report = RemovalReport()
+        groups: dict[str, list[str]] = {}
+        for row in rows:
+            current = self._registry.get_file(row.path)
+            if current is not None and current.doc_id == row.doc_id:
+                groups.setdefault(row.doc_id, []).append(row.path)
+        progress.files_found(sum(map(len, groups.values())))
+        for doc_id, selected in groups.items():
+            for path in selected:
+                progress.file_started(path)
+            try:
+                survivors = [p for p in self._live_copies(doc_id) if p not in selected]
+                if survivors:
+                    plan = self._removal_plan(doc_id)
+                    plan.forgotten_paths = selected
+                    self._registry.put_removal(doc_id, plan.model_dump_json())
+                    self._repoint_doc(doc_id, survivors)
+                    self._forget_paths(doc_id, selected)
+                    self._registry.drop_removal(doc_id)
+                    report.retained.append(doc_id)
+                else:
+                    # Once the last live copy is removed, stale associations must also
+                    # disappear. Persist the intent before touching any knowledge layer.
+                    deleted += self._start_removal(
+                        doc_id, forgotten_paths=self._registry.paths_for_doc(doc_id)
+                    )
+            except Exception as exc:
+                self._registry.set_meta(_UNREPORTED_REMOVALS, json.dumps(deleted))
+                progress.file_done("failed")
+                raise PendingRemovalError(
+                    f"cannot remove document {doc_id}: {type(exc).__name__}: {exc}. "
+                    "Retry remove, ingest, or wiki build after fixing the cause."
+                ) from exc
+            report.removed.extend(selected)
+            for _ in selected:
+                progress.file_done("processed")
+        report.wiki = await self._wiki.build(run_id=run_id, deleted=deleted, progress=progress)
+        self._log.info(
+            "remove_done",
+            paths=len(report.removed),
+            retained_documents=len(report.retained),
+            wiki_failed=len(report.wiki.failed),
+        )
+        return report
+
     async def _ingest_file(
         self, path: Path, retry_failed: bool, removed_names: list[str], progress: ProgressSink
     ) -> str:
@@ -297,8 +361,9 @@ class Pipeline:
         self._registry.set_meta(_UNREPORTED_REMOVALS, "[]")
         return names
 
-    def _start_removal(self, doc_id: str) -> list[str]:
+    def _start_removal(self, doc_id: str, *, forgotten_paths: Sequence[str] = ()) -> list[str]:
         plan = self._removal_plan(doc_id)
+        plan.forgotten_paths = list(forgotten_paths)
         self._registry.put_removal(doc_id, plan.model_dump_json())
         return self._apply_removal(doc_id, plan)
 
@@ -309,17 +374,24 @@ class Pipeline:
 
         Файл с этим содержимым мог появиться снова (другой путь, новый файл, откат): такие
         живые копии не должны лишиться документа. `live` — пути, где оно точно есть."""
-        survivors = self._live_copies(doc_id, live)
+        survivors = [p for p in self._live_copies(doc_id, live) if p not in plan.forgotten_paths]
         if self._graph.has_document(doc_id):
             # транзакция графа так и не закоммитилась, значит, ещё ничего не удалено
             if survivors:
                 self._repoint_doc(doc_id, survivors)
+                self._forget_paths(doc_id, plan.forgotten_paths)
                 self._registry.drop_removal(doc_id)
                 self._log.info("document_removal_dropped", old_doc_id=doc_id, kept_by=survivors)
                 return []
             # последующая работа (другие файлы того запуска) могла изменить состав удаления
-            return self._start_removal(doc_id)
+            return self._start_removal(doc_id, forgotten_paths=plan.forgotten_paths)
         return self._apply_removal(doc_id, plan, survivors)
+
+    def _forget_paths(self, doc_id: str, paths: Sequence[str]) -> None:
+        for path in paths:
+            row = self._registry.get_file(path)
+            if row is not None and row.doc_id == doc_id:
+                self._registry.drop_file(path)
 
     def _live_copies(self, doc_id: str, live: Sequence[str] = ()) -> list[str]:
         """Пути, файл по которым сейчас с этим содержимым (строки registry могут устареть)."""
@@ -340,6 +412,7 @@ class Pipeline:
             removed_pages=result.removed_pages,
             dirty=sorted((set(result.affected) | stale_linkers) - removed),
             relinked=len(stale_linkers - removed),
+            affected_entities=sorted(result.affected),
         )
 
     def _apply_removal(
@@ -362,6 +435,22 @@ class Pipeline:
         self._registry.clear_dirty(gone)
         self._vectors.delete_doc(doc_id)
         self._vectors.delete_entities(sorted(gone))
+        # Merged descriptions have no per-source provenance. Keep entity identities,
+        # but discard summaries that may depend on the removed source, in both stores.
+        for eid in plan.affected_entities:
+            record = self._graph.get_entity(eid)
+            if record is not None:
+                record = record.model_copy(update={"description": "", "descriptions": []})
+                vector = self._embedder.embed_documents([entity_embed_input(record)])[0]
+                self._vectors.upsert_entities([record], [vector])
+                self._graph.upsert_entity(record)
+        # Invalidate generated pages before LLM calls. A failed rebuild must not leave
+        # deleted claims searchable, and old prose must not seed the next generation.
+        for eid in sorted(set(plan.dirty) | revived):
+            page = self._graph.wiki_page(eid)
+            if page is not None:
+                self._vectors.delete_wiki_page(page.page_id)
+                (self._s.wiki.dir / page.path).unlink(missing_ok=True)
         # освободившийся slug может уже принадлежать странице другой сущности, записанной позже
         live_paths = {row.path for row in self._graph.wiki_pages()} if plan.removed_pages else set()
         for page_id, rel_path in plan.removed_pages:
@@ -378,6 +467,7 @@ class Pipeline:
             self._registry.clear_doc(doc_id)
             self._parser.drop_cache(doc_id)
             self.chunks_path(doc_id).unlink(missing_ok=True)
+        self._forget_paths(doc_id, plan.forgotten_paths)
         self._registry.drop_removal(doc_id)
         self._log.info(
             "document_removed",
@@ -432,10 +522,11 @@ class Pipeline:
             return
         path = survivors[0]
         self._log.info("document_repointed", old_path=sorted(recorded - {path}), path=path)
+        # Persist wiki invalidation before either path write: a server may commit and
+        # then raise, leaving no old recorded path for the retry to detect.
+        self._registry.mark_dirty(self._graph.pages_citing_document(doc_id))
         self._vectors.set_doc_path(doc_id, path)
         self._graph.set_document_path(doc_id, path)
-        # wiki-страницы, цитирующие этот документ, указывают его файл в своих Sources
-        self._registry.mark_dirty(self._graph.pages_citing_document(doc_id))
         if self.chunks_path(doc_id).exists():
             doc, chunks = self.load_chunks(doc_id)
             doc = doc.model_copy(update={"path": path})

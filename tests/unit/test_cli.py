@@ -18,6 +18,115 @@ from mnogobase.serving import ServeError
 runner = CliRunner()
 
 
+def register_source(root, name="a.md"):
+    path = root / name
+    path.write_text("source")
+    registry = Registry(root / ".mnogobase/state.db")
+    try:
+        registry.upsert_file(str(path), "d1", 6, 0, "done")
+    finally:
+        registry.close()
+    return path
+
+
+def test_remove_preview_and_decline_do_not_connect_to_services(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = register_source(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **kw: pytest.fail("preflight ran"))
+    preview = runner.invoke(cli.app, ["remove", str(source), "--dry-run"])
+    assert preview.exit_code == 0, preview.output
+    assert str(source) in preview.output and "1" in preview.output
+    declined = runner.invoke(cli.app, ["remove", str(source)], input="n\n")
+    assert declined.exit_code == 1, declined.output
+    assert source.read_text() == "source"
+    registry = Registry(tmp_path / ".mnogobase/state.db")
+    assert registry.get_file(str(source)) is not None
+    registry.close()
+
+
+@pytest.mark.parametrize("args", [["remove"], ["remove", "a.md"]])
+def test_remove_refuses_outside_project(tmp_path, monkeypatch, args):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2 and "No mnogobase project" in result.output
+    assert not (tmp_path / ".mnogobase").exists()
+
+
+def test_remove_requires_targets_and_unknown_target_is_noop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    register_source(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
+    result = runner.invoke(cli.app, ["remove", "--yes"])
+    assert result.exit_code == 2 and "--missing" in result.output
+    result = runner.invoke(cli.app, ["remove", "unknown.md", "--yes"])
+    assert result.exit_code == 0 and "No matching" in result.output
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_remove_runs_cascade_and_prints_wiki_summary(tmp_path, monkeypatch, missing):
+    from mnogobase.removal import RemovalReport
+    from mnogobase.wiki.builder import WikiReport
+
+    monkeypatch.chdir(tmp_path)
+    source = register_source(tmp_path)
+    if missing:
+        source.unlink()
+    calls, closed = [], []
+
+    async def remove(paths, **kwargs):
+        calls.append((paths, kwargs))
+        return RemovalReport(removed=[str(source)], wiki=WikiReport(updated=["Concept"]))
+
+    monkeypatch.setattr(
+        cli,
+        "build_app",
+        lambda settings: SimpleNamespace(
+            pipeline=SimpleNamespace(remove=remove), close=lambda: closed.append(True)
+        ),
+    )
+    args = ["remove", "--missing", "--yes"] if missing else ["remove", str(source), "--yes"]
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert "removed 1" in result.output and "updated 1" in result.output
+    assert calls[0][0] == ([] if missing else [source])
+    assert calls[0][1]["missing"] == missing
+    assert calls[0][1]["run_id"] and closed == [True]
+
+
+def test_remove_returns_failure_when_wiki_needs_retry(tmp_path, monkeypatch):
+    from mnogobase.removal import RemovalReport
+    from mnogobase.wiki.builder import WikiReport
+
+    monkeypatch.chdir(tmp_path)
+    source = register_source(tmp_path)
+
+    async def remove(*args, **kwargs):
+        return RemovalReport(removed=[str(source)], wiki=WikiReport(failed=["Concept"]))
+
+    monkeypatch.setattr(
+        cli,
+        "build_app",
+        lambda settings: SimpleNamespace(
+            pipeline=SimpleNamespace(remove=remove), close=lambda: None
+        ),
+    )
+    result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
+    assert result.exit_code == 1 and "failed 1" in result.output
+    assert "wiki build" in result.output
+
+
+def test_remove_obeys_writer_lock(tmp_path, monkeypatch):
+    from mnogobase.registry import ingest_lock
+
+    monkeypatch.chdir(tmp_path)
+    source = register_source(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
+    with ingest_lock(tmp_path / ".mnogobase"):
+        result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
+    assert result.exit_code == 2 and "in progress" in result.output
+
+
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
     """Юнит-тесты не ходят в сеть и не перенастраивают логирование всего процесса."""

@@ -16,6 +16,7 @@ uv run mnogobase doctor                   # check device, models, tokenizer, llm
 
 uv run mnogobase ingest tests/fixtures/   # small RU+EN sample corpus
 uv run mnogobase status | wiki build [--all] | reindex | reset [--yes]
+uv run mnogobase remove PATH... [--missing] [--dry-run] [--yes]  # forget indexed sources, preserve files
 uv run mnogobase ask "..." -m rag|wiki|graph|all
 uv run mnogobase compare "..."            # all modes side by side, appends to runs/compare.jsonl
 uv run mnogobase -c other.yaml status     # global --config goes BEFORE the subcommand
@@ -39,7 +40,7 @@ Any config key can be overridden with `MNOGOBASE_<SECTION>__<KEY>` env vars (lis
 
 **Invariants to preserve:**
 - **Deterministic IDs** (`ids.py`) make every write an idempotent upsert/`MERGE`: `doc_id = sha256(file bytes)[:16]`, `chunk_id = f"{doc_id}:{idx:05d}"`, `entity_id` from type + `normalize_name(name)`, `page_id = entity_id`, Qdrant point id = `uuid5(key)`.
-- **Write order:** vector → Qdrant → Neo4j, so a failing embedder or Qdrant never leaves the graph ahead. Removing an old version of a changed file is journaled in `pending_removals` and finished first on the next `ingest` / `wiki build`.
+- **Write order:** vector → Qdrant → Neo4j, so a failing embedder or Qdrant never leaves the graph ahead. Removing an old version or explicitly forgetting sources is journaled in `pending_removals` and finished first on the next `ingest` / `remove` / `wiki build`. Explicit removals persist `forgotten_paths`, which must never cancel removal merely because the original file still exists. Surviving copies receive updated citation paths. Affected generated wiki pages and their vectors are invalidated before rebuild; merged descriptions lacking source provenance are cleared.
 - **Embedder signature** `model_id:dim:tpl-<hash of templates>` is stored in registry `meta`. Changing the embedder model, dim or templates blocks ingest/ask until `mnogobase reindex`.
 - **Extraction cache** key is `(chunk_id, prompt_version, model)`. Bump `PROMPT_VERSION` in `extraction/extractor.py` whenever you change the meaning of `llm/prompts/extract.md`.
 - **Neo4j schema** lives in the `_SCHEMA` list in `graph_store.py` (`IF NOT EXISTS`, applied on every start). New per-document data must be handled in `_delete_document_tx` and `document_deletion_plan`.
