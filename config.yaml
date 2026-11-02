@@ -97,6 +97,8 @@ vision:
   skip: [logo, icon, qr_code, bar_code, signature, stamp]   # классы картинок без описания
 
 graph:
+  traversal: apoc                   # bounded BFS; без APOC — обычный Cypher
+  use_gds: true                      # читать готовый graph analyze; не запускать при ask
   hops: 2
   max_relations: 30
   seeds: 5

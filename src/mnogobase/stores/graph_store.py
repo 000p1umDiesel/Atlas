@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import json
+import math
 import re
+import uuid
 from dataclasses import dataclass
 from itertools import pairwise
 
-from neo4j import Driver, GraphDatabase, ManagedTransaction, NotificationDisabledClassification
+from neo4j import (
+    Driver,
+    GraphDatabase,
+    ManagedTransaction,
+    NotificationDisabledClassification,
+    Query,
+)
+from neo4j.exceptions import ClientError
 
 from mnogobase.config import Neo4jSettings
+from mnogobase.log import get_logger
 from mnogobase.models import (
     ChunkRecord,
     ChunkView,
@@ -32,17 +43,21 @@ _SCHEMA = [
     "CREATE INDEX page_slug IF NOT EXISTS FOR (p:WikiPage) ON (p.slug)",
     "CREATE INDEX chunk_doc IF NOT EXISTS FOR (c:Chunk) ON (c.doc_id)",
     "CREATE FULLTEXT INDEX entity_names IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.aliases_text]",
+    "CREATE CONSTRAINT analysis_state_key IF NOT EXISTS FOR (s:AnalysisState) REQUIRE s.key IS UNIQUE",
 ]
 _WORD = re.compile(r"\w+", re.UNICODE)
 _TEAM_ID = re.compile(r"[0-9a-f]{32}\Z")
-_NODE_LABEL = re.compile(r":(Document|Chunk|Entity|WikiPage)\b")
-_NODE_MERGE = re.compile(r"(MERGE \(\w+:(?:Document|Chunk|Entity|WikiPage) \{)")
+_NODE_LABEL = re.compile(r":(Document|Chunk|Entity|WikiPage|AnalysisState)\b")
+_NODE_MERGE = re.compile(r"(MERGE \(\w+:(?:Document|Chunk|Entity|WikiPage|AnalysisState) \{)")
 _SCHEMA_NAME = re.compile(r"\A(CREATE (?:CONSTRAINT|(?:FULLTEXT )?INDEX)) (\w+)\b")
 _PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version} AS page"
 _REL_MAP = (
     "{src_id: startNode(r).entity_id, src_name: startNode(r).name, predicate: r.predicate, "
     "dst_id: endNode(r).entity_id, dst_name: endNode(r).name, description: r.description, "
     "weight: r.weight, evidence: r.evidence}"
+)
+_INVALIDATE_ANALYSIS = (
+    "MERGE (s:AnalysisState {key: 'graph'}) SET s.revision = randomUUID(), s.run_id = null"
 )
 
 
@@ -97,21 +112,40 @@ class GraphStore:
     def verify(self) -> None:
         self._driver.verify_connectivity()
 
-    def _run(self, query: str, **params) -> list[dict]:
+    def _run(self, query: str, *, _timeout: float | None = None, **params) -> list[dict]:
         query = _scope_query(query, self._team_id)
         if self._team_id is not None:
             params["_team_id"] = self._team_id
-        records, _, _ = self._driver.execute_query(query, parameters_=params, database_=self._db)
+        statement = Query(query, timeout=_timeout) if _timeout is not None else query
+        records, _, _ = self._driver.execute_query(
+            statement, parameters_=params, database_=self._db
+        )
         return [r.data() for r in records]
+
+    def _write(self, query: str, **params) -> None:
+        """Invalidate derived scores atomically with a source mutation; lock state first."""
+        if self._team_id is not None:
+            params["_team_id"] = self._team_id
+
+        def write(tx):
+            tx.run(_scope_query(_INVALIDATE_ANALYSIS, self._team_id), **params).consume()
+            tx.run(_scope_query(query, self._team_id), **params).consume()
+
+        with self._driver.session(database=self._db) as session:
+            session.execute_write(write)
 
     # ---- схема / обслуживание ----
     def ensure_schema(self) -> None:
         for statement in _SCHEMA:
             self._run(statement)
+        self._run("MERGE (s:AnalysisState {key: 'graph'}) ON CREATE SET s.revision = randomUUID()")
         self._run("CALL db.awaitIndexes(60)")
 
     def wipe(self) -> None:
-        self._run("MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage DETACH DELETE n")
+        self._run(
+            "MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage "
+            "OR n:AnalysisState DETACH DELETE n"
+        )
 
     def counts(self) -> dict[str, int]:
         out = {
@@ -125,7 +159,7 @@ class GraphStore:
 
     # ---- документы / чанки ----
     def upsert_document(self, doc: DocumentRecord) -> None:
-        self._run(
+        self._write(
             "MERGE (d:Document {doc_id: $doc_id}) "
             "SET d.path = $path, d.title = $title, d.mime = $mime, d.n_pages = $n_pages, "
             "d.ingested_at = datetime()",
@@ -134,7 +168,7 @@ class GraphStore:
 
     def upsert_chunks(self, chunks: list[ChunkRecord]) -> None:
         rows = [c.model_dump(exclude={"context_text", "path"}) for c in chunks]
-        self._run(
+        self._write(
             "UNWIND $rows AS row "
             "MATCH (d:Document {doc_id: row.doc_id}) "
             "MERGE (c:Chunk {chunk_id: row.chunk_id}) "
@@ -144,7 +178,7 @@ class GraphStore:
         )
         pairs = [[a.chunk_id, b.chunk_id] for a, b in pairwise(chunks)]
         if pairs:
-            self._run(
+            self._write(
                 "UNWIND $pairs AS p "
                 "MATCH (a:Chunk {chunk_id: p[0]}), (b:Chunk {chunk_id: p[1]}) "
                 "MERGE (a)-[:NEXT]->(b)",
@@ -157,7 +191,7 @@ class GraphStore:
         return rows[0]["path"] if rows else None
 
     def set_document_path(self, doc_id: str, path: str) -> None:
-        self._run("MATCH (d:Document {doc_id: $id}) SET d.path = $path", id=doc_id, path=path)
+        self._write("MATCH (d:Document {doc_id: $id}) SET d.path = $path", id=doc_id, path=path)
 
     def pages_citing_document(self, doc_id: str) -> list[str]:
         """Wiki-страницы (page_id == entity_id), чьи Sources цитируют чанк этого документа."""
@@ -265,7 +299,7 @@ class GraphStore:
         return EntityRecord(**rows[0]["e"]) if rows else None
 
     def upsert_entity(self, entity: EntityRecord) -> None:
-        self._run(
+        self._write(
             "MERGE (e:Entity {entity_id: $entity_id}) "
             "SET e.name = $name, e.type = $type, e.aliases = $aliases, e.aliases_text = $aliases_text, "
             "e.description = $description, e.descriptions = $descriptions, "
@@ -289,7 +323,7 @@ class GraphStore:
     def add_mentions(self, chunk_id: str, entity_ids: list[str]) -> None:
         if not entity_ids:
             return
-        self._run(
+        self._write(
             "MATCH (c:Chunk {chunk_id: $chunk_id}) "
             "UNWIND $eids AS eid "
             "MATCH (e:Entity {entity_id: eid}) "
@@ -309,7 +343,7 @@ class GraphStore:
         strength: int,
         chunk_id: str,
     ) -> None:
-        self._run(
+        self._write(
             "MATCH (a:Entity {entity_id: $src}), (b:Entity {entity_id: $dst}) "
             "MERGE (a)-[r:RELATED {predicate: $predicate}]->(b) "
             "ON CREATE SET r.evidence = [], r.strengths = [], r.weight = 0.0, r.description = $description "
@@ -378,6 +412,254 @@ class GraphStore:
         )
         return [RelationView(**r) for r in rows]
 
+    def neighborhood_apoc(
+        self,
+        seed_ids: list[str],
+        hops: int,
+        limit: int,
+        *,
+        max_nodes: int = 20_000,
+        timeout: float = 5.0,
+    ) -> list[RelationView]:
+        if not seed_ids or limit <= 0:
+            return []
+        count = self._run("MATCH (e:Entity) RETURN count(e) AS n")[0]["n"]
+        if count > max_nodes:
+            get_logger(__name__).info("apoc_fallback", reason="node_budget", nodes=count)
+            return self.neighborhood(seed_ids, hops, limit)
+        try:
+            rows = self._run(
+                "MATCH (n:Entity) WITH collect(n) AS allowed "
+                "UNWIND $seeds AS sid MATCH (s:Entity {entity_id: sid}) "
+                "CALL apoc.path.expandConfig(s, {relationshipFilter:'RELATED', "
+                "labelFilter:$label_filter, allowlistNodes:allowed, filterStartNode:true, "
+                "minLevel:0, maxLevel:$hops, bfs:true, uniqueness:'NODE_GLOBAL', limit:5000}) "
+                "YIELD path WITH path LIMIT 5000 "
+                "WITH collect(DISTINCT last(nodes(path))) AS reached "
+                "UNWIND reached AS a MATCH (a)-[r:RELATED]-(b:Entity) WHERE b IN reached "
+                "WITH DISTINCT r WITH r, startNode(r) AS a, endNode(r) AS b "
+                "RETURN a.entity_id AS src_id, a.name AS src_name, r.predicate AS predicate, "
+                "b.entity_id AS dst_id, b.name AS dst_name, r.description AS description, "
+                "r.weight AS weight, r.evidence AS evidence "
+                "ORDER BY weight DESC, src_id, predicate, dst_id LIMIT $limit",
+                seeds=seed_ids,
+                hops=max(1, min(int(hops), 3)),
+                limit=limit,
+                label_filter=f"+{self.entity_label}",
+                _timeout=timeout,
+            )
+        except ClientError as exc:
+            if exc.code != "Neo.ClientError.Procedure.ProcedureNotFound":
+                raise
+            get_logger(__name__).warning("apoc_fallback", reason="procedure_missing")
+            return self.neighborhood(seed_ids, hops, limit)
+        return [RelationView(**r) for r in rows]
+
+    # ---- производная аналитика (не меняет IDs и evidence) ----
+    @property
+    def entity_label(self) -> str:
+        return f"mb_team_{self._team_id}_Entity" if self._team_id else "Entity"
+
+    @property
+    def analysis_scope(self) -> str:
+        return self._team_id or "legacy"
+
+    def analysis_status(self) -> dict:
+        rows = self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) "
+            "RETURN s.revision AS revision, s.run_id AS run_id, s.metadata AS metadata, "
+            "toString(s.completed_at) AS completed_at"
+        )
+        state = rows[0] if rows else {"revision": None, "run_id": None}
+        metadata = json.loads(state.pop("metadata", None) or "{}")
+        return {**state, "ready": bool(state["run_id"]), "metadata": metadata}
+
+    def analysis_scores(self, entity_ids: list[str]) -> dict[str, float]:
+        rows = self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
+            "MATCH (e:Entity) WHERE e.entity_id IN $ids AND e.analytics_run_id = s.run_id "
+            "RETURN e.entity_id AS id, e.analytics_pagerank AS score",
+            ids=entity_ids,
+        )
+        return {r["id"]: r["score"] for r in rows}
+
+    def analysis_details(self, limit: int = 20) -> list[dict]:
+        return self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
+            "MATCH (e:Entity) WHERE e.analytics_run_id = s.run_id "
+            "RETURN e.entity_id AS entity_id, e.name AS name, "
+            "e.analytics_pagerank AS pagerank, e.analytics_community AS community "
+            "ORDER BY pagerank DESC, entity_id LIMIT $limit",
+            limit=max(1, min(limit, 100)),
+        )
+
+    def plugin_status(self) -> dict:
+        procedures = {
+            "apoc.path.expandConfig",
+            "gds.graph.project",
+            "gds.graph.project.estimate",
+            "gds.graph.list",
+            "gds.graph.drop",
+            "gds.pageRank.stream",
+            "gds.pageRank.stream.estimate",
+            "gds.leiden.stream",
+            "gds.leiden.stream.estimate",
+        }
+        available = {
+            r["name"]
+            for r in self._run(
+                "SHOW PROCEDURES YIELD name WHERE name IN $names RETURN name",
+                names=sorted(procedures),
+            )
+        }
+        functions = {
+            r["name"]
+            for r in self._run(
+                "SHOW FUNCTIONS YIELD name WHERE name IN $names RETURN name",
+                names=["apoc.version", "gds.version", "gds.util.asNode"],
+            )
+        }
+        return {
+            "apoc": self._run("RETURN apoc.version() AS version")[0]["version"]
+            if "apoc.version" in functions
+            else None,
+            "gds": self._run("RETURN gds.version() AS version")[0]["version"]
+            if "gds.version" in functions
+            else None,
+            "missing": sorted((procedures - available) | ({"gds.util.asNode"} - functions)),
+        }
+
+    def analysis_counts(self) -> dict:
+        nodes = self._run("MATCH (e:Entity) RETURN count(e) AS n")[0]["n"]
+        relationships = self._run(
+            "MATCH (:Entity)-[r:RELATED]->(:Entity) "
+            "RETURN count(r) AS relationships, sum(CASE WHEN r.weight > 0 "
+            "AND r.weight <= 1.7976931348623157e308 THEN 0 ELSE 1 END) AS invalid_weights"
+        )[0]
+        return {"nodes": nodes, **relationships}
+
+    def gds_project_estimate(self, timeout: float) -> int:
+        return int(
+            self._run(
+                "CALL gds.graph.project.estimate($label, "
+                "{RELATED:{orientation:'UNDIRECTED', properties:'weight'}}, "
+                "{readConcurrency:1, validateRelationships:false}) "
+                "YIELD bytesMax RETURN bytesMax AS bytes",
+                label=self.entity_label,
+                _timeout=timeout,
+            )[0]["bytes"]
+        )
+
+    def gds_project(self, name: str, timeout: float) -> None:
+        self._run(
+            "CALL gds.graph.project($name, $label, "
+            "{RELATED:{orientation:'UNDIRECTED', properties:'weight'}}, "
+            "{readConcurrency:1, validateRelationships:false}) YIELD graphName RETURN graphName",
+            name=name,
+            label=self.entity_label,
+            _timeout=timeout,
+        )
+
+    def gds_algorithm_estimate(self, name: str, algorithm: str, timeout: float) -> int:
+        if algorithm not in {"pageRank", "leiden"}:
+            raise ValueError("Unsupported graph algorithm")
+        return int(
+            self._run(
+                f"CALL gds.{algorithm}.stream.estimate($name, "
+                "{relationshipWeightProperty:'weight', concurrency:1}) "
+                "YIELD bytesMax RETURN bytesMax AS bytes",
+                name=name,
+                _timeout=timeout,
+            )[0]["bytes"]
+        )
+
+    def gds_pagerank(self, name: str, timeout: float) -> list[dict]:
+        return self._run(
+            "CALL gds.pageRank.stream($name, {relationshipWeightProperty:'weight', "
+            "concurrency:1, maxIterations:20, dampingFactor:0.85}) "
+            "YIELD nodeId, score RETURN gds.util.asNode(nodeId).entity_id AS entity_id, "
+            "score AS pagerank",
+            name=name,
+            _timeout=timeout,
+        )
+
+    def gds_leiden(self, name: str, timeout: float) -> list[dict]:
+        return self._run(
+            "CALL gds.leiden.stream($name, {relationshipWeightProperty:'weight', "
+            "concurrency:1, randomSeed:42}) YIELD nodeId, communityId "
+            "RETURN gds.util.asNode(nodeId).entity_id AS entity_id, communityId AS community_id",
+            name=name,
+            _timeout=timeout,
+        )
+
+    def owned_projections(self) -> list[str]:
+        return [
+            r["name"]
+            for r in self._run(
+                "CALL gds.graph.list() YIELD graphName "
+                "WHERE graphName STARTS WITH $prefix RETURN graphName AS name",
+                prefix=f"mb_analysis_{self.analysis_scope}_",
+            )
+        ]
+
+    def drop_projection(self, name: str) -> None:
+        if not name.startswith(f"mb_analysis_{self.analysis_scope}_"):
+            raise ValueError("Cannot drop another scope's projection")
+        self._run("CALL gds.graph.drop($name, false) YIELD graphName RETURN graphName", name=name)
+
+    def clear_analysis(self) -> None:
+        self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) SET s.run_id = null, s.metadata = null, "
+            "s.completed_at = null"
+        )
+        self._run(
+            "MATCH (e:Entity) REMOVE e.analytics_run_id, e.analytics_pagerank, e.analytics_community"
+        )
+
+    def publish_analysis(self, revision: str, rows: list[dict], metadata: dict) -> bool:
+        if len({r["entity_id"] for r in rows}) != len(rows) or any(
+            not math.isfinite(r["pagerank"]) or r["pagerank"] < 0 or not r["community"]
+            for r in rows
+        ):
+            raise ValueError("Analysis requires complete, unique, finite scores")
+        run_id = uuid.uuid4().hex
+
+        def publish(tx):
+            def run(query, **params):
+                if self._team_id:
+                    params["_team_id"] = self._team_id
+                return tx.run(_scope_query(query, self._team_id), **params)
+
+            # Taking a write lock before reading the revision serializes with source writes.
+            state = run(
+                "MATCH (s:AnalysisState {key: 'graph'}) "
+                "SET s.publications = coalesce(s.publications, 0) + 1 RETURN s.revision AS revision"
+            ).single()
+            if state is None or state["revision"] != revision:
+                return False
+            count = run("MATCH (e:Entity) RETURN count(e) AS n").single()["n"]
+            if count != len(rows):
+                raise ValueError("Analysis must contain the complete entity set")
+            written = run(
+                "UNWIND $rows AS row MATCH (e:Entity {entity_id: row.entity_id}) "
+                "SET e.analytics_run_id = $run, e.analytics_pagerank = row.pagerank, "
+                "e.analytics_community = row.community RETURN count(e) AS n",
+                rows=rows,
+                run=run_id,
+            ).single()["n"]
+            if written != count:
+                raise ValueError("Analysis must contain the complete entity set")
+            run(
+                "MATCH (s:AnalysisState {key: 'graph'}) SET s.run_id = $run, "
+                "s.metadata = $metadata, s.completed_at = datetime()",
+                run=run_id,
+                metadata=json.dumps(metadata, ensure_ascii=False),
+            ).consume()
+            return True
+
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(publish)
+
     # ---- wiki-страницы ----
     def upsert_wiki_page(
         self, page: WikiPageRecord, entity_id: str, links_to: list[str], cites: list[str]
@@ -443,8 +725,11 @@ def _delete_document_tx(
     tx: ManagedTransaction, doc_id: str, team_id: str | None = None
 ) -> DeleteResult:
     def run(query: str, **params):
+        if team_id:
+            params["_team_id"] = team_id
         return tx.run(_scope_query(query, team_id), **params)
 
+    run(_INVALIDATE_ANALYSIS).consume()
     found = run(
         "MATCH (d:Document {doc_id: $doc_id}) "
         "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "

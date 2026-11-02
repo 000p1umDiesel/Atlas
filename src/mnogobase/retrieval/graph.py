@@ -50,7 +50,22 @@ class GraphRetriever:
                         text=f"{entity.name} ({entity.type}): {entity.description}",
                     )
                 )
-        relations = self._graph.neighborhood(seeds, self._s.hops, self._s.max_relations)
+        if self._s.traversal == "apoc":
+            relations = self._graph.neighborhood_apoc(
+                seeds,
+                self._s.hops,
+                self._s.max_relations,
+                max_nodes=self._s.analysis.apoc_max_nodes,
+                timeout=self._s.analysis.apoc_timeout_s,
+            )
+        else:
+            relations = self._graph.neighborhood(seeds, self._s.hops, self._s.max_relations)
+        if self._s.use_gds and relations:
+            entity_ids = list(dict.fromkeys(eid for r in relations for eid in (r.src_id, r.dst_id)))
+            scores = self._graph.analysis_scores(entity_ids)
+            if len(scores) == len(entity_ids):
+                # Stable ties retain the traversal's previous order. Scores never add candidates.
+                relations.sort(key=lambda r: (-r.weight, -(scores[r.src_id] + scores[r.dst_id])))
         for r in relations:
             text = f"{r.src_name} —{r.predicate}→ {r.dst_name}"
             if r.description:

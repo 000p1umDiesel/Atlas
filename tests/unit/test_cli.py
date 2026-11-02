@@ -18,6 +18,25 @@ from mnogobase.serving import ServeError
 runner = CliRunner()
 
 
+def test_graph_status_needs_no_models_or_qdrant(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    register_source(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models app was built"))
+    from mnogobase.stores.graph_store import GraphStore
+
+    closed = []
+    store = SimpleNamespace(
+        analysis_status=lambda: {"ready": False, "revision": "test", "run_id": None},
+        analysis_details=lambda: [],
+        close=lambda: closed.append(True),
+    )
+    monkeypatch.setattr(GraphStore, "from_settings", lambda *a: store)
+    result = runner.invoke(cli.app, ["graph", "status"])
+    assert result.exit_code == 0, result.output
+    assert '"ready": false' in result.output
+    assert closed == [True]
+
+
 def register_source(root, name="a.md"):
     path = root / name
     path.write_text("source")

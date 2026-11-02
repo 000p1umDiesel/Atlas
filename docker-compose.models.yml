@@ -11,6 +11,13 @@ x-gpu: &gpu
       reservations:
         devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
   restart: unless-stopped
+  logging:
+    driver: local
+    options:
+      mode: non-blocking
+      max-buffer-size: "1m"  # буфер в RAM; при переполнении новые записи пропускаются
+      max-size: "10m"
+      max-file: "3"
 
 x-llamacpp: &llamacpp
   <<: *gpu

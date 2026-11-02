@@ -340,11 +340,23 @@ class VisionSettings(ServedModel):
         return value
 
 
+class GraphAnalysisSettings(BaseModel):
+    max_nodes: PositiveInt = 100_000
+    max_relationships: PositiveInt = 500_000
+    memory_mb: PositiveInt = 1536
+    timeout_s: float = Field(default=120.0, gt=0, allow_inf_nan=False)
+    apoc_max_nodes: PositiveInt = 20_000
+    apoc_timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+
+
 class GraphSettings(BaseModel):
     hops: int = 2
     max_relations: int = 30
     seeds: int = 5
     seed_threshold: float = 0.3  # мин. косинус для seed-сущностей по запросу
+    traversal: Literal["cypher", "apoc"] = "cypher"
+    use_gds: bool = False
+    analysis: GraphAnalysisSettings = Field(default_factory=GraphAnalysisSettings)
 
 
 class QdrantSettings(BaseModel):

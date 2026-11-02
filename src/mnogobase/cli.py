@@ -12,6 +12,7 @@ from typing import Annotated, cast
 import filelock
 import typer
 import yaml
+from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -44,6 +45,8 @@ from mnogobase.database_cli import app as database_app
 from mnogobase.doctor import Check, run_checks
 from mnogobase.evaluation.cli import app as evaluation_app
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
+from mnogobase.graph_analysis import AnalysisError
+from mnogobase.graph_analysis import analyze as analyze_graph
 from mnogobase.log import configure_logging, new_run_id
 from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
@@ -73,6 +76,7 @@ from mnogobase.serving import (
     served_roles,
     server_args,
 )
+from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.wiki.builder import WikiReport
 
@@ -100,6 +104,8 @@ app.add_typer(evaluation_app, name="eval")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(worker_app, name="worker")
 app.add_typer(database_app, name="database")
+graph_app = typer.Typer(no_args_is_help=True, help="Graph analysis with APOC/GDS.")
+app.add_typer(graph_app, name="graph")
 models_app = typer.Typer(
     no_args_is_help=True,
     help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",
@@ -243,6 +249,86 @@ def _fail_cleanly(exc: Exception) -> None:
     """Известная ошибка, которую можно исправить: её сообщение, exit 2, без traceback."""
     console.print(f"[red]{escape(str(exc))}[/red]")
     raise typer.Exit(2) from exc
+
+
+@contextmanager
+def _graph_writer(settings: Settings):
+    # Global GDS gate precedes the existing worker/corpus locks; never reverse this order.
+    try:
+        with database_lock(
+            settings, "graph-analysis", settings.service.root / "graph-analysis.lock", service=True
+        ):
+            lock = _lock(settings)
+            try:
+                yield
+            finally:
+                lock.release()
+    except filelock.Timeout:
+        _fail_cleanly(AnalysisError("Another graph analysis is in progress"))
+
+
+@graph_app.command("analyze")
+def graph_analyze(
+    estimate: Annotated[bool, typer.Option("--estimate", help="Estimate projection only.")] = False,
+) -> None:
+    """Run weighted PageRank and Leiden without models or LLM calls."""
+    settings = _settings(project=True)
+    _preflight(settings, ("neo4j",))
+    graph = GraphStore.from_settings(settings.neo4j)
+    try:
+        with _graph_writer(settings):
+            graph.ensure_schema()
+            if not estimate:
+                for name in graph.owned_projections():
+                    graph.drop_projection(name)
+            report = analyze_graph(graph, settings.graph.analysis, estimate_only=estimate)
+            console.print_json(data=report)
+    except (AnalysisError, Neo4jError, ServiceUnavailable, SessionExpired, ValueError) as exc:
+        _fail_cleanly(exc)
+    finally:
+        graph.close()
+
+
+@graph_app.command("status")
+def graph_status() -> None:
+    """Show snapshot freshness and a bounded list of central entities/communities."""
+    settings = _settings(project=True)
+    _preflight(settings, ("neo4j",))
+    graph = GraphStore.from_settings(settings.neo4j)
+    try:
+        with _read_lock(settings):
+            console.print_json(
+                data={**graph.analysis_status(), "entities": graph.analysis_details()}
+            )
+    except (Neo4jError, ServiceUnavailable, SessionExpired, ValueError) as exc:
+        _fail_cleanly(exc)
+    finally:
+        graph.close()
+
+
+@graph_app.command("clear")
+def graph_clear(
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
+) -> None:
+    """Remove derived scores and owned temporary projections; preserve source knowledge."""
+    settings = _settings(project=True)
+    if not yes:
+        typer.confirm(
+            "Clear graph analytics? Source documents and knowledge are preserved.", abort=True
+        )
+    _preflight(settings, ("neo4j",))
+    graph = GraphStore.from_settings(settings.neo4j)
+    try:
+        with _graph_writer(settings):
+            graph.clear_analysis()
+            if graph.plugin_status()["gds"]:
+                for name in graph.owned_projections():
+                    graph.drop_projection(name)
+        console.print("Graph analytics cleared.")
+    except (Neo4jError, ServiceUnavailable, SessionExpired, ValueError) as exc:
+        _fail_cleanly(exc)
+    finally:
+        graph.close()
 
 
 def _where(path: str | None, page: int | None, ref: str) -> str:

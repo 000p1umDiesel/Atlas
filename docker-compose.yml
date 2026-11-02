@@ -2,43 +2,72 @@ services:
   postgres:
     image: postgres:18
     mem_limit: 1g
+    memswap_limit: 1g  # RAM + swap; равенство mem_limit запрещает swap
     cpus: 1.0
     ports: ["127.0.0.1:5432:5432"]
     environment:
       POSTGRES_DB: mnogobase
       POSTGRES_USER: mnogobase
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mnogobase-dev}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
     volumes: ["postgres_data:/var/lib/postgresql"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mnogobase -d mnogobase"]
       interval: 5s
+      timeout: 5s
       retries: 12
+      start_period: 20s
+    logging:
+      driver: local
+      options:
+        mode: non-blocking
+        max-buffer-size: "1m"  # буфер в RAM; при переполнении новые записи пропускаются
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:v1.19.2
     mem_limit: 2g
+    memswap_limit: 2g
     cpus: 1.5
     ports: ["127.0.0.1:6333:6333"]  # HTTP; приложение не использует gRPC :6334
     volumes: ["qdrant_data:/qdrant/storage"]
+    logging:
+      driver: local
+      options:
+        mode: non-blocking
+        max-buffer-size: "1m"
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   neo4j:
     image: neo4j:5.26-community
-    mem_limit: 4g
-    cpus: 2.0
+    mem_limit: 8g
+    memswap_limit: 8g
+    cpus: 4.0
     ports: ["127.0.0.1:7474:7474", "127.0.0.1:7687:7687"]  # Browser и Bolt
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-mnogobase-dev}
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}"
+      # APOC: ограниченный обход; GDS: отдельный graph analyze (PageRank + Leiden).
       NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
       NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
-      NEO4J_server_memory_heap_max__size: 2G
-      NEO4J_server_memory_pagecache_size: 1G  # без него Neo4j берёт ~половину RAM хоста
+      NEO4J_server_memory_heap_max__size: 4G
+      NEO4J_server_memory_pagecache_size: 2G
     volumes: ["neo4j_data:/data"]
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:7474/ || exit 1"]
       interval: 10s
-      retries: 12
+      timeout: 10s
+      retries: 18
+      start_period: 90s
+    logging:
+      driver: local
+      options:
+        mode: non-blocking
+        max-buffer-size: "1m"
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
 volumes:

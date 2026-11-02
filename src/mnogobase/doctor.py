@@ -31,6 +31,7 @@ CHECKS: tuple[str, ...] = (
     "llm",
     "qdrant",
     "neo4j",
+    "graph_plugins",
     "index",
     "types",
 )
@@ -190,6 +191,18 @@ def run_checks(
             graph.close()
         return Check("neo4j", True, settings.neo4j.uri)
 
+    def graph_plugins() -> Check:
+        graph = GraphStore.from_settings(settings.neo4j)
+        try:
+            status = graph.plugin_status()
+        finally:
+            graph.close()
+        detail = f"APOC {status['apoc'] or 'unavailable'}, GDS {status['gds'] or 'unavailable'}"
+        if status["missing"]:
+            detail += "; missing: " + ", ".join(status["missing"])
+        # Plugins are optional for ordinary ingest/rag/wiki; graph analyze checks strictly.
+        return Check("graph_plugins", True, detail, warn=bool(status["missing"]))
+
     def index() -> Check:
         db = database_target(settings)
         if not target_exists(db):
@@ -228,6 +241,7 @@ def run_checks(
         "llm": llm,
         "qdrant": qdrant,
         "neo4j": neo4j,
+        "graph_plugins": graph_plugins,
         "index": index,
         "types": types,
     }

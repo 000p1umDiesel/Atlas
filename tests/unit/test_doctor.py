@@ -13,6 +13,21 @@ from mnogobase.registry import Registry
 from mnogobase.stores.qdrant_store import QdrantStore
 
 
+def test_plugin_check_reports_missing_optional_procedures(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mnogobase.stores.graph_store import GraphStore
+
+    store = SimpleNamespace(
+        plugin_status=lambda: {"apoc": None, "gds": None, "missing": ["gds.leiden.stream"]},
+        close=lambda: None,
+    )
+    monkeypatch.setattr(GraphStore, "from_settings", lambda *a: store)
+    [check] = run_checks(make_settings(tmp_path), only=["graph_plugins"])
+    assert check.ok and check.warn
+    assert "gds.leiden.stream" in check.detail
+
+
 def make_settings(tmp_path, **update) -> Settings:
     # dim задан явно: при `auto` проверки спросили бы его у сервера эмбеддера
     embedder = EmbedderSettings(dim=2560)
