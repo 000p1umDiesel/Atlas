@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
+from mnogobase.database import (
+    database_target,
+    mark_project,
+)
 from mnogobase.device import detect_device
 from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
@@ -69,7 +73,8 @@ def build_app(
 ) -> App:
     owned_clients: list[object] = []
     device = detect_device(settings.device)
-    registry = Registry(settings.data_dir / "state.db")
+    registry = Registry(database_target(settings))
+    mark_project(settings)
     owned_embedder, owned_vectors, owned_llm = embedder is None, vectors is None, llm is None
     embedder = embedder or OpenAICompatEmbedder(settings.embedder)
     sparse = sparse or BM25Encoder(settings.sparse.model, device=device)

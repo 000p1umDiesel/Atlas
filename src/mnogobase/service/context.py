@@ -33,4 +33,5 @@ def team_settings(base: Settings, team_id: str) -> Settings:
     scoped.logs_dir = root / "logs"
     scoped.qdrant.prefix = f"mb_team_{team_id}_"
     scoped.neo4j.team_id = team_id
+    scoped.database.project = f"team_{team_id}"
     return scoped

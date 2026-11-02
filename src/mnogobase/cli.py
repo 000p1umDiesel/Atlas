@@ -27,10 +27,20 @@ from rich.progress import (
 )
 from rich.table import Table
 from rich.text import Text
+from sqlalchemy.exc import DBAPIError
+from typer.core import TyperGroup
 
 from mnogobase.app import App, build_app
 from mnogobase.background.cli import jobs_app, worker_app
 from mnogobase.config import Settings, load_settings
+from mnogobase.database import (
+    DatabaseError,
+    DatabaseTarget,
+    database_lock,
+    database_target,
+    project_exists,
+)
+from mnogobase.database_cli import app as database_app
 from mnogobase.doctor import Check, run_checks
 from mnogobase.evaluation.cli import app as evaluation_app
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
@@ -66,12 +76,30 @@ from mnogobase.serving import (
 from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.wiki.builder import WikiReport
 
-app = typer.Typer(no_args_is_help=True, help="mnogobase — LLM Wiki core: ingest, wiki, retrieval.")
+
+class DatabaseSafeGroup(TyperGroup):
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except DatabaseError as exc:
+            _fail_cleanly(exc)
+        except DBAPIError:
+            _fail_cleanly(
+                DatabaseError("Database operation failed; check PostgreSQL and schema version")
+            )
+
+
+app = typer.Typer(
+    cls=DatabaseSafeGroup,
+    no_args_is_help=True,
+    help="mnogobase — LLM Wiki core: ingest, wiki, retrieval.",
+)
 wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
 app.add_typer(wiki_app, name="wiki")
 app.add_typer(evaluation_app, name="eval")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(worker_app, name="worker")
+app.add_typer(database_app, name="database")
 models_app = typer.Typer(
     no_args_is_help=True,
     help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",
@@ -119,7 +147,7 @@ def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
 
         try:
             team_id = str(_state["team"])
-            ServiceStore(settings.service.root / "service.db").get_team(team_id)
+            ServiceStore(database_target(settings, "service")).get_team(team_id)
             settings = team_settings(settings, team_id)
         except ServiceError as exc:
             _fail_cleanly(exc)
@@ -142,16 +170,16 @@ def _preflight(
         raise typer.Exit(2)
 
 
-def _state_db(settings: Settings) -> Path:
-    return settings.data_dir / "state.db"
+def _state_db(settings: Settings) -> Path | DatabaseTarget:
+    return database_target(settings)
 
 
 def _require_project(settings: Settings, code: int = 2) -> None:
     """Выход с `code` вне проекта: команды, которые только читают, не должны создавать
     state.db."""
-    if not _state_db(settings).is_file():
+    if not project_exists(settings):
         console.print(
-            f"No mnogobase project here (no {escape(str(_state_db(settings).resolve()))}). "
+            f"No mnogobase project here (no {escape(str(_state_db(settings)))}). "
             "Run `mnogobase ingest` first, or pass the project's --config.",
             soft_wrap=True,
         )
@@ -169,8 +197,12 @@ def _lock(settings: Settings) -> filelock.FileLock | _WriterLocks:
         try:
             settings.service.root.mkdir(parents=True, exist_ok=True)
             # Same acquisition order as TeamService.work_once: global worker, then corpus.
-            locks.enter_context(filelock.FileLock(settings.service.root / "worker.lock", timeout=0))
-            locks.enter_context(ingest_lock(settings.data_dir))
+            locks.enter_context(
+                database_lock(
+                    settings, "worker", settings.service.root / "worker.lock", service=True
+                )
+            )
+            locks.enter_context(ingest_lock(settings.data_dir, target=database_target(settings)))
         except filelock.Timeout:
             locks.release()
             console.print("[red]Another service worker or team writer is in progress.[/red]")
@@ -179,7 +211,7 @@ def _lock(settings: Settings) -> filelock.FileLock | _WriterLocks:
             locks.release()
             raise
         return locks
-    lock = ingest_lock(settings.data_dir)
+    lock = ingest_lock(settings.data_dir, target=database_target(settings))
     try:
         lock.acquire()
     except filelock.Timeout:
@@ -195,7 +227,7 @@ def _read_lock(settings: Settings):
     if settings.neo4j.team_id is None:
         yield
         return
-    lock = ingest_lock(settings.data_dir)
+    lock = ingest_lock(settings.data_dir, target=database_target(settings))
     try:
         lock.acquire()
     except filelock.Timeout:
@@ -662,7 +694,7 @@ def _reset_targets(settings: Settings) -> list[str]:
     return [
         f"Neo4j {settings.neo4j.uri}: all nodes in the default database",
         f"Qdrant {settings.qdrant.url}: collections with prefix {settings.qdrant.prefix!r}",
-        f"state and caches in {settings.data_dir.resolve()}",
+        f"registry in {_state_db(settings)}; file caches in {settings.data_dir.resolve()}",
         f"wiki pages in {wiki_dir}: entities/, index.md, log.md",
     ]
 
@@ -674,10 +706,10 @@ def reset(
     """Удалить ВСЕ векторы, данные графа, состояние registry, кэши и страницы wiki."""
     settings = _settings()
     state_db = _state_db(settings)
-    if not state_db.is_file():
+    if not project_exists(settings):
         # --yes это не обходит: неверный CWD или конфиг не должен стереть чужие данные
         console.print(
-            f"[red]No mnogobase project here: {escape(str(state_db.resolve()))} does not exist.[/red] "
+            f"[red]No mnogobase project here: {escape(str(state_db))} does not exist.[/red] "
             "Run reset from the project directory or pass its --config.",
             soft_wrap=True,
         )

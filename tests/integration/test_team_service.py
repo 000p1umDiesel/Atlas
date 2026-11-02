@@ -12,6 +12,7 @@ import pytest
 from mnogobase.app import build_app
 from mnogobase.background.queue import JobQueue
 from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.ids import entity_id
 from mnogobase.service.context import team_settings
 from mnogobase.service.errors import ServiceError
@@ -24,8 +25,8 @@ pytestmark = pytest.mark.integration
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
-@pytest.fixture
-def team_service(tmp_path, neo4j_container, qdrant_client):
+@pytest.fixture(params=["sqlite", "postgresql"])
+def team_service(tmp_path, neo4j_container, qdrant_client, request):
     settings = Settings(
         device="cpu",
         service={"root": tmp_path / "service"},
@@ -35,6 +36,8 @@ def team_service(tmp_path, neo4j_container, qdrant_client):
         vision={"enabled": False},
         wiki={"min_mentions": 1},
     )
+    if request.param == "postgresql":
+        settings.database = request.getfixturevalue("pg_settings").database
     operations = []
     llms = []
 
@@ -191,7 +194,7 @@ async def test_worker_recovers_running_jobs_and_rotates_teams(team_service):
                 f"paper-{index}.md",
                 f"# Transformer {index}\n\nTransformer uses attention and softmax.\n".encode(),
             )
-    path = team_settings(env.settings, a.team_id).data_dir / "jobs.db"
+    path = database_target(team_settings(env.settings, a.team_id), "jobs")
     queue = JobQueue(path)
     try:
         interrupted = queue.claim()

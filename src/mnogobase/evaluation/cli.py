@@ -14,6 +14,7 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from mnogobase.database import database_target
 from mnogobase.processing import corpus_snapshot, measured_ingest
 from mnogobase.registry import ingest_lock
 from mnogobase.retrieval import Mode
@@ -102,7 +103,7 @@ def run(
     try:
         load_questions(dataset)  # reject invalid input before any services/configuration
         settings = cli._settings(project=True)
-        with _lock(output), ingest_lock(settings.data_dir):
+        with _lock(output), ingest_lock(settings.data_dir, target=database_target(settings)):
             cli._preflight(settings)
             application = cli.build_app(settings)
             try:

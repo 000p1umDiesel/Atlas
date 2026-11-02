@@ -7,6 +7,7 @@ from typing import Literal
 
 import typer
 
+from mnogobase.database import database_target
 from mnogobase.service.client import register_client
 from mnogobase.service.errors import ServiceError
 from mnogobase.service.store import ServiceStore
@@ -21,7 +22,7 @@ def _settings():
 
 
 def _store() -> ServiceStore:
-    return ServiceStore(_settings().service.root / "service.db")
+    return ServiceStore(database_target(_settings(), "service"))
 
 
 def _print(value) -> None:

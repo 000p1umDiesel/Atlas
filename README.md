@@ -69,7 +69,7 @@ flowchart TB
     GRAPH --> BUILD
     WIKI --> INDEX["Qdrant · поиск по разделам wiki<br/>Neo4j · связи страниц и цитаты"]
     WIKI --> OBSIDIAN["Obsidian<br/>чтение и граф страниц"]
-    INPUT -. "этапы и кэш" .-> STATE[("SQLite · state.db<br/>прогресс и возобновление")]
+    INPUT -. "этапы и кэш" .-> STATE[("PostgreSQL<br/>прогресс и возобновление")]
 
     classDef source fill:#eff6ff,stroke:#2563eb,color:#172554
     classDef rag fill:#ecfdf5,stroke:#059669,color:#064e3b
@@ -94,7 +94,7 @@ flowchart TB
 | Разбор и чанкинг | Docling `DocumentConverter` и `HybridChunker` | структурный и токен-осознанный чанкинг, много форматов, OCR |
 | Эмбеддер и реранкер | в `config.yaml` — Qwen3-Embedding-0.6B и Qwen3-Reranker-0.6B на llama.cpp; размерность эмбеддингов определяется автоматически | модели и бэкенды меняются через настройки; llama.cpp работает нативно на Mac или в Docker с CUDA на сервере; доступен и vLLM |
 | LLM | один клиент для любого OpenAI-совместимого API | llama.cpp, vLLM, LM Studio, OpenRouter, OpenAI и прокси подключаются правкой конфига. Структурированный вывод через строгую JSON Schema |
-| Состояние | SQLite `.mnogobase/state.db` | файлы, этапы, ошибки, кэш извлечения, очередь wiki; на нём держатся возобновление и инкрементальность |
+| Состояние | PostgreSQL (SQLite — явно выбранный legacy backend) | файлы, этапы, ошибки, кэш извлечения, очередь wiki; на нём держатся возобновление и инкрементальность |
 | Интерфейс | пакет и CLI на Typer | UI, API и MCP можно навесить поверх того же пакета |
 | Язык wiki | английский по умолчанию | канонические английские имена сущностей склеивают русские и английские упоминания |
 | Логи | structlog: консоль и JSONL-файл | формат готов для Loki/Grafana и трейсинга |
@@ -142,7 +142,7 @@ cp .env.example .env
 #    NEO4J_PASSWORD=mnogobase-dev соответствует локальному Compose
 #    вне Mac добавьте MNOGOBASE_DEVICE=auto: в config.yaml задано mps
 
-# 2. Базы данных: Qdrant (:6333) и Neo4j (:7474, :7687)
+# 2. Базы данных: PostgreSQL (:5432), Qdrant (:6333), Neo4j (:7474, :7687)
 docker compose up -d
 
 # 3. Python-зависимости (пакет ставится в .venv в режиме редактирования)
@@ -278,7 +278,7 @@ uv run mnogobase ingest documents/
 | `parse` | Docling разбирает файл: текст, заголовки, таблицы, OCR для сканов и скриншотов; при `vision.enabled` графики, схемы и скриншоты описывает VLM, описание становится текстом документа | `.mnogobase/cache/<doc_id>.json`, картинки и `images.json` в `.mnogobase/cache/<doc_id>/images/` |
 | `chunk` | HybridChunker режет документ по структуре на чанки до `chunking.max_tokens` (512) токенов | `.mnogobase/cache/<doc_id>.chunks.json` |
 | `embed` | каждый чанк (с заголовками раздела) → плотный вектор Qwen3-Embedding и BM25 | Qdrant `mb_chunks`; узлы `Document`, `Chunk`, связи `HAS_CHUNK`, `NEXT` в Neo4j |
-| `extract` | LLM достаёт из каждого чанка сущности и связи (параллельно, до `llm.concurrency` запросов) | кэш в `.mnogobase/state.db` (`extraction_cache`) |
+| `extract` | LLM достаёт из каждого чанка сущности и связи (параллельно, до `llm.concurrency` запросов) | кэш `extraction_cache` в PostgreSQL |
 | `graph` | сущности сливаются с уже известными (в том числе RU и EN), связи пишутся в граф | Neo4j `Entity`, `MENTIONS`, `RELATED`; Qdrant `mb_entities`; `entity_ids` в payload чанков |
 | wiki | после всех файлов: страницы сущностей с новыми упоминаниями создаются или дописываются | `wiki/entities/*.md`, `wiki/index.md`, `wiki/log.md`; Qdrant `mb_wiki_pages` |
 
@@ -293,7 +293,7 @@ uv run mnogobase ingest documents/
 ```bash
 uv run mnogobase ingest documents/statya.pdf        # один файл
 uv run mnogobase ingest documents/ --no-wiki        # без обновления wiki (быстрее; wiki можно собрать потом)
-uv run mnogobase ingest --retry-failed              # перезапустить все упавшие файлы (пути берутся из state.db)
+uv run mnogobase ingest --retry-failed              # перезапустить все упавшие файлы (пути берутся из registry)
 uv run mnogobase ingest documents/ --retry-failed   # перезапустить упавшие среди этих путей и догрузить новые
 ```
 
@@ -347,7 +347,7 @@ uv run mnogobase compare "Что такое механизм внимания?" 
 
 `compare` печатает таблицу: режим, ответ, процитированные источники, задержка, токены LLM, размер контекста, и дописывает по строке на режим в `runs/compare.jsonl` (раздел 4.4).
 
-`ask` и `compare` работают только внутри проекта (нужен `.mnogobase/state.db`), иначе завершаются с кодом 2 и ничего не создают. Блокировку `ingest` они не берут: спрашивать можно и во время загрузки.
+`ask` и `compare` работают только внутри проекта (для PostgreSQL нужны схема registry и локальный `.mnogobase/postgresql-project.json`; для SQLite — `state.db`), иначе завершаются с кодом 2 и ничего не создают. Блокировку `ingest` они не берут: спрашивать можно и во время загрузки.
 
 ### 3.5 Состояние (status)
 
@@ -378,10 +378,10 @@ uv run mnogobase reset --yes      # без вопроса
 
 Область действия `reset`:
 
-- вне проекта (нет `.mnogobase/state.db`) он отказывается работать даже с `--yes` (код 2): неверная папка или `--config` не должны стереть чужие данные;
-- перед подтверждением показывает, что именно удалит: **все узлы в базе Neo4j по умолчанию** (держите отдельный Neo4j на проект), коллекции Qdrant с префиксом `mb_`, состояние и кэши в `.mnogobase/` (таблицы очищаются, сам `state.db` остаётся, папка `cache/` удаляется), а из wiki — только то, что создал сам: `entities/`, `index.md`, `log.md`. Другие файлы в `wiki/` (например, ваши заметки и настройки Obsidian в `.obsidian/`) не трогаются, папка удаляется, только если опустела.
+- вне проекта (нет маркера PostgreSQL или явно выбранного SQLite `state.db`) он отказывается работать даже с `--yes` (код 2): неверная папка или `--config` не должны стереть чужие данные;
+- перед подтверждением показывает, что именно удалит: **все узлы в базе Neo4j по умолчанию** (держите отдельный Neo4j на проект), коллекции Qdrant с префиксом `mb_`, таблицы registry выбранного проекта и файловые кэши в `.mnogobase/` (схема БД сохраняется, папка `cache/` удаляется), а из wiki — только то, что создал сам: `entities/`, `index.md`, `log.md`. Другие файлы в `wiki/` (например, ваши заметки и настройки Obsidian в `.obsidian/`) не трогаются, папка удаляется, только если опустела.
 
-Очередь `jobs.db`, измерения `processing.jsonl`, логи и сохранённые отчёты остаются. Перед сбросом остановите worker; повторная постановка неизменённых файлов описана в [разделе 15.1](#151-очередь-и-наблюдение).
+Очередь заданий (таблица `jobs`, либо legacy `jobs.db`), измерения `processing.jsonl`, логи и сохранённые отчёты остаются. Перед сбросом остановите worker; повторная постановка неизменённых файлов описана в [разделе 15.1](#151-очередь-и-наблюдение).
 
 Отказ на вопросе подтверждения завершает команду с кодом 1.
 
@@ -404,17 +404,17 @@ uv run mnogobase reset --yes      # без вопроса
 | `models down` / `status` / `logs РОЛЬ [-f]` | остановить серверы моделей / где какая модель и готова ли / лог сервера роли | — | нет |
 | `jobs enqueue PATH... [--force]` | поставить файлы в постоянную очередь | нет | транзакция очереди |
 | `jobs list [--limit N]` / `jobs retry [--id N]` | посмотреть очередь / вернуть ошибочные задания на повтор | нет | транзакция очереди |
-| `worker run [--watch PATH]` | обрабатывать очередь; с `--watch` также отслеживать папку | как у ingest, перед заданием | один worker; ingest.lock на обработку |
+| `worker run [--watch PATH]` | обрабатывать очередь; с `--watch` также отслеживать папку | как у ingest, перед заданием | один worker; блокировка корпуса на обработку |
 | `worker run --once` | обработать готовые задания и завершиться | как у ingest | как у worker |
-| `eval ingest PATH... --phase build\|update --output DIR` | загрузить документы и измерить общий preprocessing | как у ingest | ingest.lock и каталог эксперимента |
-| `eval run DATASET --output DIR [--mode MODE] [--limit N] [--k N]` | сохранить ответы выбранных режимов; по умолчанию rag, wiki, graph | models, llm, qdrant, neo4j | ingest.lock и каталог эксперимента |
+| `eval ingest PATH... --phase build\|update --output DIR` | загрузить документы и измерить общий preprocessing | как у ingest | блокировка корпуса и каталог эксперимента |
+| `eval run DATASET --output DIR [--mode MODE] [--limit N] [--k N]` | сохранить ответы выбранных режимов; по умолчанию rag, wiki, graph | models, llm, qdrant, neo4j | блокировка корпуса и каталог эксперимента |
 | `eval score DIR [--metric NAME]` | оценить сохранённые ответы метриками Ragas | подключения судьи и его embeddings | каталог эксперимента |
 | `eval report DIR` | построить CSV и Markdown по сохранённым данным | нет | каталог эксперимента |
 | `eval benchmark DATASET --output DIR [--skip-score]` | выполнить run → score → report; без судьи при `--skip-score` | по фазам | по фазам |
 
-Команды `ingest`, `remove`, `wiki build`, `reindex`, `reset`, `eval ingest`, `eval run` и обработка задания worker используют общую `.mnogobase/ingest.lock`. Это не позволяет менять корпус во время экспериментальной генерации ответов. Обычные пишущие команды при занятой блокировке завершаются; worker откладывает обработку, наблюдатель продолжает пополнять очередь. `ask` и `compare` блокировку не берут, поэтому во время записи могут видеть промежуточное состояние.
+Команды `ingest`, `remove`, `wiki build`, `reindex`, `reset`, `eval ingest`, `eval run` и обработка задания worker используют общую PostgreSQL advisory lock корпуса (для SQLite — `.mnogobase/ingest.lock`). Это не позволяет менять корпус во время экспериментальной генерации ответов. Обычные пишущие команды при занятой блокировке завершаются; worker откладывает обработку, наблюдатель продолжает пополнять очередь. `ask` и `compare` блокировку не берут, поэтому во время записи могут видеть промежуточное состояние.
 
-В каталоге эксперимента `eval` используется отдельная `.eval.lock`. Один worker на проект обеспечивается `.mnogobase/worker.lock`; очередь хранится в `jobs.db`, независимо от `state.db`. Для нескольких наблюдаемых папок повторяйте `--watch`, для режимов и метрик — `--mode` и `--metric`. Полные опции доступны через `uv run mnogobase COMMAND --help`.
+В каталоге эксперимента `eval` используется отдельная `.eval.lock`. Один worker на проект обеспечивается PostgreSQL advisory lock; legacy backend использует `.mnogobase/worker.lock`. Очередь `jobs` и registry используют отдельные таблицы одной схемы PostgreSQL (в legacy backend — `jobs.db` и `state.db`). Для нескольких наблюдаемых папок повторяйте `--watch`, для режимов и метрик — `--mode` и `--metric`. Полные опции доступны через `uv run mnogobase COMMAND --help`.
 
 **Коды выхода:**
 
@@ -664,7 +664,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant PL as Pipeline
-    participant REG as Registry SQLite
+    participant REG as Registry PostgreSQL
     participant DL as DoclingParser
     participant CH as Chunker
     participant EMB as Embedder и BM25
@@ -797,7 +797,7 @@ erDiagram
 | Wiki-страница | `page_id = entity_id`; `slug` = нормализованное имя через дефис (`#` → `sharp`, длинные имена обрезаются с хешем), при занятости `slug-<тип>`, затем `slug-<6 символов id>` |
 | Точка Qdrant | `uuid5(NAMESPACE, ключ)`, ключ — `chunk_id`, `entity_id` или `page_id#i` |
 
-**SQLite registry** (`.mnogobase/state.db`):
+**Registry PostgreSQL** (схема `mnogobase_project_default`; legacy SQLite — `.mnogobase/state.db`):
 
 | Таблица | Колонки | Зачем |
 |---|---|---|
@@ -909,7 +909,7 @@ flowchart TD
 - **Изменённый файл.** План удаления старой версии вычисляется только чтением и записывается в журнал `pending_removals`. Затем: одна транзакция Neo4j (чанки, документ, `evidence` из его чанков, связи без `evidence`, сущности без упоминаний и их страницы) → очередь wiki → Qdrant и файлы wiki → registry → запись журнала удаляется последней. Граф чистится первым намеренно: если шаг Qdrant не удался, режимы `rag`/`wiki`/`all` до следующего `ingest` или `wiki build` (они доводят журнал) могут вернуть текст удалённой версии, режим `graph` уже чист. Незавершённое удаление перепроверяется по графу, а если довести его не удаётся, `ingest` и `wiki build` завершаются с кодом 2.
 - **Одинаковое содержимое по двум путям** — один документ. Второй путь пропускается; изменение одного из файлов не удаляет данные, пока другой путь хранит то же содержимое (ссылки в источниках переводятся на живой путь). Живой путь — тот, где файл существует и его хеш совпадает с `doc_id`: строка registry для переименованного или удалённого файла копией не считается.
 - **Переименование.** Файл с новым путём и прежним содержимым пропускается, а если записанный путь документа (кэш чанков или `Document.path` в Neo4j; кэша может не быть) больше не хранит это содержимое, документ переводится на новый путь: сначала `path` в payload чанков Qdrant, затем `Document.path`, кэш чанков последним, поэтому прерванный перевод доделывает следующий `ingest`. Wiki-страницы, которые цитируют чанки документа, помечаются на обновление: раздел `## Sources` получит новое имя файла при ближайшей сборке wiki. Строки registry с этим содержимым, файла которых больше нет, удаляются, а строки существующих файлов (копий или изменённых) остаются. Если после этого `ingest` изменить переименованный файл, старая версия удаляется как обычно. Переименование и правка между двумя запусками `ingest` выглядят как удалённый старый файл плюс новый: старая версия остаётся (см. ограничения).
-- **Блокировка.** Файловая блокировка `.mnogobase/ingest.lock` не даёт параллельно запускать пишущие команды; блокировка снимается автоматически при завершении процесса.
+- **Блокировка.** PostgreSQL advisory lock корпуса не даёт параллельно запускать пишущие команды; соединение удерживается на всё время операции. Для legacy SQLite используется файловая `.mnogobase/ingest.lock`.
 - **Повторы сетевых вызовов.** LLM: до 5 попыток при ошибках соединения и таймаутах, 429 и 5xx (экспоненциальная пауза до 30 с); невалидный JSON — ещё до 2 попыток с текстом ошибки валидации. В повтор передаются исходные сообщения, первые 2000 символов последнего невалидного ответа и его ошибка; длинные ответы и история предыдущих исправлений не накапливаются. Эмбеддер и реранкер: до 5 попыток при сетевых ошибках и 5xx. Qdrant: до 5 попыток при сетевых ошибках. Neo4j — средствами драйвера.
 - **Подпись эмбеддера.** В `meta` хранится `model_id:dim:tpl-<хеш>`, где хеш (8 hex-символов sha256) покрывает `embedder.doc_template` и `query_template`. Смена модели, размерности или любого из шаблонов останавливает `ingest`, `wiki build`, `ask` и `compare` до `reindex`. Старая подпись без хеша (`model_id:dim`) принимается, если модель и размерность совпадают, и переписывается в новом формате при следующем запуске (только если значение в `meta` не изменилось за это время: идущий параллельно `reindex` не затирается). Такая подпись не знает, какими шаблонами построен индекс: если вы меняли `doc_template`/`query_template` до этой версии и не запускали после этого `reindex`, выполните `uv run mnogobase reindex` один раз.
 - **Ограничения.** Удалённые с диска файлы из индекса не убираются (строки registry для них остаются, если то же содержимое не нашлось по другому пути). Также остаётся старая версия файла, который переименовали и изменили без `ingest` между этими шагами.
@@ -929,7 +929,7 @@ flowchart TD
 | Ключ | По умолчанию | Что делает | После изменения |
 |---|---|---|---|
 | `device` | `auto` | `auto`, `cuda`, `mps`, `cpu`: устройство для Docling (и BM25 при `cuda`) | сразу |
-| `data_dir` | `.mnogobase` | `state.db`, кэши, блокировка | это другой проект |
+| `data_dir` | `.mnogobase` | локальный маркер проекта, кэши, измерения; legacy SQLite-файлы | PostgreSQL namespace задаётся `database.project` |
 | `logs_dir` | `logs` | папка `mnogobase.jsonl` | сразу |
 | `runs_dir` | `runs` | папка `compare.jsonl` | сразу |
 | `llm.model` | `gpt-6-luna` | что запускается и как модель называется на сервере: у `llamacpp` — GGUF `repo:квант`, у `vllm` — HF-репозиторий исходной модели, у `api` — имя на сервере (раздел 7.15) | новые вызовы; новая модель `extract` — новый ключ кэша |
@@ -1074,6 +1074,75 @@ extract:
 Для раскраски новых типов в Neo4j добавьте строку вида `node.Gene { color: #...; border-color: #...; }` в [`docs/neo4j/mnogobase.grass`](docs/neo4j/mnogobase.grass) (раздел 4.1).
 
 ---
+
+### 6.4 PostgreSQL и перенос существующего проекта
+
+По умолчанию `database.backend: postgresql`. DSN берётся из переменной, названной
+`database.url_env` (по умолчанию `DATABASE_URL`); автоматического fallback на SQLite нет.
+
+```yaml
+database:
+  backend: postgresql
+  url_env: DATABASE_URL
+  schema_prefix: mnogobase
+  project: default
+  connect_timeout: 5
+```
+
+Пароль и URL находятся в `.env` (пример в `.env.example`). `POSTGRES_PASSWORD` задаёт
+пароль при первом создании Compose volume; `DATABASE_URL` задаёт подключение Python.
+Смена `POSTGRES_PASSWORD` после инициализации volume сама не меняет пароль роли в БД.
+Пароль с особыми символами в URL необходимо percent-encode.
+
+В одной базе используются схемы `mnogobase_service` (пользователи, команды, права,
+сессии, личные диалоги), `mnogobase_project_default` (registry, очередь и uploads)
+и `mnogobase_project_team_<id>` для каждого командного корпуса. Для другого
+самостоятельного проекта задайте другое `database.project`, а также отдельные
+Qdrant prefix, Neo4j и файловые каталоги. PostgreSQL namespace не зависит от cwd.
+`database.schema_prefix` — `[a-z][a-z0-9_]{0,15}`, `database.project` —
+`[a-z][a-z0-9_]{0,36}`; составные имена укладываются в лимит PostgreSQL.
+
+Существующий проект переносится так:
+
+```bash
+# Сначала остановите API, worker, watcher и остальные пишущие процессы проекта.
+# При существующем .venv сохраняем дополнительные пакеты (например, ipykernel VS Code).
+uv sync --inexact
+docker compose up -d postgres
+# Заполните DATABASE_URL в .env и установите database.backend: postgresql.
+uv run mnogobase database migrate-sqlite
+uv run mnogobase status
+uv run mnogobase doctor
+```
+
+Команда переносит текущие `state.db`, `jobs.db`, `uploads.db`, общий `service.db`
+и базы зарегистрированных команд. Она резервирует SQLite источники от записи,
+блокирует целевые таблицы и импортирует все строки в одной транзакции PostgreSQL.
+До commit сравниваются количество и SHA-256 содержимого каждой таблицы; сохраняются
+ID, password hashes, session hashes/сроки, источники сообщений, порядок кэша,
+сигнатуры embedder и незавершённые операции. Исходные SQLite-файлы сохраняются.
+Непустая целевая таблица останавливает перенос: команда не перезаписывает имеющиеся
+данные. Другие экспериментальные проекты в подпапках переносятся отдельно с их конфигом.
+
+При ingest и миграции создаётся локальный `.mnogobase/postgresql-project.json` с
+идентификатором подключения без пароля. Он сохраняет защиту читающих команд и
+`reset --yes` от запуска из чужого каталога. Старые eval run.json после смены
+backend/настроек продолжают хранить старый снимок: начинайте новый каталог опыта.
+
+Для резервного копирования PostgreSQL (каталог backups создайте заранее):
+
+```bash
+docker compose exec -T postgres pg_dump -U mnogobase -d mnogobase -Fc > backups/mnogobase.dump
+```
+
+Для отката к исходному снимку до новых записей PostgreSQL можно явно выбрать
+`database.backend: sqlite`. После переключения SQLite больше не обновляется;
+поздние изменения PostgreSQL требуют отдельного обратного экспорта. Wiki, источники
+документов, Qdrant и Neo4j резервируются вместе с БД как части одного проекта.
+
+PostgreSQL не меняет текущую модель обработки: один worker сервиса и один писатель
+корпуса. Wiki, документы и кэши остаются на файловой системе. Для нескольких машин
+потребуются согласованное файловое хранилище и отдельная доработка worker.
 
 ## 7. Как поменять типовые вещи
 
@@ -1335,7 +1404,9 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `app.py` | `build_app`: создаёт все компоненты и связывает их (точка подмены реализаций) |
 | `pipeline.py` | `Pipeline`: подготовка, обнаружение файлов, этапы `ingest`, `remove`, восстановление удалений |
 | `removal.py` | выбор зарегистрированных источников по путям и `--missing`, `RemovalReport` |
-| `registry.py` | `Registry` (SQLite), `STAGES`, `ingest_lock` |
+| `database.py` | подключения PostgreSQL/legacy SQLite, bind-параметры, namespace, advisory locks и маркер проекта |
+| `database_migration.py` / `database_cli.py` | транзакционный перенос SQLite, сверка данных и команда `database migrate-sqlite` |
+| `registry.py` | `Registry` (PostgreSQL / legacy SQLite), `STAGES`, `ingest_lock` |
 | `config.py` | `Settings` (pydantic-settings), типы сущностей по умолчанию, загрузка YAML и env |
 | `models.py` | доменные модели: `DocumentRecord`, `ChunkRecord`, `EntityRecord`, `ExtractionResult`, `ContextItem`, `Answer` и др. |
 | `ids.py` | детерминированные ID, `normalize_name`, `slugify` |
@@ -1353,7 +1424,7 @@ uv run mnogobase doctor              # строка models: vision ... available
 | `doctor.py` | проверки окружения и предварительные проверки команд |
 | `serving.py` | `mnogobase models`: роли с `serve`, команды llama.cpp и vLLM (`server_args`), запуск в Docker (`DockerRunner`) и нативно (`NativeRunner`), ожидание `/health` |
 | `maintenance.py` | `reindex`, `reset` |
-| `background/` | `queue.py` — очередь SQLite; `watch.py` — стабильность и обнаружение файлов; `worker.py` — обработка/повторы; `cli.py` — команды jobs/worker |
+| `background/` | `queue.py` — очередь PostgreSQL / legacy SQLite; `watch.py` — стабильность и обнаружение файлов; `worker.py` — обработка/повторы; `cli.py` — команды jobs/worker |
 | `processing.py` | измерения этапов, успешных токенов LLM и снимок индексированного корпуса |
 | `evaluation/` | CLI run/score/report/benchmark, артефакты и возобновление, Ragas-судья, сводные и парные сравнения |
 
@@ -1532,7 +1603,7 @@ def top(limit: Annotated[int, typer.Option("--limit", help="How many entities.")
 | `cannot finish removing old document version(s) ...` (код 2), `status` показывает `pending document removals` | удаление старой версии изменённого файла не завершилось (обычно недоступен Qdrant или Neo4j) | почините сервис (`doctor`) и повторите `remove`, `ingest` или `wiki build`: удаление доводится первым. Начать заново — `reset` |
 | `Another ingest / remove / wiki / reindex / reset run is in progress.` | идёт другая пишущая команда | дождитесь её. Блокировка снимается сама при завершении процесса; файл `.mnogobase/ingest.lock` может остаться — это нормально |
 | предупреждение `entity types changed in config: ...` | типы в конфиге изменились после загрузки документов | ничего, если старые типы допустимы; иначе `reset` и `ingest` (раздел 6.3) |
-| `No mnogobase project here (no .../state.db)` | команда запущена не из корня проекта или без нужного `--config` | перейдите в корень или передайте `-c` |
+| `No mnogobase project here` | команда запущена не из корня проекта или без нужного `--config` | перейдите в корень или передайте `-c` |
 | `Invalid configuration: ...` / `Config file not found: ...` | ошибка в YAML, в переменной `MNOGOBASE_*` или неверный путь | исправьте конфиг (раздел 6) |
 | `ingest`: `VisionError: N of M pictures got no description from the VLM at ...` или `...: the VLM at ... failed` | сервер VLM недоступен или не успел ответить (`vision.timeout_s`) | `uv run mnogobase models up vision`, `uv run mnogobase models logs vision`; затем `ingest --retry-failed` |
 | русский текст сканов и скриншотов не распознаётся (пусто или иероглифы) | OCR с китайской моделью RapidOCR: `parsing.ocr_lang` пуст | `parsing.ocr_lang: ["iso:ru", "iso:en"]` (по умолчанию), затем `reset` и `ingest` для уже загруженных |
@@ -1690,9 +1761,9 @@ uv run mnogobase ask "что такое механизм внимания?"
 - **Neo4j Browser и панель Qdrant** — через SSH-туннель: `ssh -N -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 server`, затем http://localhost:7474 (Bolt `bolt://localhost:7687`) и http://localhost:6333/dashboard.
 - **Логи** — `logs/mnogobase.jsonl` на сервере (раздел 4.5), модели — `uv run mnogobase models logs <роль>`, базы — `docker compose logs -f qdrant neo4j`.
 
-Запускать CLI на ноутбуке против серверных сервисов можно (туннель на 8001, 8002, 6333, 7687 и `config.yaml` с теми же адресами), но тогда `.mnogobase/state.db` и wiki окажутся на ноутбуке. У одного проекта должно быть одно место запуска: два CLI с разными `state.db` на одних Qdrant и Neo4j рассинхронизируются.
+Запускать CLI на ноутбуке против серверных сервисов можно (туннель на 8001, 8002, 6333, 7687 и `config.yaml` с теми же адресами), но тогда wiki и файловые кэши окажутся на ноутбуке; PostgreSQL должен использовать тот же namespace (также нужен туннель на 5432). У одного проекта должно быть одно место запуска: разные PostgreSQL `database.project` на одних Qdrant collections и общем Neo4j рассинхронизируются.
 
-**Сеть и доступ.** Порты моделей `docker-compose.models.yml` публикует только на `127.0.0.1` (`MODELS_BIND` в `.env`, чтобы открыть): у llama.cpp и vLLM без `--api-key` нет авторизации. `docker-compose.yml` публикует Qdrant (без авторизации) и Neo4j на все интерфейсы — закройте 6333, 6334, 7474 и 7687 файрволом или ходите к ним через туннель.
+**Сеть и доступ.** Порты моделей `docker-compose.models.yml` публикует только на `127.0.0.1` (`MODELS_BIND` в `.env`, чтобы открыть): у llama.cpp и vLLM без `--api-key` нет авторизации. `docker-compose.yml` публикует PostgreSQL, Qdrant и Neo4j только на `127.0.0.1`. Python на том же сервере подключается через localhost; удалённый доступ — через SSH-туннель. Контейнеры одной Compose-сети используют `postgres:5432`, `qdrant:6333`, `neo4j:7687`. Порт Qdrant gRPC 6334 приложением не используется и наружу не публикуется.
 
 **Ресурсы.** В текущем `docker-compose.yml` у Qdrant заданы `mem_limit: 2g`, `cpus: 1.5`, у Neo4j — `mem_limit: 4g`, `cpus: 2.0`. У Neo4j дополнительно ограничены heap (2 ГБ) и page cache (1 ГБ). Для большого корпуса пересмотрите лимит контейнера вместе с этими настройками: лимит должен оставлять место и для прочих расходов процесса. После изменения пересоздайте нужный сервис через `docker compose up -d`. Память локальных моделей учитывается отдельно; долю видеопамяти vLLM задаёт `<роль>.server.gpu_memory`.
 
@@ -1713,6 +1784,20 @@ uv run mnogobase ask "что такое механизм внимания?"
 
 ---
 
+
+**Порты и дисковый объём.** `127.0.0.1:5432:5432` — интерфейс хоста, порт хоста,
+порт контейнера. 5432 — PostgreSQL, 6333 — Qdrant HTTP, 7687 — Neo4j Bolt,
+7474 — необязательный для приложения Neo4j Browser. `mem_limit` ограничивает RAM,
+`cpus` — процессор; эти параметры не ограничивают рост `postgres_data`, `qdrant_data`
+и `neo4j_data`. Обычный local named volume не поддерживает переносимое поле `size`
+для жёсткой дисковой квоты. В Docker Desktop на Mac общий предел задаётся в
+Settings → Resources → Advanced (Disk usage limit). На Linux используйте отдельную
+файловую систему/диск или файловые project quotas и bind mount; конкретная настройка
+зависит от ОС/ФС. `storage_opt.size` контейнера не ограничивает named volume.
+PG18 монтирует volume в `/var/lib/postgresql` (версионный PGDATA внутри него).
+Для контроля общего потребления: `docker system df -v`; для размера PostgreSQL —
+`SELECT pg_size_pretty(pg_database_size(current_database()));`.
+
 ## 12. Структура репозитория
 
 ```
@@ -1729,7 +1814,7 @@ mnogobase/
 │   ├── cli.py  app.py  pipeline.py  registry.py  config.py
 │   ├── models.py  ids.py  log.py  device.py  doctor.py  maintenance.py  serving.py
 │   ├── processing.py             # измерения обработки и снимок корпуса
-│   ├── background/               # CLI, очередь SQLite, watcher, worker
+│   ├── background/               # CLI, постоянная очередь, watcher, worker
 │   ├── evaluation/               # CLI, Ragas, отчёты и парные сравнения
 │   ├── parsing/docling_parser.py
 │   ├── chunking/    hybrid.py  tokenizer.py
@@ -1745,7 +1830,7 @@ mnogobase/
 │   └── fakes.py  conftest.py
 ├── documents/                 # ваши документы (в .gitignore)
 ├── wiki/                      # сгенерированная wiki (в .gitignore)
-├── .mnogobase/                # state.db, jobs.db, cache/, processing.jsonl, locks
+├── .mnogobase/                # postgresql-project.json, cache/, processing.jsonl; legacy SQLite files
 ├── logs/mnogobase.jsonl       # (в .gitignore)
 └── runs/                     # compare.jsonl, eval/<эксперимент>/ (в .gitignore)
 ```
@@ -1825,7 +1910,7 @@ uv run mnogobase eval report runs/eval/attention
 
 Используйте одинаковый корпус и неизменные индексы, граф и wiki для всех подходов и при возобновлении. Если в базе есть другие документы, это оценка по всей текущей базе. Для опыта только по статье подготовьте отдельный проект с отдельными `data_dir`, `wiki.dir`, префиксом коллекций Qdrant и отдельным экземпляром Neo4j. Не удаляйте рабочую базу ради примера.
 
-`run.json` фиксирует снимок локального реестра и wiki; изменение снимка запрещает продолжать этот запуск в том же каталоге. Во время генерации удерживается `ingest.lock`. Прямые изменения в Qdrant/Neo4j внешними инструментами снимок может не обнаружить, поэтому на время опыта их тоже исключите. Порядок измерений build/update — в [разделе 15.2](#152-измерение-build-и-update).
+`run.json` фиксирует снимок реестра выбранного проекта и wiki; изменение снимка запрещает продолжать этот запуск в том же каталоге. Во время генерации удерживается блокировка корпуса (PostgreSQL advisory lock; для SQLite — `ingest.lock`). Прямые изменения в Qdrant/Neo4j внешними инструментами снимок может не обнаружить, поэтому на время опыта их тоже исключите. Порядок измерений build/update — в [разделе 15.2](#152-измерение-build-и-update).
 
 `--mode` можно повторять: `--mode rag --mode graph --mode all`. `--k 8` задаёт число результатов retrieval. Для выбора метрик используйте повторяемый `eval score ... --metric faithfulness --metric factual_correctness`; последующий запуск без `--metric` досчитает остальные. Глобальный `--config` передаётся **до** `eval`.
 
@@ -1917,9 +2002,9 @@ uv run mnogobase jobs retry
 ```mermaid
 flowchart TD
     FILE["Новый или изменённый файл"] --> STABLE["Watcher<br/>период стабильности"]
-    STABLE --> QUEUE[("jobs.db<br/>постоянная очередь")]
+    STABLE --> QUEUE[("PostgreSQL jobs<br/>постоянная очередь")]
     MANUAL["jobs enqueue"] --> QUEUE
-    QUEUE --> WORKER["Один worker<br/>блокировка ingest.lock"]
+    QUEUE --> WORKER["Один worker<br/>блокировка корпуса"]
     WORKER --> PIPELINE["Существующий ingest<br/>parse → chunk → embed → extract → graph → wiki"]
     PIPELINE -->|"успех"| DONE["Задание done"]
     PIPELINE -->|"ошибка"| RETRY{"Остались попытки?"}
@@ -1947,7 +2032,7 @@ Ctrl+C или SIGTERM останавливает worker; для продолже
 | `--retry-delay` | `10` с | первая пауза повтора; затем удваивается, максимум час |
 | `--once` | выключено | обработать готовую очередь и выйти; вместе с `--watch` не используется |
 
-Наблюдатель продолжает обнаруживать файлы во время ingest и повторяет обход после перезапуска. Скрытые файлы, симлинки, неподдерживаемые расширения и каталоги результатов исключены. После удаления файла запустите `remove --missing`, чтобы убрать знания из индекса. Неудачная wiki-сборка считается ошибкой задания; при занятой `ingest.lock` попытка не расходуется. `worker --once` завершается с кодом 1, если остались ошибки или отложенные/незавершённые задания: повторите запуск, когда наступит время повтора. `jobs retry --id N` возвращает в очередь одно задание со статусом `failed`.
+Наблюдатель продолжает обнаруживать файлы во время ingest и повторяет обход после перезапуска. Скрытые файлы, симлинки, неподдерживаемые расширения и каталоги результатов исключены. После удаления файла запустите `remove --missing`, чтобы убрать знания из индекса. Неудачная wiki-сборка считается ошибкой задания; при занятой блокировке корпуса попытка не расходуется. `worker --once` завершается с кодом 1, если остались ошибки или отложенные/незавершённые задания: повторите запуск, когда наступит время повтора. `jobs retry --id N` возвращает в очередь одно задание со статусом `failed`.
 
 Для работы после закрытия терминала на macOS/Linux можно запустить процесс так:
 
@@ -2104,7 +2189,7 @@ service:
   max_concurrent_operations: 4
 ```
 
-Пароли хешируются Argon2, в SQLite сохраняются только хеши session tokens.
+Пароли хешируются Argon2, в служебной БД сохраняются только хеши session tokens.
 Файлы, registry, jobs, кэш, Wiki, логи и runs находятся в `data/teams/<server-team-id>/`.
 Qdrant использует prefix `mb_team_<id>_`; Neo4j — отдельные командные labels и индексы
 с тем же namespace, узлы содержат `team_id`. ID выдаёт сервер; произвольные пути и prefixes

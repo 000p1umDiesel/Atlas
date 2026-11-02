@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from filelock import FileLock, Timeout
+from filelock import Timeout
 from rich.markup import escape
 from rich.table import Table
 
+from mnogobase.database import database_lock, database_target, target_exists
 from mnogobase.ids import file_doc_id
 from mnogobase.log import get_logger, new_run_id
 from mnogobase.processing import measured_ingest
@@ -43,7 +44,7 @@ def enqueue(
     files = discover(paths, settings.parsing.extensions, _excluded(settings))
     if not files:
         cli._fail_cleanly(ValueError("No supported source files found"))
-    q = JobQueue(settings.data_dir / "jobs.db")
+    q = JobQueue(database_target(settings, "jobs"))
     try:
         for path in files:
             job_id = q.enqueue(path, file_doc_id(path), force=force)
@@ -59,8 +60,8 @@ def list_jobs(limit: Annotated[int, typer.Option(min=1)] = 100) -> None:
     from mnogobase import cli
 
     settings = cli._settings()
-    path = settings.data_dir / "jobs.db"
-    if not path.exists():
+    path = database_target(settings, "jobs")
+    if not target_exists(path, "jobs"):
         cli.console.print("Queue is empty.")
         return
     q = JobQueue(path)
@@ -89,8 +90,8 @@ def retry(job_id: Annotated[int | None, typer.Option("--id", min=1)] = None) -> 
     from mnogobase import cli
 
     settings = cli._settings()
-    path = settings.data_dir / "jobs.db"
-    if not path.exists():
+    path = database_target(settings, "jobs")
+    if not target_exists(path, "jobs"):
         cli.console.print("Queue is empty.")
         return
     q = JobQueue(path)
@@ -173,7 +174,7 @@ def run_worker(
     if any(not p.is_dir() for p in watch or []):
         cli._fail_cleanly(ValueError("Every --watch path must be an existing directory"))
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    worker_lock = FileLock(settings.data_dir / "worker.lock", timeout=0)
+    worker_lock = database_lock(settings, "worker", settings.data_dir / "worker.lock")
     try:
         worker_lock.acquire()
     except Timeout:
@@ -184,14 +185,14 @@ def run_worker(
     try:
         if threading.current_thread() is threading.main_thread():
             previous_term = signal.signal(signal.SIGTERM, signal.default_int_handler)
-        q = JobQueue(settings.data_dir / "jobs.db")
+        q = JobQueue(database_target(settings, "jobs"))
         resumed = q.recover()
         cli.console.print(f"Worker started; recovered {resumed}; queue {q.counts()}")
         if watch:
             thread = threading.Thread(
                 target=_watch_loop,
                 args=(
-                    settings.data_dir / "jobs.db",
+                    database_target(settings, "jobs"),
                     settings,
                     watch,
                     stop,

@@ -122,3 +122,9 @@ evaluation:
   timeout_s: 360
   temperature: 0
   strictness: 3
+
+database:
+  backend: postgresql
+  url_env: DATABASE_URL
+  schema_prefix: mnogobase
+  project: default

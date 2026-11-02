@@ -15,3 +15,5 @@ docs/superpowers
 .pytest_cache
 .ruff_cache
 .planning/
+CLAUDE.md
+AGENTS.md

@@ -5,18 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 
 from mnogobase.app import build_app
 from mnogobase.background.cli import JobProgress
 from mnogobase.background.queue import JobQueue
 from mnogobase.config import Settings
+from mnogobase.database import (
+    connect,
+    database_lock,
+    database_target,
+    initialize,
+    target_exists,
+)
 from mnogobase.llm.templates import render_messages
 from mnogobase.log import team_logging
 from mnogobase.models import Answer
@@ -38,7 +44,7 @@ _DOC_ID = re.compile(r"[0-9a-f]{16}")
 class TeamService:
     def __init__(self, settings: Settings, *, app_factory=build_app, graph_factory=None):
         self.settings = settings.model_copy(deep=True)
-        self.store = ServiceStore(self.settings.service.root / "service.db")
+        self.store = ServiceStore(database_target(self.settings, "service"))
         self._factory = app_factory
         self._graph_factory = graph_factory or (
             GraphStore.from_settings if app_factory is build_app else None
@@ -68,7 +74,7 @@ class TeamService:
         self._check(ctx, admin=admin)
         settings = self._settings(ctx.team_id)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
-        lock = ingest_lock(settings.data_dir)
+        lock = ingest_lock(settings.data_dir, target=database_target(settings))
         try:
             lock.acquire()
         except Timeout:
@@ -83,14 +89,14 @@ class TeamService:
     @contextmanager
     def _uploads(self, settings: Settings):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(settings.data_dir / "uploads.db", timeout=10)
+        db = connect(database_target(settings, "uploads"), autocommit=False, rows=True)
         try:
-            db.row_factory = sqlite3.Row
+            initialize(
+                db,
+                "CREATE TABLE IF NOT EXISTS uploads(doc_id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL)",
+                "uploads",
+            )
             with db:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS uploads("
-                    "doc_id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL)"
-                )
                 yield db
         finally:
             db.close()
@@ -114,7 +120,7 @@ class TeamService:
 
     @contextmanager
     def _queue(self, settings: Settings):
-        queue = JobQueue(settings.data_dir / "jobs.db")
+        queue = JobQueue(database_target(settings, "jobs"))
         try:
             yield queue
         finally:
@@ -138,7 +144,9 @@ class TeamService:
         root = self.settings.service.root
         root.mkdir(parents=True, exist_ok=True)
         for index in range(self.settings.service.max_concurrent_operations):
-            lock = FileLock(root / f"operation-{index}.lock", timeout=0)
+            lock = database_lock(
+                self.settings, f"operation-{index}", root / f"operation-{index}.lock", service=True
+            )
             try:
                 lock.acquire()
             except Timeout:
@@ -235,7 +243,7 @@ class TeamService:
             finally:
                 temporary.unlink(missing_ok=True)
             db.execute(
-                "INSERT OR IGNORE INTO uploads VALUES(?,?,?)",
+                "INSERT INTO uploads VALUES(?,?,?) ON CONFLICT(doc_id) DO NOTHING",
                 (doc_id, filename, str(path.resolve())),
             )
             job_id = q.enqueue(path, fingerprint)
@@ -247,7 +255,7 @@ class TeamService:
             rows = db.execute(
                 "SELECT * FROM uploads ORDER BY doc_id LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
-            registry = Registry(settings.data_dir / "state.db")
+            registry = Registry(database_target(settings))
             try:
                 out = []
                 for row in rows:
@@ -346,9 +354,9 @@ class TeamService:
 
     @staticmethod
     def _has_sources(settings: Settings) -> bool:
-        if not (settings.data_dir / "state.db").is_file():
+        if not target_exists(database_target(settings)):
             return False
-        registry = Registry(settings.data_dir / "state.db")
+        registry = Registry(database_target(settings))
         try:
             return bool(registry.doc_ids())
         finally:
@@ -594,7 +602,7 @@ class TeamService:
     async def work_once(self) -> int:
         root = self.settings.service.root
         root.mkdir(parents=True, exist_ok=True)
-        lock = FileLock(root / "worker.lock", timeout=0)
+        lock = database_lock(self.settings, "worker", root / "worker.lock", service=True)
         try:
             lock.acquire()
         except Timeout:
@@ -609,8 +617,8 @@ class TeamService:
             for team in teams:
                 settings = self._settings(team["id"])
                 settings.data_dir.mkdir(parents=True, exist_ok=True)
-                corpus_lock = ingest_lock(settings.data_dir)
-                local_worker = FileLock(settings.data_dir / "worker.lock", timeout=0)
+                corpus_lock = ingest_lock(settings.data_dir, target=database_target(settings))
+                local_worker = database_lock(settings, "worker", settings.data_dir / "worker.lock")
                 try:
                     local_worker.acquire()
                     corpus_lock.acquire()

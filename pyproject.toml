@@ -25,6 +25,8 @@ dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
   "argon2-cffi>=23.1",
+  "sqlalchemy>=2.0,<3",
+  "psycopg[binary]>=3.2,<4",
   "transformers>=5.20",
   # закреплено здесь, чтобы [tool.uv.sources] мог брать CUDA-колёса на Windows (PyPI там отдаёт только CPU-сборки)
   "torch>=2.14",

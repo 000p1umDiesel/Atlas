@@ -25,9 +25,14 @@ pytestmark = pytest.mark.e2e
 ROOT = Path(__file__).parents[2]
 
 
-async def test_team_http_cli_live_models(neo4j_container, qdrant_client, tmp_path):
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+async def test_team_http_cli_live_models(
+    neo4j_container, qdrant_client, tmp_path, request, backend
+):
     settings = load_settings(ROOT / "config.yaml")
     settings.service.root = tmp_path / "service"
+    if backend == "postgresql":
+        settings.database = request.getfixturevalue("pg_settings").database
     settings.wiki.min_mentions = 1
     settings.llm.concurrency = 4
     settings.llm.timeout_s = 90

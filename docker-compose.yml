@@ -1,9 +1,25 @@
 services:
+  postgres:
+    image: postgres:18
+    mem_limit: 1g
+    cpus: 1.0
+    ports: ["127.0.0.1:5432:5432"]
+    environment:
+      POSTGRES_DB: mnogobase
+      POSTGRES_USER: mnogobase
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mnogobase-dev}
+    volumes: ["postgres_data:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mnogobase -d mnogobase"]
+      interval: 5s
+      retries: 12
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.19.2
     mem_limit: 2g
     cpus: 1.5
-    ports: ["6333:6333", "6334:6334"]
+    ports: ["127.0.0.1:6333:6333"]  # HTTP; приложение не использует gRPC :6334
     volumes: ["qdrant_data:/qdrant/storage"]
     restart: unless-stopped
 
@@ -11,7 +27,7 @@ services:
     image: neo4j:5.26-community
     mem_limit: 4g
     cpus: 2.0
-    ports: ["7474:7474", "7687:7687"]
+    ports: ["127.0.0.1:7474:7474", "127.0.0.1:7687:7687"]  # Browser и Bolt
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-mnogobase-dev}
       NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
@@ -26,5 +42,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres_data:
   qdrant_data:
   neo4j_data:

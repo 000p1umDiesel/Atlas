@@ -390,6 +390,14 @@ class EvaluationSettings(BaseModel):
     strictness: PositiveInt = 3
 
 
+class DatabaseSettings(BaseModel):
+    backend: Literal["postgresql", "sqlite"] = "postgresql"
+    url_env: str = "DATABASE_URL"
+    schema_prefix: str = Field(default="mnogobase", pattern=r"^[a-z][a-z0-9_]{0,15}$")
+    project: str = Field(default="default", pattern=r"^[a-z][a-z0-9_]{0,36}$")
+    connect_timeout: int = Field(default=5, ge=1, le=60)
+
+
 class ServiceSettings(BaseModel):
     root: Path = Path("data")
     api_url: str = "http://127.0.0.1:8080"
@@ -410,6 +418,7 @@ class Settings(BaseSettings):
     logs_dir: Path = Path("logs")
     runs_dir: Path = Path("runs")
     service: ServiceSettings = Field(default_factory=ServiceSettings)
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embedder: EmbedderSettings = Field(default_factory=EmbedderSettings)
     sparse: SparseSettings = Field(default_factory=SparseSettings)

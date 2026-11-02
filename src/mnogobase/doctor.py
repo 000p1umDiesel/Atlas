@@ -9,6 +9,11 @@ from tenacity import wait_none
 
 from mnogobase.chunking.tokenizer import AUTO, load_tokenizer, tokenizer_source
 from mnogobase.config import ServedModel, Settings
+from mnogobase.database import (
+    connect,
+    database_target,
+    target_exists,
+)
 from mnogobase.device import detect_device
 from mnogobase.embedding.base import embedder_signature, signature_mismatch
 from mnogobase.embedding.http import auth_headers
@@ -20,6 +25,7 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 CHECKS: tuple[str, ...] = (
     "device",
+    "database",
     "models",
     "tokenizer",
     "llm",
@@ -87,6 +93,17 @@ def run_checks(
 
     def device() -> Check:
         return Check("device", True, detect_device(settings.device))
+
+    def database() -> Check:
+        if settings.database.backend == "sqlite":
+            return Check("database", True, "SQLite (explicit legacy backend)")
+        target = database_target(settings)
+        connection = connect(target)
+        try:
+            connection.execute("SELECT 1")
+        finally:
+            connection.close()
+        return Check("database", True, str(target))
 
     def models() -> Check:
         # embedder, reranker и VLM могут работать на разных серверах
@@ -174,8 +191,8 @@ def run_checks(
         return Check("neo4j", True, settings.neo4j.uri)
 
     def index() -> Check:
-        db = settings.data_dir / "state.db"
-        if not db.exists():
+        db = database_target(settings)
+        if not target_exists(db):
             return Check("index", True, "no index yet")
         if embedder_dim() is None:
             return Check("index", False, f"embedder dimension unknown: {unreachable[0]}")
@@ -191,8 +208,8 @@ def run_checks(
         return Check("index", True, f"embedder {expected}")
 
     def types() -> Check:
-        db = settings.data_dir / "state.db"
-        if not db.exists():
+        db = database_target(settings)
+        if not target_exists(db):
             return Check("types", True, "no index yet")
         registry = Registry(db)
         try:
@@ -205,6 +222,7 @@ def run_checks(
 
     checks = {
         "device": device,
+        "database": database,
         "models": models,
         "tokenizer": tokenizer,
         "llm": llm,

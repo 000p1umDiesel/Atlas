@@ -7,13 +7,13 @@ databases. Writers must hold ingest.lock while taking it and generating answers.
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from mnogobase.config import Settings
+from mnogobase.database import DatabaseTarget, connect, database_target, target_exists
 from mnogobase.evaluation.artifacts import append_jsonl, fingerprint
 from mnogobase.ids import file_doc_id
 from mnogobase.progress import NULL_PROGRESS, NullProgress
@@ -24,10 +24,10 @@ TOKEN_SCOPE = (
 
 
 def corpus_snapshot(settings: Settings) -> dict:
-    db = settings.data_dir / "state.db"
+    db = database_target(settings)
     files, meta, stages, removals, dirty = [], [], [], [], []
-    if db.is_file():
-        connection = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    if target_exists(db):
+        connection = connect(db)
         try:
             files = connection.execute(
                 "SELECT path,doc_id,status FROM files ORDER BY path"
@@ -51,7 +51,7 @@ def corpus_snapshot(settings: Settings) -> dict:
     ]
     project = fingerprint(
         {
-            "state": str(db.resolve()),
+            "state": str(db) if isinstance(db, DatabaseTarget) else str(db.resolve()),
             "qdrant": settings.qdrant.model_dump(),
             "neo4j": {"uri": settings.neo4j.uri, "user": settings.neo4j.user},
         }
