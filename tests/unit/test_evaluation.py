@@ -110,6 +110,24 @@ def test_manifest_blocks_changed_config_and_dataset(tmp_path):
         core.prepare_run(path, run, Settings(), limit=1, k=19)
 
 
+def test_manifest_blocks_resume_after_security_policy_changes(tmp_path, monkeypatch):
+    from mnogobase.llm import templates
+
+    core = evaluation()
+    path = dataset(tmp_path)
+    run = tmp_path / "run"
+    core.prepare_run(path, run, Settings())
+    original = templates.render
+
+    def changed_policy(name, **values):
+        result = original(name, **values)
+        return result + "\nUpdated security policy." if name == "untrusted_data" else result
+
+    monkeypatch.setattr(templates, "render", changed_policy)
+    with pytest.raises(ValueError, match="configuration changed"):
+        core.prepare_run(path, run, Settings())
+
+
 @pytest.mark.parametrize("existing_run", [False, True], ids=["new-run", "existing-run"])
 @pytest.mark.parametrize(
     "options, match",

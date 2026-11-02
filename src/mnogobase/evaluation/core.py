@@ -7,7 +7,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from mnogobase.config import Settings
-from mnogobase.llm.templates import render
+from mnogobase.llm.templates import render_messages
 from mnogobase.models import Answer
 from mnogobase.retrieval.compare import run_mode
 
@@ -43,7 +43,7 @@ def prepare_run(
         "modes": modes,
         "settings": snapshot,
         "k": k if k is not None else settings.retrieval.k,
-        "answer_prompt": render(
+        "answer_prompt": render_messages(
             "answer", question="$question", context="$context", language="$language"
         ),
     }

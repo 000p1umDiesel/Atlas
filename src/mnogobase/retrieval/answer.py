@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mnogobase.config import LANGUAGE_NAMES
 from mnogobase.llm.client import LLMClient
-from mnogobase.llm.templates import render
+from mnogobase.llm.templates import render_messages
 from mnogobase.models import Answer, ContextItem, Source
 from mnogobase.retrieval.base import estimate_tokens
 
@@ -82,8 +82,10 @@ class Answerer:
                 latency_ms=int((time.perf_counter() - start) * 1000),
             )
         before_in, before_out = self._llm.usage.tokens_in, self._llm.usage.tokens_out
-        prompt = render("answer", question=question, context=context, language=self._language)
-        text = await self._llm.complete([{"role": "user", "content": prompt}], task="answer")
+        messages = render_messages(
+            "answer", question=question, context=context, language=self._language
+        )
+        text = await self._llm.complete(messages, task="answer")
         cited = {int(n) for n in _CITED.findall(text)}
         for source in sources:
             source.cited = source.n in cited

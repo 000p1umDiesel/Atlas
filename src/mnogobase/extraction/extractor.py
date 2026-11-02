@@ -7,13 +7,13 @@ from collections.abc import Iterable, Mapping
 
 from mnogobase.ids import normalize_name
 from mnogobase.llm.client import LLMClient
-from mnogobase.llm.templates import render
+from mnogobase.llm.templates import render_messages
 from mnogobase.log import get_logger
 from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
 from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
 
-PROMPT_VERSION = "extract-v3"
+PROMPT_VERSION = "extract-v4"
 TYPES_CHANGED = (
     "entity types changed in config: already-ingested documents keep their old types "
     "(new and changed documents use the new ones); run `mnogobase reset`, then "
@@ -129,16 +129,14 @@ class Extractor:
         hit = self.cached(chunk)
         if hit is not None:
             return hit
-        prompt = render(
+        messages = render_messages(
             "extract",
             entity_types=format_entity_types(self._types),
             title=title,
             headings=" > ".join(chunk.headings) or "-",
             text=chunk.text,
         )
-        raw = await self._llm.structured(
-            [{"role": "user", "content": prompt}], ExtractionResult, task="extract"
-        )
+        raw = await self._llm.structured(messages, ExtractionResult, task="extract")
         result = clean_extraction(raw, self._types)
         self._registry.put_extraction(
             chunk.chunk_id, self._version, self.model, result.model_dump_json()

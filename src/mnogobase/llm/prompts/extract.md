@@ -13,6 +13,7 @@ Rules:
 Entity types:
 $entity_types
 
+<!-- untrusted-data -->
 Document: $title
 Section: $headings
 

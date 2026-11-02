@@ -1,5 +1,6 @@
 Answer the question using only the numbered sources below. Cite sources inline with their numbers in square brackets, for example [1] or [2][3]. If the sources do not contain the answer, say that the knowledge base does not have enough information. Answer in $language.
 
+<!-- untrusted-data -->
 Question: $question
 
 Sources:

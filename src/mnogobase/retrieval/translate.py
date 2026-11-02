@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mnogobase.llm.client import LLMClient
-from mnogobase.llm.templates import render
+from mnogobase.llm.templates import render_messages
 from mnogobase.log import get_logger
 
 # вопрос переводится, если доля не-ASCII (не латинских) букв в нём больше этого порога
@@ -37,9 +37,9 @@ class QueryTranslator:
         return self._cache[question]
 
     async def _translate(self, question: str) -> list[str]:
-        prompt = render("translate_query", question=question)
+        messages = render_messages("translate_query", question=question)
         try:
-            text = await self._llm.complete([{"role": "user", "content": prompt}], task="query")
+            text = await self._llm.complete(messages, task="query")
         except Exception as exc:  # поиск работает и без него
             self._log.warning(
                 "query_translation_failed", error_type=type(exc).__name__, error=str(exc)

@@ -12,7 +12,7 @@ from mnogobase.config import LANGUAGE_NAMES, WikiSettings
 from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.ids import normalize_name, slugify
 from mnogobase.llm.client import LLMClient
-from mnogobase.llm.templates import render
+from mnogobase.llm.templates import render_messages
 from mnogobase.log import get_logger
 from mnogobase.models import (
     EmbedInput,
@@ -324,7 +324,7 @@ class WikiBuilder:
         previous = self._graph.wiki_page(entity.entity_id)
         existing_body = parse_page(file.read_text(encoding="utf-8"))[1] if file.exists() else ""
         hits = hits + self._carried_evidence(entity, existing_body, hits)
-        prompt = render(
+        messages = render_messages(
             "wiki_page",
             language=LANGUAGE_NAMES.get(self._s.language, self._s.language),
             name=entity.name,
@@ -340,7 +340,7 @@ class WikiBuilder:
             example_id=hits[0].key,
             existing=existing_body,
         )
-        body = await self._llm.complete([{"role": "user", "content": prompt}], task="wiki")
+        body = await self._llm.complete(messages, task="wiki")
         return _Draft(entity, hits, rel_path, slug, context.relations, previous, body)
 
     def _write(self, draft: _Draft, lookup: PageLookup) -> _Built:

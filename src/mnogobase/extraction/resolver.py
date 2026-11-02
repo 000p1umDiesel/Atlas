@@ -6,7 +6,7 @@ from mnogobase.config import ResolveSettings
 from mnogobase.embedding.base import Embedder
 from mnogobase.ids import entity_id, entity_name_keys, normalize_name
 from mnogobase.llm.client import LLMClient
-from mnogobase.llm.templates import render
+from mnogobase.llm.templates import render_messages
 from mnogobase.log import get_logger
 from mnogobase.models import EmbedInput, EntityRecord, ExtractedEntity
 from mnogobase.stores.graph_store import GraphStore
@@ -109,7 +109,7 @@ class EntityResolver:
         return None
 
     async def _same(self, entity: ExtractedEntity, candidate: EntityRecord) -> bool:
-        prompt = render(
+        messages = render_messages(
             "resolve_same",
             a_name=entity.name,
             a_type=entity.type,
@@ -118,9 +118,7 @@ class EntityResolver:
             b_type=candidate.type,
             b_description=candidate.description,
         )
-        verdict = await self._llm.structured(
-            [{"role": "user", "content": prompt}], SameEntity, task="resolve"
-        )
+        verdict = await self._llm.structured(messages, SameEntity, task="resolve")
         return verdict.same
 
     async def _merge(
@@ -136,15 +134,13 @@ class EntityResolver:
         if not changed:
             return existing, False
         if len(descriptions) > self._s.max_descriptions:
-            prompt = render(
+            messages = render_messages(
                 "resolve_summarize",
                 name=existing.name,
                 type=existing.type,
                 descriptions="\n".join(f"- {d}" for d in descriptions),
             )
-            merged = await self._llm.structured(
-                [{"role": "user", "content": prompt}], MergedDescription, task="resolve"
-            )
+            merged = await self._llm.structured(messages, MergedDescription, task="resolve")
             descriptions = [merged.description]
         return existing.model_copy(
             update={
