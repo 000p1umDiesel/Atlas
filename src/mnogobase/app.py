@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import inspect
+from dataclasses import dataclass, field
 
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.config import Settings
@@ -37,10 +38,23 @@ class App:
     wiki: WikiBuilder
     pipeline: Pipeline
     reranker: Reranker | None = None  # rerank.enabled
+    _owned_clients: tuple[object, ...] = field(default=(), repr=False)
 
     def close(self) -> None:
         self.graph.close()
         self.registry.close()
+
+    async def aclose(self) -> None:
+        """Закрывает ресурсы операции, сохраняя внедрённые клиентские зависимости."""
+        try:
+            self.close()
+        finally:
+            for resource in self._owned_clients:
+                close = getattr(resource, "aclose", None) or getattr(resource, "close", None)
+                if close is not None:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
 
 
 def build_app(
@@ -53,16 +67,22 @@ def build_app(
     vectors: QdrantStore | None = None,
     graph: GraphStore | None = None,
 ) -> App:
+    owned_clients: list[object] = []
     device = detect_device(settings.device)
     registry = Registry(settings.data_dir / "state.db")
+    owned_embedder, owned_vectors, owned_llm = embedder is None, vectors is None, llm is None
     embedder = embedder or OpenAICompatEmbedder(settings.embedder)
     sparse = sparse or BM25Encoder(settings.sparse.model, device=device)
     # при `embedder.dim: auto` размерность спросит у сервера только команда, которой она нужна
     vectors = vectors or QdrantStore.from_settings(settings.qdrant, lambda: embedder.dim)
     graph = graph or GraphStore.from_settings(settings.neo4j)
     llm = llm or OpenAICompatLLM(settings.llm)
+    for own, resource in ((owned_embedder, embedder), (owned_vectors, vectors), (owned_llm, llm)):
+        if own:
+            owned_clients.append(resource)
     if reranker is None and settings.rerank.enabled:
         reranker = ApiReranker(settings.rerank)
+        owned_clients.append(reranker)
     parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache", settings.vision)
     chunker = Chunker(settings.chunking, settings.embedder)
     extractor = Extractor(llm, registry, settings.extract.entity_types)
@@ -106,4 +126,5 @@ def build_app(
         wiki,
         pipeline,
         reranker,
+        tuple(owned_clients),
     )

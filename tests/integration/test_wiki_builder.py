@@ -167,7 +167,7 @@ async def test_rebuild_updates_existing_page(world, graph):
     report = await w.builder.build(run_id="r2")
     assert report.updated == ["Transformer"] and report.created == []
     assert graph.wiki_page("e1").version == 2
-    last_prompt = [p for p in w.llm.calls_for("wiki") if '"Transformer"' in p][-1]
+    last_prompt = [p for p in w.llm.calls_for("wiki") if "\nEntity: Transformer (" in p][-1]
     assert "Summary sentence." in last_prompt  # существующий текст страницы передан обратно в LLM
 
 
@@ -181,7 +181,7 @@ async def test_entities_below_threshold_are_skipped(world):
 
 async def test_failed_entity_does_not_stop_the_build(world, graph):
     def handler(task: str, prompt: str) -> str:
-        if task == "wiki" and '"Softmax"' in prompt:
+        if task == "wiki" and "\nEntity: Softmax (" in prompt:
             raise RuntimeError("llm down")
         return scripted_llm_handler(task, prompt)
 
@@ -205,7 +205,7 @@ async def test_failed_entity_with_existing_page_keeps_links(world, graph):
     fail = {"Softmax": False}
 
     def handler(task: str, prompt: str) -> str:
-        if task == "wiki" and fail["Softmax"] and '"Softmax"' in prompt:
+        if task == "wiki" and fail["Softmax"] and "\nEntity: Softmax (" in prompt:
             raise RuntimeError("llm down")
         return scripted_llm_handler(task, prompt)
 
@@ -391,6 +391,6 @@ async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, grap
     assert report.updated == ["Transformer"]
     # обе ещё валидные цитаты сохраняются, хотя свежим top-1 попаданием является только одна
     assert _cited(page.read_text(encoding="utf-8")) == set(ids[:2])
-    prompt = [p for p in w.llm.calls_for("wiki") if '"Transformer"' in p][-1]
+    prompt = [p for p in w.llm.calls_for("wiki") if "\nEntity: Transformer (" in p][-1]
     assert all(f"[{cid}]" in prompt for cid in ids[:2])  # перенесённое evidence показывается LLM
     assert f"[{extra.chunk_id}]" not in prompt

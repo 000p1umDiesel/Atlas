@@ -19,6 +19,9 @@ class Reranker(Protocol):
 
 
 class ApiReranker:
+    def close(self) -> None:
+        self._client.close()
+
     """Cross-encoder через `/rerank` OpenAI-совместимого сервера (vLLM, llama.cpp server).
 
     Формат Jina/Cohere: `query` и `documents` одним запросом, ответ `results[].index` и

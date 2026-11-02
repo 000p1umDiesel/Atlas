@@ -356,6 +356,7 @@ class Neo4jSettings(BaseModel):
     uri: str = "bolt://localhost:7687"
     user: str = "neo4j"
     password_env: str = "NEO4J_PASSWORD"
+    team_id: str | None = None
 
     def password(self) -> str:
         return os.environ.get(self.password_env, "")
@@ -389,6 +390,16 @@ class EvaluationSettings(BaseModel):
     strictness: PositiveInt = 3
 
 
+class ServiceSettings(BaseModel):
+    root: Path = Path("data")
+    api_url: str = "http://127.0.0.1:8080"
+    session_hours: int = Field(default=24, ge=1, le=720)
+    max_upload_mb: int = Field(default=50, ge=1)
+    max_pending_jobs: int = Field(default=100, ge=1)
+    history_messages: int = Field(default=12, ge=0, le=100)
+    max_concurrent_operations: int = Field(default=4, ge=1, le=64)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MNOGOBASE_", env_nested_delimiter="__", extra="ignore"
@@ -398,6 +409,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path(".mnogobase")
     logs_dir: Path = Path("logs")
     runs_dir: Path = Path("runs")
+    service: ServiceSettings = Field(default_factory=ServiceSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embedder: EmbedderSettings = Field(default_factory=EmbedderSettings)
     sparse: SparseSettings = Field(default_factory=SparseSettings)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -189,7 +189,9 @@ def ingest_measured(
 
     settings = cli._settings()
     try:
-        with _lock(output), ingest_lock(settings.data_dir):
+        with _lock(output), ExitStack() as locks:
+            corpus_lock = cli._lock(settings)
+            locks.callback(corpus_lock.release)
             if (output / "run.json").exists():
                 raise ValueError(
                     "This experiment already has an answer plan; use a new output directory for updates"

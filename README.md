@@ -12,6 +12,7 @@
 | Обрабатывать новые файлы автоматически | [Очередь и worker](#15-фоновая-обработка-и-воспроизводимые-эксперименты) |
 | Измерить качество и затраты | [Оценка Ragas](#14-оценка-hybrid-rag-wikillm-и-graphrag) → [измерение build/update](#152-измерение-build-и-update) |
 | Изучить Hybrid RAG по шагам | [Учебные ноутбуки](#16-учебные-ноутбуки) |
+| Работать с командами, API и чатами | [Командный backend и CLI-клиент](#17-командный-backend-api-и-чат) |
 | Изменить реализацию | [Архитектура](#5-как-это-устроено-внутри) → [карта модулей](#81-карта-модулей) |
 
 ## Содержание
@@ -32,6 +33,7 @@
 14. [Оценка Hybrid RAG, WikiLLM и GraphRAG](#14-оценка-hybrid-rag-wikillm-и-graphrag)
 15. [Фоновая обработка и воспроизводимые эксперименты](#15-фоновая-обработка-и-воспроизводимые-эксперименты)
 16. [Учебные ноутбуки](#16-учебные-ноутбуки)
+17. [Командный backend, API и чат](#17-командный-backend-api-и-чат)
 
 ---
 
@@ -1995,3 +1997,154 @@ uv run mnogobase eval benchmark eval/questions.jsonl --output runs/eval/experime
 | [03 — Ragas](hybrid_rag_notebooks/03_hybrid_rag_ragas.ipynb) | одиночная метрика, пять метрик на наборе, ошибки, пропуски и сравнение запусков |
 
 У папки свои [зависимости и инструкция](hybrid_rag_notebooks/SETUP.md), `.env`, helpers и артефакты. Пакет `mnogobase`, Neo4j и wiki ей не требуются; для запуска нужны сервисы, перечисленные в SETUP. Ноутбуки не заменяют CLI-конвейер и не строят граф/wiki основного проекта. Выполнение ячеек с генерацией и оценкой делает реальные модельные вызовы.
+
+
+## 17. Командный backend, API и чат
+
+Backend работает без сайта: FastAPI предоставляет операции базы знаний, а группа
+`mnogobase client` обращается к ним по HTTP. Операторские команды создают пользователей
+и команды локально. План реализации — [TEAM_SERVICE_BACKEND_PLAN.md](docs/TEAM_SERVICE_BACKEND_PLAN.md),
+проверки и их границы — [TEAM_SERVICE_BACKEND_VERIFICATION.md](docs/TEAM_SERVICE_BACKEND_VERIFICATION.md).
+
+### 17.1 Запуск
+
+Все команды запускаются из корня проекта. При сохранении дополнительных пакетов своего
+окружения используйте `uv sync --inexact`; обычный `uv sync` приводит окружение строго к lockfile.
+Основная LLM использует `llm.serve: api` и существующий `LLM_API_KEY`. Локально запускаются
+нужные роли embedder, rerank и vision, как в текущем `config.yaml`.
+
+```bash
+uv sync --inexact
+docker compose up -d
+uv run mnogobase models up
+uv run mnogobase service init
+uv run mnogobase user create alice
+uv run mnogobase team create research
+```
+
+Пароль вводится скрыто. Команды создания выводят `id`; подставьте их вместо `TEAM_ID`
+и `USER_ID` в следующую команду:
+
+```bash
+uv run mnogobase team add-member TEAM_ID USER_ID --role admin
+uv run mnogobase api serve --host 127.0.0.1 --port 8080
+```
+
+В другом терминале запустите диспетчер:
+
+```bash
+uv run mnogobase service work
+```
+
+Он сохраняет прогресс и ошибки, после перезапуска восстанавливает незавершённые задания.
+За проход выполняется максимум одно готовое задание каждой команды; порядок начала команд
+меняется по кругу. `service work --once` выполняет **один проход**, а не всю очередь.
+Ctrl+C прекращает дальнейшие проходы; уже запущенная операция заканчивает текущую работу
+и освобождает блокировки. Ожидание API ограничено `llm.timeout_s` и повторами LLM-клиента.
+
+### 17.2 Работа участника через CLI
+
+```bash
+uv run mnogobase client login alice
+uv run mnogobase client teams
+uv run mnogobase client --team TEAM_ID documents upload tests/fixtures/attention_en.md
+uv run mnogobase client --team TEAM_ID jobs list
+uv run mnogobase client --team TEAM_ID documents list
+uv run mnogobase client --team TEAM_ID search "Как работает внимание?"
+uv run mnogobase client --team TEAM_ID ask "Кто предложил Transformer?" --mode rag
+uv run mnogobase client --team TEAM_ID chat open --mode all
+```
+
+`chat open` создаёт личный диалог; `/exit` завершает интерактивный ввод. Чтобы продолжить,
+передайте выведенный `CONVERSATION_ID` в `chat open CONVERSATION_ID`. Доступны также
+`chat new`, `chat list`, `chat history CONVERSATION_ID` и
+`chat send CONVERSATION_ID "Уточняющий вопрос"`. Уточнение переформулируется по ограниченной
+истории этого диалога, а ответ обосновывается текущими источниками выбранной команды.
+
+```bash
+uv run mnogobase client --team TEAM_ID wiki list
+uv run mnogobase client --team TEAM_ID wiki show PAGE_ID
+uv run mnogobase client --team TEAM_ID graph search Transformer
+uv run mnogobase client --team TEAM_ID graph neighbors ENTITY_ID --depth 1 --limit 50
+uv run mnogobase client --team TEAM_ID documents source DOC_ID --output downloaded.md
+uv run mnogobase client --team TEAM_ID documents remove DOC_ID
+uv run mnogobase client --team TEAM_ID jobs retry JOB_ID
+uv run mnogobase client logout
+```
+
+Выходной файл `documents source` должен отсутствовать. Удаление доступно администратору,
+ставится в постоянную очередь и выполняется диспетчером. Участник может читать документы,
+загружать материалы, задавать вопросы и повторять ingest; повтор удаления требует admin.
+Диалоги личные даже для другого администратора той же команды. История хранит снимок цитат
+и отмечает недоступность удалённого исходника или Wiki-страницы.
+
+Адрес клиента задаётся через `client --url URL`, `MNOGOBASE_API_URL` либо `service.api_url`.
+Opaque session token хранится в `~/.config/mnogobase/credentials.json` с правами `0600`;
+`client --credentials PATH` задаёт другой файл. Пароль в нём не сохраняется. Сессия проверяется
+на каждом запросе; удаление членства сразу запрещает последующие обращения команды.
+
+### 17.3 API и настройки
+
+OpenAPI и схемы запросов доступны на `/docs` и `/openapi.json` запущенного API.
+Аутентификация: `POST /api/auth/login` с JSON `{ "username": "alice", "password": "..." }`,
+затем `Authorization: Bearer TOKEN`. `POST /api/auth/logout` отзывает сессию.
+Группы `/api/teams/{team_id}/...`: `members`, `documents`, `jobs`, `search`, `ask`,
+`conversations`, `wiki`, `graph`. Загрузка — raw body в
+`POST /api/teams/{team_id}/documents?filename=paper.pdf`; ответ содержит постоянный job ID.
+Идемпотентность повторной загрузки определяется содержимым внутри команды.
+
+```yaml
+service:
+  root: data
+  api_url: http://127.0.0.1:8080
+  session_hours: 24
+  max_upload_mb: 50
+  max_pending_jobs: 100
+  history_messages: 12
+  max_concurrent_operations: 4
+```
+
+Пароли хешируются Argon2, в SQLite сохраняются только хеши session tokens.
+Файлы, registry, jobs, кэш, Wiki, логи и runs находятся в `data/teams/<server-team-id>/`.
+Qdrant использует prefix `mb_team_<id>_`; Neo4j — отдельные командные labels и индексы
+с тем же namespace, узлы содержат `team_id`. ID выдаёт сервер; произвольные пути и prefixes
+через API не принимаются. Один Neo4j Community обслуживает команды без удаления legacy constraints.
+
+API асинхронный: модельные вызовы используют `await`, синхронное ядро выполняется в рабочих
+потоках с отдельными event loops и ресурсами операций. Это сохраняет отзывчивость HTTP-сервера.
+Операции над одним корпусом сериализуются файловой блокировкой; другая команда может работать
+параллельно. Занятый корпус возвращает `409`; лимит модельных операций или очереди — `429`,
+превышение загрузки — `413`, недоступность сервиса — `503`. После неудачной попытки изменения
+поиск/ответ/Wiki/граф возвращают `409` до успешного повтора, чтобы не выдавать частичный индекс.
+Списки поддерживают `limit`/`offset`; глубина графа ограничена 1–3.
+`max_concurrent_operations` ограничивает число операций с моделями между процессами, а
+`llm.concurrency` — внутренний параллелизм одной операции ingest. Отмена HTTP-ожидания не
+освобождает слот и блокировку, пока рабочая операция безопасно не завершится.
+
+Исходники выдаются авторизованным снимком под блокировкой; внутренние пути в citations
+заменяются именами файлов и API URLs. Исходники скачиваются как вложения, HTML не исполняется.
+В этой версии используются bearer sessions; браузерные cookie/CSRF, сайт, HTTPS/VPS и
+полный backup/restore относятся к следующему этапу.
+
+### 17.4 Старый проект и операторские команды
+
+Старые `.mnogobase/`, `wiki/`, Qdrant prefix и Neo4j labels остаются отдельным legacy-проектом.
+Старые данные не назначаются новым пользователям автоматически. Для переноса сохраните
+резервную копию, создайте команду и загрузите копии выбранных исходников через её API/CLI;
+индексы строятся заново, старый проект сохраняется для возврата.
+
+Оператор может выбрать зарегистрированный командный проект глобальным `--team TEAM_ID`:
+
+```bash
+uv run mnogobase --team TEAM_ID status
+uv run mnogobase --team TEAM_ID ask "Что есть в базе?"
+uv run mnogobase --team TEAM_ID wiki build
+uv run mnogobase --team TEAM_ID reindex
+```
+
+Это локальные доверенные операторские операции, не пользовательская авторизация.
+Командные writers используют общий lock диспетчера и lock корпуса; чтение — lock корпуса.
+Для пользовательских загрузок и скачиваемых источников используйте `client documents upload`:
+он копирует файл в серверный каталог и регистрирует имя. Прямой операторский `ingest` может
+индексировать внешние локальные пути, которые HTTP намеренно не выдаёт.
+`--team ... worker run` запрещён: командные ingest/remove задания выполняет `service work`.

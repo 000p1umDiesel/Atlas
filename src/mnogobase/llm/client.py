@@ -109,6 +109,9 @@ class OpenAICompatLLM:
     def model_for(self, task: str) -> str:
         return self._settings.model_for(task)
 
+    async def aclose(self) -> None:
+        await self._client.close()
+
     async def _chat(
         self, messages: list[Message], *, task: str, response_format: dict | None = None
     ) -> str:

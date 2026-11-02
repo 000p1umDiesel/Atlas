@@ -162,6 +162,10 @@ def run_worker(
     from mnogobase import cli
 
     settings = cli._settings()
+    if settings.neo4j.team_id is not None:
+        cli._fail_cleanly(
+            ValueError("Team queues require the typed dispatcher: use `mnogobase service work`")
+        )
     if once and watch:
         cli._fail_cleanly(
             ValueError("Use jobs enqueue before worker run --once; --watch is continuous")

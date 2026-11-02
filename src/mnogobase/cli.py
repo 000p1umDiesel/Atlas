@@ -5,7 +5,7 @@ import shlex
 import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -78,7 +78,7 @@ models_app = typer.Typer(
 )
 app.add_typer(models_app, name="models")
 console = Console()
-_state: dict[str, Path | None] = {"config": None}
+_state: dict[str, Path | str | None] = {"config": None, "team": None}
 # сервисы, нужные команде до старта: embedder, LLM, векторное хранилище, граф
 PREFLIGHT_CHECKS = ("models", "llm", "qdrant", "neo4j")
 INGEST_CHECKS = (*PREFLIGHT_CHECKS, "tokenizer")  # только ingest режет документы на чанки
@@ -92,8 +92,12 @@ def main(
     config: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to config.yaml.")
     ] = None,
+    team: Annotated[
+        str | None, typer.Option("--team", help="Operator: use a registered team project.")
+    ] = None,
 ) -> None:
     _state["config"] = config
+    _state["team"] = team
 
 
 def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
@@ -108,6 +112,17 @@ def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
     except (yaml.YAMLError, ValueError) as exc:  # битый YAML или ValidationError от pydantic
         console.print(f"[red]Invalid configuration:[/red] {escape(str(exc))}")
         raise typer.Exit(2) from None
+    if _state.get("team") is not None:
+        from mnogobase.service.context import team_settings
+        from mnogobase.service.errors import ServiceError
+        from mnogobase.service.store import ServiceStore
+
+        try:
+            team_id = str(_state["team"])
+            ServiceStore(settings.service.root / "service.db").get_team(team_id)
+            settings = team_settings(settings, team_id)
+        except ServiceError as exc:
+            _fail_cleanly(exc)
     if project:
         _require_project(settings, missing_exit)
     configure_logging(settings.logs_dir)
@@ -143,7 +158,27 @@ def _require_project(settings: Settings, code: int = 2) -> None:
         raise typer.Exit(code)
 
 
-def _lock(settings: Settings) -> filelock.FileLock:
+class _WriterLocks(ExitStack):
+    def release(self) -> None:
+        self.close()
+
+
+def _lock(settings: Settings) -> filelock.FileLock | _WriterLocks:
+    if settings.neo4j.team_id is not None:
+        locks = _WriterLocks()
+        try:
+            settings.service.root.mkdir(parents=True, exist_ok=True)
+            # Same acquisition order as TeamService.work_once: global worker, then corpus.
+            locks.enter_context(filelock.FileLock(settings.service.root / "worker.lock", timeout=0))
+            locks.enter_context(ingest_lock(settings.data_dir))
+        except filelock.Timeout:
+            locks.release()
+            console.print("[red]Another service worker or team writer is in progress.[/red]")
+            raise typer.Exit(2) from None
+        except BaseException:
+            locks.release()
+            raise
+        return locks
     lock = ingest_lock(settings.data_dir)
     try:
         lock.acquire()
@@ -153,6 +188,23 @@ def _lock(settings: Settings) -> filelock.FileLock:
         )
         raise typer.Exit(2) from None
     return lock
+
+
+@contextmanager
+def _read_lock(settings: Settings):
+    if settings.neo4j.team_id is None:
+        yield
+        return
+    lock = ingest_lock(settings.data_dir)
+    try:
+        lock.acquire()
+    except filelock.Timeout:
+        console.print("[red]Another team corpus operation is in progress.[/red]")
+        raise typer.Exit(2) from None
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _fail_cleanly(exc: Exception) -> None:
@@ -292,40 +344,41 @@ def status() -> None:
     """Сводка по загруженным файлам, статусам стадий, ожидающим обновлениям wiki и ошибкам."""
     # status только читает: вне проекта он сообщает об этом и завершается успешно
     settings = _settings(project=True, missing_exit=0)
-    registry = Registry(_state_db(settings))
-    try:
-        files = registry.files()
-        counts = Counter(f.status for f in files)
-        console.print(
-            f"files: {len(files)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-        )
-        summary = registry.stage_summary()
-        table = Table("stage", "done", "failed", "pending", "running")
-        for stage in STAGES:
-            row = summary.get(stage, {})
-            table.add_row(
-                stage, *(str(row.get(k, 0)) for k in ("done", "failed", "pending", "running"))
-            )
-        console.print(table)
-        console.print(f"entities waiting for wiki update: {len(registry.dirty())}")
-        removals = [doc_id for doc_id, _ in registry.pending_removals()]
-        console.print(f"pending document removals: {len(removals)}")
-        if removals:
+    with _read_lock(settings):
+        registry = Registry(_state_db(settings))
+        try:
+            files = registry.files()
+            counts = Counter(f.status for f in files)
             console.print(
-                f"  unfinished: {', '.join(removals)} — the next ingest / remove / wiki build retries "
-                "them first",
-                soft_wrap=True,
+                f"files: {len(files)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
             )
-        if stale_entity_types(registry, settings.extract.entity_types):
-            console.print(f"[yellow]warning:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True)
-        errors = registry.stage_errors()
-        if errors:
-            err_table = Table("doc_id", "stage", "error")
-            for doc_id, stage, error in errors:
-                err_table.add_row(doc_id, stage, escape(error or ""))
-            console.print(err_table)
-    finally:
-        registry.close()
+            summary = registry.stage_summary()
+            table = Table("stage", "done", "failed", "pending", "running")
+            for stage in STAGES:
+                row = summary.get(stage, {})
+                table.add_row(
+                    stage, *(str(row.get(k, 0)) for k in ("done", "failed", "pending", "running"))
+                )
+            console.print(table)
+            console.print(f"entities waiting for wiki update: {len(registry.dirty())}")
+            removals = [doc_id for doc_id, _ in registry.pending_removals()]
+            console.print(f"pending document removals: {len(removals)}")
+            if removals:
+                console.print(
+                    f"  unfinished: {', '.join(removals)} — the next ingest / remove / wiki build retries "
+                    "them first",
+                    soft_wrap=True,
+                )
+            if stale_entity_types(registry, settings.extract.entity_types):
+                console.print(f"[yellow]warning:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True)
+            errors = registry.stage_errors()
+            if errors:
+                err_table = Table("doc_id", "stage", "error")
+                for doc_id, stage, error in errors:
+                    err_table.add_row(doc_id, stage, escape(error or ""))
+                console.print(err_table)
+        finally:
+            registry.close()
 
 
 @app.command()
@@ -520,22 +573,23 @@ def ask(
 ) -> None:
     """Ответить на вопрос со ссылками на источники в одном режиме retrieval."""
     settings = _settings(project=True)
-    _preflight(settings)
-    application = build_app(settings)
-    try:
-        retrievers, answerer, translator = _answer_setup(application)
-        answer = asyncio.run(
-            run_mode(
-                question,
-                mode.value,
-                retrievers[mode.value],
-                answerer,
-                k or settings.retrieval.k,
-                translator,
+    with _read_lock(settings):
+        _preflight(settings)
+        application = build_app(settings)
+        try:
+            retrievers, answerer, translator = _answer_setup(application)
+            answer = asyncio.run(
+                run_mode(
+                    question,
+                    mode.value,
+                    retrievers[mode.value],
+                    answerer,
+                    k or settings.retrieval.k,
+                    translator,
+                )
             )
-        )
-    finally:
-        application.close()
+        finally:
+            application.close()
     _print_answer(answer)
 
 
@@ -546,23 +600,24 @@ def compare(
 ) -> None:
     """Ответить в режимах rag / wiki / graph / all и записать сравнение в runs/compare.jsonl."""
     settings = _settings(project=True)
-    _preflight(settings)
-    application = build_app(settings)
-    try:
-        retrievers, answerer, translator = _answer_setup(application)
-        answers = asyncio.run(
-            do_compare(
-                question,
-                retrievers,
-                answerer,
-                k or settings.retrieval.k,
-                settings.runs_dir,
-                config_hash(settings),
-                translator,
+    with _read_lock(settings):
+        _preflight(settings)
+        application = build_app(settings)
+        try:
+            retrievers, answerer, translator = _answer_setup(application)
+            answers = asyncio.run(
+                do_compare(
+                    question,
+                    retrievers,
+                    answerer,
+                    k or settings.retrieval.k,
+                    settings.runs_dir,
+                    config_hash(settings),
+                    translator,
+                )
             )
-        )
-    finally:
-        application.close()
+        finally:
+            application.close()
     table = Table("mode", "answer", "sources (cited)", "latency ms", "tokens in/out", "context")
     for a in answers:
         cited = ", ".join(_where(x.path, x.page, x.ref) for x in a.sources if x.cited) or "-"
@@ -782,3 +837,8 @@ def models_logs(
         model_runner.logs(served[0], follow)
     except (ServeError, OSError) as exc:
         _fail_cleanly(exc)
+
+
+from mnogobase.service.cli import register_cli  # noqa: E402
+
+register_cli(app)

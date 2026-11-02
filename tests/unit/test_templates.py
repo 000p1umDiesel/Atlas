@@ -28,6 +28,7 @@ CASES = {
     ),
     "answer": dict(question="VAL_QUESTION", context="VAL_CONTEXT", language="VAL_LANGUAGE"),
     "translate_query": dict(question="VAL_QUESTION"),
+    "chat_query": dict(question="VAL_QUESTION", history="VAL_HISTORY"),
 }
 
 

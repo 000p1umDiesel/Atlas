@@ -60,6 +60,9 @@ class QdrantStore:
             self._dim = self._dim()
         return self._dim
 
+    def close(self) -> None:
+        self.client.close()
+
     def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Выполняет сетевой вызов Qdrant, повторяя только при транспортных ошибках."""
         retrying = Retrying(

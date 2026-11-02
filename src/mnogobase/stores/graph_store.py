@@ -34,6 +34,10 @@ _SCHEMA = [
     "CREATE FULLTEXT INDEX entity_names IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.aliases_text]",
 ]
 _WORD = re.compile(r"\w+", re.UNICODE)
+_TEAM_ID = re.compile(r"[0-9a-f]{32}\Z")
+_NODE_LABEL = re.compile(r":(Document|Chunk|Entity|WikiPage)\b")
+_NODE_MERGE = re.compile(r"(MERGE \(\w+:(?:Document|Chunk|Entity|WikiPage) \{)")
+_SCHEMA_NAME = re.compile(r"\A(CREATE (?:CONSTRAINT|(?:FULLTEXT )?INDEX)) (\w+)\b")
 _PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version} AS page"
 _REL_MAP = (
     "{src_id: startNode(r).entity_id, src_name: startNode(r).name, predicate: r.predicate, "
@@ -50,17 +54,42 @@ class DeleteResult:
     removed_pages: list[tuple[str, str]]
 
 
+def _scope_query(query: str, team_id: str | None) -> str:
+    """Только фиксированные серверные Cypher-шаблоны; значения остаются параметрами.
+
+    Командные узлы не получают legacy labels: иначе старые unique constraints и
+    полнотекстовый индекс объединяли бы проекты. Unique ID внутри отдельного label
+    уже задаёт уникальность пары (team_id, local_id), не меняя публичный local_id.
+    Вызывается и для обычных запросов, и внутри транзакции каскадного удаления.
+    """
+    if team_id is None:
+        return query
+    # Защита находится здесь тоже: даже прямой вызов helper не интерполирует чужой Cypher.
+    if not isinstance(team_id, str) or not _TEAM_ID.fullmatch(team_id):
+        raise ValueError("team_id must contain exactly 32 lowercase hexadecimal characters")
+    prefix = f"mb_team_{team_id}_"
+    query = _NODE_MERGE.sub(r"\1team_id: $_team_id, ", query)
+    query = _NODE_LABEL.sub(lambda match: f":{prefix}{match[1]}", query)
+    query = _SCHEMA_NAME.sub(lambda match: f"{match[1]} {prefix}{match[2]}", query)
+    return query.replace("'entity_names'", f"'{prefix}entity_names'")
+
+
 class GraphStore:
-    def __init__(self, driver: Driver, database: str | None = None):
+    def __init__(self, driver: Driver, database: str | None = None, *, team_id: str | None = None):
+        if team_id is not None and (
+            not isinstance(team_id, str) or not _TEAM_ID.fullmatch(team_id)
+        ):
+            raise ValueError("team_id must contain exactly 32 lowercase hexadecimal characters")
         self._driver = driver
         self._db = database
+        self._team_id = team_id
 
     @classmethod
     def from_settings(cls, settings: Neo4jSettings) -> GraphStore:
         driver = GraphDatabase.driver(
             settings.uri, auth=(settings.user, settings.password()), **DRIVER_OPTIONS
         )
-        return cls(driver)
+        return cls(driver, team_id=settings.team_id)
 
     def close(self) -> None:
         self._driver.close()
@@ -69,6 +98,9 @@ class GraphStore:
         self._driver.verify_connectivity()
 
     def _run(self, query: str, **params) -> list[dict]:
+        query = _scope_query(query, self._team_id)
+        if self._team_id is not None:
+            params["_team_id"] = self._team_id
         records, _, _ = self._driver.execute_query(query, parameters_=params, database_=self._db)
         return [r.data() for r in records]
 
@@ -79,14 +111,16 @@ class GraphStore:
         self._run("CALL db.awaitIndexes(60)")
 
     def wipe(self) -> None:
-        self._run("MATCH (n) DETACH DELETE n")
+        self._run("MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage DETACH DELETE n")
 
     def counts(self) -> dict[str, int]:
         out = {
             label: self._run(f"MATCH (n:{label}) RETURN count(n) AS n")[0]["n"]
             for label in ("Document", "Chunk", "Entity", "WikiPage")
         }
-        out["RELATED"] = self._run("MATCH ()-[r:RELATED]->() RETURN count(r) AS n")[0]["n"]
+        out["RELATED"] = self._run("MATCH (:Entity)-[r:RELATED]->(:Entity) RETURN count(r) AS n")[
+            0
+        ]["n"]
         return out
 
     # ---- документы / чанки ----
@@ -164,7 +198,7 @@ class GraphStore:
         # а его сущности — с устаревшими счётчиками упоминаний / осиротевшими wiki-страницами
         # (повтор ничего бы не сделал)
         with self._driver.session(database=self._db) as session:
-            return session.execute_write(_delete_document_tx, doc_id)
+            return session.execute_write(_delete_document_tx, doc_id, self._team_id)
 
     def chunks_by_ids(self, chunk_ids: list[str]) -> list[ChunkView]:
         rows = self._run(
@@ -327,11 +361,14 @@ class GraphStore:
         rows = self._run(
             "MATCH (s:Entity) WHERE s.entity_id IN $seeds "
             f"MATCH p = (s)-[:RELATED*1..{hops}]-(:Entity) "
+            "WHERE all(n IN nodes(p) WHERE n:Entity) "
             "WITH p LIMIT 5000 "
             "UNWIND relationships(p) AS r "
             "WITH DISTINCT r "
             "WITH r, startNode(r) AS a, endNode(r) AS b "
-            "WITH r, a, b, COUNT { (a)--() } + COUNT { (b)--() } AS degree "
+            "WITH r, a, b, "
+            "COUNT { (a)--(n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage } + "
+            "COUNT { (b)--(n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage } AS degree "
             "RETURN a.entity_id AS src_id, a.name AS src_name, r.predicate AS predicate, "
             "b.entity_id AS dst_id, b.name AS dst_name, r.description AS description, "
             "r.weight AS weight, r.evidence AS evidence, degree "
@@ -402,8 +439,13 @@ class GraphStore:
         return [PageIndexRow(**r) for r in rows]
 
 
-def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
-    found = tx.run(
+def _delete_document_tx(
+    tx: ManagedTransaction, doc_id: str, team_id: str | None = None
+) -> DeleteResult:
+    def run(query: str, **params):
+        return tx.run(_scope_query(query, team_id), **params)
+
+    found = run(
         "MATCH (d:Document {doc_id: $doc_id}) "
         "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
         "OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity) "
@@ -414,8 +456,9 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
     eids = found[0]["eids"] if found else []
     if cids:
         # убираем подтверждения из удалённых чанков; рёбра, оставшиеся без подтверждений, исчезают
-        tx.run(
-            "MATCH ()-[r:RELATED]->() WHERE any(x IN r.evidence WHERE x IN $cids) "
+        run(
+            "MATCH (:Entity)-[r:RELATED]->(:Entity) "
+            "WHERE any(x IN r.evidence WHERE x IN $cids) "
             "WITH r, [i IN range(0, size(r.evidence) - 1) WHERE NOT r.evidence[i] IN $cids] AS keep "
             "SET r.description = '', r.evidence = [i IN keep | r.evidence[i]], "
             "    r.strengths = [i IN keep | r.strengths[i]] "
@@ -423,7 +466,7 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
             "WITH r WHERE size(r.evidence) = 0 DELETE r",
             cids=cids,
         ).consume()
-    tx.run(
+    run(
         "MATCH (d:Document {doc_id: $doc_id}) "
         "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
         "WITH d, collect(c) AS cs "
@@ -431,7 +474,7 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
         "DETACH DELETE d",
         doc_id=doc_id,
     ).consume()
-    removed = tx.run(
+    removed = run(
         "UNWIND $eids AS eid "
         "MATCH (e:Entity {entity_id: eid}) "
         "SET e.mention_count = COUNT { (e)<-[:MENTIONS]-(:Chunk) } "

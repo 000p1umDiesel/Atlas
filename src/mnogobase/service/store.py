@@ -1,0 +1,372 @@
+"""Служебная SQLite: пользователи, отзываемые сессии и личные диалоги."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import sqlite3
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerificationError
+
+from mnogobase.service.context import TeamContext, validate_team_id
+from mnogobase.service.errors import ServiceError
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1))
+);
+CREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS memberships (
+    team_id TEXT NOT NULL REFERENCES teams(id), user_id TEXT NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL CHECK(role IN ('admin', 'member')), PRIMARY KEY(team_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id),
+    user_id TEXT NOT NULL REFERENCES users(id), title TEXT NOT NULL, created_at TEXT NOT NULL,
+    UNIQUE(id, team_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS conversations_owner ON conversations(team_id, user_id, created_at);
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, team_id TEXT NOT NULL,
+    user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+    mode TEXT NOT NULL, sources TEXT NOT NULL, status TEXT NOT NULL, query TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(conversation_id, team_id, user_id)
+        REFERENCES conversations(id, team_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS messages_owner ON messages(team_id, user_id, conversation_id, created_at);
+"""
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _pagination(limit: int, offset: int) -> None:
+    if type(limit) is not int or type(offset) is not int or not 1 <= limit <= 1000 or offset < 0:
+        raise ServiceError(400, "Invalid pagination")
+
+
+class ServiceStore:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._passwords = PasswordHasher()
+        with self._connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(_SCHEMA)
+
+    @contextmanager
+    def _connection(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
+            with conn:
+                yield conn
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise ServiceError(409, "Service database is busy") from None
+            raise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _user(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND active=1", (user_id,)).fetchone()
+        if user is None:
+            raise ServiceError(403, "User is inactive or unavailable")
+        return user
+
+    @staticmethod
+    def _team(conn: sqlite3.Connection, team_id: str) -> sqlite3.Row:
+        validate_team_id(team_id)
+        team = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
+        if team is None:
+            raise ServiceError(404, "Team not found")
+        return team
+
+    def _context(
+        self, conn: sqlite3.Connection, user_id: str, team_id: str, *, admin: bool = False
+    ) -> TeamContext:
+        validate_team_id(team_id)
+        self._user(conn, user_id)
+        member = conn.execute(
+            "SELECT role FROM memberships WHERE team_id=? AND user_id=?", (team_id, user_id)
+        ).fetchone()
+        if member is None or (admin and member["role"] != "admin"):
+            raise ServiceError(403, "Team access denied")
+        return TeamContext(team_id, user_id, member["role"])
+
+    def create_user(self, username: str, password: str) -> dict:
+        username = username.strip()
+        if not username or not password:
+            raise ServiceError(400, "Username and password are required")
+        user = {"id": uuid.uuid4().hex, "username": username}
+        password_hash = self._passwords.hash(password)
+        try:
+            with self._connection(write=True) as conn:
+                conn.execute(
+                    "INSERT INTO users(id, username, password_hash) VALUES(?, ?, ?)",
+                    (user["id"], username, password_hash),
+                )
+        except sqlite3.IntegrityError:
+            raise ServiceError(409, "Username already exists") from None
+        return user
+
+    def disable_user(self, user_id: str) -> None:
+        with self._connection(write=True) as conn:
+            self._user(conn, user_id)
+            conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
+    def create_team(self, name: str) -> dict:
+        name = name.strip()
+        if not name:
+            raise ServiceError(400, "Team name is required")
+        team = {"id": uuid.uuid4().hex, "name": name}
+        with self._connection(write=True) as conn:
+            conn.execute("INSERT INTO teams(id, name) VALUES(?, ?)", (team["id"], name))
+        return team
+
+    def add_member(self, team_id: str, user_id: str, role: str = "member") -> None:
+        if role not in {"member", "admin"}:
+            raise ServiceError(400, "Invalid membership role")
+        with self._connection(write=True) as conn:
+            self._team(conn, team_id)
+            if conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone() is None:
+                raise ServiceError(404, "User not found")
+            conn.execute(
+                "INSERT INTO memberships(team_id, user_id, role) VALUES(?, ?, ?) "
+                "ON CONFLICT(team_id, user_id) DO UPDATE SET role=excluded.role",
+                (team_id, user_id, role),
+            )
+
+    def remove_member(self, team_id: str, user_id: str) -> None:
+        with self._connection(write=True) as conn:
+            self._team(conn, team_id)
+            conn.execute(
+                "DELETE FROM memberships WHERE team_id=? AND user_id=?", (team_id, user_id)
+            )
+
+    def members(self, team_id: str) -> list[dict]:
+        with self._connection() as conn:
+            self._team(conn, team_id)
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT m.user_id, u.username, m.role FROM memberships m "
+                    "JOIN users u ON u.id=m.user_id WHERE m.team_id=? AND u.active=1 "
+                    "ORDER BY u.username, u.id",
+                    (team_id,),
+                )
+            ]
+
+    def login(self, username: str, password: str, ttl_hours: int = 24) -> str:
+        if not isinstance(ttl_hours, (int, float)) or not 0 < ttl_hours <= 24 * 365:
+            raise ServiceError(400, "Invalid session lifetime")
+        with self._connection() as conn:
+            user = conn.execute(
+                "SELECT * FROM users WHERE username=? AND active=1", (username.strip(),)
+            ).fetchone()
+        try:
+            if user is None:
+                # Match the verification cost for unknown users without creating a session.
+                self._passwords.hash(password)
+                raise ServiceError(401, "Invalid username or password")
+            self._passwords.verify(user["password_hash"], password)
+        except VerificationError:
+            raise ServiceError(401, "Invalid username or password") from None
+        token = secrets.token_urlsafe(32)
+        with self._connection(write=True) as conn:
+            # A disable between verification and this write must also reject the login.
+            if not conn.execute(
+                "SELECT id FROM users WHERE id=? AND active=1", (user["id"],)
+            ).fetchone():
+                raise ServiceError(401, "Invalid username or password")
+            conn.execute(
+                "INSERT INTO sessions(token_hash, user_id, expires_at) VALUES(?, ?, ?)",
+                (_token_hash(token), user["id"], time.time() + ttl_hours * 3600),
+            )
+        return token
+
+    def authenticate(self, token: str) -> dict:
+        with self._connection() as conn:
+            user = conn.execute(
+                "SELECT u.id, u.username FROM users u JOIN sessions s ON s.user_id=u.id "
+                "WHERE s.token_hash=? AND s.expires_at>? AND u.active=1",
+                (_token_hash(token), time.time()),
+            ).fetchone()
+            if user is None:
+                raise ServiceError(401, "Invalid or expired session")
+            return dict(user)
+
+    def logout(self, token: str) -> None:
+        with self._connection(write=True) as conn:
+            conn.execute("DELETE FROM sessions WHERE token_hash=?", (_token_hash(token),))
+
+    def teams(self, user_id: str | None = None) -> list[dict]:
+        with self._connection() as conn:
+            if user_id is None:
+                rows = conn.execute("SELECT * FROM teams ORDER BY name, id")
+            else:
+                self._user(conn, user_id)
+                rows = conn.execute(
+                    "SELECT t.* FROM teams t JOIN memberships m ON m.team_id=t.id "
+                    "WHERE m.user_id=? ORDER BY t.name, t.id",
+                    (user_id,),
+                )
+            return [dict(row) for row in rows]
+
+    def get_team(self, team_id: str) -> dict:
+        with self._connection() as conn:
+            return dict(self._team(conn, team_id))
+
+    def context(self, user_id: str, team_id: str, admin: bool = False) -> TeamContext:
+        with self._connection() as conn:
+            return self._context(conn, user_id, team_id, admin=admin)
+
+    def _conversation(
+        self, conn: sqlite3.Connection, ctx: TeamContext, conversation_id: str
+    ) -> sqlite3.Row:
+        self._context(conn, ctx.user_id, ctx.team_id)
+        chat = conn.execute(
+            "SELECT * FROM conversations WHERE id=? AND team_id=? AND user_id=?",
+            (conversation_id, ctx.team_id, ctx.user_id),
+        ).fetchone()
+        if chat is None:
+            raise ServiceError(404, "Conversation not found")
+        return chat
+
+    def create_conversation(self, context: TeamContext, title: str = "") -> dict:
+        chat = {
+            "id": uuid.uuid4().hex,
+            "team_id": context.team_id,
+            "user_id": context.user_id,
+            "title": title,
+            "created_at": _now(),
+        }
+        with self._connection(write=True) as conn:
+            self._context(conn, context.user_id, context.team_id)
+            conn.execute(
+                "INSERT INTO conversations(id, team_id, user_id, title, created_at) "
+                "VALUES(:id, :team_id, :user_id, :title, :created_at)",
+                chat,
+            )
+        return chat
+
+    def conversations(self, context: TeamContext, limit: int = 50, offset: int = 0) -> list[dict]:
+        _pagination(limit, offset)
+        with self._connection() as conn:
+            self._context(conn, context.user_id, context.team_id)
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM conversations WHERE team_id=? AND user_id=? "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?",
+                    (context.team_id, context.user_id, limit, offset),
+                )
+            ]
+
+    def conversation(self, context: TeamContext, conversation_id: str) -> dict:
+        with self._connection() as conn:
+            return dict(self._conversation(conn, context, conversation_id))
+
+    @staticmethod
+    def _message(row: sqlite3.Row) -> dict:
+        message = dict(row)
+        message["sources"] = json.loads(message["sources"])
+        return message
+
+    def messages(
+        self, context: TeamContext, conversation_id: str, limit: int = 100, offset: int = 0
+    ) -> list[dict]:
+        _pagination(limit, offset)
+        with self._connection() as conn:
+            self._conversation(conn, context, conversation_id)
+            return [
+                self._message(row)
+                for row in conn.execute(
+                    "SELECT * FROM messages WHERE conversation_id=? AND team_id=? AND user_id=? "
+                    "ORDER BY created_at, rowid LIMIT ? OFFSET ?",
+                    (conversation_id, context.team_id, context.user_id, limit, offset),
+                )
+            ]
+
+    def recent_messages(
+        self, context: TeamContext, conversation_id: str, limit: int = 12
+    ) -> list[dict]:
+        """Последние сообщения в хронологическом порядке, без загрузки всего чата."""
+        _pagination(limit, 0)
+        with self._connection() as conn:
+            self._conversation(conn, context, conversation_id)
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE conversation_id=? AND team_id=? AND user_id=? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (conversation_id, context.team_id, context.user_id, limit),
+            ).fetchall()
+            return [self._message(row) for row in reversed(rows)]
+
+    def append_message(
+        self,
+        context: TeamContext,
+        conversation_id: str,
+        role: str,
+        content: str,
+        *,
+        mode: str = "rag",
+        sources: list | None = None,
+        status: str = "done",
+        query: str | None = None,
+    ) -> dict:
+        if role not in {"user", "assistant", "system"}:
+            raise ServiceError(400, "Invalid message role")
+        if sources is not None and not isinstance(sources, list):
+            raise ServiceError(400, "Invalid message sources")
+        try:
+            sources_json = json.dumps(sources if sources is not None else [], ensure_ascii=False)
+        except (TypeError, ValueError):
+            raise ServiceError(400, "Invalid message sources") from None
+        message = {
+            "id": uuid.uuid4().hex,
+            "conversation_id": conversation_id,
+            "team_id": context.team_id,
+            "user_id": context.user_id,
+            "role": role,
+            "content": content,
+            "mode": mode,
+            "sources": sources_json,
+            "status": status,
+            "query": query,
+            "created_at": _now(),
+        }
+        with self._connection(write=True) as conn:
+            self._conversation(conn, context, conversation_id)
+            conn.execute(
+                "INSERT INTO messages(id, conversation_id, team_id, user_id, role, content, mode, "
+                "sources, status, query, created_at) VALUES(:id, :conversation_id, :team_id, :user_id, "
+                ":role, :content, :mode, :sources, :status, :query, :created_at)",
+                message,
+            )
+        message["sources"] = json.loads(sources_json)
+        return message

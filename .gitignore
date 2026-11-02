@@ -9,7 +9,9 @@ __pycache__/
 .DS_Store
 documents/
 /wiki/
+/data/
 *.superpowers
 docs/superpowers
 .pytest_cache
 .ruff_cache
+.planning/

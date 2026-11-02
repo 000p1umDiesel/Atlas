@@ -44,6 +44,9 @@ class OpenAICompatEmbedder:
         assert self._dim is not None
         return self._dim
 
+    def close(self) -> None:
+        self._client.close()
+
     def _embed(self, inputs: list[str]) -> list[list[float]]:
         start = time.perf_counter()
         for attempt in Retrying(
