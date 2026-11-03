@@ -3,13 +3,17 @@ from pathlib import Path
 
 import pytest
 
+from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.registry import ingest_lock
+
+pytestmark = pytest.mark.integration
 
 
 def queue(path, clock=lambda: 100.0):
     from mnogobase.background.queue import JobQueue
 
-    return JobQueue(path, clock=clock)
+    return JobQueue(database_target(Settings(), "jobs"), clock=clock)
 
 
 def test_queue_persists_deduplicates_and_preserves_new_revision(tmp_path):
@@ -141,7 +145,7 @@ async def test_worker_resumes_after_interruption_and_respects_writer_lock(tmp_pa
     async def interrupted(job):
         raise asyncio.CancelledError
 
-    with ingest_lock(tmp_path):
+    with ingest_lock(tmp_path, target=database_target(Settings())):
         assert not await process_one(q, interrupted, tmp_path)
     assert q.jobs()[0].attempts == 0
     with pytest.raises(asyncio.CancelledError):
@@ -187,8 +191,7 @@ async def test_watcher_can_enqueue_while_worker_holds_writer_lock(tmp_path):
 
     source = tmp_path / "a.md"
     source.write_text("a")
-    db = tmp_path / "jobs.db"
-    q = JobQueue(db)
+    q = JobQueue(database_target(Settings(), "jobs"))
     q.enqueue(source, file_doc_id(source))
 
     async def handler(job):
@@ -196,7 +199,7 @@ async def test_watcher_can_enqueue_while_worker_holds_writer_lock(tmp_path):
         finished = threading.Event()
 
         def scan():
-            other = JobQueue(db)
+            other = JobQueue(database_target(Settings(), "jobs"))
             try:
                 Watcher(other, [tmp_path], ["md"], settle=0).scan()
             finally:

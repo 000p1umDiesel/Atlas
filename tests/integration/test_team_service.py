@@ -25,8 +25,8 @@ pytestmark = pytest.mark.integration
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
-@pytest.fixture(params=["sqlite", "postgresql"])
-def team_service(tmp_path, neo4j_container, qdrant_client, request):
+@pytest.fixture
+def team_service(tmp_path, neo4j_container, qdrant_client, pg_settings):
     settings = Settings(
         device="cpu",
         service={"root": tmp_path / "service"},
@@ -36,8 +36,7 @@ def team_service(tmp_path, neo4j_container, qdrant_client, request):
         vision={"enabled": False},
         wiki={"min_mentions": 1},
     )
-    if request.param == "postgresql":
-        settings.database = request.getfixturevalue("pg_settings").database
+    settings.database = pg_settings.database
     operations = []
     llms = []
 

@@ -106,6 +106,9 @@ def test_postgresql_corpus_snapshot_reads_registry(pg_settings):
 
 def test_sqlite_migration_preserves_all_stores_and_rejects_repeat(pg_settings, tmp_path):
     import hashlib
+    import time
+
+    from argon2 import PasswordHasher
 
     from mnogobase.background.queue import JobQueue
     from mnogobase.database_migration import migrate_sqlite
@@ -113,47 +116,77 @@ def test_sqlite_migration_preserves_all_stores_and_rejects_repeat(pg_settings, t
     from mnogobase.service.context import team_settings
     from mnogobase.service.runtime import TeamService
     from mnogobase.service.store import ServiceStore
+    from tests.legacy_sqlite import legacy_database
 
-    legacy = pg_settings.model_copy(deep=True)
-    legacy.database.backend = "sqlite"
-    service = TeamService(legacy)
-    user = service.store.create_user("alice", "password")
-    team = service.store.create_team("Team")
-    service.store.add_member(team["id"], user["id"], "admin")
-    ctx = service.store.context(user["id"], team["id"])
-    token = service.store.login("alice", "password")
-    chat = service.store.create_conversation(ctx)
-    msg = service.store.append_message(ctx, chat["id"], "user", "Вопрос")
-    service.upload(ctx, "paper.md", b"attention")
-    scoped = team_settings(legacy, team["id"])
-    registry = Registry(database_target(scoped))
-    registry.upsert_file("/one.md", "one", 5, 1.123456789, "done")
-    registry.put_extraction("c", "v1", "m", "old")
-    registry.put_extraction("c", "v2", "m", "new")
-    registry.put_extraction("c", "v1", "m", "latest")
-    registry.set_meta("embedder", "unchanged")
-    registry.close()
+    user, team, chat, message = [letter * 32 for letter in "abcd"]
+    token = "old-session-token"
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with legacy_database(pg_settings.service.root / "service.db", "service") as source:
+        source.execute(
+            "INSERT INTO users VALUES(?,?,?,1)", (user, "alice", PasswordHasher().hash("password"))
+        )
+        source.execute("INSERT INTO teams VALUES(?,?)", (team, "Team"))
+        source.execute("INSERT INTO memberships VALUES(?,?,?)", (team, user, "admin"))
+        source.execute("INSERT INTO sessions VALUES(?,?,?)", (token_hash, user, time.time() + 3600))
+        source.execute(
+            "INSERT INTO conversations VALUES(?,?,?,?,?)",
+            (chat, team, user, "Приватный вопрос", "2026-01-01"),
+        )
+        source.execute(
+            "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (message, chat, team, user, "user", "Вопрос", "all", "[]", "done", None, "2026-01-01"),
+        )
+    scoped = team_settings(pg_settings, team)
+    doc_id = hashlib.sha256(b"attention").hexdigest()[:16]
+    path = scoped.data_dir.parent / "documents" / (doc_id + ".md")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"attention")
+    with legacy_database(scoped.data_dir / "state.db", "state") as source:
+        source.execute(
+            "INSERT INTO files VALUES(?,?,?,?,?,?)",
+            (str(path), doc_id, 9, 1.123456789, "done", "2026-01-01"),
+        )
+        for version, value in [("v1", "old"), ("v2", "new"), ("v1", "latest")]:
+            source.execute(
+                "INSERT OR REPLACE INTO extraction_cache VALUES(?,?,?,?)",
+                ("c", version, "m", value),
+            )
+        source.execute("INSERT INTO meta VALUES(?,?)", ("embedder", "unchanged"))
+    with legacy_database(scoped.data_dir / "jobs.db", "jobs") as source:
+        source.execute(
+            "INSERT INTO jobs(id,path,fingerprint,status,attempts) VALUES(1,?,?,?,1)",
+            (str(path), doc_id, "running"),
+        )
+        source.execute("INSERT INTO desired VALUES(?,?)", (str(path), doc_id))
+    with legacy_database(scoped.data_dir / "uploads.db", "uploads") as source:
+        source.execute("INSERT INTO uploads VALUES(?,?,?)", (doc_id, "paper.md", str(path)))
     files = list(tmp_path.rglob("*.db"))
     before = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     report = migrate_sqlite(pg_settings)
     assert sum(report.values()) > 0
     assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files} == before
     store = ServiceStore(database_target(pg_settings, "service"))
-    assert store.authenticate(token)["id"] == user["id"]
-    assert store.messages(ctx, chat["id"]) == [msg]
+    assert store.authenticate(token)["id"] == user
+    assert store.login("alice", "password")
+    ctx = store.context(user, team)
+    assert store.messages(ctx, chat)[0]["content"] == "Вопрос"
     service = TeamService(pg_settings)
     assert service.documents(ctx)[0]["name"] == "paper.md"
-    target = database_target(team_settings(pg_settings, team["id"]))
+    target = database_target(scoped)
     registry = Registry(target)
     assert registry.get_latest_extraction("c") == "latest"
     assert registry.get_meta("embedder") == "unchanged"
+    assert registry.files()[0].mtime == 1.123456789
     registry.put_extraction("c", "v2", "m", "after migration")
     assert registry.get_latest_extraction("c") == "after migration"
     registry.close()
     queue = JobQueue(target)
-    new_id = queue.enqueue(tmp_path / "new.md", "new")
-    assert new_id > 1
-    queue.close()
+    try:
+        assert queue.get(1).status == "running"
+        assert queue.has_unfinished_writes()
+        assert queue.enqueue(tmp_path / "new.md", "new") > 1
+    finally:
+        queue.close()
     with pytest.raises(ValueError, match="empty|already|непуст"):
         migrate_sqlite(pg_settings)
 
@@ -162,12 +195,12 @@ def test_migration_rolls_back_all_imports_on_nonempty_destination(pg_settings):
     from mnogobase.database_migration import migrate_sqlite
     from mnogobase.registry import Registry
     from mnogobase.service.store import ServiceStore
+    from tests.legacy_sqlite import legacy_database
 
-    registry = Registry(pg_settings.data_dir / "state.db")
-    registry.upsert_file("/one.md", "one", 1, 0, "done")
-    registry.close()
-    legacy_store = ServiceStore(pg_settings.service.root / "service.db")
-    legacy_store.create_user("source", "password")
+    with legacy_database(pg_settings.data_dir / "state.db", "state") as source:
+        source.execute("INSERT INTO files VALUES('/one.md','one',1,0,'done','today')")
+    with legacy_database(pg_settings.service.root / "service.db", "service") as source:
+        source.execute("INSERT INTO users VALUES('u','source','hash',1)")
     destination = ServiceStore(database_target(pg_settings, "service"))
     destination.create_user("existing", "password")
     with pytest.raises(ValueError):
@@ -191,17 +224,14 @@ def test_postgresql_project_marker_guards_wrong_cwd(pg_settings, tmp_path):
 
 
 def test_migration_late_constraint_failure_rolls_back_previous_tables(pg_settings):
-    import sqlite3
-
     from sqlalchemy.exc import IntegrityError
 
     from mnogobase.database_migration import migrate_sqlite
-    from mnogobase.service.store import ServiceStore
+    from tests.legacy_sqlite import legacy_database
 
-    source = ServiceStore(pg_settings.service.root / "service.db")
-    source.create_user("alice", "password")
-    with sqlite3.connect(source.path) as conn:
-        conn.execute("INSERT INTO memberships VALUES('missing-team','missing-user','member')")
+    with legacy_database(pg_settings.service.root / "service.db", "service") as source:
+        source.execute("INSERT INTO users VALUES('u','alice','hash',1)")
+        source.execute("INSERT INTO memberships VALUES('missing-team','missing-user','member')")
     with pytest.raises(IntegrityError):
         migrate_sqlite(pg_settings)
     target = connect(database_target(pg_settings, "service"))

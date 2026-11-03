@@ -1,4 +1,4 @@
-"""Подключения PostgreSQL и явно выбранного legacy SQLite backend.
+"""Подключения PostgreSQL и блокировки пространства проекта.
 
 SQL хранилищ использует bind-параметры DB-API; SQLAlchemy компилирует их
 для PostgreSQL. Имена схем задаёт только проверенная конфигурация.
@@ -10,13 +10,12 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
@@ -24,8 +23,8 @@ from sqlalchemy.pool import NullPool
 
 from mnogobase.config import Settings
 
-INTEGRITY_ERRORS = (sqlite3.IntegrityError, IntegrityError)
-OPERATIONAL_ERRORS = (sqlite3.OperationalError, OperationalError)
+INTEGRITY_ERRORS = (IntegrityError,)
+OPERATIONAL_ERRORS = (OperationalError,)
 
 
 class DatabaseError(RuntimeError):
@@ -46,12 +45,9 @@ class DatabaseTarget:
         return f"PostgreSQL schema {self.schema}"
 
 
-def database_target(settings: Settings, kind: str = "state") -> Path | DatabaseTarget:
+def database_target(settings: Settings, kind: str = "state") -> DatabaseTarget:
     if kind not in {"state", "jobs", "uploads", "service"}:
         raise ValueError("Unknown database kind")
-    if settings.database.backend == "sqlite":
-        root = settings.service.root if kind == "service" else settings.data_dir
-        return root / f"{kind}.db"
     url = os.environ.get(settings.database.url_env)
     if not url:
         raise DatabaseError(f"Set {settings.database.url_env} for PostgreSQL")
@@ -146,7 +142,6 @@ class PgConnection:
             ) from None
 
     def execute(self, sql, params=()):
-        sql = sql.replace("BEGIN IMMEDIATE", "BEGIN")
         query, bound = bind_sql(sql, params)
         result = Cursor(self.raw.execute(text(query), bound))
         if sql.strip() == "BEGIN":
@@ -180,33 +175,20 @@ class PgConnection:
         self.execute("ROLLBACK" if exc_type else "COMMIT")
 
 
-def connect(target: Path | DatabaseTarget, *, autocommit=True, rows=False):
-    if isinstance(target, DatabaseTarget):
-        return PgConnection(target)
-    target = Path(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        target,
-        timeout=10,
-        check_same_thread=False,
-        isolation_level=None if autocommit else "",
-    )
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA foreign_keys=ON")
-    if rows:
-        connection.row_factory = sqlite3.Row
-    return connection
+def connect(target: DatabaseTarget) -> PgConnection:
+    if not isinstance(target, DatabaseTarget):
+        raise DatabaseError(
+            "A PostgreSQL DatabaseTarget is required; file databases are unsupported"
+        )
+    return PgConnection(target)
 
 
 def initialize(connection, script: str, component: str):
-    if not isinstance(connection, PgConnection):
-        connection.executescript(script)
-        return
     with connection:
         target = connection.target
         connection.execute("SELECT pg_advisory_xact_lock(?)", (_lock_key(target, "ddl"),))
         connection.execute(f'CREATE SCHEMA IF NOT EXISTS "{target.schema}"')
-        connection.executescript(re.sub(r"\bREAL\b", "DOUBLE PRECISION", script))
+        connection.executescript(script)
         connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations(component TEXT PRIMARY KEY, version INTEGER NOT NULL)"
         )
@@ -216,9 +198,7 @@ def initialize(connection, script: str, component: str):
         )
 
 
-def target_exists(target: Path | DatabaseTarget, table="files") -> bool:
-    if not isinstance(target, DatabaseTarget):
-        return Path(target).is_file()
+def target_exists(target: DatabaseTarget, table="files") -> bool:
     connection = connect(target)
     try:
         return connection.execute(
@@ -235,8 +215,7 @@ def _lock_key(target: DatabaseTarget, key: str) -> int:
 
 
 def transaction_lock(connection, key: str) -> None:
-    if isinstance(connection, PgConnection):
-        connection.execute("SELECT pg_advisory_xact_lock(?)", (_lock_key(connection.target, key),))
+    connection.execute("SELECT pg_advisory_xact_lock(?)", (_lock_key(connection.target, key),))
 
 
 class PgLock:
@@ -280,10 +259,7 @@ class PgLock:
 
 def database_lock(settings: Settings, key: str, path: Path, *, service=False):
     target = database_target(settings, "service" if service else "state")
-    if isinstance(target, DatabaseTarget):
-        return PgLock(target, key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return FileLock(path, timeout=0)
+    return PgLock(target, key)
 
 
 def _project_identity(target: DatabaseTarget) -> dict:
@@ -296,24 +272,22 @@ def _project_identity(target: DatabaseTarget) -> dict:
 
 def mark_project(settings: Settings) -> None:
     target = database_target(settings)
-    if isinstance(target, DatabaseTarget):
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        path = settings.data_dir / "postgresql-project.json"
-        temporary = path.with_suffix(f".{uuid4().hex}.tmp")
-        try:
-            temporary.write_text(json.dumps(_project_identity(target)), encoding="utf-8")
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    path = settings.data_dir / "postgresql-project.json"
+    temporary = path.with_suffix(f".{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(_project_identity(target)), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def project_exists(settings: Settings) -> bool:
     target = database_target(settings)
-    if isinstance(target, DatabaseTarget):
-        marker = settings.data_dir / "postgresql-project.json"
-        try:
-            if json.loads(marker.read_text(encoding="utf-8")) != _project_identity(target):
-                return False
-        except (OSError, ValueError):
+    marker = settings.data_dir / "postgresql-project.json"
+    try:
+        if json.loads(marker.read_text(encoding="utf-8")) != _project_identity(target):
             return False
+    except (OSError, ValueError):
+        return False
     return target_exists(target)

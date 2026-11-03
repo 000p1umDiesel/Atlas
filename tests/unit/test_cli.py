@@ -7,6 +7,8 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from mnogobase import cli
+from mnogobase.config import Settings
+from mnogobase.database import database_target, mark_project
 from mnogobase.doctor import Check
 from mnogobase.extraction.extractor import PROMPT_VERSION
 from mnogobase.maintenance import ReindexError
@@ -14,6 +16,8 @@ from mnogobase.models import Answer, Source
 from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
 from mnogobase.serving import ServeError
+
+pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
@@ -40,11 +44,12 @@ def test_graph_status_needs_no_models_or_qdrant(tmp_path, monkeypatch):
 def register_source(root, name="a.md"):
     path = root / name
     path.write_text("source")
-    registry = Registry(root / ".mnogobase/state.db")
+    registry = Registry(database_target(Settings(), "state"))
     try:
         registry.upsert_file(str(path), "d1", 6, 0, "done")
     finally:
         registry.close()
+    mark_project(Settings(data_dir=root / ".mnogobase"))
     return path
 
 
@@ -59,7 +64,7 @@ def test_remove_preview_and_decline_do_not_connect_to_services(tmp_path, monkeyp
     declined = runner.invoke(cli.app, ["remove", str(source)], input="n\n")
     assert declined.exit_code == 1, declined.output
     assert source.read_text() == "source"
-    registry = Registry(tmp_path / ".mnogobase/state.db")
+    registry = Registry(database_target(Settings(), "state"))
     assert registry.get_file(str(source)) is not None
     registry.close()
 
@@ -141,7 +146,7 @@ def test_remove_obeys_writer_lock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source = register_source(tmp_path)
     monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
-    with ingest_lock(tmp_path / ".mnogobase"):
+    with ingest_lock(tmp_path / ".mnogobase", target=database_target(Settings())):
         result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
     assert result.exit_code == 2 and "in progress" in result.output
 
@@ -154,7 +159,8 @@ def offline(monkeypatch):
 
 
 def make_project(root: Path) -> None:
-    Registry(root / ".mnogobase" / "state.db").close()
+    Registry(database_target(Settings(), "state")).close()
+    mark_project(Settings(data_dir=root / ".mnogobase"))
 
 
 @pytest.mark.parametrize("command", ["ask", "compare"])
@@ -180,17 +186,17 @@ def test_status_outside_a_project_creates_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "No mnogobase project here" in result.output and "state.db" in result.output
+    assert "No mnogobase project here" in result.output and "PostgreSQL" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
 @pytest.mark.parametrize("args", [["ask", "what is attention?"], ["compare", "what?"]])
 def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
-    monkeypatch.chdir(tmp_path)  # здесь нет .mnogobase/state.db
+    monkeypatch.chdir(tmp_path)  # здесь нет маркера проекта PostgreSQL
     monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
-    assert "No mnogobase project here" in result.output and "state.db" in result.output
+    assert "No mnogobase project here" in result.output and "PostgreSQL" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
@@ -241,12 +247,12 @@ def test_reset_prompt_lists_the_resolved_targets(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("args", [["reset"], ["reset", "--yes"]])
 def test_reset_refuses_outside_a_project(tmp_path, monkeypatch, args):
-    monkeypatch.chdir(tmp_path)  # здесь нет .mnogobase/state.db
+    monkeypatch.chdir(tmp_path)  # здесь нет маркера проекта PostgreSQL
     monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
     monkeypatch.setattr(cli, "do_reset", lambda application: pytest.fail("reset ran"))
     result = runner.invoke(cli.app, args, input="y\n")
     assert result.exit_code == 2, result.output
-    assert "No mnogobase project" in result.output and "state.db" in result.output
+    assert "No mnogobase project" in result.output and "PostgreSQL" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
@@ -467,9 +473,10 @@ def test_wiki_build_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monk
 
 def test_status_shows_pending_removals(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    registry = Registry(tmp_path / ".mnogobase" / "state.db")
+    registry = Registry(database_target(Settings(), "state"))
     registry.put_removal("abcd1234abcd1234", "{}")
     registry.close()
+    mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
     assert "pending document removals: 1" in result.output
@@ -486,9 +493,10 @@ def test_doctor_warning_is_shown_but_does_not_fail(tmp_path, monkeypatch):
 
 
 def _extracted_project(root: Path, types_signature: str) -> None:
-    registry = Registry(root / ".mnogobase" / "state.db")
+    registry = Registry(database_target(Settings(), "state"))
     registry.put_extraction("c1", f"{PROMPT_VERSION}:{types_signature}", "m", "{}")
     registry.close()
+    mark_project(Settings(data_dir=root / ".mnogobase"))
 
 
 def test_status_warns_when_the_entity_types_changed(tmp_path, monkeypatch):

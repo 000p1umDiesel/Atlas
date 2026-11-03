@@ -4,9 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.evaluation.artifacts import read_jsonl
 from mnogobase.llm.client import Usage
 from mnogobase.registry import Registry
+
+pytestmark = pytest.mark.integration
 
 
 async def test_measured_ingest_records_stages_usage_and_wiki_failure(tmp_path):
@@ -65,7 +68,7 @@ def test_corpus_binding_detects_changed_wiki_and_indexed_sources(tmp_path):
     settings = Settings(data_dir=tmp_path / "state", wiki={"dir": tmp_path / "wiki"})
     before = corpus_snapshot(settings)
     assert not settings.data_dir.exists()
-    registry = Registry(settings.data_dir / "state.db")
+    registry = Registry(database_target(settings, "state"))
     registry.upsert_file("a.md", "id1", 1, 1, "done")
     indexed = corpus_snapshot(settings)
     assert before != indexed
@@ -91,7 +94,7 @@ def test_partial_graph_retry_changes_corpus_even_if_file_still_failed(tmp_path):
     from mnogobase.processing import corpus_snapshot
 
     settings = Settings(data_dir=tmp_path / "state", wiki={"dir": tmp_path / "wiki"})
-    registry = Registry(settings.data_dir / "state.db")
+    registry = Registry(database_target(settings, "state"))
     registry.upsert_file("a.md", "id", 1, 1, "failed")
     registry.set_stage("id", "graph", "running")
     registry.set_stage("id", "graph", "failed")

@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 
+import pytest
+
+from mnogobase.config import Settings
+from mnogobase.database import database_target
+
+pytestmark = pytest.mark.integration
+
 
 def test_cli_registration_exists():
     assert importlib.util.find_spec("mnogobase.service.cli") is not None
@@ -26,7 +33,6 @@ def test_operator_cli_creates_team_and_user(tmp_path, monkeypatch):
     import typer
     from typer.testing import CliRunner
 
-    from mnogobase.config import Settings
     from mnogobase.service.cli import register_cli
     from mnogobase.service.store import ServiceStore
 
@@ -43,7 +49,7 @@ def test_operator_cli_creates_team_and_user(tmp_path, monkeypatch):
     assert "long-enough-password" not in result.output
     result = runner.invoke(app, ["team", "create", "Research"])
     assert result.exit_code == 0, result.output
-    store = ServiceStore(tmp_path / "service.db")
+    store = ServiceStore(database_target(Settings(), "service"))
     team = store.teams()[0]
     user = store.authenticate(store.login("alice", "long-enough-password"))
     result = runner.invoke(app, ["team", "add-member", team["id"], user["id"], "--role", "admin"])
@@ -60,12 +66,11 @@ def test_http_cli_login_commands_chat_and_logout(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
     from mnogobase.api.app import create_api
-    from mnogobase.config import Settings
     from mnogobase.service.cli import register_cli
     from mnogobase.service.store import ServiceStore
 
     settings = Settings(service={"root": tmp_path})
-    store = ServiceStore(tmp_path / "service.db")
+    store = ServiceStore(database_target(Settings(), "service"))
     user = store.create_user("alice", "long-enough-password")
     team = store.create_team("Team")
     store.add_member(team["id"], user["id"], "admin")

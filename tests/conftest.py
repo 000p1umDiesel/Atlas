@@ -21,9 +21,26 @@ QDRANT_IMAGE = "qdrant/qdrant:v1.19.2"
 
 
 @pytest.fixture(autouse=True)
-def explicit_legacy_database(monkeypatch):
-    """Offline tests explicitly use SQLite; PostgreSQL tests override Settings directly."""
-    monkeypatch.setenv("MNOGOBASE_DATABASE__BACKEND", "sqlite")
+def isolated_database(request, monkeypatch):
+    prefix = "test_" + uuid.uuid4().hex[:10]
+    monkeypatch.setenv("MNOGOBASE_DATABASE__BACKEND", "postgresql")
+    monkeypatch.setenv("MNOGOBASE_DATABASE__SCHEMA_PREFIX", prefix)
+    monkeypatch.setenv("MNOGOBASE_DATABASE__PROJECT", "default")
+    uses_database = any(request.node.get_closest_marker(m) for m in ("integration", "e2e"))
+    if uses_database:
+        url = request.getfixturevalue("postgresql_url")
+        monkeypatch.setenv("DATABASE_URL", url)
+    yield
+    if uses_database:
+        from mnogobase.database import DatabaseTarget
+
+        connection = connect(DatabaseTarget(url, "public"))
+        try:
+            for (name,) in connection.execute("SELECT nspname FROM pg_namespace"):
+                if name.startswith(prefix + "_"):
+                    connection.execute(f'DROP SCHEMA "{name}" CASCADE')
+        finally:
+            connection.close()
 
 
 @pytest.fixture(scope="session")

@@ -349,6 +349,14 @@ class GraphAnalysisSettings(BaseModel):
     apoc_timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
 
 
+class GraphCommunitySettings(BaseModel):
+    enabled: bool = False
+    max_communities: int = Field(default=3, gt=0, le=20)
+    max_entities: int = Field(default=30, gt=0, le=500)
+    max_chunks: int = Field(default=3, gt=0, le=100)
+    timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+
+
 class GraphSettings(BaseModel):
     hops: int = 2
     max_relations: int = 30
@@ -356,6 +364,7 @@ class GraphSettings(BaseModel):
     seed_threshold: float = 0.3  # мин. косинус для seed-сущностей по запросу
     traversal: Literal["cypher", "apoc"] = "cypher"
     use_gds: bool = False
+    community: GraphCommunitySettings = Field(default_factory=GraphCommunitySettings)
     analysis: GraphAnalysisSettings = Field(default_factory=GraphAnalysisSettings)
 
 
@@ -403,7 +412,7 @@ class EvaluationSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    backend: Literal["postgresql", "sqlite"] = "postgresql"
+    backend: Literal["postgresql"] = "postgresql"
     url_env: str = "DATABASE_URL"
     schema_prefix: str = Field(default="mnogobase", pattern=r"^[a-z][a-z0-9_]{0,15}$")
     project: str = Field(default="default", pattern=r"^[a-z][a-z0-9_]{0,36}$")

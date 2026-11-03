@@ -68,3 +68,19 @@ def test_missing_database_url_is_a_clean_cli_error(monkeypatch):
     assert result.exit_code == 2
     assert "Set MISSING_TEST_DATABASE_URL" in result.output
     assert "Traceback" not in result.output
+
+
+def test_sqlite_backend_is_rejected_before_any_store_is_opened():
+    from mnogobase.config import DatabaseSettings
+
+    with pytest.raises(ValueError, match="postgresql"):
+        DatabaseSettings(backend="sqlite")
+
+
+def test_file_database_target_is_rejected_without_creating_files(tmp_path):
+    from mnogobase.database import DatabaseError, connect
+
+    path = tmp_path / "legacy" / "state.db"
+    with pytest.raises(DatabaseError, match="PostgreSQL"):
+        connect(path)
+    assert not path.parent.exists()

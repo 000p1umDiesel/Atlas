@@ -1,4 +1,7 @@
-from mnogobase.config import DEFAULT_ENTITY_TYPES
+import pytest
+
+from mnogobase.config import DEFAULT_ENTITY_TYPES, Settings
+from mnogobase.database import database_target
 from mnogobase.extraction.extractor import (
     PROMPT_VERSION,
     Extractor,
@@ -10,6 +13,8 @@ from mnogobase.extraction.extractor import (
 from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
 from mnogobase.registry import Registry
 from tests.fakes import FakeLLM, RecordingProgress, scripted_llm_handler
+
+pytestmark = pytest.mark.integration
 
 DOC = "a" * 16
 
@@ -36,7 +41,7 @@ def R(source, target, predicate="uses", strength=5):  # noqa: N802
 
 
 async def test_extract_uses_cache(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     ex = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
     c = chunk("The Transformer uses softmax.")
@@ -83,7 +88,7 @@ def test_clean_extraction_relations():
 
 
 async def test_extract_many_isolates_failures(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
 
     def handler(task, prompt):
         if "BROKEN" in prompt:
@@ -98,7 +103,7 @@ async def test_extract_many_isolates_failures(tmp_path):
 
 
 async def test_extract_many_advances_once_per_chunk_with_cache_hits_and_failures(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
 
     def handler(task, prompt):
         if "BROKEN" in prompt:
@@ -121,7 +126,7 @@ async def test_extract_many_advances_once_per_chunk_with_cache_hits_and_failures
 
 
 async def test_cached_falls_back_to_another_model(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     ex = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
     c = chunk("The Transformer uses softmax.")
@@ -143,7 +148,7 @@ def test_prompt_lists_types_with_descriptions():
 
 async def test_prompt_has_no_hard_coded_kinds(tmp_path):
     llm = FakeLLM(scripted_llm_handler)
-    ex = Extractor(llm, Registry(tmp_path / "s.db"), GENES)
+    ex = Extractor(llm, Registry(database_target(Settings(), "state")), GENES)
     await ex.extract(chunk("The Transformer uses softmax."), "Doc")
     [prompt] = llm.calls_for("extract")
     assert "- Gene: A named gene.\n- Other: Anything else." in prompt
@@ -158,7 +163,7 @@ def test_types_signature_is_short_stable_and_covers_descriptions():
 
 
 async def test_cache_is_keyed_by_the_entity_types(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
@@ -172,7 +177,7 @@ async def test_cache_is_keyed_by_the_entity_types(tmp_path):
 
 
 async def test_cache_hits_are_recleaned_with_the_current_types(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
@@ -187,11 +192,13 @@ async def test_cache_hits_are_recleaned_with_the_current_types(tmp_path):
 
 
 def test_empty_cache_is_never_stale(tmp_path):
-    assert not stale_entity_types(Registry(tmp_path / "s.db"), DEFAULT_ENTITY_TYPES)
+    assert not stale_entity_types(
+        Registry(database_target(Settings(), "state")), DEFAULT_ENTITY_TYPES
+    )
 
 
 async def test_stale_until_every_document_is_extracted_with_the_current_types(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     doc_a, doc_b, doc_a2, doc_b2 = "a" * 16, "b" * 16, "c" * 16, "d" * 16
     old = Extractor(llm, reg, DEFAULT_ENTITY_TYPES)
@@ -213,7 +220,7 @@ async def test_stale_until_every_document_is_extracted_with_the_current_types(tm
 
 
 async def test_a_chunk_re_extracted_with_the_current_types_is_not_stale(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
@@ -222,14 +229,14 @@ async def test_a_chunk_re_extracted_with_the_current_types_is_not_stale(tmp_path
 
 
 def test_legacy_extractions_are_stale(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     empty = ExtractionResult(entities=[], relations=[]).model_dump_json()
     reg.put_extraction(f"{DOC}:00000", "extract-v1", "fake-extract", empty)
     assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # создано до того, как типы вошли в ключ
 
 
 def test_a_new_prompt_version_with_the_same_types_is_not_stale(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     empty = ExtractionResult(entities=[], relations=[]).model_dump_json()
     sig = entity_types_signature(DEFAULT_ENTITY_TYPES)
     reg.put_extraction(f"{DOC}:00000", f"extract-v99:{sig}", "m", empty)
@@ -238,7 +245,7 @@ def test_a_new_prompt_version_with_the_same_types_is_not_stale(tmp_path):
 
 
 async def test_cached_does_not_write(tmp_path):
-    reg = Registry(tmp_path / "s.db")
+    reg = Registry(database_target(Settings(), "state"))
     llm = FakeLLM(scripted_llm_handler)
     c = chunk("The Transformer uses softmax.")
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")

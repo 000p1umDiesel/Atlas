@@ -5,6 +5,7 @@
 Запуск: `uv run pytest -m e2e -s`.
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -13,11 +14,13 @@ import pytest
 from mnogobase.app import build_app
 from mnogobase.config import load_settings
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
+from mnogobase.graph_analysis import analyze
 from mnogobase.ids import file_doc_id, normalize_name
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.compare import run_mode
 from mnogobase.stores.qdrant_store import QdrantStore
+from tests.integration.test_graph_plugins import plugin_container as plugin_container
 
 pytestmark = [
     pytest.mark.e2e,
@@ -30,6 +33,20 @@ pytestmark = [
 ROOT = Path(__file__).parents[2]
 FIXTURES = ROOT / "tests" / "fixtures"
 QUESTION = "What is the Transformer and who proposed it?"
+
+
+@pytest.fixture
+def graph(plugin_container):
+    from mnogobase.stores.graph_store import GraphStore
+
+    store = GraphStore(plugin_container.get_driver())
+    store.wipe()
+    store.ensure_schema()
+    try:
+        yield store
+    finally:
+        # The application closes this driver; the disposable container owns test data.
+        store.close()
 
 
 def make_corpus(folder: Path) -> None:
@@ -70,12 +87,14 @@ async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"
     make_corpus(corpus)
     base = load_settings(ROOT / "config.yaml")
+    assert base.llm.serve == "api", "The full cycle uses the configured LLM API"
     settings = base.model_copy(
         update={
             "data_dir": tmp_path / ".mb",
             "logs_dir": tmp_path / "logs",
             "runs_dir": tmp_path / "runs",
             "wiki": base.wiki.model_copy(update={"dir": tmp_path / "wiki"}),
+            "llm": base.llm.model_copy(update={"concurrency": 4, "timeout_s": 90}),
         }
     )
     embedder = OpenAICompatEmbedder(settings.embedder)
@@ -109,8 +128,15 @@ async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
         assert any("[^" in p.read_text(encoding="utf-8") for p in pages)
         assert (tmp_path / "wiki" / "index.md").is_file()
 
-        retrievers = build_retrievers(vectors, graph, app.embedder, app.sparse, settings)
+        analysis = analyze(graph, settings.graph.analysis)
+        assert analysis["nodes"] > 0 and analysis["communities"] > 0
+        assert graph.analysis_status()["ready"]
+
+        retrievers = build_retrievers(
+            vectors, graph, app.embedder, app.sparse, settings, reranker=app.reranker
+        )
         answerer = Answerer(app.llm, settings.retrieval.context_tokens)
+        answers = []
         for mode in Mode:
             answer = await run_mode(
                 QUESTION, mode.value, retrievers[mode.value], answerer, settings.retrieval.k
@@ -118,9 +144,26 @@ async def test_full_flow(graph, qdrant_client, tmp_path, monkeypatch):
             assert answer.text.strip(), mode
             assert answer.sources, mode
             assert any(s.cited for s in answer.sources), (mode, answer.text)
+            answers.append(answer.model_dump())
 
         again = await app.pipeline.ingest([corpus])
         assert again.processed == [] and len(again.skipped) == 4, again
         assert again.failed == {}
+        (tmp_path / "full-flow.json").write_text(
+            json.dumps(
+                {
+                    "model": settings.llm.model,
+                    "analysis": analysis,
+                    "answers": answers,
+                    "processed": len(report.processed),
+                    "skipped_on_repeat": len(again.skipped),
+                    "tokens_in": app.llm.usage.tokens_in,
+                    "tokens_out": app.llm.usage.tokens_out,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     finally:
-        app.registry.close()  # драйвер Neo4j закрывает фикстура `graph`
+        await app.aclose()  # драйвер Neo4j закрывает фикстура `graph`
+        embedder.close()

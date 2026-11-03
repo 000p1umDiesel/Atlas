@@ -5,12 +5,15 @@ from qdrant_client import QdrantClient
 from mnogobase import doctor
 from mnogobase.chunking.tokenizer import TokenizerError
 from mnogobase.config import EmbedderSettings, RerankSettings, Settings, VisionSettings
+from mnogobase.database import database_target
 from mnogobase.doctor import run_checks
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.extraction.extractor import PROMPT_VERSION, entity_types_signature
 from mnogobase.registry import Registry
 from mnogobase.stores.qdrant_store import QdrantStore
+
+pytestmark = pytest.mark.integration
 
 
 def test_plugin_check_reports_missing_optional_procedures(tmp_path, monkeypatch):
@@ -47,7 +50,7 @@ def mock_embedder(monkeypatch, handler) -> None:
 
 
 def store_signature(tmp_path, signature: str) -> None:
-    registry = Registry(tmp_path / ".mb" / "state.db")
+    registry = Registry(database_target(Settings(), "state"))
     registry.set_meta("embedder", signature)
     registry.close()
 
@@ -190,7 +193,7 @@ def test_types_check_warns_without_failing_when_the_types_changed(tmp_path):
     assert fresh.ok and not fresh.warn
     assert not (tmp_path / ".mb" / "state.db").exists()
 
-    registry = Registry(tmp_path / ".mb" / "state.db")
+    registry = Registry(database_target(Settings(), "state"))
     sig = entity_types_signature(settings.extract.entity_types)
     registry.put_extraction("c1", f"{PROMPT_VERSION}:{sig}", "m", "{}")
     [same] = run_checks(settings, only=["types"])

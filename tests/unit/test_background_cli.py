@@ -1,18 +1,21 @@
 import asyncio
 import signal
-import sqlite3
 import threading
 from types import SimpleNamespace
 
 import pytest
-from filelock import FileLock
 from rich.progress import Progress
+from sqlalchemy.exc import ResourceClosedError
 from typer.testing import CliRunner
 
 from mnogobase import cli
 from mnogobase.background import cli as background_cli
 from mnogobase.background.queue import JobQueue
+from mnogobase.config import Settings
+from mnogobase.database import DatabaseTarget, database_lock, database_target
 from mnogobase.ids import file_doc_id
+
+pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
@@ -42,7 +45,7 @@ def tracked_queues(monkeypatch):
             if self.before_close is not None:
                 self.before_close()
             super().close()
-            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            with pytest.raises(ResourceClosedError):
                 self.counts()
             self.closed = True
 
@@ -66,7 +69,7 @@ def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
 
     async def ingest(paths, **options):
         calls.extend(paths)
-        observer = JobQueue(project.parent / ".mnogobase/jobs.db")
+        observer = JobQueue(database_target(Settings(), "jobs"))
         try:
             progress = options["progress"]
             progress.files_found(1)
@@ -95,15 +98,15 @@ def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
 
 def test_second_worker_and_busy_writer_leave_job_unclaimed(project):
     runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
-    with FileLock(".mnogobase/worker.lock", timeout=0):
+    with database_lock(Settings(), "worker", Settings().data_dir / "worker.lock"):
         result = runner.invoke(cli.app, ["worker", "run", "--once"])
     assert result.exit_code == 2
-    with FileLock(".mnogobase/ingest.lock", timeout=0):
+    with database_lock(Settings(), "ingest", Settings().data_dir / "ingest.lock"):
         result = runner.invoke(cli.app, ["worker", "run", "--once"])
     assert result.exit_code == 1, result.output
     from mnogobase.background.queue import JobQueue
 
-    q = JobQueue(project.parent / ".mnogobase/jobs.db")
+    q = JobQueue(database_target(Settings(), "jobs"))
     assert q.jobs()[0].attempts == 0
     q.close()
 
@@ -193,7 +196,7 @@ def test_worker_rebinds_changed_queued_revision_before_ingest(project, monkeypat
     result = runner.invoke(cli.app, ["worker", "run", "--once"])
     assert result.exit_code == 1, result.output
     assert calls == []
-    q = JobQueue(project.parent / ".mnogobase/jobs.db")
+    q = JobQueue(database_target(Settings(), "jobs"))
     assert q.counts() == {"pending": 1, "superseded": 1}
     project.write_text("document")
     q.enqueue(project, file_doc_id(project))
@@ -235,7 +238,7 @@ def test_enqueue_closes_queue_if_discovered_source_disappears(project, monkeypat
     assert result.exit_code == 2, result.output
     assert not project.exists()
     assert len(tracked_queues) == 1 and tracked_queues[0].closed
-    q = JobQueue(project.parent / ".mnogobase/jobs.db")
+    q = JobQueue(database_target(Settings(), "jobs"))
     try:
         assert q.jobs() == []
     finally:
@@ -267,8 +270,10 @@ def test_worker_rejects_invalid_options_before_opening_queue(
 
 
 def test_job_progress_persists_steps_and_counts_and_updates_display(tmp_path):
-    db = tmp_path / "jobs.db"
-    q, observer = JobQueue(db), JobQueue(db)
+    q, observer = (
+        JobQueue(database_target(Settings(), "jobs")),
+        JobQueue(database_target(Settings(), "jobs")),
+    )
     try:
         job_id = q.enqueue(tmp_path / "a.md", "revision")
         q.claim()
@@ -309,7 +314,7 @@ def test_watch_loop_scans_new_files_and_excludes_project_outputs(
     for directory in background_cli._excluded(settings):
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "generated.md").write_text("generated content")
-    db = settings.data_dir / "jobs.db"
+    db = database_target(settings, "jobs")
     first, second, stop = threading.Event(), threading.Event(), threading.Event()
     other = project.with_name("b.md")
     queue_type = background_cli.JobQueue
@@ -338,7 +343,7 @@ def test_watch_loop_scans_new_files_and_excludes_project_outputs(
     assert not thread.is_alive()
     assert health == []
     assert len(tracked_queues) == 1 and tracked_queues[0].closed
-    q = JobQueue(db)
+    q = JobQueue(database_target(Settings(), "jobs"))
     try:
         assert {job.path for job in q.jobs()} == {str(project), str(other)}
         assert q.counts() == {"pending": 2}
@@ -347,15 +352,14 @@ def test_watch_loop_scans_new_files_and_excludes_project_outputs(
 
 
 def test_watch_loop_reports_failure_to_open_queue(project):
-    db = project.parent / "directory-not-database"
-    db.mkdir()
+    db = DatabaseTarget("postgresql://test:test@127.0.0.1:1/unavailable", "test", timeout=1)
     health = []
 
     background_cli._watch_loop(
         db, cli.load_settings(), [project.parent], threading.Event(), 0.1, 0, health
     )
 
-    assert health == ["OperationalError"]
+    assert health == ["DatabaseError"]
 
 
 def test_worker_exits_on_watcher_database_failure_and_releases_resources(
@@ -370,7 +374,7 @@ def test_worker_exits_on_watcher_database_failure_and_releases_resources(
     def open_queue(path):
         q = queue_type(path)
         if q.owner == "mnogobase-watch":
-            q._db.execute("PRAGMA query_only=ON")
+            q._db.execute("SET default_transaction_read_only = on")
             q.before_close = watcher_failed.set
         return q
 
@@ -391,14 +395,14 @@ def test_worker_exits_on_watcher_database_failure_and_releases_resources(
     )
 
     assert result.exit_code == 2, result.output
-    assert "Watcher stopped: OperationalError" in result.output
+    assert "Watcher stopped: InternalError" in result.output
     assert {q.owner for q in tracked_queues} == {"MainThread", "mnogobase-watch"}
     assert all(q.closed for q in tracked_queues)
     assert signal.getsignal(signal.SIGTERM) == previous_term
     assert not any(t.name == "mnogobase-watch" for t in threading.enumerate())
-    with FileLock(".mnogobase/worker.lock", timeout=0):
+    with database_lock(Settings(), "worker", Settings().data_dir / "worker.lock"):
         pass
-    q = JobQueue(project.parent / ".mnogobase/jobs.db")
+    q = JobQueue(database_target(Settings(), "jobs"))
     try:
         assert q.jobs() == []
     finally:
@@ -487,11 +491,11 @@ def test_worker_watch_joins_watcher_before_closing_app(project, monkeypatch, tra
     assert app_closed == [True]
     assert len(tracked_queues) == 2 and all(q.closed for q in tracked_queues)
     with (
-        FileLock(".mnogobase/worker.lock", timeout=0),
-        FileLock(".mnogobase/ingest.lock", timeout=0),
+        database_lock(Settings(), "worker", Settings().data_dir / "worker.lock"),
+        database_lock(Settings(), "ingest", Settings().data_dir / "ingest.lock"),
     ):
         pass
-    q = JobQueue(project.parent / ".mnogobase/jobs.db")
+    q = JobQueue(database_target(Settings(), "jobs"))
     try:
         job = q.jobs()[0]
         assert (job.status, job.attempts, job.fingerprint) == ("running", 1, file_doc_id(project))
@@ -508,7 +512,7 @@ def test_worker_missing_source_fails_job_before_constructing_models(project, mon
     result = runner.invoke(cli.app, ["worker", "run", "--once", "--max-attempts", "1"])
 
     assert result.exit_code == 1, result.output
-    q = JobQueue(project.parent / ".mnogobase/jobs.db")
+    q = JobQueue(database_target(Settings(), "jobs"))
     try:
         job = q.jobs()[0]
         assert (job.status, job.attempts, job.error) == ("failed", 1, "FileNotFoundError")

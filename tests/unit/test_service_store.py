@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from dataclasses import FrozenInstanceError
 
 import pytest
 from argon2 import PasswordHasher
 
 from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.service.context import TeamContext, team_settings, validate_team_id
 from mnogobase.service.errors import ServiceError
 from mnogobase.service.store import ServiceStore
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def store(tmp_path):
-    return ServiceStore(tmp_path / "service.db")
+    return ServiceStore(database_target(Settings(), "service"))
 
 
 @pytest.fixture
@@ -30,7 +32,7 @@ def test_password_and_session_are_hashed_and_survive_restart(store):
     user = store.create_user("alice", "correct horse")
     token = store.login("alice", "correct horse")
     assert ServiceStore(store.path).authenticate(token) == user
-    with sqlite3.connect(store.path) as conn:
+    with store._connection(write=True) as conn:
         password_hash = conn.execute("SELECT password_hash FROM users").fetchone()[0]
         token_hash = conn.execute("SELECT token_hash FROM sessions").fetchone()[0]
     assert PasswordHasher().verify(password_hash, "correct horse")
@@ -56,7 +58,7 @@ def test_logout_and_expired_sessions_are_rejected(store):
     with pytest.raises(ServiceError, match="Invalid or expired session"):
         store.authenticate(token)
     expired = store.login("alice", "correct horse")
-    with sqlite3.connect(store.path) as conn:
+    with store._connection(write=True) as conn:
         conn.execute("UPDATE sessions SET expires_at=0")
     with pytest.raises(ServiceError) as exc:
         store.authenticate(expired)
@@ -189,7 +191,7 @@ def test_recent_messages_limits_are_bounded(store, member, limit):
     assert exc.value.status == 400
 
 
-def test_input_errors_do_not_leak_sqlite_details(store):
+def test_input_errors_do_not_leak_database_details(store):
     user = store.create_user("alice", "password")
     team = store.create_team("Team")
     for operation in [

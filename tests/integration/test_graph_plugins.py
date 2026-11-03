@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import GraphAnalysisSettings
+from mnogobase.config import GraphAnalysisSettings, Settings
+from mnogobase.database import database_target, mark_project
 from mnogobase.models import EntityRecord
 from mnogobase.stores.graph_store import GraphStore
 from tests.integration.test_team_graph import CHUNKS, DOC_ID, populate
@@ -245,7 +246,7 @@ def test_graph_cli_works_without_model_servers(
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
             {
-                "database": {"backend": "sqlite"},
+                "database": {"backend": "postgresql"},
                 "neo4j": {
                     "uri": plugin_container.get_connection_url(),
                     "password_env": "TEST_NEO4J_PASSWORD",
@@ -253,7 +254,8 @@ def test_graph_cli_works_without_model_servers(
             }
         )
     )
-    Registry(tmp_path / ".mnogobase/state.db").close()
+    Registry(database_target(Settings(), "state")).close()
+    mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("model application created"))
     runner = CliRunner()
     for args in (["graph", "analyze", "--estimate"], ["graph", "analyze"], ["graph", "status"]):

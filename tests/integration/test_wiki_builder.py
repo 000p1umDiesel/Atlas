@@ -6,7 +6,8 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client import models as qm
 
-from mnogobase.config import WikiSettings
+from mnogobase.config import Settings, WikiSettings
+from mnogobase.database import database_target
 from mnogobase.ids import point_id
 from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput, EntityRecord
 from mnogobase.registry import Registry
@@ -86,7 +87,7 @@ def world(graph, tmp_path):
             graph.add_mentions(chunk.chunk_id, ids)
             vectors.set_chunk_entities(chunk.chunk_id, ids)
         graph.merge_relation("e1", "e2", "uses", "Transformer uses softmax.", 5, chunks[2].chunk_id)
-        registry = Registry(tmp_path / "state.db")
+        registry = Registry(database_target(Settings(), "state"))
         registry.mark_dirty(["e1", "e2"])
         llm = FakeLLM(handler)
         wiki_dir = tmp_path / "wiki"

@@ -89,7 +89,7 @@ class TeamService:
     @contextmanager
     def _uploads(self, settings: Settings):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
-        db = connect(database_target(settings, "uploads"), autocommit=False, rows=True)
+        db = connect(database_target(settings, "uploads"))
         try:
             initialize(
                 db,

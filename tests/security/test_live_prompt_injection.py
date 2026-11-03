@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from mnogobase.config import DEFAULT_ENTITY_TYPES, WikiSettings, load_settings
+from mnogobase.config import DEFAULT_ENTITY_TYPES, Settings, WikiSettings, load_settings
+from mnogobase.database import database_target
 from mnogobase.extraction.extractor import Extractor
 from mnogobase.llm.client import OpenAICompatLLM
 from mnogobase.models import ContextItem, EntityContext, EntityRecord, SearchHit
@@ -58,7 +59,7 @@ async def test_answer_uses_facts_and_retains_citations(llm, attack, kind):
 
 
 async def test_extraction_does_not_turn_instructions_into_facts(llm, attack, tmp_path):
-    registry = Registry(tmp_path / "state.db")
+    registry = Registry(database_target(Settings()))
     try:
         result = await Extractor(llm, registry, DEFAULT_ENTITY_TYPES).extract(
             chunk(attack), "Qdrant service notes"

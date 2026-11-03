@@ -1,12 +1,16 @@
 import filelock
 import pytest
 
+from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.registry import STAGES, Registry, ingest_lock
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
 def reg(tmp_path):
-    r = Registry(tmp_path / "state.db")
+    r = Registry(database_target(Settings(), "state"))
     yield r
     r.close()
 
@@ -88,8 +92,8 @@ def test_drop_file_removes_only_that_path(reg):
 
 
 def test_ingest_lock_is_exclusive(tmp_path):
-    with ingest_lock(tmp_path), pytest.raises(filelock.Timeout):
-        ingest_lock(tmp_path).acquire()
+    with ingest_lock(tmp_path, target=database_target(Settings())), pytest.raises(filelock.Timeout):
+        ingest_lock(tmp_path, target=database_target(Settings())).acquire()
 
 
 def test_latest_extraction_ignores_model_and_prompt_version(reg):

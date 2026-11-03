@@ -4,6 +4,7 @@ import json
 import math
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -14,7 +15,7 @@ from neo4j import (
     NotificationDisabledClassification,
     Query,
 )
-from neo4j.exceptions import ClientError
+from neo4j.exceptions import ClientError, Neo4jError
 
 from mnogobase.config import Neo4jSettings
 from mnogobase.log import get_logger
@@ -44,6 +45,8 @@ _SCHEMA = [
     "CREATE INDEX chunk_doc IF NOT EXISTS FOR (c:Chunk) ON (c.doc_id)",
     "CREATE FULLTEXT INDEX entity_names IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.aliases_text]",
     "CREATE CONSTRAINT analysis_state_key IF NOT EXISTS FOR (s:AnalysisState) REQUIRE s.key IS UNIQUE",
+    "CREATE INDEX entity_community IF NOT EXISTS FOR (e:Entity) "
+    "ON (e.analytics_run_id, e.analytics_community)",
 ]
 _WORD = re.compile(r"\w+", re.UNICODE)
 _TEAM_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -492,6 +495,54 @@ class GraphStore:
             "ORDER BY pagerank DESC, entity_id LIMIT $limit",
             limit=max(1, min(limit, 100)),
         )
+
+    def community_chunks(
+        self,
+        seed_ids: list[str],
+        limit: int,
+        *,
+        max_communities: int = 3,
+        max_entities: int = 30,
+        exclude_chunk_ids: Sequence[str] = (),
+        timeout: float = 5.0,
+    ) -> list[ChunkView]:
+        """Original evidence from current seed communities, bounded before MENTIONS expansion."""
+        if not seed_ids or limit <= 0 or max_communities <= 0 or max_entities <= 0:
+            return []
+        try:
+            rows = self._run(
+                "MATCH (s:AnalysisState {key:'graph'}) WHERE s.run_id IS NOT NULL "
+                "UNWIND range(0, size($seeds)-1) AS priority "
+                "MATCH (seed:Entity {entity_id:$seeds[priority]}) "
+                "WHERE seed.analytics_run_id = s.run_id "
+                "AND seed.analytics_community IS NOT NULL "
+                "WITH s, seed.analytics_community AS community, min(priority) AS priority "
+                "ORDER BY priority, community LIMIT $groups "
+                "CALL (s, community) { "
+                "  MATCH (e:Entity) WHERE e.analytics_run_id = s.run_id "
+                "  AND e.analytics_community = community "
+                "  RETURN e ORDER BY e.analytics_pagerank DESC, e.entity_id LIMIT $members "
+                "} "
+                "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(e) "
+                "WHERE NOT c.chunk_id IN $excluded "
+                "WITH d, c, min(priority) AS priority, count(DISTINCT e) AS mentions, "
+                "max(e.analytics_pagerank) AS rank "
+                "RETURN c.chunk_id AS chunk_id, c.doc_id AS doc_id, c.text AS text, "
+                "d.path AS path, c.page_start AS page, coalesce(c.headings,[]) AS headings "
+                "ORDER BY priority, mentions DESC, rank DESC, chunk_id LIMIT $limit",
+                seeds=list(dict.fromkeys(seed_ids)),
+                groups=min(max_communities, 20),
+                members=min(max_entities, 500),
+                excluded=list(exclude_chunk_ids),
+                limit=min(limit, 100),
+                _timeout=timeout,
+            )
+        except Neo4jError as exc:
+            if "TransactionTimedOut" not in (exc.code or ""):
+                raise
+            get_logger(__name__).warning("leiden_context_timeout")
+            return []
+        return [ChunkView(**row) for row in rows]
 
     def plugin_status(self) -> dict:
         procedures = {

@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from mnogobase.config import DEFAULT_ENTITY_TYPES, ResolveSettings, WikiSettings
+from mnogobase.config import DEFAULT_ENTITY_TYPES, ResolveSettings, Settings, WikiSettings
+from mnogobase.database import database_target
 from mnogobase.extraction.extractor import Extractor
 from mnogobase.extraction.resolver import EntityResolver
 from mnogobase.models import ContextItem, EntityContext, EntityRecord, ExtractedEntity, SearchHit
@@ -65,8 +66,9 @@ async def test_answer_keeps_question_source_and_path_in_data():
     assert result.sources[0].cited
 
 
+@pytest.mark.integration
 async def test_extract_keeps_title_headings_and_fragment_in_data(tmp_path):
-    registry = Registry(tmp_path / "state.db")
+    registry = Registry(database_target(Settings(), "state"))
     try:
         c = chunk(ATTACK)
         c.headings = [ATTACK]

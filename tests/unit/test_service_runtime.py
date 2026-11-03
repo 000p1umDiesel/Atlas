@@ -1,10 +1,13 @@
 import pytest
 
 from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.registry import ingest_lock
 from mnogobase.service.context import team_settings
 from mnogobase.service.errors import ServiceError
 from mnogobase.service.runtime import TeamService
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
@@ -65,7 +68,10 @@ def test_context_is_rechecked_after_membership_revocation(service):
 def test_busy_corpus_returns_conflict(service):
     svc, ctx = service
     settings = team_settings(svc.settings, ctx.team_id)
-    with ingest_lock(settings.data_dir), pytest.raises(ServiceError) as error:
+    with (
+        ingest_lock(settings.data_dir, target=database_target(settings)),
+        pytest.raises(ServiceError) as error,
+    ):
         svc.upload(ctx, "one.md", b"one")
     assert error.value.status == 409
 
@@ -172,25 +178,20 @@ def test_wiki_section_citation_has_working_page_url(service, monkeypatch):
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_upload_connections_close_on_success_and_failure(service, monkeypatch, fail):
-    import sqlite3
+    from sqlalchemy.exc import ResourceClosedError
+
+    from mnogobase.service import runtime
 
     svc, ctx = service
     connections = []
-    original_connect = sqlite3.connect
-
-    class TrackedConnection(sqlite3.Connection):
-        closed = False
-
-        def close(self):
-            self.closed = True
-            super().close()
+    original_connect = runtime.connect
 
     def connect(*args, **kwargs):
-        db = original_connect(*args, **kwargs, factory=TrackedConnection)
+        db = original_connect(*args, **kwargs)
         connections.append(db)
         return db
 
-    monkeypatch.setattr(sqlite3, "connect", connect)
+    monkeypatch.setattr(runtime, "connect", connect)
     settings = team_settings(svc.settings, ctx.team_id)
     try:
         with svc._uploads(settings) as db:
@@ -199,7 +200,10 @@ def test_upload_connections_close_on_success_and_failure(service, monkeypatch, f
                 raise ValueError("interrupted")
     except ValueError:
         assert fail
-    assert connections and all(db.closed for db in connections)
+    assert connections
+    for connection in connections:
+        with pytest.raises(ResourceClosedError):
+            connection.execute("SELECT 1")
 
 
 @pytest.mark.parametrize("metadata_removed", [False, True])
@@ -213,7 +217,7 @@ async def test_removal_recovers_after_source_was_unlinked(service, monkeypatch, 
     doc = svc.documents(ctx)[0]
     path = svc.source(ctx, doc["id"])
     settings = team_settings(svc.settings, ctx.team_id)
-    queue = JobQueue(settings.data_dir / "jobs.db")
+    queue = JobQueue(database_target(settings, "jobs"))
     queue.claim()
     queue.finish(upload["id"])
     queue.close()
@@ -269,7 +273,7 @@ async def test_failed_processing_blocks_knowledge_reads_until_successful_retry(s
     svc, ctx = service
     queued = svc.upload(ctx, "one.md", b"one")
     settings = team_settings(svc.settings, ctx.team_id)
-    queue = JobQueue(settings.data_dir / "jobs.db")
+    queue = JobQueue(database_target(settings, "jobs"))
     try:
         queue.claim()
         queue.fail(queued["id"], "InterruptedWrite", max_attempts=1, delay=0)
@@ -297,7 +301,7 @@ async def test_removing_failed_ingest_reconciles_corpus_and_old_job(service, mon
     queued = svc.upload(ctx, "one.md", b"one")
     doc = svc.documents(ctx)[0]
     settings = team_settings(svc.settings, ctx.team_id)
-    queue = JobQueue(settings.data_dir / "jobs.db")
+    queue = JobQueue(database_target(settings, "jobs"))
     try:
         queue.claim()
         queue.fail(queued["id"], "PartialWrite", max_attempts=1, delay=0)

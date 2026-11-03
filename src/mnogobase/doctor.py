@@ -96,8 +96,6 @@ def run_checks(
         return Check("device", True, detect_device(settings.device))
 
     def database() -> Check:
-        if settings.database.backend == "sqlite":
-            return Check("database", True, "SQLite (explicit legacy backend)")
         target = database_target(settings)
         connection = connect(target)
         try:

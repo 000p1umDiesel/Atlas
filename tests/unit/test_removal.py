@@ -2,12 +2,16 @@ from pathlib import Path
 
 import pytest
 
+from mnogobase.config import Settings
+from mnogobase.database import database_target
 from mnogobase.registry import Registry
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
 def registry(tmp_path):
-    registry = Registry(tmp_path / "state.db")
+    registry = Registry(database_target(Settings(), "state"))
     yield registry
     registry.close()
 

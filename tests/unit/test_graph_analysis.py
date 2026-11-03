@@ -20,6 +20,11 @@ def test_graph_extensions_are_opt_in_for_library_users():
         {"analysis": {"memory_mb": 0}},
         {"analysis": {"timeout_s": 0}},
         {"analysis": {"apoc_max_nodes": 0}},
+        {"community": {"max_communities": 0}},
+        {"community": {"max_entities": 0}},
+        {"community": {"max_chunks": 0}},
+        {"community": {"timeout_s": 0}},
+        {"community": {"timeout_s": float("inf")}},
     ],
 )
 def test_graph_extensions_reject_unsafe_budgets(overrides):
@@ -46,6 +51,31 @@ def test_community_keys_follow_membership_not_leiden_integer_ids():
     )
     assert first == second
     assert first["a"] == first["b"]
+
+
+def test_community_query_timeout_keeps_normal_retrieval_available():
+    from neo4j.exceptions import Neo4jError
+
+    from mnogobase.stores.graph_store import GraphStore
+
+    store = GraphStore(None)
+
+    def fail(*args, **kwargs):
+        raise Neo4jError._hydrate_neo4j(
+            code="Neo.ClientError.Transaction.TransactionTimedOut", message="expired"
+        )
+
+    store._run = fail
+    assert store.community_chunks(["seed"], 2) == []
+
+    def unauthorized(*args, **kwargs):
+        raise Neo4jError._hydrate_neo4j(
+            code="Neo.ClientError.Security.Unauthorized", message="unauthorized"
+        )
+
+    store._run = unauthorized
+    with pytest.raises(Neo4jError):
+        store.community_chunks(["seed"], 2)
 
 
 def test_retrieval_uses_pagerank_only_to_break_equal_relation_weights():

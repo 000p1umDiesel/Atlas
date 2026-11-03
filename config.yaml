@@ -99,6 +99,12 @@ vision:
 graph:
   traversal: apoc                   # bounded BFS; без APOC — обычный Cypher
   use_gds: true                      # читать готовый graph analyze; не запускать при ask
+  community:
+    enabled: true                   # Leiden: добирать исходные чанки сообществ seeds
+    max_communities: 3
+    max_entities: 30                 # на сообщество, отбор по PageRank
+    max_chunks: 3                    # внутри retrieval.k, с резервом локальных источников
+    timeout_s: 5
   hops: 2
   max_relations: 30
   seeds: 5

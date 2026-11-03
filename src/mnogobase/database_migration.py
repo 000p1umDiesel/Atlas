@@ -87,8 +87,6 @@ def migrate_sqlite(settings: Settings) -> dict[str, int]:
     """
     if settings.database.backend != "postgresql":
         raise ValueError("Migration requires database.backend: postgresql")
-    legacy = settings.model_copy(deep=True)
-    legacy.database.backend = "sqlite"
     sources = []
     with ExitStack() as stack:
         settings.service.root.mkdir(parents=True, exist_ok=True)
@@ -96,7 +94,7 @@ def migrate_sqlite(settings: Settings) -> dict[str, int]:
         stack.enter_context(
             database_lock(settings, "worker", settings.service.root / "worker.lock", service=True)
         )
-        service_path = database_target(legacy, "service")
+        service_path = settings.service.root / "service.db"
         projects = [settings]
         if service_path.is_file():
             source = _snapshot(service_path, stack)
@@ -105,16 +103,14 @@ def migrate_sqlite(settings: Settings) -> dict[str, int]:
                 projects.append(team_settings(settings, validate_team_id(team_id)))
         for project in projects:
             stack.enter_context(FileLock(project.data_dir / "worker.lock", timeout=0))
-            stack.enter_context(ingest_lock(project.data_dir))
+            stack.enter_context(FileLock(project.data_dir / "ingest.lock", timeout=0))
             stack.enter_context(ingest_lock(project.data_dir, target=database_target(project)))
-            sqlite_project = project.model_copy(deep=True)
-            sqlite_project.database.backend = "sqlite"
             for kind, tables in [
                 ("state", REGISTRY_TABLES),
                 ("jobs", QUEUE_TABLES),
                 ("uploads", ("uploads",)),
             ]:
-                path = database_target(sqlite_project, kind)
+                path = project.data_dir / f"{kind}.db"
                 if path.is_file():
                     sources.append((project, kind, _snapshot(path, stack), tables))
         if not sources:

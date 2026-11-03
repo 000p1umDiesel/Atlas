@@ -15,7 +15,7 @@ from .queue import JobQueue
 async def process_one(
     queue: JobQueue, handler, data_dir: Path, *, max_attempts=3, delay=10
 ) -> bool:
-    lock = ingest_lock(data_dir, target=getattr(queue, "target", None))
+    lock = ingest_lock(data_dir, target=queue.target)
     try:
         lock.acquire()
     except Timeout:

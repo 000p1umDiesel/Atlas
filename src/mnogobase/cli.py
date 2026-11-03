@@ -176,13 +176,13 @@ def _preflight(
         raise typer.Exit(2)
 
 
-def _state_db(settings: Settings) -> Path | DatabaseTarget:
+def _state_db(settings: Settings) -> DatabaseTarget:
     return database_target(settings)
 
 
 def _require_project(settings: Settings, code: int = 2) -> None:
     """Выход с `code` вне проекта: команды, которые только читают, не должны создавать
-    state.db."""
+    SQL-таблицы проекта."""
     if not project_exists(settings):
         console.print(
             f"No mnogobase project here (no {escape(str(_state_db(settings)))}). "

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 from mnogobase.config import GraphSettings
 from mnogobase.embedding.base import Embedder
+from mnogobase.log import get_logger
 from mnogobase.models import ContextItem
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -22,6 +23,8 @@ class GraphRetriever:
         self._s = settings
 
     def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
+        if k <= 0:
+            return []
         queries = [query, *alt_queries]
         vector_hits = [
             h
@@ -78,16 +81,26 @@ class GraphRetriever:
                     score=r.weight,
                 )
             )
-        evidence = list(dict.fromkeys(cid for r in relations for cid in r.evidence))[:k]
-        if evidence:
-            for chunk in self._graph.chunks_by_ids(evidence):
-                items.append(
-                    ContextItem(
-                        kind="chunk",
-                        ref=chunk.chunk_id,
-                        text=chunk.text,
-                        path=chunk.path,
-                        page=chunk.page,
-                    )
-                )
-        return items
+        evidence = list(dict.fromkeys(cid for r in relations for cid in r.evidence))
+        local = self._graph.chunks_by_ids(evidence[:k]) if evidence else []
+        by_id = {c.chunk_id: c for c in local}
+        local = [by_id[cid] for cid in evidence[:k] if cid in by_id]
+        community = self._s.community
+        extra = []
+        quota = min(community.max_chunks, k // 2 if local else k)
+        if self._s.use_gds and community.enabled and quota:
+            extra = self._graph.community_chunks(
+                seeds,
+                quota,
+                max_communities=community.max_communities,
+                max_entities=community.max_entities,
+                exclude_chunk_ids=evidence,
+                timeout=community.timeout_s,
+            )
+            get_logger(__name__).info("leiden_context", chunks=len(extra), seeds=len(seeds))
+        chunks = [
+            ContextItem(kind="chunk", ref=c.chunk_id, text=c.text, path=c.path, page=c.page)
+            for c in [*local[: k - len(extra)], *extra]
+        ]
+        # Give original evidence priority over summaries within the answer/context budget.
+        return chunks + items if extra else items + chunks

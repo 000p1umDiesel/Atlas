@@ -6,11 +6,14 @@ from typer.testing import CliRunner
 
 from mnogobase import cli
 from mnogobase.config import Settings
+from mnogobase.database import database_target, mark_project
 from mnogobase.evaluation import core
 from mnogobase.models import ContextItem
 from mnogobase.registry import Registry
 from mnogobase.retrieval.answer import Answerer
 from tests.fakes import FakeLLM
+
+pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
@@ -25,7 +28,8 @@ def offline(tmp_path, monkeypatch):
 
 
 def test_cli_run_uses_three_modes_and_closes_app(offline, tmp_path, monkeypatch):
-    Registry(tmp_path / ".mnogobase/state.db").close()
+    Registry(database_target(Settings(), "state")).close()
+    mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     closed = []
     monkeypatch.setattr(cli, "_preflight", lambda *a: None)
     monkeypatch.setattr(
@@ -119,7 +123,8 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
 
     from mnogobase.registry import ingest_lock
 
-    Registry(tmp_path / ".mnogobase/state.db").close()
+    Registry(database_target(Settings(), "state")).close()
+    mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     monkeypatch.setattr(cli, "_preflight", lambda *a: None)
     monkeypatch.setattr(cli, "build_app", lambda *a: SimpleNamespace(close=lambda: None))
     llm = FakeLLM(lambda *a: "Answer [1]")
@@ -127,7 +132,7 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
     class Retriever:
         def retrieve(self, query, k, alt_queries=()):
             with pytest.raises(Timeout):
-                ingest_lock(tmp_path / ".mnogobase").acquire()
+                ingest_lock(tmp_path / ".mnogobase", target=database_target(Settings())).acquire()
             return [ContextItem(kind="chunk", ref="c", text="Answer")]
 
     class Judge:

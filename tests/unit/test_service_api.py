@@ -5,6 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from mnogobase.config import Settings
+from mnogobase.database import database_target
+
+pytestmark = pytest.mark.integration
+
 
 def test_api_factory_exists():
     assert importlib.util.find_spec("mnogobase.api.app") is not None
@@ -15,11 +20,10 @@ def setup_api(tmp_path):
     from fastapi.testclient import TestClient
 
     from mnogobase.api.app import create_api
-    from mnogobase.config import Settings
     from mnogobase.service.store import ServiceStore
 
     settings = Settings(service={"root": tmp_path, "max_upload_mb": 1})
-    store = ServiceStore(tmp_path / "service.db")
+    store = ServiceStore(database_target(Settings(), "service"))
     admin = store.create_user("admin", "long-enough-password")
     member = store.create_user("member", "long-enough-password")
     outsider = store.create_user("outsider", "long-enough-password")
@@ -273,7 +277,6 @@ def test_factory_uses_injected_service_settings(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from mnogobase.api.app import create_api
-    from mnogobase.config import Settings
     from mnogobase.service.runtime import TeamService
 
     service = TeamService(Settings(service={"root": tmp_path / "custom", "session_hours": 1}))

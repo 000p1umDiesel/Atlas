@@ -22,6 +22,7 @@ def service(tmp_path):
     return service, service.store.context(user["id"], team["id"])
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("operation", ["ask", "work_once"])
 async def test_runtime_blocking_dependencies_leave_event_loop_responsive(
     service, monkeypatch, operation

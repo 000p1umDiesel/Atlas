@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from mnogobase.config import Settings
-from mnogobase.database import DatabaseTarget, connect, database_target, target_exists
+from mnogobase.database import connect, database_target, target_exists
 from mnogobase.evaluation.artifacts import append_jsonl, fingerprint
 from mnogobase.ids import file_doc_id
 from mnogobase.progress import NULL_PROGRESS, NullProgress
@@ -51,7 +51,7 @@ def corpus_snapshot(settings: Settings) -> dict:
     ]
     project = fingerprint(
         {
-            "state": str(db) if isinstance(db, DatabaseTarget) else str(db.resolve()),
+            "state": str(db),
             "qdrant": settings.qdrant.model_dump(),
             "neo4j": {"uri": settings.neo4j.uri, "user": settings.neo4j.user},
         }
