@@ -64,6 +64,7 @@ from mnogobase.retrieval.compare import config_hash, run_mode
 from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.serving import (
     CONTAINER_PORT,
+    DockerRunner,
     ModelRunner,
     Runner,
     Served,
@@ -825,7 +826,7 @@ RolesArg = Annotated[
 RunnerOpt = Annotated[
     str,
     typer.Option(
-        "--runner", help="docker (Linux + NVIDIA), native (llama-server; default on macOS) or auto."
+        "--runner", help="docker (CPU/CUDA), native (llama-server; default on macOS) or auto."
     ),
 ]
 
@@ -864,11 +865,18 @@ def models_up(
         console.print("Nothing to start: every role is serve: api (or disabled).")
         return
     where = resolve_runner(_runner(runner))
+    if isinstance(model_runner, DockerRunner):
+        where = "docker"
     for s in served:
         port = s.port if where == "native" else CONTAINER_PORT[s.backend]
         program = "llama-server" if s.backend == "llamacpp" else "vllm serve"
+        location = f"{where}, cpu" if s.device == "cpu" else where
+        try:
+            command = shlex.join(server_args(s, port))
+        except ServeError as exc:
+            _fail_cleanly(exc)
         console.print(
-            f"{s.role} → {s.settings.url} ({where}): {program} {shlex.join(server_args(s, port))}",
+            f"{s.role} → {s.settings.url} ({location}): {program} {command}",
             soft_wrap=True,
             highlight=False,
         )
@@ -897,7 +905,16 @@ def models_up(
 
     try:
         # `models up vision` не трогает серверы других ролей из конфига
-        bring_up(served, model_runner, timeout, waiting, keep=everything)
+        def fallback(served: Served, reason: str) -> None:
+            console.print(
+                f"{stamp()} {served.role}: GPU startup failed ({reason}); retrying in a CPU container.",
+                style="yellow",
+                soft_wrap=True,
+                highlight=False,
+                markup=False,
+            )
+
+        bring_up(served, model_runner, timeout, waiting, keep=everything, on_fallback=fallback)
     except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
         _fail_cleanly(exc)
     console.print(f"[green]{stamp()} All model servers are ready.[/green]", highlight=False)

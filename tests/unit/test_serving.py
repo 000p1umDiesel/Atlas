@@ -118,12 +118,19 @@ def test_docker_runner_prunes_other_backends_and_passes_the_commands(tmp_path, m
     served = served_roles(settings(rerank=rerank))
     runner.prune(served)
     runner.start(served)
-    (rm, rm_kwargs), (up, up_kwargs) = run.calls
+    (rm, rm_kwargs), (switch, _), (up, up_kwargs) = run.calls
     assert rm[:6] == ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", str(compose)]
     assert rm[rm.index("rm") :] == [
-        "rm", "--stop", "--force", "embed-vllm", "rerank-llamacpp",
-        "vision-llamacpp", "vision-vllm", "llm-llamacpp", "llm-vllm",
+        "rm", "--stop", "--force", "embed-vllm",
+        "rerank-llamacpp", "rerank-llamacpp-cpu", "vision-llamacpp", "vision-llamacpp-cpu",
+        "vision-vllm", "llm-llamacpp", "llm-llamacpp-cpu", "llm-vllm",
     ]  # fmt: skip
+    assert switch[switch.index("rm") :] == [
+        "rm",
+        "--stop",
+        "--force",
+        "embed-llamacpp-cpu",
+    ]
     assert up[up.index("up") :] == ["up", "-d", "embed-llamacpp", "rerank-vllm"]
     env = up_kwargs["env"]
     assert "COMPOSE_FILE" not in env
@@ -223,7 +230,7 @@ def test_bring_up_starts_vllm_servers_one_by_one():
         return False
 
     bring_up(served_roles(full), runner, 60, ready=is_ready, sleep=lambda s: None)
-    assert runner.events == ["prune", "start rerank", "start embedder", "start llm"]
+    assert runner.events == ["prune", "start embedder", "start rerank", "start llm"]
 
 
 def test_bring_up_of_one_role_keeps_the_other_servers():

@@ -129,7 +129,7 @@ flowchart TB
 | [uv](https://docs.astral.sh/uv/) | Python 3.12 и зависимости | `uv --version` |
 | [Obsidian](https://obsidian.md) (по желанию) | смотреть wiki и её граф | — |
 
-Python нужен версии **3.12** (`>=3.12,<3.13` в `pyproject.toml`); окружением `.venv` управляет `uv`. Дальнейшие shell-примеры рассчитаны на macOS/Linux. На Linux с NVIDIA используйте [инструкцию сервера](#11-развёртывание-на-сервере). В Windows меняются shell-команды, а бэкенд моделей выбирается явно: `models up` по умолчанию использует Docker вне macOS; для установленного `llama-server` можно указать `--runner native`.
+Python нужен версии **3.12** (`>=3.12,<3.13` в `pyproject.toml`); окружением `.venv` управляет `uv`. Дальнейшие shell-примеры рассчитаны на macOS/Linux. На Linux с NVIDIA используйте [инструкцию сервера](#11-развёртывание-на-сервере). В Windows `models up` по умолчанию использует Docker; для CUDA нужен Docker Desktop с WSL2, Linux-контейнерами и поддерживающим WSL2 драйвером NVIDIA. Для запуска моделей без GPU задайте `device: cpu`: команда поднимет CPU-контейнеры. Для установленного `llama-server` можно явно указать `--runner native`.
 
 ### 2.2 Первый запуск (один раз)
 
@@ -1073,7 +1073,7 @@ Leiden не пишет текст самостоятельно: готовые �
 
 | Ключ | По умолчанию | Что делает | После изменения |
 |---|---|---|---|
-| `device` | `auto` | `auto`, `cuda`, `mps`, `cpu`: устройство для Docling (и BM25 при `cuda`) | сразу |
+| `device` | `auto` | `auto`, `cuda`, `mps`, `cpu`: устройство для Docling (и BM25 при `cuda`); `cpu` также выбирает CPU-серверы моделей, в режиме `--runner auto` — контейнеры Docker | сразу для Docling; `models up` для серверов |
 | `data_dir` | `.mnogobase` | локальный маркер проекта, кэши, измерения | PostgreSQL namespace задаётся `database.project` |
 | `logs_dir` | `logs` | папка `mnogobase.jsonl` | сразу |
 | `runs_dir` | `runs` | папка `compare.jsonl` | сразу |
@@ -1509,12 +1509,18 @@ embedder → http://localhost:8001/v1 (native): llama-server -hf Qwen/Qwen3-Embe
 
 «starting or downloading» — сервер ещё не отвечает (запускается или качает веса; размер загрузки сервер не сообщает), «loading the model» — `/health` отвечает 503, веса грузятся в память.
 
-`models up` идемпотентна: работающий сервер с той же моделью и флагами не трогается, после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `api` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux) — сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). vLLM работает только в Docker.
+`models up` не пересоздаёт работающий сервер с той же моделью, устройством и флагами; после правки `config.yaml` перезапускается только изменившаяся роль, а сервер роли, ставшей `api` или отключённой, останавливается. Где запускать, выбирает `--runner`: `native` (по умолчанию на macOS при `device` не `cpu`) — процессы `llama-server` (`brew install llama.cpp`), состояние в `.mnogobase/models/`, логи в `logs/models-<роль>.log`; `docker` (по умолчанию на Linux/Windows и при `device: cpu` на любой ОС) — сервисы из `docker-compose.models.yml` в compose-проекте `mnogobase-models` (раздел 11). Явный `--runner native` сохраняет нативный запуск, в том числе llama.cpp на CPU. vLLM запускается только в Docker.
+
+**CPU и запасной запуск после ошибки GPU — только llama.cpp.** При `device: cpu` команда сразу выбирает сервисы `<роль>-llamacpp-cpu`: CPU-образ llama.cpp с `--n-gpu-layers 0`. Модели загружаются из тех же GGUF-репозиториев, имя API-модели и порты не меняются; веса остаются в общем томе `llama_models`. Для такого переключения `reindex` не нужен. Роли с `serve: api` и выключенные роли не запускаются. **vLLM работает исключительно на CUDA:** активная роль с `serve: vllm` при `device: cpu` вызывает понятную ошибку до изменения контейнеров. Для CPU выберите `serve: llamacpp` и совместимые GGUF-веса; автоматической подмены бэкенда или модели нет.
+
+В Docker роли запускаются по очереди. Если CUDA/NVIDIA у **llama.cpp** не инициализируется, отсутствует GPU-драйвер контейнеров или сервер сообщает CUDA OOM, `models up` печатает причину, останавливает неудачный GPU-контейнер и один раз пробует CPU-контейнер **этой роли**. Уже поднятые роли продолжают работать. vLLM после ошибки GPU на CPU не переключается. Ошибки скачивания, авторизации, конфигурации и занятых портов остаются ошибками; обычное ожидание загрузки модели не вызывает переключения. Если CPU-запуск тоже завершается ошибкой, команда выходит с кодом 2 и останавливает неудачный контейнер, сохранив его логи. `models logs <роль>` находит CPU-контейнер после переключения, `models down` останавливает оба варианта, оставляя веса в кэше. При следующем `models up` с `device`, отличным от `cpu`, GPU будет проверена заново; для постоянного CPU-режима задайте `device: cpu`.
+
+CPU-контейнер llama.cpp по умолчанию ограничен **8 ГиБ RAM без swap и 2 CPU**. Значения задаются прямо в блоке `x-cpu` файла `docker-compose.models.yml`: `mem_limit`, `memswap_limit` и `cpus`. Чтобы запретить swap, сохраняйте `memswap_limit` равным `mem_limit`. Это лимиты **каждого контейнера**, суммарный потолок равен числу CPU-серверов, умноженному на лимит. CPU-образ поддерживает x86-64 и ARM64. Нативный Metal-запуск на Mac не переключается автоматически на Docker: для CPU-контейнеров задайте `device: cpu`, оставив `--runner auto` или указав `--runner docker`. При смене между `native` и `docker` сначала остановите прежний раннер: `models down --runner native` или `models down --runner docker`.
 
 Особенности:
 
 - **llama.cpp, реранкер.** Нужен GGUF с классификатором Qwen3-Reranker (`gorse-io/Qwen3-Reranker-4B-GGUF` по умолчанию, есть и 0.6B); старые конвертации (`dengcao`, `mradermacher`, `QuantFactory`) загружаются, но дают бессмысленные оценки.
-- **vLLM.** Каждый контейнер резервирует долю **всей** видеопамяти (`<роль>.server.gpu_memory`: 0.15 для эмбеддера и реранкера, 0.6 для LLM); на одной карте сумма долей должна быть меньше 1, и `models up` запускает vLLM-серверы по очереди. Для Qwen3-Reranker `models up` сам добавляет `--hf-overrides` и шаблон промпта из образа. vLLM проверен по документации и модульным тестам, не вживую.
+- **vLLM — только CUDA.** Каждый сервер получает долю **всей** видеопамяти (`<роль>.server.gpu_memory`: 0.15 для эмбеддера, реранкера и vision, 0.6 для LLM); на одной карте сумма долей должна быть меньше 1 с запасом для прочих процессов. Для Qwen3-Reranker `models up` сам добавляет `--hf-overrides` и шаблон промпта из образа. vLLM проверен по документации и модульным тестам, не вживую.
 - **Окно контекста** — `<роль>.server.ctx`. Длинный вход сервер не обрезает, а отклоняет: окно эмбеддера должно вмещать `chunking.max_tokens` плюс шаблон.
 - **Дополнительные флаги** сервера — `<роль>.server.args`, например `["--parallel", "8"]` для llama.cpp.
 - **Ключ API.** Если сервер (`api`) требует ключ, задайте `<роль>.api_key_env` — имя переменной из `.env`.
@@ -1873,17 +1879,16 @@ LLM_API_KEY=...                     # внешний LLM; для локальн�
 NEO4J_PASSWORD=<свой пароль>        # не оставляйте mnogobase-dev
 HF_TOKEN=...                        # только для закрытых моделей на Hugging Face
 MNOGOBASE_DEVICE=auto               # config.yaml в репозитории настроен на mps (Mac)
-COMPOSE_FILE=docker-compose.yml:docker-compose.cuda.yml   # базы, Qdrant на GPU
 ```
 
 ```bash
-docker compose up -d                       # Qdrant и Neo4j (compose читает COMPOSE_FILE из .env)
+docker compose up -d                       # PostgreSQL, Qdrant (CPU) и Neo4j
 uv run mnogobase models up                 # модели по config.yaml; первый старт качает их (минуты)
 uv run mnogobase models status             # все роли ready
 uv run mnogobase doctor                    # всё зелёное
 ```
 
-На Linux `models up` по умолчанию запускает модели в Docker: сервисы `<роль>-<бэкенд>` из `docker-compose.models.yml` в отдельном compose-проекте `mnogobase-models` (их видно в `docker ps`, команду каждому строит `mnogobase` из конфига). Сервер без Docker, но с собранным `llama-server` в `PATH` — `models up --runner native`.
+На Linux/Windows `models up` по умолчанию запускает модели в Docker: GPU-сервисы `<роль>-<бэкенд>` или CPU-сервисы `<роль>-llamacpp-cpu` из `docker-compose.models.yml` в отдельном compose-проекте `mnogobase-models` (их видно в `docker ps`, команду каждому строит `mnogobase` из конфига). `device: cpu` выбирает CPU-контейнеры llama.cpp сразу; ошибка инициализации GPU у llama.cpp вызывает одну попытку запуска затронутой роли на CPU (раздел 7.15). vLLM работает только на CUDA. Сервер без Docker, но с собранным `llama-server` в `PATH` — `models up --runner native`.
 
 **Как скачиваются модели.** Вручную ничего качать не нужно. llama.cpp при старте контейнера ищет GGUF из `-hf repo:quant` в томе `llama_models` и, если его там нет, скачивает с Hugging Face (у vLLM — том `hf_cache`). Пока идёт загрузка, `models up` ждёт `/health` и раз в 15 с пишет, что делает каждый ещё не готовый сервер (раздел 7.15); лог сервера — `uv run mnogobase models logs <роль> -f`. Тома переживают перезапуски, `models down` и перезагрузку, поэтому повторно качается только новая модель (новые `model` / `gguf` в конфиге) или всё после удаления томов (`docker volume rm mnogobase-models_llama_models mnogobase-models_hf_cache`). Закрытым репозиториям нужен `HF_TOKEN`. Серверу без интернета положите GGUF в том `mnogobase-models_llama_models` и передайте путь через `<роль>.server.args` (`-m /models/<файл>.gguf`).
 
@@ -1944,7 +1949,7 @@ uv run mnogobase ask "что такое механизм внимания?"
 
 ### 11.5 GPU в самом mnogobase
 
-`device: auto` (на сервере — `MNOGOBASE_DEVICE=auto`) выбирает CUDA → MPS (Apple Silicon) → CPU для моделей Docling. На CUDA Docling получает увеличенные батчи разметки, OCR и таблиц. BM25 на GPU — `onnxruntime-gpu` (раздел 11.2). Модели эмбеддера, реранкера и LLM работают в своих серверах и от `device` не зависят.
+`device: auto` (на сервере — `MNOGOBASE_DEVICE=auto`) выбирает CUDA → MPS (Apple Silicon) → CPU для моделей Docling. На CUDA Docling получает увеличенные батчи разметки, OCR и таблиц. BM25 на GPU — `onnxruntime-gpu` (раздел 11.2). Модели эмбеддера, реранкера, vision и LLM работают в своих серверах; `device: cpu` также задаёт им CPU-режим при следующем `models up`. Автоматический переход Docker-сервера на CPU после ошибки GPU не меняет настройки Docling и не записывает изменения в `config.yaml`.
 
 ---
 
@@ -1968,8 +1973,7 @@ PG18 монтирует volume в `/var/lib/postgresql` (версионный PG
 mnogobase/
 ├── config.yaml                # несекретные настройки (раздел 6)
 ├── .env.example               # шаблон секретов; .env не коммитится
-├── docker-compose.yml         # Qdrant + Neo4j (APOC, GDS)
-├── docker-compose.cuda.yml    # override для NVIDIA: Qdrant с GPU (раздел 11)
+├── docker-compose.yml         # PostgreSQL + Qdrant (CPU) + Neo4j (APOC, GDS)
 ├── docker-compose.models.yml  # серверы моделей для `mnogobase models up` (llama.cpp, vLLM)
 ├── docs/neo4j/mnogobase.grass     # стиль Neo4j Browser
 ├── eval/questions.jsonl           # 40 вопросов по Attention Is All You Need

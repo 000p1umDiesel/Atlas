@@ -1,15 +1,11 @@
-# Серверы моделей для `mnogobase models up` (Linux + NVIDIA Container Toolkit). Напрямую не
+# Серверы моделей для `mnogobase models up` (Docker CPU или NVIDIA CUDA). Напрямую не
 # запускайте: какую роль на каком бэкенде поднять и с какой моделью, решает config.yaml
 # (serve, model, server), а команду сервиса mnogobase передаёт в MB_<СЕРВИС>_ARGS.
 # Проект compose — mnogobase-models, отдельно от Qdrant и Neo4j из docker-compose.yml.
 # Порты слушают MODELS_BIND (по умолчанию 127.0.0.1: у серверов без --api-key нет авторизации).
 # GGUF и веса кэшируются в томах llama_models и hf_cache и переживают перезапуски.
 
-x-gpu: &gpu
-  deploy:
-    resources:
-      reservations:
-        devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+x-common: &common
   restart: unless-stopped
   logging:
     driver: local
@@ -18,6 +14,19 @@ x-gpu: &gpu
       max-buffer-size: "1m"  # буфер в RAM; при переполнении новые записи пропускаются
       max-size: "10m"
       max-file: "3"
+
+x-gpu: &gpu
+  <<: *common
+  deploy:
+    resources:
+      reservations:
+        devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+
+x-cpu: &cpu
+  <<: *common
+  mem_limit: 8g
+  memswap_limit: 8g  # равенство mem_limit запрещает swap
+  cpus: 0.0
 
 x-llamacpp: &llamacpp
   <<: *gpu
@@ -41,6 +50,14 @@ x-vllm: &vllm
     retries: 10
     start_period: 30m  # первая загрузка модели с Hugging Face
 
+x-llamacpp-cpu: &llamacpp-cpu
+  <<: *cpu
+  image: ghcr.io/ggml-org/llama.cpp:server-b11804
+  environment:
+    LLAMA_CACHE: /models
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes: ["llama_models:/models"]
+
 services:
   embed-llamacpp:
     <<: *llamacpp
@@ -52,6 +69,11 @@ services:
     profiles: [embed-vllm]
     command: ${MB_EMBED_VLLM_ARGS:-}
     ports: ["${MODELS_BIND:-127.0.0.1}:8001:8000"]
+  embed-llamacpp-cpu:
+    <<: *llamacpp-cpu
+    profiles: [embed-llamacpp-cpu]
+    command: ${MB_EMBED_LLAMACPP_CPU_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8001:8080"]
 
   rerank-llamacpp:
     <<: *llamacpp
@@ -63,6 +85,11 @@ services:
     profiles: [rerank-vllm]
     command: ${MB_RERANK_VLLM_ARGS:-}
     ports: ["${MODELS_BIND:-127.0.0.1}:8002:8000"]
+  rerank-llamacpp-cpu:
+    <<: *llamacpp-cpu
+    profiles: [rerank-llamacpp-cpu]
+    command: ${MB_RERANK_LLAMACPP_CPU_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8002:8080"]
 
   vision-llamacpp:
     <<: *llamacpp
@@ -74,6 +101,11 @@ services:
     profiles: [vision-vllm]
     command: ${MB_VISION_VLLM_ARGS:-}
     ports: ["${MODELS_BIND:-127.0.0.1}:8003:8000"]
+  vision-llamacpp-cpu:
+    <<: *llamacpp-cpu
+    profiles: [vision-llamacpp-cpu]
+    command: ${MB_VISION_LLAMACPP_CPU_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8003:8080"]
 
   llm-llamacpp:
     <<: *llamacpp
@@ -85,6 +117,11 @@ services:
     profiles: [llm-vllm]
     command: ${MB_LLM_VLLM_ARGS:-}
     ports: ["${MODELS_BIND:-127.0.0.1}:8000:8000"]
+  llm-llamacpp-cpu:
+    <<: *llamacpp-cpu
+    profiles: [llm-llamacpp-cpu]
+    command: ${MB_LLM_LLAMACPP_CPU_ARGS:-}
+    ports: ["${MODELS_BIND:-127.0.0.1}:8000:8080"]
 
 volumes:
   llama_models:

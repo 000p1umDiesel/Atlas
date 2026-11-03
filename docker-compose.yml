@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:18
     mem_limit: 1g
-    memswap_limit: 1g  # RAM + swap; равенство mem_limit запрещает swap
+    memswap_limit: 5g  # RAM + swap; равенство mem_limit запрещает swap
     cpus: 1.0
     ports: ["127.0.0.1:5432:5432"]
     environment:
@@ -28,7 +28,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.19.2
     mem_limit: 2g
-    memswap_limit: 2g
+    memswap_limit: 5g
     cpus: 1.5
     ports: ["127.0.0.1:6333:6333"]  # HTTP; приложение не использует gRPC :6334
     volumes: ["qdrant_data:/qdrant/storage"]
@@ -43,8 +43,8 @@ services:
 
   neo4j:
     image: neo4j:5.26-community
-    mem_limit: 8g
-    memswap_limit: 8g
+    mem_limit: 6g
+    memswap_limit: 10g
     cpus: 4.0
     ports: ["127.0.0.1:7474:7474", "127.0.0.1:7687:7687"]  # Browser и Bolt
     environment:

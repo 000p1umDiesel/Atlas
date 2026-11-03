@@ -3,13 +3,15 @@
 Каждая роль (`embedder`, `rerank`, `vision`, `llm`) с `serve: llamacpp | vllm` получает свой сервер на
 порту роли. Команды серверов строятся здесь, из конфига; запускаются они либо в Docker
 (`docker-compose.models.yml`, сервис `<роль>-<бэкенд>`, команда приходит переменной
-`MB_<СЕРВИС>_ARGS`), либо нативно (llama.cpp на Mac: в Docker на Mac нет GPU)."""
+`MB_<СЕРВИС>_ARGS`), либо нативно (llama.cpp на Mac: в Docker на Mac нет GPU).
+`device: cpu` выбирает CPU-сервисы; при ошибке CUDA Docker-сервер пробуется на CPU один раз."""
 
 from __future__ import annotations
 
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -17,7 +19,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -51,6 +53,7 @@ class Served:
 
     role: str
     settings: ServedModel
+    device: Literal["gpu", "cpu"] = "gpu"
 
     @property
     def backend(self) -> str:
@@ -58,7 +61,8 @@ class Served:
 
     @property
     def service(self) -> str:
-        return f"{SERVICE_PREFIX[self.role]}-{self.backend}"
+        suffix = "-cpu" if self.device == "cpu" and self.backend == "llamacpp" else ""
+        return f"{SERVICE_PREFIX[self.role]}-{self.backend}{suffix}"
 
     @property
     def port(self) -> int:
@@ -84,7 +88,7 @@ def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
         candidates.append(("vision", settings.vision))
     candidates.append(("llm", settings.llm))
     return [
-        Served(role, s)
+        Served(role, s, "cpu" if settings.device == "cpu" else "gpu")
         for role, s in candidates
         if s.serve != "api" and (not roles or role in roles)
     ]
@@ -93,11 +97,18 @@ def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
 def server_args(served: Served, port: int) -> list[str]:
     """Аргументы сервера (без самой программы): `llama-server ...` или `vllm serve ...`."""
     s, c = served.settings, served.settings.server
+    if served.backend == "vllm" and served.device == "cpu":
+        raise ServeError(
+            f"{served.role}: vLLM requires CUDA; device: cpu supports only llama.cpp. "
+            "Use serve: llamacpp with GGUF weights, or set device: auto/cuda."
+        )
     if served.backend == "llamacpp":
         # имя модели на сервере — `model`, как у vLLM, поэтому конфиг не зависит от бэкенда;
         # у VLM -hf сам скачивает и подключает проектор картинок (mmproj) из того же репозитория
         args = ["-hf", s.weights, "--alias", s.model, "--port", str(port)]
-        args += ["--ctx-size", str(c.ctx), "--n-gpu-layers", "999"]
+        args += ["--ctx-size", str(c.ctx)]
+        if served.device != "cpu":
+            args += ["--n-gpu-layers", "999"]
         if served.role == "embedder":
             args += ["--embedding", "--ubatch-size", str(c.ctx)]
         elif served.role == "rerank":
@@ -110,7 +121,11 @@ def server_args(served: Served, port: int) -> list[str]:
         if served.role == "rerank" and "qwen3-reranker" in s.model.lower():
             args += ["--hf-overrides", json.dumps(QWEN3_RERANKER_OVERRIDES)]
             args += ["--chat-template", QWEN3_RERANKER_TEMPLATE]
-    return args + c.args
+    args += c.args
+    if served.device == "cpu" and served.backend == "llamacpp":
+        # Последний флаг имеет приоритет над server.args из GPU-конфигурации.
+        args += ["--n-gpu-layers", "0"]
+    return args
 
 
 def resolve_runner(runner: Runner) -> Literal["docker", "native"]:
@@ -148,18 +163,30 @@ class DockerRunner:
         self._file = compose_file
         self._run = run
 
-    def _compose(self, *args: str, env: dict[str, str] | None = None, check: bool = True):
+    def _compose(
+        self,
+        *args: str,
+        env: dict[str, str] | None = None,
+        check: bool = True,
+        capture: bool = False,
+    ):
         profiles = [
             arg
             for prefix in SERVICE_PREFIX.values()
             for backend in BACKENDS
-            for arg in ("--profile", f"{prefix}-{backend}")
+            for suffix in (("", "-cpu") if backend == "llamacpp" else ("",))
+            for arg in ("--profile", f"{prefix}-{backend}{suffix}")
         ]
         cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", str(self._file), *profiles, *args]
         base = {
             k: v for k, v in os.environ.items() if k not in ("COMPOSE_FILE", "COMPOSE_PROFILES")
         }
-        return self._run(cmd, env={**base, **(env or {})}, check=check)
+        kwargs = {"capture_output": True, "text": True} if capture else {}
+        try:
+            return self._run(cmd, env={**base, **(env or {})}, check=check, **kwargs)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise ServeError(f"Docker Compose failed: {detail}") from exc
 
     @staticmethod
     def _env(served: Sequence[Served]) -> dict[str, str]:
@@ -173,34 +200,82 @@ class DockerRunner:
     def prune(self, served: Sequence[Served]) -> None:
         """Удаляет контейнеры ролей, которые сменили бэкенд или стали api: они занимают
         порт роли."""
-        wanted = {s.service for s in served}
+        wanted = {replace(s, device=device).service for s in served for device in ("gpu", "cpu")}
         stale = [
-            f"{prefix}-{backend}"
+            f"{prefix}-{backend}{suffix}"
             for prefix in SERVICE_PREFIX.values()
             for backend in BACKENDS
-            if f"{prefix}-{backend}" not in wanted
+            for suffix in (("", "-cpu") if backend == "llamacpp" else ("",))
+            if f"{prefix}-{backend}{suffix}" not in wanted
         ]
-        self._compose("rm", "--stop", "--force", *stale)
+        if stale:
+            self._compose("rm", "--stop", "--force", *stale, capture=True)
 
     def start(self, served: Sequence[Served]) -> None:
+        if not served:
+            return
+        env = self._env(served)  # validate before stopping existing containers
+        alternatives = [
+            replace(s, device="gpu" if s.device == "cpu" else "cpu")
+            for s in served
+            if s.backend == "llamacpp"
+        ]
+        if alternatives:
+            self._compose(
+                "rm", "--stop", "--force", *(s.service for s in alternatives), capture=True
+            )
         # compose пересоздаёт контейнер, если команда (модель, флаги) изменилась
-        self._compose("up", "-d", *(s.service for s in served), env=self._env(served))
+        self._compose("up", "-d", *(s.service for s in served), env=env, capture=True)
 
     def alive(self, served: Served) -> bool:
-        result = self._run(
-            ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", str(self._file),
-             "--profile", served.service, "ps", "--status", "running", "-q", served.service],
-            capture_output=True, text=True, check=False,
-        )  # fmt: skip
+        result = self._compose(
+            "ps", "--status", "running", "-q", served.service, capture=True, check=False
+        )
         return bool(result.stdout.strip())
+
+    def halt(self, served: Served) -> None:
+        """Останавливает неудачный запуск без restart-loop, сохраняя логи."""
+        self._compose("stop", served.service, capture=True)
+
+    def gpu_failure(self, served: Served, exc: ServeError) -> str | None:
+        if served.device == "cpu" or served.backend != "llamacpp":
+            return None
+        diagnostic = str(exc)
+        if not _gpu_error(diagnostic):
+            result = self._compose(
+                "logs", "--no-color", "--tail", "100", served.service, capture=True, check=False
+            )
+            diagnostic = result.stdout + result.stderr
+        return next((line.strip() for line in diagnostic.splitlines() if _gpu_error(line)), None)
 
     def stop(self) -> None:
         self._compose("down")
 
     def logs(self, served: Served, follow: bool) -> None:
+        # CPU fallback сохраняется между вызовами CLI в имени контейнера.
+        existing = self._compose("ps", "--all", "-q", served.service, capture=True, check=False)
+        if not existing.stdout.strip() and served.backend == "llamacpp":
+            served = replace(served, device="gpu" if served.device == "cpu" else "cpu")
         self._compose(
             "logs", "--tail", "200", *(["-f"] if follow else []), served.service, check=False
         )
+
+
+def _gpu_error(message: str) -> bool:
+    return bool(
+        re.search(
+            r"CUDA (?:error|out of memory|initialization error|is not available)|"
+            r"CUDA driver (?:version is insufficient|error)|"
+            r"cudaMalloc.*(?:fail|out of memory)|cuBLAS error|CUBLAS_STATUS_(?!SUCCESS)\w+|"
+            r"could not select device driver|nvidia-container-cli:.*(?:error|fail)|NVIDIA-SMI has failed|"
+            r"failed to initialize (?:CUDA|NVML)|no (?:CUDA|compatible) (?:GPU|device)|"
+            r"no NVIDIA driver|NVIDIA driver.*too old|"
+            r"(?:cannot|failed to|could not|unable to).*libcuda(?:rt)?\.so|"
+            r"libcuda(?:rt)?\.so.*(?:cannot open|not found)|requires cuda|unsatisfied condition: cuda",
+            message,
+            re.IGNORECASE,
+        )
+    )
 
 
 class NativeRunner:
@@ -302,7 +377,7 @@ ModelRunner = DockerRunner | NativeRunner
 
 
 def make_runner(runner: Runner, settings: Settings) -> ModelRunner:
-    if resolve_runner(runner) == "docker":
+    if resolve_runner(runner) == "docker" or (runner == "auto" and settings.device == "cpu"):
         return DockerRunner(Path(COMPOSE_FILE))
     return NativeRunner(settings.data_dir / "models", settings.logs_dir)
 
@@ -345,18 +420,35 @@ def bring_up(
     timeout: float,
     on_wait: Callable[[Sequence[Served], float], None] = lambda pending, elapsed: None,
     keep: Sequence[Served] | None = None,
+    on_fallback: Callable[[Served, str], None] = lambda served, reason: None,
     **wait_kwargs,
 ) -> None:
-    """Запускает серверы ролей и ждёт их готовности. llama.cpp стартуют вместе, vLLM — по
-    одному: каждый при старте резервирует долю свободной видеопамяти, и параллельный старт
-    сбивает этот расчёт. Останавливаются серверы, которых нет в `keep` (по умолчанию —
-    в `served`): роли, ставшие `api` или отключённые, и прежний бэкенд роли."""
-    runner.prune(served if keep is None else keep)
-    llama = [s for s in served if s.backend == "llamacpp"]
-    if llama:
-        runner.start(llama)
+    """Последовательный запуск; при сбое CUDA llama.cpp в Docker — одна попытка на CPU.
+    Прочие роли из `keep` не останавливаются. Ошибки моделей/скачивания не скрываются."""
     for s in served:
-        if s.backend == "vllm":
+        server_args(s, s.port)  # reject CPU-vLLM before any container mutation
+    runner.prune(served if keep is None else keep)
+    for s in served:
+        try:
             runner.start([s])
             wait_ready([s], runner, timeout, on_wait, **wait_kwargs)
-    wait_ready(llama, runner, timeout, on_wait, **wait_kwargs)
+        except ServeError as exc:
+            if not isinstance(runner, DockerRunner):
+                raise
+            reason = runner.gpu_failure(s, exc)
+            # Не оставляем упавший контейнер бесконечно перезапускаться.
+            runner.halt(s)
+            if reason is None:
+                if s.device == "cpu":
+                    raise ServeError(f"{s.role}: CPU startup failed: {exc}") from exc
+                raise
+            on_fallback(s, reason)
+            cpu = replace(s, device="cpu")
+            try:
+                runner.start([cpu])
+                wait_ready([cpu], runner, timeout, on_wait, **wait_kwargs)
+            except ServeError as cpu_exc:
+                runner.halt(cpu)
+                raise ServeError(
+                    f"{s.role}: CPU fallback failed after {reason}: {cpu_exc}"
+                ) from cpu_exc

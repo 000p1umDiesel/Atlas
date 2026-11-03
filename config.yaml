@@ -1,4 +1,4 @@
-device: mps                         # auto | cuda | mps | cpu
+device: mps                         # auto | cuda | mps | cpu; cpu: CPU-контейнеры llama.cpp, vLLM требует CUDA
 
 # Модели ролей (llm, embedder, rerank, vision). serve — где работает модель:
 #   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002/8003);

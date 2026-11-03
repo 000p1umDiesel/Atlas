@@ -672,7 +672,9 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     monkeypatch.setattr(
         cli,
         "bring_up",
-        lambda served, model_runner, timeout, on_wait, keep: started.append((served, keep)),
+        lambda served, model_runner, timeout, on_wait, keep, on_fallback: started.append(
+            (served, keep)
+        ),
     )
     result = runner.invoke(cli.app, ["models", "up", "--runner", "docker"])
     assert result.exit_code == 0, result.output
@@ -688,7 +690,7 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
         "rerank",
     ]
 
-    def broken(served, model_runner, timeout, on_wait, keep):
+    def broken(served, model_runner, timeout, on_wait, keep, on_fallback):
         raise ServeError("embedder: the llamacpp server exited")
 
     monkeypatch.setattr(cli, "bring_up", broken)
@@ -701,7 +703,7 @@ def test_models_up_reports_waiting_and_ready_servers(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "make_runner", lambda runner, settings: "runner")
     monkeypatch.setattr(cli, "health_state", lambda served: "loading the model")
 
-    def bring_up(served, model_runner, timeout, on_wait, keep):
+    def bring_up(served, model_runner, timeout, on_wait, keep, on_fallback):
         on_wait(served, 5)  # эмбеддер ещё грузится
         on_wait(served, 10)  # через 5 с: повтор строки не печатается
         on_wait([], 15)  # готов
