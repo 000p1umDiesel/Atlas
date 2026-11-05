@@ -129,12 +129,12 @@ def create_api(settings: Settings | None = None, *, service=None) -> FastAPI:
 
     @app.post("/api/teams/{team_id}/members")
     def add_member(team_id: str, body: Member, ctx: TeamContext = Depends(admin_context)):
-        store.add_member(team_id, body.user_id, body.role)
+        store.add_member(team_id, body.user_id, body.role, actor_id=ctx.user_id)
         return {"status": "ok"}
 
     @app.delete("/api/teams/{team_id}/members/{user_id}")
     def remove_member(team_id: str, user_id: str, ctx: TeamContext = Depends(admin_context)):
-        store.remove_member(team_id, user_id)
+        store.remove_member(team_id, user_id, actor_id=ctx.user_id)
         return {"status": "ok"}
 
     @app.get("/api/teams/{team_id}/documents")

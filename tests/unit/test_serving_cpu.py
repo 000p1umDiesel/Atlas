@@ -256,7 +256,8 @@ def test_cpu_services_keep_the_existing_caches_and_have_no_gpu_request():
                 .get("reservations", {})
                 .get("devices")
             )
-            assert service.get("mem_limit") and service.get("cpus")
+            assert service.get("mem_limit")
+            assert service.get("cpus") == 0.0
 
 
 def test_cli_rejects_cpu_vllm_with_a_clean_error(tmp_path, monkeypatch):

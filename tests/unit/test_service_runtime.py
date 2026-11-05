@@ -321,3 +321,42 @@ async def test_removing_failed_ingest_reconciles_corpus_and_old_job(service, mon
     assert svc.documents(ctx) == []
     assert await svc.search(ctx, "one") == []
     assert [job["status"] for job in svc.jobs(ctx)] == ["done", "superseded"]
+
+
+@pytest.mark.parametrize("state", ["failed", "removed", "missing"])
+async def test_reupload_restores_current_ingest_intent(service, state):
+    svc, ctx = service
+    first = svc.upload(ctx, "one.md", b"one")
+    settings = team_settings(svc.settings, ctx.team_id)
+    with svc._queue(settings) as queue:
+        assert queue.claim().id == first["id"]
+        if state == "failed":
+            queue.fail(first["id"], "temporary failure", max_attempts=1, delay=0)
+        else:
+            queue.finish(first["id"])
+    doc = svc.documents(ctx)[0]
+    if state == "removed":
+        await svc.remove_document(ctx, doc["id"])
+    elif state == "missing":
+        svc.source(ctx, doc["id"]).unlink()
+    again = svc.upload(ctx, "one.md", b"one")
+    assert again["id"] == first["id"]
+    assert again["status"] == "pending"
+    assert again["attempts"] == 0
+    with svc._queue(settings) as queue:
+        assert queue.is_current(queue.get(again["id"]))
+    assert svc.source(ctx, doc["id"]).read_bytes() == b"one"
+
+
+def test_reupload_repairs_metadata_after_interrupted_upload(service):
+    svc, ctx = service
+    first = svc.upload(ctx, "one.md", b"one")
+    settings = team_settings(svc.settings, ctx.team_id)
+    with svc._uploads(settings) as db:
+        db.execute("DELETE FROM uploads")
+    assert svc.documents(ctx) == []
+    again = svc.upload(ctx, "one.md", b"one")
+    assert again["id"] == first["id"]
+    docs = svc.documents(ctx)
+    assert len(docs) == 1
+    assert svc.source(ctx, docs[0]["id"]).read_bytes() == b"one"

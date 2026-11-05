@@ -174,10 +174,14 @@ class ServiceStore:
             conn.execute("INSERT INTO teams(id, name) VALUES(?, ?)", (team["id"], name))
         return team
 
-    def add_member(self, team_id: str, user_id: str, role: str = "member") -> None:
+    def add_member(
+        self, team_id: str, user_id: str, role: str = "member", *, actor_id: str | None = None
+    ) -> None:
         if role not in {"member", "admin"}:
             raise ServiceError(400, "Invalid membership role")
         with self._connection(write=True) as conn:
+            if actor_id is not None:
+                self._context(conn, actor_id, team_id, admin=True)
             self._team(conn, team_id)
             if conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone() is None:
                 raise ServiceError(404, "User not found")
@@ -187,8 +191,10 @@ class ServiceStore:
                 (team_id, user_id, role),
             )
 
-    def remove_member(self, team_id: str, user_id: str) -> None:
+    def remove_member(self, team_id: str, user_id: str, *, actor_id: str | None = None) -> None:
         with self._connection(write=True) as conn:
+            if actor_id is not None:
+                self._context(conn, actor_id, team_id, admin=True)
             self._team(conn, team_id)
             conn.execute(
                 "DELETE FROM memberships WHERE team_id=? AND user_id=?", (team_id, user_id)

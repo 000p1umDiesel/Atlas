@@ -389,3 +389,27 @@ def test_retry_job_id_requires_positive_integer(setup_api):
     response = s.client.post(prefix + "/1/retry", headers=s.headers)
     assert response.status_code == 200
     assert response.json()["id"] == 1
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+def test_membership_mutation_rechecks_revoked_admin(setup_api, monkeypatch, operation):
+    s = setup_api
+    original = s.store.context
+
+    def revoke_after_check(user_id, team_id, *, admin=False):
+        ctx = original(user_id, team_id, admin=admin)
+        if admin:
+            s.store.remove_member(team_id, user_id)
+        return ctx
+
+    monkeypatch.setattr(s.store, "context", revoke_after_check)
+    prefix = f"/api/teams/{s.team['id']}/members"
+    if operation == "add":
+        response = s.client.post(
+            prefix, headers=s.headers, json={"user_id": s.admin["id"], "role": "admin"}
+        )
+    else:
+        response = s.client.delete(prefix + "/" + s.member["id"], headers=s.headers)
+    assert response.status_code == 403
+    members = s.store.members(s.team["id"])
+    assert {m["user_id"] for m in members} == {s.member["id"]}

@@ -212,6 +212,12 @@ class TeamService:
                 else settings.data_dir.parent / "documents" / (doc_id + suffix)
             )
             self._contained_source(settings, path, must_exist=False)
+            # Restore metadata even when a previous enqueue committed before the
+            # uploads transaction (e.g. interruption during its commit).
+            db.execute(
+                "INSERT INTO uploads VALUES(?,?,?) ON CONFLICT(doc_id) DO NOTHING",
+                (doc_id, filename, str(path.resolve())),
+            )
             fingerprint = doc_id
             existing = next(
                 (
@@ -223,7 +229,7 @@ class TeamService:
                 ),
                 None,
             )
-            if existing is not None and path.is_file():
+            if existing is not None and q.is_current(existing) and path.is_file():
                 return self._job(existing)
             counts = q.counts()
             if (
@@ -242,11 +248,7 @@ class TeamService:
                 temporary.replace(path)
             finally:
                 temporary.unlink(missing_ok=True)
-            db.execute(
-                "INSERT INTO uploads VALUES(?,?,?) ON CONFLICT(doc_id) DO NOTHING",
-                (doc_id, filename, str(path.resolve())),
-            )
-            job_id = q.enqueue(path, fingerprint)
+            job_id = q.enqueue(path, fingerprint, force=True)
             return self._job(q.get(job_id))
 
     def documents(self, ctx: TeamContext, limit: int = 50, offset: int = 0) -> list[dict]:
