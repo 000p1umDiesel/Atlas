@@ -8,13 +8,14 @@ import hashlib
 import ipaddress
 import json
 import os
+import pwd
 import re
 import shutil
 import signal
 import subprocess
 import tarfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from urllib.error import URLError
@@ -43,18 +44,60 @@ HOST_PATHS = (
 )
 
 
-class CleanupError(RuntimeError):
+class KeepStoppedError(RuntimeError):
+    """The current state is unsafe to resume automatically."""
+
+
+class CleanupError(KeepStoppedError):
     """Keep production stopped when temporary containers could still be running."""
 
 
-def run(args: list[str], *, env=None, input=None) -> str:
-    result = subprocess.run(
-        args, env=env, input=input, capture_output=True, text=True, timeout=2100, check=False
+def run(args: list[str], *, env=None, input=None, umask=-1, timeout=2100, user=None) -> str:
+    credentials = {}
+    if user is not None:
+        account = pwd.getpwnam(user)
+        credentials = {
+            "user": account.pw_uid,
+            "group": account.pw_gid,
+            "extra_groups": os.getgrouplist(user, account.pw_gid),
+        }
+        env = {
+            **(os.environ if env is None else env),
+            "HOME": account.pw_dir,
+            "USER": user,
+            "LOGNAME": user,
+        }
+    process = subprocess.Popen(
+        args,
+        env=env,
+        umask=umask,
+        stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        **credentials,
     )
-    if result.returncode:
+    try:
+        stdout, _ = process.communicate(input=input, timeout=timeout)
+    except BaseException:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.communicate(timeout=2)
+        except BaseException:
+            pass
+        finally:
+            # The leader may have exited while a descendant with redirected I/O
+            # remains alive. Terminate the entire installer group before returning.
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+        raise
+    if process.returncode:
         # Never echo subprocess stderr, environment values or a full Docker inspect.
         raise RuntimeError(f"{args[0]} {args[1]} failed; private command output was suppressed")
-    return result.stdout.strip()
+    return stdout.strip()
 
 
 def states() -> list[str]:
@@ -81,9 +124,11 @@ def quiesced():
             run(["systemctl", "stop", *UNITS])
         offline()
         yield
-    except CleanupError:
+    except KeepStoppedError:
         resume = False
-        print("Recovery cleanup failed: production remains stopped. Temporary files retained.")
+        print(
+            "Operation requires recovery: production remains stopped. Inspect the reported details."
+        )
         raise
     finally:
         if resume:
@@ -443,6 +488,21 @@ def recovery_check(snapshot: Path) -> None:
     print("RECOVERY CHECK OK (files and database reads; no LLM calls).", flush=True)
 
 
+def new_destination(root: Path, backups: Path) -> Path:
+    if backups.resolve() != backups or backups.is_relative_to(root):
+        raise RuntimeError("Backup directory must be outside project storage without symlinks")
+    backups.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if backups.stat().st_uid != 0 or backups.stat().st_mode & 0o077:
+        raise RuntimeError("Backup parent must be root-owned with mode0700")
+    needed = sum(
+        int(line.split()[0])
+        for line in run(["du", "-sb", *(str(root / p) for p in CONTENTS)]).splitlines()
+    )
+    if shutil.disk_usage(backups).free < needed + 512 * 1024**2:
+        raise RuntimeError("Not enough free space for a backup")
+    return backups / (datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:8])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -459,21 +519,7 @@ def main() -> None:
     with Path("/run/lock/mnogobase-backup.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.command == "create":
-            if BACKUPS.resolve() != BACKUPS:
-                raise RuntimeError("Backup directory must not contain symlinks")
-            BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if BACKUPS.stat().st_uid != 0 or BACKUPS.stat().st_mode & 0o077:
-                raise RuntimeError("Backup parent must be root-owned with mode0700")
-            # Conservative upper bound includes the excluded venv; fail before downtime.
-            needed = sum(
-                int(line.split()[0])
-                for line in run(["du", "-sb", *(str(ROOT / p) for p in CONTENTS)]).splitlines()
-            )
-            if shutil.disk_usage(BACKUPS).free < needed + 512 * 1024**2:
-                raise RuntimeError("Not enough free space for a backup")
-            destination = BACKUPS / (
-                datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:8]
-            )
+            destination = new_destination(ROOT, BACKUPS)
             images = image_ids()
             references = {
                 name: json.loads(

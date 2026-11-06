@@ -2,13 +2,33 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
+import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).parents[2] / "deploy/shared-host/backup.py"
 IMAGES = {name: "sha256:" + "a" * 64 for name in ("postgres", "qdrant", "neo4j")}
+
+
+def test_cancelled_command_cannot_leave_a_child_mutating_after_return(tmp_path):
+    backup = module()
+    marker = tmp_path / "late-write"
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import subprocess,sys,time\n"
+        "subprocess.Popen([sys.executable,'-c',"
+        "'import time,sys; from pathlib import Path; time.sleep(.5); Path(sys.argv[1]).write_text(\"late\")',"
+        "sys.argv[1]],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "time.sleep(30)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        backup.run([sys.executable, str(launcher), str(marker)], timeout=0.2)
+    time.sleep(0.7)
+    assert not marker.exists()
 
 
 def module():

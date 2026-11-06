@@ -1,11 +1,13 @@
 # Shared Linux host deployment
 
 Target: Ubuntu 22.04 amd64, 8 vCPU, 16 GB RAM, Minecraft Java and Xray/Happ alongside
-mnogobase. CPU PyTorch is installed separately in the server copy of the project.
+mnogobase. A versioned Linux CPU dependency profile is in `python/`; the initial
+rsync deployment used equivalent server-only dependency changes before Git adoption.
 This directory prepares PostgreSQL/Qdrant/Neo4j, CPU model containers and application
 configuration, grouped systemd services, nginx HTTPS on the public IP, and a cold-backup
-helper with an isolated recovery check. The backup helper still needs a VPS runtime check;
-Minecraft/VPN remain separate deployment steps.
+helper with an isolated recovery check. Backup recovery, offsite transfer and reboot
+have passed on the pilot VPS. Git conversion/update still needs its staged runtime
+check; Minecraft/VPN remain separate deployment steps.
 
 Prerequisites: Docker with Compose, application sources and Python 3.12 at
 `/srv/mnogobase/app`, system account/group `mnogobase`, and a mounted 60,000,000,000-byte
@@ -502,6 +504,113 @@ describes the environment-based credentials used by the recovery query; password
 not passed in arguments or printed. Unit/static checks run on the Mac; the actual
 Linux recovery check remains a VPS step.
 
+## Git adoption and one-command updates
+
+Use the existing public repository `https://github.com/000p1umDiesel/Atlas.git`, main
+branch. Publish the reviewed local deployment/observability changes before cloning
+them on the server. The agent does not commit or push on the user's behalf. Check the
+file list before publication: `.env*`, `*.env`, session files, runtime data and backup
+archives must stay ignored. `.env.example` remains the public empty template.
+
+The small virtual project `python/pyproject.toml` depends editably on the existing
+root package; it does not duplicate application code or the main dependency list.
+Its separate lock targets Linux amd64/Python3.12 and CPU Torch/Torchvision. The178
+Linux runtime versions were compared with the successfully deployed VPS lock and
+matched exactly. Root `pyproject.toml`/`uv.lock` remain the normal development profile,
+including Windows CUDA and Linux GPU use. Always regenerate the server lock when root
+dependencies change; the artifact test checks that the lock is current and CPU-only.
+
+`UV_PROJECT_ENVIRONMENT=/srv/mnogobase/app/.venv` makes server synchronization target
+the existing runtime venv. This is the one server environment managed by the profile;
+do not run root-project `uv sync` there after Git adoption. See uv's
+[project environment documentation](https://docs.astral.sh/uv/concepts/projects/config/#project-environment-path).
+
+First conversion has a review checkpoint. Current private config/data/caches/models
+stay outside the app directory, and the existing `.venv` is retained. On the server,
+as admin, install Git if needed, clone only metadata into a separate directory and
+attach it without checking files out over the running application:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git
+sudo install -d -o admin -g mnogobase -m2750 /srv/mnogobase/git-bootstrap
+git clone --no-checkout https://github.com/000p1umDiesel/Atlas.git /srv/mnogobase/git-bootstrap/repo
+test ! -e /srv/mnogobase/app/.git && mv /srv/mnogobase/git-bootstrap/repo/.git /srv/mnogobase/app/.git
+cd /srv/mnogobase/app
+git reset --mixed HEAD
+git status --short
+git diff --stat
+```
+
+Run this once; if the staging checkout or `.git` already exists, inspect it instead
+of overwriting/removing it. `reset --mixed` builds the index and preserves working
+files. Expect the old server CPU metadata, older copied docs/tests and missing newly
+published deployment files. Review any application-code differences before proceeding;
+preserve and reconcile local hotfixes. A default Git root project would install different
+Linux Torch wheels, so the separate CPU profile must be present before dependency sync.
+
+Only after that review, stop the complete stack, make a fresh archive with the existing
+working backup helper, and align the tracked source files. The verified offsite archive
+also preserves the original CPU dependency files, and private config/data/venv are not
+tracked. These commands deliberately replace tracked files with the reviewed commit:
+
+```bash
+sudo systemctl stop mnogobase.target mnogobase-api.service mnogobase-monitor.service mnogobase-worker.service mnogobase-models.service mnogobase-storage.service
+sudo /srv/mnogobase/app/.venv/bin/python /srv/mnogobase/app/deploy/shared-host/backup.py create
+git restore --source=HEAD --worktree -- .
+git status --short
+sudo /srv/mnogobase/app/.venv/bin/python /srv/mnogobase/app/deploy/shared-host/update.py --sync
+sudo systemctl start mnogobase.target
+curl -fsS https://152.234.234.206/health
+```
+
+The backup command sees an initially stopped stack and leaves it stopped. `--sync`
+reapplies **the current revision**, validates the CPU lock and CPU runtime, restores
+source/venv ownership and service read access, reapplies native OCR-cache preparation
+and installs/verifies the versioned Mnogobase systemd units. It also leaves an initially
+stopped stack stopped; the explicit start above is the first-conversion final step.
+Do not continue after a failing command: inspect the error and retained backup first.
+
+For subsequent updates from a clean main checkout tracking origin/main, use:
+
+```bash
+sudo /srv/mnogobase/app/.venv/bin/python /srv/mnogobase/app/deploy/shared-host/update.py
+```
+
+The helper rejects a different origin, dirty files or a diverged branch; fetch happens
+before downtime, and only the validated fetched commit is fast-forwarded. It takes a
+cold backup before changing code, syncs the locked CPU environment as admin, reapplies
+native preparation/units, resumes a previously running stack and checks local API health.
+Git hooks are disabled and the checkout is revalidated immediately before installation.
+The installer runs directly under admin credentials in a managed process group, without
+a runuser wrapper; timeout/interruption terminates that group before returning/releasing
+the shared backup/update lock. The file-permission pass does not follow symlinks and
+keeps application/package code read-only to the service group; RapidOCR's checkpoint
+folder regains the service ownership required by the library.
+
+If main is current, normal mode skips installation and restart. `--sync` explicitly
+reapplies the current revision and does not advance to a newer fetched commit. A stopped
+Minecraft/VPN mode remains stopped; nginx, certificates and private server config are
+not overwritten. Unit drop-ins remain available for operator-specific limits; unexpected
+edits to installed base unit files cause a refusal rather than silent replacement.
+
+After a code/environment mutation, any failure keeps the stack stopped with the backup
+path and previous revision. A private `config/update-state.json` records the known
+previous unit hashes so `--sync` can repair a partially copied unit set without accepting
+unrelated local overrides. The record clears only after successful installation and,
+when initially running, health verification. An incomplete update requires explicit
+`--sync`; it is not reported as a successful no-op. After a stopped-state repair, start
+the target explicitly and recheck health when the Mnogobase mode should run. If the Git
+revision differs from the pending record or local overrides were edited, review recovery
+manually. Never reset branches or restore databases blindly: a newly started version
+may have migrated a schema. Use the reported cold archive as the recovery point; image
+layers/venv/model downloads remain rebuildable, as described above.
+
+Tests exercise real temporary Git repositories, real archive/file operations and
+process-group cancellation; Linux service/uv installation is not simulated as a live
+VPS proof. First conversion, `--sync` and a subsequent update still require server
+validation before declaring this workflow complete.
+
 ## Verification scope
 
 VPS evidence so far: all storage checks and all three native model readiness checks passed;
@@ -532,8 +641,8 @@ independently in both teams, each as job2 with one attempt and no errors. TeamA'
 subsequent remove job3 also completed with one attempt and no errors. Post-removal
 document lists and RAG searches confirm the common file is absent in TeamA and
 retained/searchable by tester in TeamB. One TeamA search returned a transient409;
-its repeated read succeeded. Other retrieval modes, Vision inference and reboot must
-still be checked before declaring migration complete.
+its repeated read succeeded. Other retrieval modes, Vision inference and Git updates
+still need their runtime checks.
 
 The first VPS cold-backup run created
 `/var/backups/mnogobase/20261105T222325Z-cb3e4b4f`: recovered PostgreSQL retained two
@@ -549,4 +658,8 @@ files passed hash verification, `RECOVERY CHECK OK` printed, temporary resources
 removed and all six production units restarted active. This confirms the isolated
 file/database recovery check. The archive and manifest were subsequently copied to
 the Mac under `.mnogobase/backups/20261105T222325Z-cb3e4b4f/`; the local archive SHA-256
-check returned `OK`. Actual reboot remains pending.
+check returned `OK`. After reboot, `/srv/mnogobase` mounted as loop3,8GiBswap and the
+Certbot timer were active. Models initially loaded before the API; all six units then
+became active automatically and external HTTPS health returned200/ok. Preserved admin
+and tester sessions read the expected TeamA1/TeamB2documents, and all three source
+hashes matched. Git adoption/update is the next unverified deployment step.

@@ -3,6 +3,10 @@
 logs/
 runs/
 .env
+.env*
+!.env.example
+*.env
+.deployment-backup/
 .venv/
 __pycache__/
 *.pyc
