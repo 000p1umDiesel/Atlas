@@ -5,9 +5,9 @@ mnogobase. A versioned Linux CPU dependency profile is in `python/`; the initial
 rsync deployment used equivalent server-only dependency changes before Git adoption.
 This directory prepares PostgreSQL/Qdrant/Neo4j, CPU model containers and application
 configuration, grouped systemd services, nginx HTTPS on the public IP, and a cold-backup
-helper with an isolated recovery check. Backup recovery, offsite transfer and reboot
-have passed on the pilot VPS. Git conversion/update still needs its staged runtime
-check; Minecraft/VPN remain separate deployment steps.
+helper with an isolated recovery check. Backup recovery, offsite transfer, reboot and
+the first Git conversion with CPU dependency synchronization have passed on the pilot
+VPS. Minecraft/VPN remain separate deployment steps.
 
 Prerequisites: Docker with Compose, application sources and Python 3.12 at
 `/srv/mnogobase/app`, system account/group `mnogobase`, and a mounted 60,000,000,000-byte
@@ -548,6 +548,11 @@ files. Expect the old server CPU metadata, older copied docs/tests and missing n
 published deployment files. Review any application-code differences before proceeding;
 preserve and reconcile local hotfixes. A default Git root project would install different
 Linux Torch wheels, so the separate CPU profile must be present before dependency sync.
+Preserve operator-only untracked notes outside the checkout before running the updater,
+for example under `/srv/mnogobase/migration-notes/`. Review `git status --short` rather
+than deleting untracked files: the updater requires a clean checkout. The pilot's
+`SERVICE_OBSERVABILITY_VERIFICATION.md` was moved there after the fresh backup;
+`.deployment-backup/` remains preserved and ignored.
 
 Only after that review, stop the complete stack, make a fresh archive with the existing
 working backup helper, and align the tracked source files. The verified offsite archive
@@ -607,9 +612,10 @@ may have migrated a schema. Use the reported cold archive as the recovery point;
 layers/venv/model downloads remain rebuildable, as described above.
 
 Tests exercise real temporary Git repositories, real archive/file operations and
-process-group cancellation; Linux service/uv installation is not simulated as a live
-VPS proof. First conversion, `--sync` and a subsequent update still require server
-validation before declaring this workflow complete.
+process-group cancellation. The first production conversion and `--sync` also passed
+on the Linux VPS, including the actual uv installation, permission preparation and
+systemd unit installation. This run does not exercise a later fast-forward to a new
+commit or a repair after an installation failure.
 
 ## Verification scope
 
@@ -641,7 +647,7 @@ independently in both teams, each as job2 with one attempt and no errors. TeamA'
 subsequent remove job3 also completed with one attempt and no errors. Post-removal
 document lists and RAG searches confirm the common file is absent in TeamA and
 retained/searchable by tester in TeamB. One TeamA search returned a transient409;
-its repeated read succeeded. Other retrieval modes, Vision inference and Git updates
+its repeated read succeeded. Other retrieval modes, Vision inference and peak load
 still need their runtime checks.
 
 The first VPS cold-backup run created
@@ -662,4 +668,17 @@ check returned `OK`. After reboot, `/srv/mnogobase` mounted as loop3,8GiBswap an
 Certbot timer were active. Models initially loaded before the API; all six units then
 became active automatically and external HTTPS health returned200/ok. Preserved admin
 and tester sessions read the expected TeamA1/TeamB2documents, and all three source
-hashes matched. Git adoption/update is the next unverified deployment step.
+hashes matched.
+
+On 2026-11-06, Git metadata was attached to the existing application without replacing
+working files. The differences were reviewed: no application-source changes, only the
+known CPU root dependency edits and older deployment/docs/tests. A fresh cold backup
+was created at `/var/backups/mnogobase/20261106T091335Z-24081bd3` before tracked files
+were aligned to commit `7cbed85`. The operator's untracked verification note was
+preserved outside the checkout, and the clean-worktree check passed. `update.py --sync`
+created its own backup at `/var/backups/mnogobase/20261106T091410Z-41ee0cf1`, installed
+the locked CPU dependencies and units, and correctly left the initially stopped stack
+stopped. The explicit target start returned six active units and HTTPS health/ok.
+Post-installation authenticated API checks retained both users' memberships and the expected
+TeamA1/TeamB2 document lists; all three source hashes matched. Tester requests for the
+TeamA document list and source both returned403. These checks made no LLM calls.
