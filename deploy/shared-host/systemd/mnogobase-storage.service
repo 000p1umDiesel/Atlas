@@ -1,0 +1,17 @@
+[Unit]
+Description=Mnogobase PostgreSQL, Qdrant and Neo4j
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/mnogobase
+PartOf=mnogobase.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/mnogobase/app
+ExecStart=/bin/bash /srv/mnogobase/app/deploy/shared-host/storage up -d --wait --wait-timeout 240
+ExecStopPost=/bin/bash /srv/mnogobase/app/deploy/shared-host/storage stop --timeout 60
+TimeoutStartSec=10min
+TimeoutStopSec=2min
+UMask=0077

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Self
 
@@ -419,7 +420,32 @@ class DatabaseSettings(BaseModel):
     connect_timeout: int = Field(default=5, ge=1, le=60)
 
 
+class ServingSettings(BaseModel):
+    compose_override: Path | None = None
+
+
+class LLMRate(BaseModel):
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    input_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
+    output_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
+
+
+class MonitorSettings(BaseModel):
+    heartbeat_s: float = Field(default=30, gt=0, allow_inf_nan=False)
+    worker_stale_s: float = Field(default=120, gt=0, allow_inf_nan=False)
+    pending_s: float = Field(default=900, gt=0, allow_inf_nan=False)
+    running_s: float = Field(default=3600, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def heartbeat_window(self) -> Self:
+        if self.worker_stale_s <= self.heartbeat_s:
+            raise ValueError("worker_stale_s must exceed heartbeat_s")
+        return self
+
+
 class ServiceSettings(BaseModel):
+    llm_rates: dict[str, LLMRate] = Field(default_factory=dict)
+    monitor: MonitorSettings = Field(default_factory=MonitorSettings)
     root: Path = Path("data")
     api_url: str = "http://127.0.0.1:8080"
     session_hours: int = Field(default=24, ge=1, le=720)
@@ -439,6 +465,7 @@ class Settings(BaseSettings):
     logs_dir: Path = Path("logs")
     runs_dir: Path = Path("runs")
     service: ServiceSettings = Field(default_factory=ServiceSettings)
+    serving: ServingSettings = Field(default_factory=ServingSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embedder: EmbedderSettings = Field(default_factory=EmbedderSettings)

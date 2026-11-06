@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /srv/mnogobase/app
+mountpoint -q /srv/mnogobase || {
+    echo 'Storage is not mounted; refusing to start Docker services.' >&2
+    exit 1
+}
+test -r /srv/mnogobase/config/storage.env
+unset POSTGRES_PASSWORD NEO4J_PASSWORD
+exec docker compose -p mnogobase-server \
+    --env-file /srv/mnogobase/config/storage.env \
+    -f docker-compose.yml -f deploy/shared-host/storage.yml "$@"

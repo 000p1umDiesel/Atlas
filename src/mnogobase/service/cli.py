@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Literal
 
 import typer
 
-from mnogobase.database import database_target
+from mnogobase.database import DatabaseError, database_target
 from mnogobase.service.client import register_client
+from mnogobase.service.context import validate_team_id
 from mnogobase.service.errors import ServiceError
+from mnogobase.service.observability import ObservabilityStore
 from mnogobase.service.store import ServiceStore
 
 
@@ -32,6 +35,9 @@ def _print(value) -> None:
 def _call(operation):
     try:
         return operation()
+    except DatabaseError:
+        typer.echo("PostgreSQL unavailable; check database configuration", err=True)
+        raise typer.Exit(2) from None
     except ServiceError as exc:
         typer.echo(exc.detail, err=True)
         raise typer.Exit(2) from exc
@@ -57,6 +63,74 @@ def register_cli(app: typer.Typer) -> None:
         _call(_store)
         typer.echo("Service initialized")
 
+    def telemetry():
+        settings = _settings()
+        ServiceStore(database_target(settings, "service"))
+        return ObservabilityStore(database_target(settings, "service"))
+
+    @service_app.command("usage")
+    def usage(
+        team: str | None = typer.Option(None, "--team"),
+        since: str | None = typer.Option(None, "--since"),
+        until: str | None = typer.Option(None, "--until"),
+    ):
+        """Token totals and estimated external LLM costs (JSON, UTC period)."""
+
+        def run():
+            if team is not None:
+                validate_team_id(team)
+
+            def timestamp(value):
+                if value is None:
+                    return None
+                try:
+                    parsed = datetime.fromisoformat(value)
+                    return parsed.replace(tzinfo=parsed.tzinfo or UTC).timestamp()
+                except (ValueError, OverflowError):
+                    raise ServiceError(400, "Use an ISO date or datetime for the period") from None
+
+            start, end = timestamp(since), timestamp(until)
+            if start is not None and end is not None and start >= end:
+                raise ServiceError(400, "--since must be earlier than --until")
+            return telemetry().usage(team_id=team, since=start, until=end)
+
+        _print(_call(run))
+
+    @service_app.command("alerts")
+    def alerts(
+        team: str | None = typer.Option(None, "--team"),
+        history: bool = typer.Option(False, "--history"),
+        limit: int = typer.Option(100, min=1, max=1000),
+        offset: int = typer.Option(0, min=0),
+    ):
+        """Active diagnostic events, or their full history (JSON)."""
+
+        def run():
+            if team is not None:
+                validate_team_id(team)
+            return telemetry().alerts(team_id=team, history=history, limit=limit, offset=offset)
+
+        _print(_call(run))
+
+    @service_app.command("monitor")
+    def monitor(
+        once: bool = typer.Option(False, "--once"),
+        interval: float = typer.Option(30.0, min=0.1),
+    ):
+        """Detect failures independently of the worker; never retry jobs."""
+        from mnogobase.service.monitor import ServiceMonitor
+
+        async def run():
+            watcher = ServiceMonitor(_settings())
+            while True:
+                _print(await asyncio.to_thread(watcher.scan))
+                if once:
+                    return
+                await asyncio.sleep(interval)
+
+        with suppress(KeyboardInterrupt):
+            _call(lambda: asyncio.run(run()))
+
     @service_app.command("work")
     def work(
         once: bool = typer.Option(False, "--once"), interval: float = typer.Option(2.0, min=0.1)
@@ -65,6 +139,10 @@ def register_cli(app: typer.Typer) -> None:
 
         async def run():
             service = TeamService(_settings())
+            if not once and interval >= service.settings.service.monitor.worker_stale_s:
+                raise ServiceError(
+                    400, "Worker interval must be less than service.monitor.worker_stale_s"
+                )
             while True:
                 count = await service.work_once()
                 if once:

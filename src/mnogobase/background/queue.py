@@ -21,6 +21,9 @@ class Job:
     progress: str
     kind: str = "ingest"
     payload_json: str | None = None
+    created_at: float = 0
+    updated_at: float = 0
+    started_at: float | None = None
 
 
 class JobQueue:
@@ -39,7 +42,39 @@ class JobQueue:
             CREATE TABLE IF NOT EXISTS write_state(path TEXT PRIMARY KEY);
         """
         try:
-            initialize(self._db, script, "queue")
+            tables = {
+                r[0]
+                for r in self._db.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema=?",
+                    (path.schema,),
+                )
+            }
+            if not {"jobs", "desired", "write_state"} <= tables:
+                initialize(self._db, script, "queue")
+            existing = {
+                r[0]
+                for r in self._db.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema=? AND table_name='jobs'",
+                    (path.schema,),
+                )
+            }
+            if not {"created_at", "updated_at", "started_at"} <= existing:
+                with self._db:
+                    transaction_lock(self._db, "queue-timestamps")
+                    for column in ("created_at", "updated_at", "started_at"):
+                        self._db.execute(
+                            f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {column} DOUBLE PRECISION"
+                        )
+                    self._db.execute(
+                        "UPDATE jobs SET created_at=COALESCE(created_at,?), "
+                        "updated_at=COALESCE(updated_at,?) WHERE created_at IS NULL OR updated_at IS NULL",
+                        (self._clock(), self._clock()),
+                    )
+                    # Historical importers insert only their original columns.
+                    for column in ("created_at", "updated_at"):
+                        self._db.execute(
+                            f"ALTER TABLE jobs ALTER COLUMN {column} SET DEFAULT EXTRACT(EPOCH FROM clock_timestamp())"
+                        )
         except BaseException:
             self._db.close()
             raise
@@ -64,14 +99,14 @@ class JobQueue:
                 "SELECT fingerprint FROM desired WHERE path=?", (path,)
             ).fetchone()
             self._db.execute(
-                "INSERT INTO jobs(path,fingerprint,kind,payload_json) VALUES(?,?,?,?) ON CONFLICT(path,fingerprint) DO NOTHING",
-                (path, fingerprint, kind, payload_json),
+                "INSERT INTO jobs(path,fingerprint,kind,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(path,fingerprint) DO NOTHING",
+                (path, fingerprint, kind, payload_json, self._clock(), self._clock()),
             )
             if force or (previous is not None and previous[0] != fingerprint):
                 self._db.execute(
-                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='' "
+                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',updated_at=?,started_at=NULL "
                     "WHERE path=? AND fingerprint=? AND status IN ('done','failed','superseded')",
-                    (path, fingerprint),
+                    (self._clock(), path, fingerprint),
                 )
             self._db.execute(
                 "INSERT INTO desired VALUES(?,?) ON CONFLICT(path) DO UPDATE SET fingerprint=excluded.fingerprint",
@@ -90,10 +125,10 @@ class JobQueue:
         self._db.execute("BEGIN")
         try:
             row = self._db.execute(
-                "UPDATE jobs SET status='running',attempts=attempts+1,progress='starting' "
+                "UPDATE jobs SET status='running',attempts=attempts+1,progress='starting',started_at=?,updated_at=? "
                 "WHERE id=(SELECT id FROM jobs WHERE status='pending' AND available_at<=? "
                 "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *",
-                (self._clock(),),
+                (self._clock(), self._clock(), self._clock()),
             ).fetchone()
             if row:
                 self._db.execute(
@@ -113,9 +148,9 @@ class JobQueue:
             if source:
                 transaction_lock(self._db, f"queue-path:{source[0]}")
             row = self._db.execute(
-                "UPDATE jobs SET status='done',error=NULL,progress='completed' "
+                "UPDATE jobs SET status='done',error=NULL,progress='completed',updated_at=? "
                 "WHERE id=? AND status='running' RETURNING path,fingerprint",
-                (job_id,),
+                (self._clock(), job_id),
             ).fetchone()
             if (
                 row
@@ -124,9 +159,9 @@ class JobQueue:
                 ).fetchone()
             ):
                 self._db.execute(
-                    "UPDATE jobs SET status='superseded',progress='current source operation completed' "
+                    "UPDATE jobs SET status='superseded',progress='current source operation completed',updated_at=? "
                     "WHERE path=? AND id<>? AND status IN ('pending','running','failed')",
-                    (row[0], job_id),
+                    (self._clock(), row[0], job_id),
                 )
                 self._db.execute("DELETE FROM write_state WHERE path=?", (row[0],))
             self._db.execute("COMMIT")
@@ -145,9 +180,9 @@ class JobQueue:
 
     def supersede(self, job_id: int) -> None:
         self._db.execute(
-            "UPDATE jobs SET status='superseded',progress='new content queued' "
+            "UPDATE jobs SET status='superseded',progress='new content queued',updated_at=? "
             "WHERE id=? AND status='running'",
-            (job_id,),
+            (self._clock(), job_id),
         )
 
     def defer(self, job_id: int, delay: float) -> None:
@@ -160,12 +195,13 @@ class JobQueue:
         job = self._db.execute("SELECT attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
         attempts = job[0]
         self._db.execute(
-            "UPDATE jobs SET status=?,available_at=?,error=?,progress='failed attempt' "
+            "UPDATE jobs SET status=?,available_at=?,error=?,progress='failed attempt',updated_at=?,started_at=NULL "
             "WHERE id=? AND status='running'",
             (
                 "failed" if attempts >= max_attempts else "pending",
                 self._clock() + min(delay * 2 ** min(attempts - 1, 16), 3600),
                 error,
+                self._clock(),
                 job_id,
             ),
         )
@@ -173,8 +209,9 @@ class JobQueue:
     def recover(self) -> int:
         # Only while holding worker.lock: never steal another worker's active jobs.
         return self._db.execute(
-            "UPDATE jobs SET status='pending',available_at=0,progress='resuming after interruption' "
-            "WHERE status='running'"
+            "UPDATE jobs SET status='pending',available_at=0,progress='resuming after interruption',updated_at=?,started_at=NULL "
+            "WHERE status='running'",
+            (self._clock(),),
         ).rowcount
 
     def retry(self, job_id: int | None = None) -> int:
@@ -194,9 +231,9 @@ class JobQueue:
             # to the next retry, so its intent cannot be reset accidentally.
             for selected_id, _, _ in selected:
                 row = self._db.execute(
-                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='' "
+                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',updated_at=?,started_at=NULL "
                     "WHERE id=? AND status='failed' RETURNING path,fingerprint",
-                    (selected_id,),
+                    (self._clock(), selected_id),
                 ).fetchone()
                 if row:
                     count += 1

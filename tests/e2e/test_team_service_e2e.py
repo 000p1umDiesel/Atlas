@@ -108,6 +108,11 @@ async def test_team_http_cli_live_models(neo4j_container, qdrant_client, tmp_pat
             for team in teams:
                 docs = json.loads(await cli(team, "documents", "list"))
                 assert docs[0]["id"] == doc_id and docs[0]["status"] == "done"
+            # Real ingest usage is persisted independently for each team.
+            for team in teams:
+                usage = service.observability.usage(team_id=team["id"])
+                assert usage and sum(row["tokens_in"] or 0 for row in usage) > 0
+                assert all(row["team_id"] == team["id"] for row in usage)
             answer = json.loads(await cli(teams[0], "ask", "What is the Transformer?", "-m", "rag"))
             assert answer["sources"] and any(s["cited"] for s in answer["sources"]), answer
             assert str(settings.service.root) not in json.dumps(answer)

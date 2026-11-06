@@ -23,6 +23,7 @@ from mnogobase.database import (
     initialize,
     target_exists,
 )
+from mnogobase.llm.telemetry import usage_scope
 from mnogobase.llm.templates import render_messages
 from mnogobase.log import team_logging
 from mnogobase.models import Answer
@@ -35,6 +36,8 @@ from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.service.async_ops import offload_core
 from mnogobase.service.context import TeamContext, team_settings
 from mnogobase.service.errors import ServiceError
+from mnogobase.service.monitor import worker_heartbeat
+from mnogobase.service.observability import ObservabilityStore
 from mnogobase.service.store import ServiceStore
 from mnogobase.stores.graph_store import GraphStore
 
@@ -45,6 +48,7 @@ class TeamService:
     def __init__(self, settings: Settings, *, app_factory=build_app, graph_factory=None):
         self.settings = settings.model_copy(deep=True)
         self.store = ServiceStore(database_target(self.settings, "service"))
+        self.observability = ObservabilityStore(database_target(self.settings, "service"))
         self._factory = app_factory
         self._graph_factory = graph_factory or (
             GraphStore.from_settings if app_factory is build_app else None
@@ -127,8 +131,15 @@ class TeamService:
             queue.close()
 
     @asynccontextmanager
-    async def _app(self, settings: Settings):
-        with self._capacity(), team_logging(settings.neo4j.team_id, settings.logs_dir):
+    async def _app(self, settings: Settings, *, job_id: int | None = None):
+        def record(event):
+            self.observability.record_usage(event, self.settings.service.llm_rates.get(event.model))
+
+        with (
+            self._capacity(),
+            team_logging(settings.neo4j.team_id, settings.logs_dir),
+            usage_scope(settings.neo4j.team_id, record, job_id=job_id),
+        ):
             application = self._factory(settings)
             try:
                 yield application
@@ -610,69 +621,73 @@ class TeamService:
         except Timeout:
             raise ServiceError(409, "Another service worker is running") from None
         try:
-            teams = self.store.teams()
-            if not teams:
-                return 0
-            start = self._next_team % len(teams)
-            teams = teams[start:] + teams[:start]
-            processed = 0
-            for team in teams:
-                settings = self._settings(team["id"])
-                settings.data_dir.mkdir(parents=True, exist_ok=True)
-                corpus_lock = ingest_lock(settings.data_dir, target=database_target(settings))
-                local_worker = database_lock(settings, "worker", settings.data_dir / "worker.lock")
-                try:
-                    local_worker.acquire()
-                    corpus_lock.acquire()
-                except Timeout:
-                    if local_worker.is_locked:
-                        local_worker.release()
-                    continue
-                try:
-                    with self._queue(settings) as queue:
-                        queue.recover()
-                        job = queue.claim()
-                        if job is None:
-                            continue
-                        processed += 1
-                        try:
-                            if not queue.is_current(job):
-                                queue.supersede(job.id)
-                                continue
-                            path = self._contained_source(
-                                settings, Path(job.path), must_exist=job.kind != "remove"
-                            )
-                            async with self._app(settings) as app:
-                                progress = JobProgress(queue, job.id, NullProgress())
-                                if job.kind == "remove":
-                                    doc_id = json.loads(job.payload_json)["doc_id"]
-                                    report = await app.pipeline.remove([path], progress=progress)
-                                    if report.wiki and report.wiki.failed:
-                                        raise RuntimeError("Wiki rebuild failed")
-                                    path.unlink(missing_ok=True)
-                                    with self._uploads(settings) as db:
-                                        db.execute("DELETE FROM uploads WHERE doc_id=?", (doc_id,))
-                                elif job.kind == "ingest":
-                                    if (
-                                        hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-                                        != job.fingerprint
-                                    ):
-                                        queue.supersede(job.id)
-                                        continue
-                                    report = await app.pipeline.ingest(
-                                        [path], retry_failed=True, progress=progress
-                                    )
-                                    if report.failed or (report.wiki and report.wiki.failed):
-                                        raise RuntimeError("Document processing failed")
-                                else:
-                                    raise ValueError("Unsupported job kind")
-                            queue.finish(job.id)
-                        except Exception as exc:
-                            queue.fail(job.id, type(exc).__name__, max_attempts=3, delay=1)
-                finally:
-                    corpus_lock.release()
-                    local_worker.release()
-            self._next_team = (start + 1) % len(teams)
-            return processed
+            with worker_heartbeat(self.observability, self.settings.service.monitor.heartbeat_s):
+                return await self._work_teams()
         finally:
             lock.release()
+
+    async def _work_teams(self) -> int:
+        teams = self.store.teams()
+        if not teams:
+            return 0
+        start = self._next_team % len(teams)
+        teams = teams[start:] + teams[:start]
+        processed = 0
+        for team in teams:
+            settings = self._settings(team["id"])
+            settings.data_dir.mkdir(parents=True, exist_ok=True)
+            corpus_lock = ingest_lock(settings.data_dir, target=database_target(settings))
+            local_worker = database_lock(settings, "worker", settings.data_dir / "worker.lock")
+            try:
+                local_worker.acquire()
+                corpus_lock.acquire()
+            except Timeout:
+                if local_worker.is_locked:
+                    local_worker.release()
+                continue
+            try:
+                with self._queue(settings) as queue:
+                    queue.recover()
+                    job = queue.claim()
+                    if job is None:
+                        continue
+                    processed += 1
+                    try:
+                        if not queue.is_current(job):
+                            queue.supersede(job.id)
+                            continue
+                        path = self._contained_source(
+                            settings, Path(job.path), must_exist=job.kind != "remove"
+                        )
+                        async with self._app(settings, job_id=job.id) as app:
+                            progress = JobProgress(queue, job.id, NullProgress())
+                            if job.kind == "remove":
+                                doc_id = json.loads(job.payload_json)["doc_id"]
+                                report = await app.pipeline.remove([path], progress=progress)
+                                if report.wiki and report.wiki.failed:
+                                    raise RuntimeError("Wiki rebuild failed")
+                                path.unlink(missing_ok=True)
+                                with self._uploads(settings) as db:
+                                    db.execute("DELETE FROM uploads WHERE doc_id=?", (doc_id,))
+                            elif job.kind == "ingest":
+                                if (
+                                    hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+                                    != job.fingerprint
+                                ):
+                                    queue.supersede(job.id)
+                                    continue
+                                report = await app.pipeline.ingest(
+                                    [path], retry_failed=True, progress=progress
+                                )
+                                if report.failed or (report.wiki and report.wiki.failed):
+                                    raise RuntimeError("Document processing failed")
+                            else:
+                                raise ValueError("Unsupported job kind")
+                        queue.finish(job.id)
+                    except Exception as exc:
+                        queue.fail(job.id, type(exc).__name__, max_attempts=3, delay=1)
+            finally:
+                corpus_lock.release()
+                local_worker.release()
+        self._next_team = (start + 1) % len(teams)
+        return processed

@@ -1,10 +1,10 @@
-device: mps                         # auto | cuda | mps | cpu; cpu: CPU-контейнеры llama.cpp, vLLM требует CUDA
+device: cpu                         # auto | cuda | mps | cpu; cpu: CPU-контейнеры llama.cpp, vLLM требует CUDA
 
 # Модели ролей (llm, embedder, rerank, vision). serve — где работает модель:
 #   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002/8003);
 #   api             — уже работающий сервер или API по base_url.
 #
-# Что писать в model (под этим же именем модель видна на сервере), зависит от serve:
+# Что писать в model (под этим же именем модель видна на сервере), зависитLf от serve:
 #   llamacpp — GGUF-репозиторий с квантом, repo:квант (Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M).
 #              Токенайзер берётся из самого GGUF, исходный HF-репозиторий не нужен.
 #   vllm     — HF-репозиторий исходной модели (Qwen/Qwen3-Embedding-4B); GGUF vLLM не запускает.

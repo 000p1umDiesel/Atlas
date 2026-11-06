@@ -1,0 +1,26 @@
+# Native `mnogobase models up` merges this with docker-compose.models.yml.
+# Reuse its images, profiles, command construction, readiness and CPU validation.
+services:
+  embed-llamacpp-cpu:
+    restart: "on-failure:5"
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+  rerank-llamacpp-cpu:
+    restart: "on-failure:5"
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+  vision-llamacpp-cpu:
+    restart: "on-failure:5"
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2.0
+
+volumes:
+  llama_models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/mnogobase/volumes/models

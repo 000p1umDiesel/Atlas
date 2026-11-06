@@ -156,10 +156,17 @@ class DockerRunner:
     Neo4j из `docker-compose.yml` и не подхватывают `COMPOSE_FILE` / `COMPOSE_PROFILES`."""
 
     def __init__(
-        self, compose_file: Path, run: Callable[..., subprocess.CompletedProcess] = subprocess.run
+        self,
+        compose_file: Path,
+        run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+        *,
+        override: Path | None = None,
     ):
         if not compose_file.exists():
             raise ServeError(f"{compose_file} not found: run mnogobase from the repository root")
+        if override is not None and not override.is_file():
+            raise ServeError(f"Compose override not found: {override}")
+        self._override = override
         self._file = compose_file
         self._run = run
 
@@ -177,7 +184,10 @@ class DockerRunner:
             for suffix in (("", "-cpu") if backend == "llamacpp" else ("",))
             for arg in ("--profile", f"{prefix}-{backend}{suffix}")
         ]
-        cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", str(self._file), *profiles, *args]
+        files = ["-f", str(self._file)]
+        if self._override is not None:
+            files += ["-f", str(self._override)]
+        cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, *files, *profiles, *args]
         base = {
             k: v for k, v in os.environ.items() if k not in ("COMPOSE_FILE", "COMPOSE_PROFILES")
         }
@@ -378,7 +388,7 @@ ModelRunner = DockerRunner | NativeRunner
 
 def make_runner(runner: Runner, settings: Settings) -> ModelRunner:
     if resolve_runner(runner) == "docker" or (runner == "auto" and settings.device == "cpu"):
-        return DockerRunner(Path(COMPOSE_FILE))
+        return DockerRunner(Path(COMPOSE_FILE), override=settings.serving.compose_override)
     return NativeRunner(settings.data_dir / "models", settings.logs_dir)
 
 

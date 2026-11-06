@@ -81,7 +81,19 @@ def build_app(
     # при `embedder.dim: auto` размерность спросит у сервера только команда, которой она нужна
     vectors = vectors or QdrantStore.from_settings(settings.qdrant, lambda: embedder.dim)
     graph = graph or GraphStore.from_settings(settings.neo4j)
-    llm = llm or OpenAICompatLLM(settings.llm)
+    if llm is None:
+        recorder = None
+        if settings.neo4j.team_id is not None:
+            from mnogobase.service.observability import ObservabilityStore
+            from mnogobase.service.store import ServiceStore
+
+            ServiceStore(database_target(settings, "service"))
+            telemetry = ObservabilityStore(database_target(settings, "service"))
+
+            def recorder(event):
+                telemetry.record_usage(event, settings.service.llm_rates.get(event.model))
+
+        llm = OpenAICompatLLM(settings.llm, team_id=settings.neo4j.team_id, usage_recorder=recorder)
     for own, resource in ((owned_embedder, embedder), (owned_vectors, vectors), (owned_llm, llm)):
         if own:
             owned_clients.append(resource)

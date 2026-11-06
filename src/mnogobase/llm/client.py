@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypeVar
 
 import httpx
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from mnogobase.config import LLMSettings
+from mnogobase.llm.telemetry import CallEvent, new_call, record_call
 from mnogobase.log import get_logger
 
 T = TypeVar("T", bound=BaseModel)
@@ -92,7 +94,12 @@ class OpenAICompatLLM:
         settings: LLMSettings,
         http_client: httpx.AsyncClient | None = None,
         retry_wait=_DEFAULT_RETRY_WAIT,
+        *,
+        team_id: str | None = None,
+        usage_recorder: Callable[[CallEvent], None] | None = None,
     ):
+        self._team_id = team_id
+        self._usage_recorder = usage_recorder
         self._settings = settings
         self._client = AsyncOpenAI(
             base_url=settings.url,
@@ -134,7 +141,28 @@ class OpenAICompatLLM:
             ):
                 with attempt:
                     attempts += 1
-                    response = await self._client.chat.completions.create(**kwargs)
+                    event = new_call(
+                        model, task, external=self._settings.serve == "api", team_id=self._team_id
+                    )
+                    await record_call(event, self._usage_recorder)
+                    try:
+                        response = await self._client.chat.completions.create(**kwargs)
+                    except BaseException:
+                        if event is not None:
+                            await record_call(replace(event, status="error"), self._usage_recorder)
+                        raise
+                    if event is not None:
+                        await record_call(
+                            replace(
+                                event,
+                                status="response",
+                                tokens_in=response.usage.prompt_tokens if response.usage else None,
+                                tokens_out=response.usage.completion_tokens
+                                if response.usage
+                                else None,
+                            ),
+                            self._usage_recorder,
+                        )
         usage = response.usage
         tokens_in = usage.prompt_tokens if usage else 0
         tokens_out = usage.completion_tokens if usage else 0

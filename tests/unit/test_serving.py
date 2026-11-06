@@ -272,3 +272,44 @@ def test_health_state_says_what_the_server_is_doing(respond, state):
     client = httpx.Client(transport=httpx.MockTransport(respond))
     assert health_state(served, client) == state
     assert is_ready(served, client) == (state == "ready")
+
+
+def test_model_compose_override_used_for_entire_lifecycle(tmp_path, monkeypatch):
+    from mnogobase.serving import make_runner
+
+    compose = tmp_path / "docker-compose.models.yml"
+    override = tmp_path / "models.override.yml"
+    compose.write_text("services: {}\n")
+    override.write_text("services: {}\n")
+    monkeypatch.chdir(tmp_path)
+    configured = Settings(device="cpu", serving={"compose_override": override})
+    assert make_runner("docker", configured)._override == override
+    run = FakeRun(running="container")
+    runner = DockerRunner(compose, run=run, override=override)
+    role = Served("embedder", EmbedderSettings(), "cpu")
+    runner.start([role])
+    runner.alive(role)
+    runner.logs(role, False)
+    runner.stop()
+    for command, _ in run.calls:
+        assert command[:8] == [
+            "docker",
+            "compose",
+            "-p",
+            COMPOSE_PROJECT,
+            "-f",
+            str(compose),
+            "-f",
+            str(override),
+        ]
+    up_env = next(kwargs["env"] for command, kwargs in run.calls if "up" in command)
+    assert "--n-gpu-layers 0" in up_env["MB_EMBED_LLAMACPP_CPU_ARGS"]
+
+
+def test_missing_model_override_fails_before_container_mutation(tmp_path):
+    compose = tmp_path / "docker-compose.models.yml"
+    compose.write_text("services: {}\n")
+    run = FakeRun()
+    with pytest.raises(ServeError, match="not found"):
+        DockerRunner(compose, run=run, override=tmp_path / "missing.yml")
+    assert run.calls == []
