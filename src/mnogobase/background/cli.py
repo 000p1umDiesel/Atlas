@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
 import threading
 from pathlib import Path
@@ -16,11 +17,13 @@ from sqlalchemy.exc import DBAPIError
 
 from mnogobase.database import DatabaseError, database_lock, database_target, target_exists
 from mnogobase.ids import file_doc_id
+from mnogobase.llm.telemetry import job_scope
 from mnogobase.log import get_logger, new_run_id
 from mnogobase.processing import measured_ingest
 from mnogobase.progress import NullProgress
 
 from .queue import JobQueue
+from .uploads import Uploads
 from .watch import Watcher, discover
 from .worker import ServicesUnavailable, process_one
 
@@ -130,6 +133,7 @@ class JobProgress(NullProgress):
     def _save(self):
         count = f" {self.completed}/{self.total}" if self.total is not None else ""
         self.queue.set_progress(self.job_id, f"{self.stage}{count}; failed {self.failed}")
+        self.queue.heartbeat()
 
 
 def _watch_loop(db, settings, roots, stop, interval, settle, health):
@@ -168,10 +172,6 @@ def run_worker(
     from mnogobase import cli
 
     settings = cli._settings()
-    if settings.neo4j.team_id is not None:
-        cli._fail_cleanly(
-            ValueError("Team queues require the typed dispatcher: use `mnogobase service work`")
-        )
     if once and watch:
         cli._fail_cleanly(
             ValueError("Use jobs enqueue before worker run --once; --watch is continuous")
@@ -179,7 +179,7 @@ def run_worker(
     if any(not p.is_dir() for p in watch or []):
         cli._fail_cleanly(ValueError("Every --watch path must be an existing directory"))
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    worker_lock = database_lock(settings, "worker", settings.data_dir / "worker.lock")
+    worker_lock = database_lock(settings, "worker")
     try:
         worker_lock.acquire()
     except Timeout:
@@ -212,8 +212,50 @@ def run_worker(
             )
             thread.start()
 
+        uploads = Uploads(settings)
+        stale = False
+
+        async def services():
+            nonlocal application, stale
+            failed = [c for c in cli.run_checks(settings, only=cli.INGEST_CHECKS) if not c.ok]
+            if failed:
+                raise ServicesUnavailable(", ".join(c.name for c in failed))
+            if application is not None and stale:
+                await application.aclose()
+                application = None
+            stale = False
+            if application is None:
+                application = cli.build_app(settings)
+            return application
+
+        async def remove(job):
+            # Забыть документ; загруженный через API файл удаляется, остальные остаются.
+            doc_id = json.loads(job.payload_json or "{}").get("doc_id")
+            path = Path(job.path)
+            app = await services()
+            cli.console.print(f"Removing job {job.id}: {escape(job.path)}")
+            with cli._progress() as progress:
+                report = await app.pipeline.remove(
+                    [path], run_id=new_run_id(), progress=JobProgress(q, job.id, progress)
+                )
+            if report.wiki and report.wiki.failed:
+                raise RuntimeError("Wiki rebuild failed; see project status/logs")
+            try:
+                uploaded = uploads.contained(path, must_exist=False)
+            except FileNotFoundError:
+                return
+            uploaded.unlink(missing_ok=True)
+            if doc_id:
+                uploads.delete(doc_id)
+
         async def handle(job):
-            nonlocal application
+            q.heartbeat()
+            if job.kind == "remove":
+                with job_scope(job.id):
+                    await remove(job)
+                return
+            if job.kind != "ingest":
+                raise ValueError("Unsupported job kind")
             if not Path(job.path).is_file():
                 raise FileNotFoundError(job.path)
             current = file_doc_id(Path(job.path))
@@ -222,19 +264,16 @@ def run_worker(
                 q.defer(replacement, max(settle, interval))
                 q.supersede(job.id)
                 return
-            failed = [c for c in cli.run_checks(settings, only=cli.INGEST_CHECKS) if not c.ok]
-            if failed:
-                raise ServicesUnavailable(", ".join(c.name for c in failed))
-            if application is None:
-                application = cli.build_app(settings)
+            app = await services()
             cli.console.print(f"Processing job {job.id}: {escape(job.path)}")
-            with cli._progress() as progress:
+            with cli._progress() as progress, job_scope(job.id):
                 report = await measured_ingest(
-                    application,
+                    app,
                     [Path(job.path)],
                     settings=settings,
                     verify_sources=True,
                     expected={job.path: job.fingerprint},
+                    snapshot=False,
                     retry_failed=True,
                     run_id=new_run_id(),
                     progress=JobProgress(q, job.id, progress),
@@ -245,20 +284,19 @@ def run_worker(
         def reconnect(exc):
             # Соединения App могли оборваться (рестарт PostgreSQL): следующая задача
             # создаст App заново.
-            nonlocal application
+            nonlocal stale
             cli.console.print(f"Services unavailable ({type(exc).__name__}); job deferred.")
-            if application is not None and isinstance(exc, DatabaseError | DBAPIError):
-                application.close()
-                application = None
+            if isinstance(exc, DatabaseError | DBAPIError):
+                stale = True
 
         async def dispatch():
             while True:
+                q.heartbeat()
                 if health:
                     raise RuntimeError(f"Watcher stopped: {health[0]}; restart the worker")
                 processed = await process_one(
                     q,
                     handle,
-                    settings.data_dir,
                     max_attempts=max_attempts,
                     delay=retry_delay,
                     timeout=settings.jobs.timeout_s,

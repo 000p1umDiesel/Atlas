@@ -103,7 +103,7 @@ def run(
     try:
         load_questions(dataset)  # reject invalid input before any services/configuration
         settings = cli._settings(project=True)
-        with _lock(output), ingest_lock(settings.data_dir, target=database_target(settings)):
+        with _lock(output), ingest_lock(database_target(settings)):
             cli._preflight(settings)
             application = cli.build_app(settings)
             try:

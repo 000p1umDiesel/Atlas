@@ -121,10 +121,8 @@ class OpenAICompatLLM:
         http_client: httpx.AsyncClient | None = None,
         retry_wait=_DEFAULT_RETRY_WAIT,
         *,
-        team_id: str | None = None,
         usage_recorder: Callable[[CallEvent], None] | None = None,
     ):
-        self._team_id = team_id
         self._usage_recorder = usage_recorder
         self._settings = settings
         self._client = AsyncOpenAI(
@@ -174,9 +172,7 @@ class OpenAICompatLLM:
                 # Слот конкурентности занят только на время запроса, не на паузу между попытками.
                 async with self._sem:
                     attempts += 1
-                    event = new_call(
-                        model, task, external=self._settings.serve == "api", team_id=self._team_id
-                    )
+                    event = new_call(model, task, external=self._settings.serve == "api")
                     await self._record(event)
                     try:
                         response = await self._client.chat.completions.create(**kwargs)

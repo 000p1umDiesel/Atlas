@@ -408,13 +408,16 @@ class GraphSettings(Section):
 class QdrantSettings(Section):
     url: str = "http://localhost:6333"
     prefix: str = "mb_"
+    api_key_env: str | None = None  # переменная с API-ключом Qdrant (в compose обязателен)
+
+    def api_key(self) -> str | None:
+        return os.environ.get(self.api_key_env) or None if self.api_key_env else None
 
 
 class Neo4jSettings(Section):
     uri: str = "bolt://localhost:7687"
     user: str = "neo4j"
     password_env: str = "NEO4J_PASSWORD"
-    team_id: str | None = None
 
     def password(self) -> str:
         return os.environ.get(self.password_env, "")
@@ -477,29 +480,18 @@ class LLMRate(Section):
     output_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
 
 
-class MonitorSettings(Section):
-    heartbeat_s: float = Field(default=30, gt=0, allow_inf_nan=False)
-    worker_stale_s: float = Field(default=120, gt=0, allow_inf_nan=False)
-    pending_s: float = Field(default=900, gt=0, allow_inf_nan=False)
-    running_s: float = Field(default=3600, gt=0, allow_inf_nan=False)
-
-    @model_validator(mode="after")
-    def heartbeat_window(self) -> Self:
-        if self.worker_stale_s <= self.heartbeat_s:
-            raise ValueError("worker_stale_s must exceed heartbeat_s")
-        return self
-
-
 class ServiceSettings(Section):
+    """HTTP API (`mnogobase api serve`) и его клиент."""
+
+    # оценка стоимости внешнего LLM: имя модели -> цены за миллион токенов
     llm_rates: dict[str, LLMRate] = Field(default_factory=dict)
-    monitor: MonitorSettings = Field(default_factory=MonitorSettings)
-    root: Path = Path("data")
-    api_url: str = "http://127.0.0.1:8080"
-    session_hours: int = Field(default=24, ge=1, le=720)
+    api_url: str = "http://127.0.0.1:8080"  # адрес по умолчанию для `mnogobase client`
+    uploads_dir: Path = Path("documents/uploads")  # документы, загруженные через API
+    session_hours: int = Field(default=24 * 7, ge=1, le=720)
     max_upload_mb: int = Field(default=50, ge=1)
     max_pending_jobs: int = Field(default=100, ge=1)
     history_messages: int = Field(default=12, ge=0, le=100)
-    max_concurrent_operations: int = Field(default=4, ge=1, le=64)
+    max_concurrent_asks: int = Field(default=4, ge=1, le=64)
 
 
 class Settings(BaseSettings):

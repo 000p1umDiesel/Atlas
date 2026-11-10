@@ -145,11 +145,11 @@ async def test_worker_resumes_after_interruption_and_respects_writer_lock(tmp_pa
     async def interrupted(job):
         raise asyncio.CancelledError
 
-    with ingest_lock(tmp_path, target=database_target(Settings())):
-        assert not await process_one(q, interrupted, tmp_path)
+    with ingest_lock(database_target(Settings())):
+        assert not await process_one(q, interrupted)
     assert q.jobs()[0].attempts == 0
     with pytest.raises(asyncio.CancelledError):
-        await process_one(q, interrupted, tmp_path)
+        await process_one(q, interrupted)
     assert q.jobs()[0].status == "running"
     q.recover()
     completed = []
@@ -157,7 +157,7 @@ async def test_worker_resumes_after_interruption_and_respects_writer_lock(tmp_pa
     async def handler(job):
         completed.append(job.id)
 
-    assert await process_one(q, handler, tmp_path)
+    assert await process_one(q, handler)
     assert q.jobs()[0].status == "done"
     assert len(completed) == 1
     q.close()
@@ -200,7 +200,7 @@ async def test_worker_defers_on_unavailable_services_and_times_out(tmp_path):
     async def offline(job):
         raise ServicesUnavailable("models")
 
-    assert await process_one(q, offline, tmp_path, delay=5, on_transient=seen.append)
+    assert await process_one(q, offline, delay=5, on_transient=seen.append)
     job = q.jobs()[0]
     assert (job.status, job.attempts) == ("pending", 0)
     assert isinstance(seen[0], ServicesUnavailable)
@@ -209,7 +209,7 @@ async def test_worker_defers_on_unavailable_services_and_times_out(tmp_path):
         await asyncio.sleep(10)
 
     now[0] += 10
-    assert await process_one(q, hangs, tmp_path, max_attempts=1, timeout=0.05)
+    assert await process_one(q, hangs, max_attempts=1, timeout=0.05)
     job = q.jobs()[0]
     assert (job.status, job.error) == ("failed", "JobTimeout")
     q.close()
@@ -226,8 +226,8 @@ async def test_worker_records_failures_and_continues_other_files(tmp_path):
         if job.path.endswith("bad.md"):
             raise ValueError("bad")
 
-    await process_one(q, handler, tmp_path, max_attempts=1)
-    await process_one(q, handler, tmp_path, max_attempts=1)
+    await process_one(q, handler, max_attempts=1)
+    await process_one(q, handler, max_attempts=1)
     assert {j.status for j in q.jobs()} == {"done", "failed"}
     assert any(j.error == "ValueError" for j in q.jobs())
     q.close()
@@ -264,6 +264,6 @@ async def test_watcher_can_enqueue_while_worker_holds_writer_lock(tmp_path):
         thread.join()
         assert len(q.jobs()) == 2
 
-    assert await process_one(q, handler, tmp_path)
+    assert await process_one(q, handler)
     assert q.counts() == {"done": 1, "pending": 1}
     q.close()

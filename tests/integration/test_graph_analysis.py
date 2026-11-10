@@ -39,23 +39,8 @@ def test_partial_publication_is_rejected_without_replacing_snapshot(graph):
     assert graph.counts()["Entity"] == 2
 
 
-def test_analysis_state_is_scoped_and_reset(scopes):
-    # `scopes` is local to this module so duplicate local IDs are intentional.
-    for i, store in enumerate(scopes):
-        store.upsert_entity(EntityRecord(entity_id="same", name="Same", type="Concept"))
-        assert store.publish_analysis(
-            store.analysis_status()["revision"],
-            [{"entity_id": "same", "pagerank": float(i + 1), "community": "g"}],
-            {},
-        )
-    scopes[0].wipe()
-    assert scopes[0].analysis_scores(["same"]) == {}
-    for i, store in enumerate(scopes[1:], start=1):
-        assert store.analysis_scores(["same"]) == {"same": float(i + 1)}
-
-
 def test_missing_plugins_fall_back_to_cypher(graph):
-    from tests.integration.test_team_graph import populate
+    from tests.integration.graph_seed import populate
 
     populate(graph, "Original")
     assert graph.plugin_status()["gds"] is None
@@ -74,7 +59,7 @@ def test_reset_does_not_resurrect_an_old_revision(graph):
 
 @pytest.mark.parametrize("mutation", ["document", "chunks", "path", "mentions", "relation"])
 def test_source_mutations_invalidate_published_scores(graph, mutation):
-    from tests.integration.test_team_graph import CHUNKS, DOC_ID, populate
+    from tests.integration.graph_seed import CHUNKS, DOC_ID, populate
 
     populate(graph, "Original")
     assert graph.publish_analysis(graph.analysis_status()["revision"], score_rows("e1", "e2"), {})
@@ -101,22 +86,3 @@ def test_failed_source_transaction_preserves_published_snapshot(graph):
         graph._write("CREATE (:Entity {entity_id: 'same'})")
     assert graph.analysis_status() == state
     assert graph.analysis_scores(["same"]) == {"same": 1.0}
-
-
-@pytest.fixture
-def scopes(neo4j_container):
-    from mnogobase.stores.graph_store import GraphStore
-
-    stores = [
-        GraphStore(neo4j_container.get_driver(), team_id=team)
-        for team in (None, "a" * 32, "b" * 32)
-    ]
-    for store in stores:
-        store.wipe()
-        store.ensure_schema()
-    try:
-        yield stores
-    finally:
-        for store in stores:
-            store.wipe()
-            store.close()

@@ -65,7 +65,6 @@ class Credentials:
 @dataclass
 class Client:
     url: str
-    team: str | None
     credentials: Credentials
 
     def request(self, method: str, path: str, *, auth: bool = True, **kwargs):
@@ -95,13 +94,7 @@ class Client:
         return response
 
     def path(self, suffix: str) -> str:
-        if (
-            not self.team
-            or len(self.team) != 32
-            or any(c not in "0123456789abcdef" for c in self.team)
-        ):
-            raise typer.BadParameter("Select a server team ID with client --team ID")
-        return f"/api/teams/{self.team}/{suffix}"
+        return f"/api/{suffix}"
 
 
 def _default_api_url() -> str:
@@ -122,12 +115,31 @@ def _print(value) -> None:
     typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _print_answer(value: dict, as_json: bool) -> None:
+    """Ответ с цитатами в читаемом виде; `--json` — как есть."""
+    if as_json:
+        _print(value)
+        return
+    text = value.get("text") or value.get("content") or ""
+    typer.echo(text)
+    sources = value.get("sources") or []
+    if sources:
+        typer.echo("")
+        for number, source in enumerate(sources, 1):
+            where = source.get("path") or source.get("ref") or source.get("kind", "")
+            page = f", p.{source['page']}" if source.get("page") is not None else ""
+            link = f"  {source['url']}" if source.get("url") else ""
+            typer.echo(f"[{number}] {where}{page}{link}")
+
+
 def _id(value: str) -> str:
     return quote(value, safe="")
 
 
 def register_client(app: typer.Typer) -> None:
-    client_app = typer.Typer(no_args_is_help=True, help="HTTP client for the team service.")
+    client_app = typer.Typer(
+        no_args_is_help=True, help="HTTP client for the mnogobase API (local or on a server)."
+    )
     documents = typer.Typer(no_args_is_help=True)
     jobs = typer.Typer(no_args_is_help=True)
     chat = typer.Typer(no_args_is_help=True)
@@ -147,7 +159,6 @@ def register_client(app: typer.Typer) -> None:
     def configure(
         ctx: typer.Context,
         url: str | None = typer.Option(None, "--url", envvar="MNOGOBASE_API_URL"),
-        team: str | None = typer.Option(None, "--team", envvar="MNOGOBASE_TEAM"),
         credentials: Annotated[
             Path, typer.Option("--credentials", envvar="MNOGOBASE_CREDENTIALS")
         ] = DEFAULT_CREDENTIALS,
@@ -169,7 +180,7 @@ def register_client(app: typer.Typer) -> None:
             raise typer.BadParameter(
                 "Use an http(s) API URL without credentials, query or fragment"
             )
-        ctx.obj = Client(url.rstrip("/"), team, Credentials(credentials))
+        ctx.obj = Client(url.rstrip("/"), Credentials(credentials))
 
     @client_app.command()
     def login(
@@ -191,9 +202,10 @@ def register_client(app: typer.Typer) -> None:
         c.credentials.remove(c.url)
         typer.echo("Logged out")
 
-    @client_app.command("teams")
-    def teams_list(ctx: typer.Context):
-        _print(_client(ctx).request("GET", "/api/teams").json())
+    @client_app.command("status")
+    def status(ctx: typer.Context):
+        c = _client(ctx)
+        _print(c.request("GET", c.path("status")).json())
 
     @documents.command("list")
     def documents_list(
@@ -252,9 +264,17 @@ def register_client(app: typer.Typer) -> None:
         _print(c.request("POST", c.path(f"jobs/{_id(job_id)}/retry")).json())
 
     @client_app.command("ask")
-    def ask(ctx: typer.Context, question: str, mode: str = typer.Option("rag", "--mode", "-m")):
+    def ask(
+        ctx: typer.Context,
+        question: str,
+        mode: str = typer.Option("rag", "--mode", "-m"),
+        as_json: bool = typer.Option(False, "--json"),
+    ):
         c = _client(ctx)
-        _print(c.request("POST", c.path("ask"), json={"question": question, "mode": mode}).json())
+        _print_answer(
+            c.request("POST", c.path("ask"), json={"question": question, "mode": mode}).json(),
+            as_json,
+        )
 
     @client_app.command("search")
     def search(
@@ -310,14 +330,16 @@ def register_client(app: typer.Typer) -> None:
         conversation_id: str,
         question: str,
         mode: str = typer.Option("rag", "--mode", "-m"),
+        as_json: bool = typer.Option(False, "--json"),
     ):
         c = _client(ctx)
-        _print(
+        _print_answer(
             c.request(
                 "POST",
                 c.path(f"conversations/{_id(conversation_id)}/messages"),
                 json={"question": question, "mode": mode},
-            ).json()
+            ).json(),
+            as_json,
         )
 
     @chat.command("open")
@@ -333,7 +355,10 @@ def register_client(app: typer.Typer) -> None:
                 "POST", c.path("conversations"), json={"title": title}
             ).json()["id"]
         typer.echo(f"Conversation {conversation_id}; /exit ends the session")
-        _print(c.request("GET", c.path(f"conversations/{_id(conversation_id)}/messages")).json())
+        for message in c.request(
+            "GET", c.path(f"conversations/{_id(conversation_id)}/messages")
+        ).json():
+            typer.echo(f"{message['role']}: {message['content']}")
         while True:
             try:
                 question = typer.prompt("You")
@@ -342,13 +367,15 @@ def register_client(app: typer.Typer) -> None:
             if question.strip() in ("/exit", "/quit"):
                 break
             if question.strip():
-                _print(
+                _print_answer(
                     c.request(
                         "POST",
                         c.path(f"conversations/{_id(conversation_id)}/messages"),
                         json={"question": question, "mode": mode},
-                    ).json()
+                    ).json(),
+                    False,
                 )
+                typer.echo("")
 
     @wiki.command("list")
     def wiki_list(

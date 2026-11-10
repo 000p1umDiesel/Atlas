@@ -75,34 +75,6 @@ def test_community_chunks_respect_seed_group_priority_and_clear(graph):
     assert graph.community_chunks(["seed"], 3) == []
 
 
-def test_same_ids_and_community_keys_cannot_cross_team_boundaries(neo4j_container):
-    from mnogobase.stores.graph_store import GraphStore
-
-    stores = [
-        GraphStore(neo4j_container.get_driver(), team_id=t) for t in (None, "a" * 32, "b" * 32)
-    ]
-    try:
-        for store, name in zip(stores, ("Legacy", "Alpha", "Beta"), strict=True):
-            store.wipe()
-            store.ensure_schema()
-            populate_community(store, name)
-        with neo4j_container.get_driver() as driver:
-            driver.execute_query(
-                f"MATCH (c:mb_team_{'b' * 32}_Chunk {{chunk_id:'d:3'}}), "
-                f"(e:mb_team_{'a' * 32}_Entity {{entity_id:'remote'}}) "
-                "CREATE (c)-[:MENTIONS]->(e)"
-            )
-        for store, name in zip(stores, ("Legacy", "Alpha", "Beta"), strict=True):
-            chunks = store.community_chunks(["seed"], 3)
-            assert {c.path for c in chunks} == {f"/{name}.md"}
-            assert all(c.text.startswith(name) for c in chunks)
-            assert {c.chunk_id for c in chunks} == {"d:0", "d:1", "d:2"}
-    finally:
-        for store in stores:
-            store.wipe()
-            store.close()
-
-
 @pytest.mark.parametrize(
     "k,expected",
     [(0, []), (1, ["d:1"]), (2, ["d:1", "d:2"]), (3, ["d:1", "d:2"]), (8, ["d:1", "d:2", "d:0"])],

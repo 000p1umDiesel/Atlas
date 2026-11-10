@@ -8,7 +8,7 @@ from mnogobase.config import GraphAnalysisSettings, Settings
 from mnogobase.database import database_target, mark_project
 from mnogobase.models import EntityRecord
 from mnogobase.stores.graph_store import GraphStore
-from tests.integration.test_team_graph import CHUNKS, DOC_ID, populate
+from tests.integration.graph_seed import CHUNKS, DOC_ID, populate
 
 pytestmark = pytest.mark.integration
 
@@ -42,48 +42,33 @@ def plugin_container(tmp_path_factory):
 
 
 @pytest.fixture
-def plugin_scopes(plugin_container):
-    stores = [
-        GraphStore(plugin_container.get_driver(), team_id=team)
-        for team in (None, "a" * 32, "b" * 32)
-    ]
-    for store in stores:
-        store.wipe()
-        store.ensure_schema()
+def plugin_store(plugin_container):
+    store = GraphStore(plugin_container.get_driver())
+    store.wipe()
+    store.ensure_schema()
     try:
-        yield stores
+        yield store
     finally:
-        for store in stores:
-            store.wipe()
-            store.close()
+        store.wipe()
+        store.close()
 
 
-def test_apoc_preserves_scope_even_with_cross_team_edges(plugin_scopes, plugin_container):
-    legacy, alpha, beta = plugin_scopes
-    for store, name in zip(plugin_scopes, ("Legacy", "Alpha", "Beta"), strict=True):
-        populate(store, name)
-    # Inject an invalid cross-team edge outside public GraphStore API.
-    with plugin_container.get_driver() as driver:
-        driver.execute_query(
-            f"MATCH (a:mb_team_{'a' * 32}_Entity {{entity_id:'e1'}}), "
-            f"(b:mb_team_{'b' * 32}_Entity {{entity_id:'e2'}}) "
-            "CREATE (a)-[:RELATED {predicate:'leak', weight:999, evidence:['private']}]->(b)"
-        )
-    for store, name in zip(plugin_scopes, ("Legacy", "Alpha", "Beta"), strict=True):
-        relations = store.neighborhood_apoc(["e1"], 3, 30, max_nodes=20, timeout=5)
-        assert len(relations) == 1
-        assert relations[0].description == name
-        assert set(relations[0].evidence) == set(CHUNKS)
-        # Graph-size cap selects the ordinary scoped Cypher path.
-        assert store.neighborhood_apoc(["e1"], 3, 30, max_nodes=1) == store.neighborhood(
-            ["e1"], 3, 30
-        )
+def test_apoc_neighborhood_matches_cypher(plugin_store):
+    populate(plugin_store, "Legacy")
+    relations = plugin_store.neighborhood_apoc(["e1"], 3, 30, max_nodes=20, timeout=5)
+    assert len(relations) == 1
+    assert relations[0].description == "Legacy"
+    assert set(relations[0].evidence) == set(CHUNKS)
+    # Graph-size cap selects the ordinary Cypher path.
+    assert plugin_store.neighborhood_apoc(["e1"], 3, 30, max_nodes=1) == plugin_store.neighborhood(
+        ["e1"], 3, 30
+    )
 
 
-def test_plugins_analysis_and_deletion(plugin_scopes):
+def test_plugins_analysis_and_deletion(plugin_store):
     from mnogobase.graph_analysis import analyze
 
-    store = plugin_scopes[1]
+    store = plugin_store
     populate(store, "Alpha")
     status = store.plugin_status()
     assert status["apoc"] and status["gds"]
@@ -111,28 +96,10 @@ def test_plugins_analysis_and_deletion(plugin_scopes):
     assert store.analysis_scores(["e1"]) == {}
 
 
-def test_gds_projects_only_scoped_nodes(plugin_scopes, plugin_container):
-    from mnogobase.graph_analysis import analyze
-
-    for store, name in zip(plugin_scopes, ("Legacy", "Alpha", "Beta"), strict=True):
-        populate(store, name)
-    with plugin_container.get_driver() as driver:
-        driver.execute_query(
-            f"MATCH (a:mb_team_{'a' * 32}_Entity {{entity_id:'e1'}}), "
-            f"(b:mb_team_{'b' * 32}_Entity {{entity_id:'e2'}}) "
-            "CREATE (a)-[:RELATED {predicate:'leak',weight:900,evidence:['private']}]->(b)"
-        )
-    analyze(plugin_scopes[1], GraphAnalysisSettings())
-    assert len(plugin_scopes[1].analysis_scores(["e1", "e2"])) == 2
-    assert plugin_scopes[0].analysis_scores(["e1", "e2"]) == {}
-    assert plugin_scopes[2].analysis_scores(["e1", "e2"]) == {}
-    assert plugin_scopes[1].owned_projections() == []
-
-
-def test_gds_rejects_budget_and_cleans_up_after_algorithm_failure(plugin_scopes, monkeypatch):
+def test_gds_rejects_budget_and_cleans_up_after_algorithm_failure(plugin_store, monkeypatch):
     from mnogobase.graph_analysis import AnalysisError, analyze
 
-    store = plugin_scopes[0]
+    store = plugin_store
     populate(store, "Legacy")
     with pytest.raises(AnalysisError, match="nodes"):
         analyze(store, GraphAnalysisSettings(max_nodes=1))
@@ -148,10 +115,10 @@ def test_gds_rejects_budget_and_cleans_up_after_algorithm_failure(plugin_scopes,
     assert store.analysis_scores(["e1"]) == {}
 
 
-def test_empty_and_singleton_graphs(plugin_scopes):
+def test_empty_and_singleton_graphs(plugin_store):
     from mnogobase.graph_analysis import analyze
 
-    store = plugin_scopes[0]
+    store = plugin_store
     assert analyze(store, GraphAnalysisSettings())["nodes"] == 0
     store.upsert_entity(EntityRecord(entity_id="alone", name="Alone", type="Concept"))
     assert analyze(store, GraphAnalysisSettings())["communities"] == 1
@@ -161,10 +128,10 @@ def test_empty_and_singleton_graphs(plugin_scopes):
 
 
 @pytest.mark.parametrize("weight", [0.0, -1.0, float("nan"), float("inf")])
-def test_invalid_weights_are_rejected_before_projection(plugin_scopes, weight):
+def test_invalid_weights_are_rejected_before_projection(plugin_store, weight):
     from mnogobase.graph_analysis import AnalysisError, analyze
 
-    store = plugin_scopes[0]
+    store = plugin_store
     populate(store, "Legacy")
     store._run("MATCH (:Entity)-[r:RELATED]->(:Entity) SET r.weight = $weight", weight=weight)
     with pytest.raises(AnalysisError, match="positive finite"):
@@ -172,10 +139,10 @@ def test_invalid_weights_are_rejected_before_projection(plugin_scopes, weight):
     assert store.owned_projections() == []
 
 
-def test_changed_graph_cannot_publish_scores_from_old_projection(plugin_scopes, monkeypatch):
+def test_changed_graph_cannot_publish_scores_from_old_projection(plugin_store, monkeypatch):
     from mnogobase.graph_analysis import AnalysisError, analyze
 
-    store = plugin_scopes[0]
+    store = plugin_store
     populate(store, "Legacy")
     original = store.gds_pagerank
 
@@ -191,7 +158,7 @@ def test_changed_graph_cannot_publish_scores_from_old_projection(plugin_scopes, 
     assert not store.analysis_status()["ready"]
 
 
-def test_apoc_cycles_hops_and_original_citations(plugin_scopes):
+def test_apoc_cycles_hops_and_original_citations(plugin_store):
     from qdrant_client import QdrantClient
 
     from mnogobase.config import GraphSettings
@@ -200,7 +167,7 @@ def test_apoc_cycles_hops_and_original_citations(plugin_scopes):
     from mnogobase.stores.qdrant_store import QdrantStore
     from tests.fakes import FakeEmbedder
 
-    store = plugin_scopes[1]
+    store = plugin_store
     populate(store, "Alpha")
     for eid in ("e3", "e4", "e5"):
         store.upsert_entity(EntityRecord(entity_id=eid, name=eid, type="Concept"))
@@ -229,7 +196,7 @@ def test_apoc_cycles_hops_and_original_citations(plugin_scopes):
 
 
 def test_graph_cli_works_without_model_servers(
-    plugin_scopes, plugin_container, tmp_path, monkeypatch
+    plugin_store, plugin_container, tmp_path, monkeypatch
 ):
     import json
 
@@ -239,7 +206,7 @@ def test_graph_cli_works_without_model_servers(
     from mnogobase import cli
     from mnogobase.registry import Registry
 
-    store = plugin_scopes[0]
+    store = plugin_store
     populate(store, "Legacy")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TEST_NEO4J_PASSWORD", "testpassword")

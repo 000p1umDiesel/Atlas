@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 from mnogobase.database import DatabaseTarget, PgLock, connect, initialize
 
@@ -250,5 +249,6 @@ class Registry:
             self._db.execute(f"DELETE FROM {table}")
 
 
-def ingest_lock(data_dir: Path, *, target: DatabaseTarget) -> PgLock:
+def ingest_lock(target: DatabaseTarget) -> PgLock:
+    """Единственный писатель корпуса: ingest / remove / wiki / reindex / reset / worker."""
     return PgLock(target, "ingest")

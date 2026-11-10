@@ -74,74 +74,85 @@ def build_app(
     owned_clients: list[object] = []
     device = detect_device(settings.device)
     registry = Registry(database_target(settings))
-    mark_project(settings)
-    owned_embedder, owned_vectors, owned_llm = embedder is None, vectors is None, llm is None
-    embedder = embedder or OpenAICompatEmbedder(settings.embedder)
-    sparse = sparse or BM25Encoder(settings.sparse.model, device=device)
-    # при `embedder.dim: auto` размерность спросит у сервера только команда, которой она нужна
-    vectors = vectors or QdrantStore.from_settings(settings.qdrant, lambda: embedder.dim)
-    graph = graph or GraphStore.from_settings(settings.neo4j)
-    if llm is None:
-        recorder = None
-        if settings.neo4j.team_id is not None:
-            from mnogobase.service.observability import ObservabilityStore
-            from mnogobase.service.store import ServiceStore
+    owned_graph = False
+    try:
+        mark_project(settings)
+        owned_embedder, owned_vectors, owned_llm = embedder is None, vectors is None, llm is None
+        embedder = embedder or OpenAICompatEmbedder(settings.embedder)
+        sparse = sparse or BM25Encoder(settings.sparse.model, device=device)
+        # при `embedder.dim: auto` размерность спросит у сервера только команда, которой она нужна
+        vectors = vectors or QdrantStore.from_settings(settings.qdrant, lambda: embedder.dim)
+        owned_graph = graph is None
+        graph = graph or GraphStore.from_settings(settings.neo4j)
+        if llm is None:
+            from mnogobase.service.observability import UsageStore
 
-            ServiceStore(database_target(settings, "service"))
-            telemetry = ObservabilityStore(database_target(settings, "service"))
+            usage = UsageStore(database_target(settings))
 
             def recorder(event):
-                telemetry.record_usage(event, settings.service.llm_rates.get(event.model))
+                usage.record(event, settings.service.llm_rates.get(event.model))
 
-        llm = OpenAICompatLLM(settings.llm, team_id=settings.neo4j.team_id, usage_recorder=recorder)
-    for own, resource in ((owned_embedder, embedder), (owned_vectors, vectors), (owned_llm, llm)):
-        if own:
-            owned_clients.append(resource)
-    if reranker is None and settings.rerank.enabled:
-        reranker = ApiReranker(settings.rerank)
-        owned_clients.append(reranker)
-    parser = DoclingParser(settings.parsing, device, settings.data_dir / "cache", settings.vision)
-    chunker = Chunker(settings.chunking, settings.embedder)
-    extractor = Extractor(llm, registry, settings.extract.entity_types)
-    resolver = EntityResolver(graph, vectors, embedder, llm, settings.resolve)
-    wiki = WikiBuilder(
-        settings.wiki,
-        graph,
-        vectors,
-        embedder,
-        sparse,
-        llm,
-        registry,
-        entity_types=list(settings.extract.entity_types),
-    )
-    pipeline = Pipeline(
-        settings,
-        registry,
-        parser,
-        chunker,
-        embedder,
-        sparse,
-        vectors,
-        graph,
-        extractor,
-        resolver,
-        wiki,
-    )
-    return App(
-        settings,
-        device,
-        registry,
-        embedder,
-        sparse,
-        vectors,
-        graph,
-        llm,
-        parser,
-        chunker,
-        extractor,
-        resolver,
-        wiki,
-        pipeline,
-        reranker,
-        tuple(owned_clients),
-    )
+            llm = OpenAICompatLLM(settings.llm, usage_recorder=recorder)
+        for own, resource in (
+            (owned_embedder, embedder),
+            (owned_vectors, vectors),
+            (owned_llm, llm),
+        ):
+            if own:
+                owned_clients.append(resource)
+        if reranker is None and settings.rerank.enabled:
+            reranker = ApiReranker(settings.rerank)
+            owned_clients.append(reranker)
+        parser = DoclingParser(
+            settings.parsing, device, settings.data_dir / "cache", settings.vision
+        )
+        chunker = Chunker(settings.chunking, settings.embedder)
+        extractor = Extractor(llm, registry, settings.extract.entity_types)
+        resolver = EntityResolver(graph, vectors, embedder, llm, settings.resolve)
+        wiki = WikiBuilder(
+            settings.wiki,
+            graph,
+            vectors,
+            embedder,
+            sparse,
+            llm,
+            registry,
+            entity_types=list(settings.extract.entity_types),
+        )
+        pipeline = Pipeline(
+            settings,
+            registry,
+            parser,
+            chunker,
+            embedder,
+            sparse,
+            vectors,
+            graph,
+            extractor,
+            resolver,
+            wiki,
+        )
+        return App(
+            settings,
+            device,
+            registry,
+            embedder,
+            sparse,
+            vectors,
+            graph,
+            llm,
+            parser,
+            chunker,
+            extractor,
+            resolver,
+            wiki,
+            pipeline,
+            reranker,
+            tuple(owned_clients),
+        )
+    except BaseException:
+        # Частичная сборка не должна оставлять открытые соединения с базами.
+        registry.close()
+        if owned_graph and graph is not None:
+            graph.close()
+        raise

@@ -160,7 +160,10 @@ def run_checks(
     def qdrant() -> Check:
         # проверка сообщает о доступности; warning клиента о проверке версии пропускаем
         client = QdrantClient(
-            url=settings.qdrant.url, timeout=int(timeout), check_compatibility=False
+            url=settings.qdrant.url,
+            api_key=settings.qdrant.api_key(),
+            timeout=int(timeout),
+            check_compatibility=False,
         )
         try:
             store = QdrantStore(client, settings.qdrant.prefix, lambda: embedder.dim)

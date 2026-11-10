@@ -6,7 +6,7 @@ from contextlib import suppress
 import pytest
 from filelock import Timeout
 
-from mnogobase.database import connect, database_lock, database_target
+from mnogobase.database import database_lock, database_target
 
 pytestmark = pytest.mark.integration
 
@@ -36,26 +36,40 @@ def test_postgresql_service_sessions_and_private_chats(pg_settings):
     from mnogobase.service.errors import ServiceError
     from mnogobase.service.store import ServiceStore
 
-    store = ServiceStore(database_target(pg_settings, "service"))
-    alice, bob = [store.create_user(name, "password") for name in ("alice", "bob")]
-    team = store.create_team("Team")
-    for user in (alice, bob):
-        store.add_member(team["id"], user["id"])
-    a, b = [store.context(u["id"], team["id"]) for u in (alice, bob)]
-    token = store.login("alice", "password")
-    assert store.authenticate(token)["id"] == alice["id"]
-    chat = store.create_conversation(a, "Приватный вопрос")
-    message = store.append_message(a, chat["id"], "user", "? ' % : русский текст")
-    assert store.messages(a, chat["id"]) == [message]
-    assert store.conversations(b) == []
+    store = ServiceStore(database_target(pg_settings))
+    password = "long-enough-password"
+    with pytest.raises(ServiceError, match="12"):
+        store.create_user("short", "too-short")
+    alice, bob = [store.create_user(name, password) for name in ("alice", "bob")]
+    token = store.login("alice", password)
+    me = store.authenticate(token)
+    assert me["id"] == alice["id"] and me["role"] == "owner"
+    chat = store.create_conversation(alice["id"], "Приватный вопрос")
+    message = store.append_message(alice["id"], chat["id"], "user", "? ' % : русский текст")
+    assert store.messages(alice["id"], chat["id"]) == [message]
+    assert store.conversations(bob["id"]) == []
     with pytest.raises(ServiceError):
-        store.messages(b, chat["id"])
+        store.messages(bob["id"], chat["id"])
     with pytest.raises(ServiceError):
-        store.create_user("alice", "duplicate")
-    assert store.create_user("carol", "password")
+        store.create_user("alice", password)
+    with pytest.raises(ServiceError):
+        store.login("alice", "wrong-password-123")
+    # новый пароль отзывает старые сессии
+    store.set_password("alice", "another-long-password")
+    with pytest.raises(ServiceError):
+        store.authenticate(token)
+    token = store.login("alice", "another-long-password")
+    store.set_active("alice", False)
+    with pytest.raises(ServiceError):
+        store.authenticate(token)
+    with pytest.raises(ServiceError):
+        store.login("alice", "another-long-password")
+    store.set_active("alice", True)
+    token = store.login("alice", "another-long-password")
     store.logout(token)
     with pytest.raises(ServiceError):
         store.authenticate(token)
+    assert [u["username"] for u in store.users()] == ["alice", "bob"]
 
 
 def test_postgresql_queue_concurrent_claims_are_unique(pg_settings, tmp_path):
@@ -84,8 +98,8 @@ def test_postgresql_queue_concurrent_claims_are_unique(pg_settings, tmp_path):
 
 
 def test_postgresql_locks_use_database_namespace_not_local_path(pg_settings, tmp_path):
-    a = database_lock(pg_settings, "ingest", tmp_path / "a.lock")
-    b = database_lock(pg_settings, "ingest", tmp_path / "b.lock")
+    a = database_lock(pg_settings, "ingest")
+    b = database_lock(pg_settings, "ingest")
     with a, pytest.raises(Timeout):
         b.acquire()
     with b:
@@ -104,112 +118,6 @@ def test_postgresql_corpus_snapshot_reads_registry(pg_settings):
         registry.close()
 
 
-def test_sqlite_migration_preserves_all_stores_and_rejects_repeat(pg_settings, tmp_path):
-    import hashlib
-    import time
-
-    from argon2 import PasswordHasher
-
-    from mnogobase.background.queue import JobQueue
-    from mnogobase.database_migration import migrate_sqlite
-    from mnogobase.registry import Registry
-    from mnogobase.service.context import team_settings
-    from mnogobase.service.runtime import TeamService
-    from mnogobase.service.store import ServiceStore
-    from tests.legacy_sqlite import legacy_database
-
-    user, team, chat, message = [letter * 32 for letter in "abcd"]
-    token = "old-session-token"
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    with legacy_database(pg_settings.service.root / "service.db", "service") as source:
-        source.execute(
-            "INSERT INTO users VALUES(?,?,?,1)", (user, "alice", PasswordHasher().hash("password"))
-        )
-        source.execute("INSERT INTO teams VALUES(?,?)", (team, "Team"))
-        source.execute("INSERT INTO memberships VALUES(?,?,?)", (team, user, "admin"))
-        source.execute("INSERT INTO sessions VALUES(?,?,?)", (token_hash, user, time.time() + 3600))
-        source.execute(
-            "INSERT INTO conversations VALUES(?,?,?,?,?)",
-            (chat, team, user, "Приватный вопрос", "2026-01-01"),
-        )
-        source.execute(
-            "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (message, chat, team, user, "user", "Вопрос", "all", "[]", "done", None, "2026-01-01"),
-        )
-    scoped = team_settings(pg_settings, team)
-    doc_id = hashlib.sha256(b"attention").hexdigest()[:16]
-    path = scoped.data_dir.parent / "documents" / (doc_id + ".md")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"attention")
-    with legacy_database(scoped.data_dir / "state.db", "state") as source:
-        source.execute(
-            "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            (str(path), doc_id, 9, 1.123456789, "done", "2026-01-01"),
-        )
-        for version, value in [("v1", "old"), ("v2", "new"), ("v1", "latest")]:
-            source.execute(
-                "INSERT OR REPLACE INTO extraction_cache VALUES(?,?,?,?)",
-                ("c", version, "m", value),
-            )
-        source.execute("INSERT INTO meta VALUES(?,?)", ("embedder", "unchanged"))
-    with legacy_database(scoped.data_dir / "jobs.db", "jobs") as source:
-        source.execute(
-            "INSERT INTO jobs(id,path,fingerprint,status,attempts) VALUES(1,?,?,?,1)",
-            (str(path), doc_id, "running"),
-        )
-        source.execute("INSERT INTO desired VALUES(?,?)", (str(path), doc_id))
-    with legacy_database(scoped.data_dir / "uploads.db", "uploads") as source:
-        source.execute("INSERT INTO uploads VALUES(?,?,?)", (doc_id, "paper.md", str(path)))
-    files = list(tmp_path.rglob("*.db"))
-    before = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
-    report = migrate_sqlite(pg_settings)
-    assert sum(report.values()) > 0
-    assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files} == before
-    store = ServiceStore(database_target(pg_settings, "service"))
-    assert store.authenticate(token)["id"] == user
-    assert store.login("alice", "password")
-    ctx = store.context(user, team)
-    assert store.messages(ctx, chat)[0]["content"] == "Вопрос"
-    service = TeamService(pg_settings)
-    assert service.documents(ctx)[0]["name"] == "paper.md"
-    target = database_target(scoped)
-    registry = Registry(target)
-    assert registry.get_latest_extraction("c") == "latest"
-    assert registry.get_meta("embedder") == "unchanged"
-    assert registry.files()[0].mtime == 1.123456789
-    registry.put_extraction("c", "v2", "m", "after migration")
-    assert registry.get_latest_extraction("c") == "after migration"
-    registry.close()
-    queue = JobQueue(target)
-    try:
-        assert queue.get(1).status == "running"
-        assert queue.has_unfinished_writes()
-        assert queue.enqueue(tmp_path / "new.md", "new") > 1
-    finally:
-        queue.close()
-    with pytest.raises(ValueError, match="empty|already|непуст"):
-        migrate_sqlite(pg_settings)
-
-
-def test_migration_rolls_back_all_imports_on_nonempty_destination(pg_settings):
-    from mnogobase.database_migration import migrate_sqlite
-    from mnogobase.registry import Registry
-    from mnogobase.service.store import ServiceStore
-    from tests.legacy_sqlite import legacy_database
-
-    with legacy_database(pg_settings.data_dir / "state.db", "state") as source:
-        source.execute("INSERT INTO files VALUES('/one.md','one',1,0,'done','today')")
-    with legacy_database(pg_settings.service.root / "service.db", "service") as source:
-        source.execute("INSERT INTO users VALUES('u','source','hash',1)")
-    destination = ServiceStore(database_target(pg_settings, "service"))
-    destination.create_user("existing", "password")
-    with pytest.raises(ValueError):
-        migrate_sqlite(pg_settings)
-    registry = Registry(database_target(pg_settings))
-    assert registry.files() == []
-    registry.close()
-
-
 def test_postgresql_project_marker_guards_wrong_cwd(pg_settings, tmp_path):
     from mnogobase.database import mark_project, project_exists
     from mnogobase.registry import Registry
@@ -221,24 +129,6 @@ def test_postgresql_project_marker_guards_wrong_cwd(pg_settings, tmp_path):
     assert project_exists(pg_settings)
     elsewhere = pg_settings.model_copy(update={"data_dir": tmp_path / "other"})
     assert not project_exists(elsewhere)
-
-
-def test_migration_late_constraint_failure_rolls_back_previous_tables(pg_settings):
-    from sqlalchemy.exc import IntegrityError
-
-    from mnogobase.database_migration import migrate_sqlite
-    from tests.legacy_sqlite import legacy_database
-
-    with legacy_database(pg_settings.service.root / "service.db", "service") as source:
-        source.execute("INSERT INTO users VALUES('u','alice','hash',1)")
-        source.execute("INSERT INTO memberships VALUES('missing-team','missing-user','member')")
-    with pytest.raises(IntegrityError):
-        migrate_sqlite(pg_settings)
-    target = connect(database_target(pg_settings, "service"))
-    try:
-        assert target.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-    finally:
-        target.close()
 
 
 def test_postgresql_failed_transaction_can_be_reused(pg_settings):

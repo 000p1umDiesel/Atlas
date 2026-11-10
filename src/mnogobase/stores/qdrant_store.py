@@ -52,7 +52,8 @@ class QdrantStore:
 
     @classmethod
     def from_settings(cls, settings: QdrantSettings, dim: int | Callable[[], int]) -> QdrantStore:
-        return cls(QdrantClient(url=settings.url, timeout=60), settings.prefix, dim)
+        client = QdrantClient(url=settings.url, api_key=settings.api_key(), timeout=60)
+        return cls(client, settings.prefix, dim)
 
     @property
     def dim(self) -> int:

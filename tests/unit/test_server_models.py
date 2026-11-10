@@ -31,8 +31,7 @@ def test_server_profile_preserves_model_identity_and_enables_vision(tmp_path):
     assert settings.rerank.model == before.rerank.model
     assert settings.vision.model == before.vision.model
     assert source["llm"]["concurrency"] == before.llm.concurrency
-    assert settings.service.root.is_relative_to(tmp_path)
-    assert settings.service.max_concurrent_operations == 1
+    assert settings.service.max_concurrent_asks == 1
     assert settings.embedder.batch_size == 4
     assert settings.embedder.server.ctx == 4096
 

@@ -98,10 +98,10 @@ def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
 
 def test_second_worker_and_busy_writer_leave_job_unclaimed(project):
     runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
-    with database_lock(Settings(), "worker", Settings().data_dir / "worker.lock"):
+    with database_lock(Settings(), "worker"):
         result = runner.invoke(cli.app, ["worker", "run", "--once"])
     assert result.exit_code == 2
-    with database_lock(Settings(), "ingest", Settings().data_dir / "ingest.lock"):
+    with database_lock(Settings(), "ingest"):
         result = runner.invoke(cli.app, ["worker", "run", "--once"])
     assert result.exit_code == 1, result.output
     from mnogobase.background.queue import JobQueue
@@ -400,7 +400,7 @@ def test_worker_exits_on_watcher_database_failure_and_releases_resources(
     assert all(q.closed for q in tracked_queues)
     assert signal.getsignal(signal.SIGTERM) == previous_term
     assert not any(t.name == "mnogobase-watch" for t in threading.enumerate())
-    with database_lock(Settings(), "worker", Settings().data_dir / "worker.lock"):
+    with database_lock(Settings(), "worker"):
         pass
     q = JobQueue(database_target(Settings(), "jobs"))
     try:
@@ -491,8 +491,8 @@ def test_worker_watch_joins_watcher_before_closing_app(project, monkeypatch, tra
     assert app_closed == [True]
     assert len(tracked_queues) == 2 and all(q.closed for q in tracked_queues)
     with (
-        database_lock(Settings(), "worker", Settings().data_dir / "worker.lock"),
-        database_lock(Settings(), "ingest", Settings().data_dir / "ingest.lock"),
+        database_lock(Settings(), "worker"),
+        database_lock(Settings(), "ingest"),
     ):
         pass
     q = JobQueue(database_target(Settings(), "jobs"))

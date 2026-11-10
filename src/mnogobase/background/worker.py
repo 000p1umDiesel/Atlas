@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from pathlib import Path
 
 from filelock import Timeout
 from sqlalchemy.exc import DBAPIError
@@ -31,7 +30,6 @@ TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
 async def process_one(
     queue: JobQueue,
     handler,
-    data_dir: Path | None = None,
     *,
     max_attempts: int = 3,
     delay: float = 10,
@@ -39,7 +37,7 @@ async def process_one(
     on_transient: Callable[[BaseException], None] | None = None,
 ) -> bool:
     log = get_logger(__name__)
-    lock = ingest_lock(data_dir, target=queue.target)
+    lock = ingest_lock(queue.target)
     try:
         lock.acquire()
     except Timeout:

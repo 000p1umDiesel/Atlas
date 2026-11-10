@@ -146,7 +146,7 @@ def test_remove_obeys_writer_lock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source = register_source(tmp_path)
     monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
-    with ingest_lock(tmp_path / ".mnogobase", target=database_target(Settings())):
+    with ingest_lock(database_target(Settings())):
         result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
     assert result.exit_code == 2 and "in progress" in result.output
 

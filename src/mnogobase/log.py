@@ -5,10 +5,8 @@ import os
 import sys
 import time
 import uuid
-from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -27,71 +25,6 @@ _TRACEBACKS = structlog.processors.ExceptionRenderer(
 
 # сторонние логгеры, чьи INFO-строки забивают прогресс в CLI (warning по-прежнему проходят)
 _NOISY = ("httpx", "httpcore", "neo4j", "urllib3", "docling", "docling_core", "filelock")
-_TEAM_LOGS_DIR: ContextVar[Path | None] = ContextVar("team_logs_dir", default=None)
-_MAX_FILE_HANDLERS = 32
-
-
-class _RoutingFileHandler(logging.Handler):
-    """Выбирает файл по текущему контексту, не меняя глобальные handlers запроса."""
-
-    def __init__(self, base_dir: Path):
-        super().__init__()
-        self._base_dir = base_dir.resolve()
-        self._destinations: OrderedDict[Path, RotatingFileHandler] = OrderedDict()
-
-    def emit(self, record: logging.LogRecord) -> None:
-        # logging.Handler.handle удерживает RLock во время emit: кэш и eviction атомарны.
-        try:
-            directory = _TEAM_LOGS_DIR.get() or self._base_dir
-            handler = self._destinations.pop(directory, None)
-            if handler is None:
-                directory.mkdir(parents=True, exist_ok=True)
-                handler = RotatingFileHandler(
-                    directory / "mnogobase.jsonl",
-                    maxBytes=10_000_000,
-                    backupCount=5,
-                    encoding="utf-8",
-                )
-                handler.setFormatter(self.formatter)
-            self._destinations[directory] = handler
-            if len(self._destinations) > _MAX_FILE_HANDLERS:
-                _, evicted = self._destinations.popitem(last=False)
-                evicted.close()
-            handler.handle(record)
-        except Exception:
-            self.handleError(record)
-
-    def flush(self) -> None:
-        self.acquire()
-        try:
-            for handler in self._destinations.values():
-                handler.flush()
-        finally:
-            self.release()
-
-    def close(self) -> None:
-        self.acquire()
-        try:
-            for handler in self._destinations.values():
-                handler.close()
-            self._destinations.clear()
-        finally:
-            self.release()
-        super().close()
-
-
-@contextmanager
-def team_logging(team_id: str, logs_dir: Path) -> Iterator[None]:
-    """Контекст команды и маршрута логов; путь не становится полем JSON-записи."""
-    previous = structlog.contextvars.get_contextvars()
-    token = _TEAM_LOGS_DIR.set(Path(logs_dir).resolve())
-    structlog.contextvars.bind_contextvars(team_id=team_id)
-    try:
-        yield
-    finally:
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(**previous)
-        _TEAM_LOGS_DIR.reset(token)
 
 
 class _WarningsOnly(logging.Filter):
@@ -127,31 +60,43 @@ def _quiet_third_party() -> None:
     hf_logging.disable_progress_bar()  # заодно отключает бары huggingface_hub
 
 
+def _json_formatter() -> logging.Formatter:
+    return structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            _TRACEBACKS,
+            structlog.processors.JSONRenderer(ensure_ascii=False),
+        ],
+        foreign_pre_chain=_SHARED,
+    )
+
+
 def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True) -> None:
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    """JSON-журнал в `logs_dir/mnogobase.jsonl` с ротацией (локальный CLI).
+
+    С `MNOGOBASE_LOG_FORMAT=json` (контейнеры) журнал идёт в stdout: его собирает и
+    ротирует `docker logs`, а несколько процессов не делят один файл."""
     structlog.configure(
         processors=[*_SHARED, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=False,
     )
-    file_handler = _RoutingFileHandler(logs_dir)
-    file_handler.setFormatter(
-        structlog.stdlib.ProcessorFormatter(
-            processors=[
-                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                _TRACEBACKS,
-                structlog.processors.JSONRenderer(ensure_ascii=False),
-            ],
-            foreign_pre_chain=_SHARED,
+    to_stdout = os.environ.get("MNOGOBASE_LOG_FORMAT") == "json"
+    if to_stdout:
+        main_handler: logging.Handler = logging.StreamHandler(sys.stdout)
+    else:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        main_handler = RotatingFileHandler(
+            logs_dir / "mnogobase.jsonl", maxBytes=10_000_000, backupCount=5, encoding="utf-8"
         )
-    )
+    main_handler.setFormatter(_json_formatter())
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
         handler.close()
-    root.addHandler(file_handler)
-    if console:
+    root.addHandler(main_handler)
+    if console and not to_stdout:
         console_handler = _CurrentStderr(sys.stderr)
         console_handler.setFormatter(
             structlog.stdlib.ProcessorFormatter(

@@ -12,7 +12,6 @@ import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
 from uuid import uuid4
 
 from filelock import Timeout
@@ -46,14 +45,17 @@ class DatabaseTarget:
 
 
 def database_target(settings: Settings, kind: str = "state") -> DatabaseTarget:
-    if kind not in {"state", "jobs", "uploads", "service"}:
+    """Схема проекта `<prefix>_project_<project>`: в ней всё — registry, очередь,
+    загрузки, пользователи и учёт LLM. `kind` оставлен для читаемости вызовов."""
+    if kind not in {"state", "jobs", "uploads"}:
         raise ValueError("Unknown database kind")
     url = os.environ.get(settings.database.url_env)
     if not url:
         raise DatabaseError(f"Set {settings.database.url_env} for PostgreSQL")
-    suffix = "service" if kind == "service" else f"project_{settings.database.project}"
     return DatabaseTarget(
-        url, f"{settings.database.schema_prefix}_{suffix}", settings.database.connect_timeout
+        url,
+        f"{settings.database.schema_prefix}_project_{settings.database.project}",
+        settings.database.connect_timeout,
     )
 
 
@@ -112,15 +114,22 @@ class Cursor:
 
 
 @lru_cache(maxsize=32)
-def _engine(url: str, timeout: int):
+def _engine(url: str, timeout: int, pooled: bool = True):
+    """Пул для коротких операций; advisory lock держит своё соединение без пула, чтобы
+    lock жил ровно столько, сколько его владелец."""
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg://" + url.removeprefix("postgresql://")
     if not url.startswith("postgresql+psycopg://"):
         raise DatabaseError("DATABASE_URL must use postgresql:// or postgresql+psycopg://")
+    pool = (
+        {"pool_size": 5, "max_overflow": 10, "pool_pre_ping": True, "pool_recycle": 1800}
+        if pooled
+        else {"poolclass": NullPool}
+    )
     return create_engine(
         url,
         isolation_level="AUTOCOMMIT",
-        poolclass=NullPool,
+        **pool,
         # keepalive: тихо оборванное соединение (NAT, idle timeout) иначе держало бы
         # advisory lock только на нашей стороне, и в корпус могли бы писать двое.
         connect_args={
@@ -135,11 +144,13 @@ def _engine(url: str, timeout: int):
 
 
 class PgConnection:
-    def __init__(self, target: DatabaseTarget):
+    def __init__(self, target: DatabaseTarget, *, pooled: bool = True):
         self.target = target
         self.in_transaction = False
         try:
-            self.raw = _engine(target.url, target.timeout).connect()
+            self.raw = _engine(target.url, target.timeout, pooled).connect()
+            # Соединение из пула не несёт настроек прежнего владельца.
+            self.execute("RESET ALL")
             self.execute(f'SET search_path TO "{target.schema}"')
             self.execute("SET lock_timeout TO '5s'")
         except DBAPIError:
@@ -183,12 +194,12 @@ class PgConnection:
         self.execute("ROLLBACK" if exc_type else "COMMIT")
 
 
-def connect(target: DatabaseTarget) -> PgConnection:
+def connect(target: DatabaseTarget, *, pooled: bool = True) -> PgConnection:
     if not isinstance(target, DatabaseTarget):
         raise DatabaseError(
             "A PostgreSQL DatabaseTarget is required; file databases are unsupported"
         )
-    return PgConnection(target)
+    return PgConnection(target, pooled=pooled)
 
 
 def initialize(connection, script: str, component: str):
@@ -235,7 +246,7 @@ class PgLock:
         return self.connection is not None
 
     def acquire(self):
-        connection = connect(self.target)
+        connection = connect(self.target, pooled=False)
         try:
             acquired = connection.execute(
                 "SELECT pg_try_advisory_lock(?)", (_lock_key(self.target, self.key),)
@@ -265,9 +276,8 @@ class PgLock:
         self.release()
 
 
-def database_lock(settings: Settings, key: str, path: Path, *, service=False):
-    target = database_target(settings, "service" if service else "state")
-    return PgLock(target, key)
+def database_lock(settings: Settings, key: str) -> PgLock:
+    return PgLock(database_target(settings), key)
 
 
 def _project_identity(target: DatabaseTarget) -> dict:

@@ -26,9 +26,7 @@ def server_config(base: dict, root: Path) -> dict:
     result["logs_dir"] = str(root / "data/logs")
     result["runs_dir"] = str(root / "data/runs")
     result.setdefault("wiki", {})["dir"] = str(root / "data/wiki")
-    result.setdefault("service", {}).update(
-        root=str(root / "data/service"), max_concurrent_operations=1
-    )
+    result.setdefault("service", {}).update(max_concurrent_asks=1)
     result.setdefault("llm", {})["concurrency"] = 2
     result.setdefault("embedder", {})["batch_size"] = 4
     result.setdefault("vision", {})["enabled"] = True

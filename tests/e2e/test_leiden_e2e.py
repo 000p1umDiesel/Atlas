@@ -25,7 +25,7 @@ ROOT = Path(__file__).parents[2]
 async def test_leiden_evidence_reaches_real_api(plugin_container, qdrant_client, tmp_path, mode):
     settings = load_settings(ROOT / "config.yaml")
     assert settings.llm.serve == "api", "Use the configured API, never a local LLM substitute"
-    store = GraphStore(plugin_container.get_driver(), team_id="c" * 32)
+    store = GraphStore(plugin_container.get_driver())
     store.wipe()
     store.ensure_schema()
     embedder = OpenAICompatEmbedder(settings.embedder)

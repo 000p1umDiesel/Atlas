@@ -6,11 +6,11 @@ from tenacity import wait_none
 
 from mnogobase.config import LLMSettings, ServiceSettings
 from mnogobase.llm.client import OpenAICompatLLM
-from mnogobase.llm.telemetry import usage_scope
+from mnogobase.llm.telemetry import job_scope
 from tests.unit.test_llm_client import _completion
 
 
-async def test_records_each_attempt_with_unknown_error_cost_and_safe_context():
+async def test_records_each_attempt_with_job_and_without_prompt_text():
     events = []
     calls = 0
 
@@ -25,9 +25,10 @@ async def test_records_each_attempt_with_unknown_error_cost_and_safe_context():
         LLMSettings(model="m"),
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         retry_wait=wait_none(),
+        usage_recorder=events.append,
     )
     try:
-        with usage_scope("a" * 32, events.append, job_id=42):
+        with job_scope(42):
             assert (
                 await llm.complete([{"role": "user", "content": "private"}], task="answer") == "ok"
             )
@@ -35,36 +36,37 @@ async def test_records_each_attempt_with_unknown_error_cost_and_safe_context():
         assert events[0].id == events[1].id != events[2].id == events[3].id
         assert events[1].status == "error" and events[1].tokens_in is None
         assert events[3].tokens_in == 3 and events[3].tokens_out == 5
-        assert all(e.team_id == "a" * 32 and e.job_id == 42 for e in events)
+        assert all(e.job_id == 42 for e in events)
         assert "private" not in repr(events) and "secret document" not in repr(events)
     finally:
         await llm.aclose()
 
 
-async def test_concurrent_scopes_and_missing_usage():
+async def test_concurrent_job_scopes_and_missing_usage():
     events = []
     response = _completion("ok")
     response.pop("usage")
     llm = OpenAICompatLLM(
         LLMSettings(model="m"),
+        usage_recorder=events.append,
         http_client=httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200, json=response))
         ),
     )
 
-    async def call(team):
-        with usage_scope(team, events.append):
+    async def call(job_id):
+        with job_scope(job_id):
             await llm.complete([], task="query")
 
     try:
-        await asyncio.gather(call("a" * 32), call("b" * 32))
-        assert {e.team_id for e in events} == {"a" * 32, "b" * 32}
+        await asyncio.gather(call(1), call(2), llm.complete([], task="query"))
+        assert sorted(e.job_id or 0 for e in events) == [0, 0, 1, 1, 2, 2]
         assert all(e.tokens_in is None for e in events)
     finally:
         await llm.aclose()
 
 
-def test_rates_and_thresholds_validate():
+def test_rates_validate():
     config = ServiceSettings(
         llm_rates={
             "m": {"input_per_million": "1.25", "output_per_million": "2.5", "currency": "USD"}
@@ -78,25 +80,16 @@ def test_rates_and_thresholds_validate():
                     "m": {"input_per_million": value, "output_per_million": 1, "currency": "USD"}
                 }
             )
-    with pytest.raises(ValueError):
-        ServiceSettings(monitor={"worker_stale_s": 20, "heartbeat_s": 30})
 
 
-async def test_bound_recorder_covers_operator_cli_without_request_scope():
-    events = []
+async def test_without_recorder_nothing_is_recorded():
     llm = OpenAICompatLLM(
         LLMSettings(model="m"),
-        team_id="a" * 32,
-        usage_recorder=events.append,
         http_client=httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200, json=_completion("ok")))
         ),
     )
     try:
-        await llm.complete([], task="wiki")
-        assert events[-1].team_id == "a" * 32 and events[-1].tokens_in == 3
-        with usage_scope("b" * 32, events.append, job_id=7):
-            await llm.complete([], task="answer")
-        assert events[-1].team_id == "b" * 32 and events[-1].job_id == 7
+        assert await llm.complete([], task="wiki") == "ok"
     finally:
         await llm.aclose()

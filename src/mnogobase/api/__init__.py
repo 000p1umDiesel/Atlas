@@ -1,1 +1,1 @@
-"""HTTP interface for the team service."""
+"""HTTP API of the personal knowledge base."""

@@ -16,18 +16,18 @@ def test_postgresql_is_default_and_namespace_does_not_depend_on_paths():
     a = Settings(database={"backend": "postgresql"}, data_dir="a")
     b = a.model_copy(update={"data_dir": Path("b")})
     assert database_target(a).schema == database_target(b).schema
-    assert database_target(a, "service").schema != database_target(a).schema
+    # всё состояние проекта, включая пользователей и очередь, в одной схеме
+    assert database_target(a, "jobs") == database_target(a)
+    with pytest.raises(ValueError):
+        database_target(a, "service")
 
 
-def test_team_database_namespaces_are_isolated():
+def test_projects_have_separate_schemas():
     from mnogobase.config import Settings
     from mnogobase.database import database_target
-    from mnogobase.service.context import team_settings
 
-    base = Settings(database={"backend": "postgresql"})
-    a, b = [team_settings(base, letter * 32) for letter in "ab"]
+    a, b = Settings(database={"project": "alpha"}), Settings(database={"project": "beta"})
     assert database_target(a).schema != database_target(b).schema
-    assert database_target(a, "service") == database_target(base, "service")
 
 
 @pytest.mark.parametrize(

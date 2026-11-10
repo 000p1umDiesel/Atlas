@@ -2,7 +2,9 @@ from __future__ import annotations
 
 # FastAPI evaluates these dependency declarations while registering routes.
 # ruff: noqa: B008
-from typing import Annotated, Literal
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, Path, Query, Request
@@ -10,24 +12,20 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mnogobase.config import Settings, load_settings
-from mnogobase.service.context import TeamContext, validate_team_id
 from mnogobase.service.errors import ServiceError
 
 Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0, le=1_000_000)]
 Mode = Literal["rag", "wiki", "graph", "all"]
+MAX_JSON_BODY = 64 * 1024
 
 
 class Login(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=1024)
-
-
-class Member(BaseModel):
-    user_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    role: Literal["admin", "member"] = "member"
 
 
 class Question(BaseModel):
@@ -43,17 +41,102 @@ class Conversation(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
-def create_api(settings: Settings | None = None, *, service=None) -> FastAPI:
+class BodyLimit:
+    """413 для тела больше 64 KiB до разбора JSON и до проверки сессии.
+
+    Исключение — загрузка документа: её предел (`service.max_upload_mb`) проверяет
+    обработчик потоково."""
+
+    def __init__(self, app: ASGIApp, limit: int = MAX_JSON_BODY):
+        self.app, self.limit = app, limit
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or (
+            scope["method"] == "POST" and scope["path"] == "/api/documents"
+        ):
+            await self.app(scope, receive, send)
+            return
+        for name, value in scope.get("headers", []):
+            if name == b"content-length" and value.isdigit() and int(value) > self.limit:
+                await _too_large(send)
+                return
+        received = 0
+
+        async def limited() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.limit:
+                    raise _BodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited, send)
+        except _BodyTooLarge:
+            await _too_large(send)
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+async def _too_large(send: Send) -> None:
+    response = JSONResponse({"detail": "Request body too large"}, status_code=413)
+    await send({"type": "http.response.start", "status": 413, "headers": response.raw_headers})
+    await send({"type": "http.response.body", "body": response.body})
+
+
+def get_kb(request: Request) -> Any:
+    """Единственная точка выбора базы знаний: несколько баз в одном процессе меняют
+    только её, обработчики остаются как есть."""
+    return request.app.state.kb
+
+
+def bearer(authorization: Annotated[str | None, Header()] = None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise ServiceError(401, "Authentication required")
+    token = authorization[7:]
+    if not token or any(c.isspace() for c in token):
+        raise ServiceError(401, "Authentication required")
+    return token
+
+
+def current_user(request: Request, token: str = Depends(bearer)) -> dict:
+    return get_kb(request).store.authenticate(token)
+
+
+KB = Annotated[Any, Depends(get_kb)]
+User = Annotated[dict, Depends(current_user)]
+
+
+def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     """Создаёт API без изменения cwd, окружения и общих настроек."""
     if settings is None:
-        settings = service.settings if service is not None else load_settings()
-    if service is None:
-        from mnogobase.service.runtime import TeamService
+        settings = kb.settings if kb is not None else load_settings()
 
-        service = TeamService(settings)
-    app = FastAPI(title="mnogobase team service")
-    app.state.service = service
-    store = service.store
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        owned = app.state.kb is None
+        if owned:
+            from mnogobase.kb import KnowledgeBase
+
+            app.state.kb = await run_in_threadpool(KnowledgeBase, settings)
+        try:
+            yield
+        finally:
+            if owned:
+                await app.state.kb.close()
+
+    app = FastAPI(
+        title="mnogobase",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+    app.state.kb = kb
+    app.add_middleware(BodyLimit)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, exc: ServiceError):
@@ -69,88 +152,39 @@ def create_api(settings: Settings | None = None, *, service=None) -> FastAPI:
     async def unavailable(request: Request, exc: Exception):
         return JSONResponse({"detail": "Service temporarily unavailable"}, status_code=503)
 
-    def bearer(authorization: Annotated[str | None, Header()] = None) -> str:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise ServiceError(401, "Authentication required")
-        token = authorization[7:]
-        if not token or any(c.isspace() for c in token):
-            raise ServiceError(401, "Authentication required")
-        store.authenticate(token)
-        return token
-
-    def context(team_id: str, token: str, *, admin: bool = False) -> TeamContext:
-        try:
-            validate_team_id(team_id)
-        except ServiceError as exc:
-            raise ServiceError(422, "Invalid team ID") from exc
-        user = store.authenticate(token)
-        return store.context(user["id"], team_id, admin=admin)
-
-    async def revalidate(team_id: str, token: str, *, admin: bool = False) -> TeamContext:
-        return await run_in_threadpool(context, team_id, token, admin=admin)
-
-    # Dependencies carry current identity only; all long calls revalidate before returning.
-    def member_context(team_id: str, token: str = Depends(bearer)) -> TeamContext:
-        return context(team_id, token)
-
-    def admin_context(team_id: str, token: str = Depends(bearer)) -> TeamContext:
-        return context(team_id, token, admin=True)
-
     @app.get("/health")
     def health():
         return {"status": "ok"}
 
     @app.post("/api/auth/login")
-    def login(body: Login):
+    def login(body: Login, kb: KB):
         return {
-            "token": store.login(
+            "token": kb.store.login(
                 body.username, body.password, ttl_hours=settings.service.session_hours
             ),
             "token_type": "bearer",
         }
 
     @app.post("/api/auth/logout")
-    def logout(token: str = Depends(bearer)):
-        store.logout(token)
+    def logout(kb: KB, user: User, token: str = Depends(bearer)):
+        kb.store.logout(token)
         return {"status": "ok"}
 
     @app.get("/api/auth/me")
-    def me(token: str = Depends(bearer)):
-        user = store.authenticate(token)
-        return {key: user[key] for key in ("id", "username")}
+    def me(user: User):
+        return {key: user[key] for key in ("id", "username", "role")}
 
-    @app.get("/api/teams")
-    def teams(token: str = Depends(bearer)):
-        return store.teams(store.authenticate(token)["id"])
+    @app.get("/api/documents")
+    async def documents(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
+        return await kb.documents(limit=limit, offset=offset)
 
-    @app.get("/api/teams/{team_id}/members")
-    def members(team_id: str, ctx: TeamContext = Depends(admin_context)):
-        return store.members(team_id)
-
-    @app.post("/api/teams/{team_id}/members")
-    def add_member(team_id: str, body: Member, ctx: TeamContext = Depends(admin_context)):
-        store.add_member(team_id, body.user_id, body.role, actor_id=ctx.user_id)
-        return {"status": "ok"}
-
-    @app.delete("/api/teams/{team_id}/members/{user_id}")
-    def remove_member(team_id: str, user_id: str, ctx: TeamContext = Depends(admin_context)):
-        store.remove_member(team_id, user_id, actor_id=ctx.user_id)
-        return {"status": "ok"}
-
-    @app.get("/api/teams/{team_id}/documents")
-    def documents(
-        limit: Limit = 50, offset: Offset = 0, ctx: TeamContext = Depends(member_context)
-    ):
-        return service.documents(ctx, limit=limit, offset=offset)
-
-    @app.post("/api/teams/{team_id}/documents", status_code=202)
+    @app.post("/api/documents", status_code=202)
     async def upload(
         request: Request,
-        team_id: str,
+        kb: KB,
+        user: User,
         filename: Annotated[str, Query(min_length=1, max_length=255)],
-        token: str = Depends(bearer),
     ):
-        ctx = await revalidate(team_id, token)
         maximum = settings.service.max_upload_mb * 1024 * 1024
         length = request.headers.get("content-length")
         if length is not None:
@@ -167,21 +201,11 @@ def create_api(settings: Settings | None = None, *, service=None) -> FastAPI:
             if len(data) + len(chunk) > maximum:
                 raise ServiceError(413, "Upload too large")
             data.extend(chunk)
-        # Uploading the body may itself take long enough for the session to be revoked.
-        ctx = await revalidate(team_id, token)
-        result = await run_in_threadpool(service.upload, ctx, filename, bytes(data))
-        await revalidate(team_id, token)
-        return result
+        return await run_in_threadpool(kb.upload, filename, bytes(data))
 
-    @app.get("/api/teams/{team_id}/documents/{doc_id}/content")
-    def source(
-        team_id: str,
-        doc_id: str,
-        token: str = Depends(bearer),
-        ctx: TeamContext = Depends(member_context),
-    ):
-        content, filename = service.read_source(ctx, doc_id)
-        context(team_id, token)
+    @app.get("/api/documents/{doc_id}/content")
+    def source(doc_id: str, kb: KB, user: User):
+        content, filename = kb.read_source(doc_id)
         return Response(
             content=content,
             media_type="application/octet-stream",
@@ -192,110 +216,71 @@ def create_api(settings: Settings | None = None, *, service=None) -> FastAPI:
             },
         )
 
-    @app.delete("/api/teams/{team_id}/documents/{doc_id}")
-    async def delete_document(
-        team_id: str,
-        doc_id: str,
-        token: str = Depends(bearer),
-        ctx: TeamContext = Depends(admin_context),
-    ):
-        result = await service.remove_document(ctx, doc_id)
-        await revalidate(team_id, token, admin=True)
-        return result
+    @app.delete("/api/documents/{doc_id}")
+    async def delete_document(doc_id: str, kb: KB, user: User):
+        return await kb.remove_document(doc_id)
 
-    @app.get("/api/teams/{team_id}/jobs")
-    def jobs(limit: Limit = 50, offset: Offset = 0, ctx: TeamContext = Depends(member_context)):
-        return service.jobs(ctx, limit=limit, offset=offset)
+    @app.get("/api/jobs")
+    def jobs(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
+        return kb.jobs(limit=limit, offset=offset)
 
-    @app.post("/api/teams/{team_id}/jobs/{job_id}/retry")
-    def retry_job(
-        job_id: Annotated[int, Path(ge=1, le=9223372036854775807)],
-        ctx: TeamContext = Depends(member_context),
-    ):
-        return service.retry_job(ctx, job_id)
+    @app.post("/api/jobs/{job_id}/retry")
+    def retry_job(job_id: Annotated[int, Path(ge=1, le=9223372036854775807)], kb: KB, user: User):
+        return kb.retry_job(job_id)
 
-    @app.post("/api/teams/{team_id}/search")
-    async def search(
-        team_id: str,
-        body: Search,
-        token: str = Depends(bearer),
-        ctx: TeamContext = Depends(member_context),
-    ):
-        result = await service.search(ctx, body.question, mode=body.mode, k=body.k)
-        await revalidate(team_id, token)
-        return result
+    @app.post("/api/search")
+    async def search(body: Search, kb: KB, user: User):
+        return await kb.search(body.question, mode=body.mode, k=body.k)
 
-    @app.post("/api/teams/{team_id}/ask")
-    async def ask(
-        team_id: str,
-        body: Question,
-        token: str = Depends(bearer),
-        ctx: TeamContext = Depends(member_context),
-    ):
-        result = await service.ask(ctx, body.question, mode=body.mode)
-        await revalidate(team_id, token)
-        return result
+    @app.post("/api/ask")
+    async def ask(body: Question, kb: KB, user: User):
+        return await kb.ask(body.question, mode=body.mode)
 
-    @app.post("/api/teams/{team_id}/conversations", status_code=201)
-    def create_conversation(body: Conversation, ctx: TeamContext = Depends(member_context)):
-        return store.create_conversation(ctx, body.title)
+    @app.post("/api/conversations", status_code=201)
+    def create_conversation(body: Conversation, kb: KB, user: User):
+        return kb.store.create_conversation(user["id"], body.title)
 
-    @app.get("/api/teams/{team_id}/conversations")
-    def conversations(
-        limit: Limit = 50, offset: Offset = 0, ctx: TeamContext = Depends(member_context)
-    ):
-        return store.conversations(ctx, limit=limit, offset=offset)
+    @app.get("/api/conversations")
+    def conversations(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
+        return kb.store.conversations(user["id"], limit=limit, offset=offset)
 
-    @app.get("/api/teams/{team_id}/conversations/{conversation_id}/messages")
-    def history(
-        conversation_id: str,
-        limit: Limit = 100,
-        offset: Offset = 0,
-        ctx: TeamContext = Depends(member_context),
-    ):
-        # Check ownership even when an alternate runtime implementation is injected.
-        store.conversation(ctx, conversation_id)
-        return service.history(ctx, conversation_id, limit=limit, offset=offset)
+    @app.get("/api/conversations/{conversation_id}/messages")
+    def history(conversation_id: str, kb: KB, user: User, limit: Limit = 100, offset: Offset = 0):
+        return kb.history(user["id"], conversation_id, limit=limit, offset=offset)
 
-    @app.post("/api/teams/{team_id}/conversations/{conversation_id}/messages")
-    async def send_message(
-        team_id: str,
-        conversation_id: str,
-        body: Question,
-        token: str = Depends(bearer),
-        ctx: TeamContext = Depends(member_context),
-    ):
-        await run_in_threadpool(store.conversation, ctx, conversation_id)
-        result = await service.send_message(ctx, conversation_id, body.question, mode=body.mode)
-        current = await revalidate(team_id, token)
-        await run_in_threadpool(store.conversation, current, conversation_id)
-        return result
+    @app.post("/api/conversations/{conversation_id}/messages")
+    async def send_message(conversation_id: str, body: Question, kb: KB, user: User):
+        return await kb.send_message(user["id"], conversation_id, body.question, mode=body.mode)
 
-    @app.get("/api/teams/{team_id}/wiki")
-    def wiki_pages(
-        limit: Limit = 50, offset: Offset = 0, ctx: TeamContext = Depends(member_context)
-    ):
-        return service.wiki_pages(ctx, limit=limit, offset=offset)
+    @app.get("/api/wiki")
+    async def wiki_pages(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
+        return await kb.wiki_pages(limit=limit, offset=offset)
 
-    @app.get("/api/teams/{team_id}/wiki/{page_id}")
-    def wiki_page(page_id: str, ctx: TeamContext = Depends(member_context)):
-        return service.wiki_page(ctx, page_id)
+    @app.get("/api/wiki/{page_id}")
+    async def wiki_page(page_id: str, kb: KB, user: User):
+        return await kb.wiki_page(page_id)
 
-    @app.get("/api/teams/{team_id}/graph/search")
-    def graph_search(
+    @app.get("/api/graph/search")
+    async def graph_search(
+        kb: KB,
+        user: User,
         q: Annotated[str, Query(min_length=1, max_length=1000)],
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
-        ctx: TeamContext = Depends(member_context),
     ):
-        return service.graph_search(ctx, q, limit=limit)
+        return await kb.graph_search(q, limit=limit)
 
-    @app.get("/api/teams/{team_id}/graph/{entity_id}/neighbors")
-    def graph_neighbors(
+    @app.get("/api/graph/{entity_id}/neighbors")
+    async def graph_neighbors(
         entity_id: str,
+        kb: KB,
+        user: User,
         depth: Annotated[int, Query(ge=1, le=3)] = 1,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
-        ctx: TeamContext = Depends(member_context),
     ):
-        return service.graph_neighbors(ctx, entity_id, depth=depth, limit=limit)
+        return await kb.graph_neighbors(entity_id, depth=depth, limit=limit)
+
+    @app.get("/api/status")
+    def status(kb: KB, user: User):
+        return kb.status()
 
     return app

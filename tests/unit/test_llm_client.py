@@ -154,7 +154,7 @@ async def test_failing_usage_recorder_does_not_break_the_call():
     def broken(event):
         raise RuntimeError("usage store down")
 
-    llm, _ = make_llm(["fine"], team_id="t", usage_recorder=broken)
+    llm, _ = make_llm(["fine"], usage_recorder=broken)
     assert await llm.complete([{"role": "user", "content": "go"}], task="answer") == "fine"
 
 

@@ -49,10 +49,6 @@ _SCHEMA = [
     "ON (e.analytics_run_id, e.analytics_community)",
 ]
 _WORD = re.compile(r"\w+", re.UNICODE)
-_TEAM_ID = re.compile(r"[0-9a-f]{32}\Z")
-_NODE_LABEL = re.compile(r":(Document|Chunk|Entity|WikiPage|AnalysisState)\b")
-_NODE_MERGE = re.compile(r"(MERGE \(\w+:(?:Document|Chunk|Entity|WikiPage|AnalysisState) \{)")
-_SCHEMA_NAME = re.compile(r"\A(CREATE (?:CONSTRAINT|(?:FULLTEXT )?INDEX)) (\w+)\b")
 _PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version} AS page"
 _REL_MAP = (
     "{src_id: startNode(r).entity_id, src_name: startNode(r).name, predicate: r.predicate, "
@@ -72,42 +68,17 @@ class DeleteResult:
     removed_pages: list[tuple[str, str]]
 
 
-def _scope_query(query: str, team_id: str | None) -> str:
-    """Только фиксированные серверные Cypher-шаблоны; значения остаются параметрами.
-
-    Командные узлы не получают legacy labels: иначе старые unique constraints и
-    полнотекстовый индекс объединяли бы проекты. Unique ID внутри отдельного label
-    уже задаёт уникальность пары (team_id, local_id), не меняя публичный local_id.
-    Вызывается и для обычных запросов, и внутри транзакции каскадного удаления.
-    """
-    if team_id is None:
-        return query
-    # Защита находится здесь тоже: даже прямой вызов helper не интерполирует чужой Cypher.
-    if not isinstance(team_id, str) or not _TEAM_ID.fullmatch(team_id):
-        raise ValueError("team_id must contain exactly 32 lowercase hexadecimal characters")
-    prefix = f"mb_team_{team_id}_"
-    query = _NODE_MERGE.sub(r"\1team_id: $_team_id, ", query)
-    query = _NODE_LABEL.sub(lambda match: f":{prefix}{match[1]}", query)
-    query = _SCHEMA_NAME.sub(lambda match: f"{match[1]} {prefix}{match[2]}", query)
-    return query.replace("'entity_names'", f"'{prefix}entity_names'")
-
-
 class GraphStore:
-    def __init__(self, driver: Driver, database: str | None = None, *, team_id: str | None = None):
-        if team_id is not None and (
-            not isinstance(team_id, str) or not _TEAM_ID.fullmatch(team_id)
-        ):
-            raise ValueError("team_id must contain exactly 32 lowercase hexadecimal characters")
+    def __init__(self, driver: Driver, database: str | None = None):
         self._driver = driver
         self._db = database
-        self._team_id = team_id
 
     @classmethod
     def from_settings(cls, settings: Neo4jSettings) -> GraphStore:
         driver = GraphDatabase.driver(
             settings.uri, auth=(settings.user, settings.password()), **DRIVER_OPTIONS
         )
-        return cls(driver, team_id=settings.team_id)
+        return cls(driver)
 
     def close(self) -> None:
         self._driver.close()
@@ -116,9 +87,6 @@ class GraphStore:
         self._driver.verify_connectivity()
 
     def _run(self, query: str, *, _timeout: float | None = None, **params) -> list[dict]:
-        query = _scope_query(query, self._team_id)
-        if self._team_id is not None:
-            params["_team_id"] = self._team_id
         statement = Query(query, timeout=_timeout) if _timeout is not None else query
         records, _, _ = self._driver.execute_query(
             statement, parameters_=params, database_=self._db
@@ -127,12 +95,10 @@ class GraphStore:
 
     def _write(self, query: str, **params) -> None:
         """Invalidate derived scores atomically with a source mutation; lock state first."""
-        if self._team_id is not None:
-            params["_team_id"] = self._team_id
 
         def write(tx):
-            tx.run(_scope_query(_INVALIDATE_ANALYSIS, self._team_id), **params).consume()
-            tx.run(_scope_query(query, self._team_id), **params).consume()
+            tx.run(_INVALIDATE_ANALYSIS, **params).consume()
+            tx.run(query, **params).consume()
 
         with self._driver.session(database=self._db) as session:
             session.execute_write(write)
@@ -235,7 +201,7 @@ class GraphStore:
         # а его сущности — с устаревшими счётчиками упоминаний / осиротевшими wiki-страницами
         # (повтор ничего бы не сделал)
         with self._driver.session(database=self._db) as session:
-            return session.execute_write(_delete_document_tx, doc_id, self._team_id)
+            return session.execute_write(_delete_document_tx, doc_id)
 
     def chunks_by_ids(self, chunk_ids: list[str]) -> list[ChunkView]:
         rows = self._run(
@@ -459,13 +425,10 @@ class GraphStore:
         return [RelationView(**r) for r in rows]
 
     # ---- производная аналитика (не меняет IDs и evidence) ----
-    @property
-    def entity_label(self) -> str:
-        return f"mb_team_{self._team_id}_Entity" if self._team_id else "Entity"
-
-    @property
-    def analysis_scope(self) -> str:
-        return self._team_id or "legacy"
+    entity_label = "Entity"
+    # Входит в имена GDS-проекций и метаданные снимка; прежнее значение сохраняет
+    # уже записанный анализ действительным.
+    analysis_scope = "legacy"
 
     def analysis_status(self) -> dict:
         rows = self._run(
@@ -677,9 +640,7 @@ class GraphStore:
 
         def publish(tx):
             def run(query, **params):
-                if self._team_id:
-                    params["_team_id"] = self._team_id
-                return tx.run(_scope_query(query, self._team_id), **params)
+                return tx.run(query, **params)
 
             # Taking a write lock before reading the revision serializes with source writes.
             state = run(
@@ -768,13 +729,9 @@ class GraphStore:
         return [PageIndexRow(**r) for r in rows]
 
 
-def _delete_document_tx(
-    tx: ManagedTransaction, doc_id: str, team_id: str | None = None
-) -> DeleteResult:
+def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
     def run(query: str, **params):
-        if team_id:
-            params["_team_id"] = team_id
-        return tx.run(_scope_query(query, team_id), **params)
+        return tx.run(query, **params)
 
     run(_INVALIDATE_ANALYSIS).consume()
     found = run(

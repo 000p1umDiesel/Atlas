@@ -123,7 +123,7 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
     class Retriever:
         def retrieve(self, query, k, alt_queries=()):
             with pytest.raises(Timeout):
-                ingest_lock(tmp_path / ".mnogobase", target=database_target(Settings())).acquire()
+                ingest_lock(database_target(Settings())).acquire()
             return [ContextItem(kind="chunk", ref="c", text="Answer")]
 
     class Judge:

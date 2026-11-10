@@ -90,8 +90,8 @@ def test_drop_file_removes_only_that_path(reg):
 
 
 def test_ingest_lock_is_exclusive(tmp_path):
-    with ingest_lock(tmp_path, target=database_target(Settings())), pytest.raises(filelock.Timeout):
-        ingest_lock(tmp_path, target=database_target(Settings())).acquire()
+    with ingest_lock(database_target(Settings())), pytest.raises(filelock.Timeout):
+        ingest_lock(database_target(Settings())).acquire()
 
 
 def test_latest_extraction_ignores_model_and_prompt_version(reg):

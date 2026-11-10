@@ -99,7 +99,7 @@ def pg_settings(tmp_path, monkeypatch, postgresql_url):
     prefix = "test_" + uuid.uuid4().hex[:10]
     settings = Settings(
         data_dir=tmp_path / "state",
-        service={"root": tmp_path / "service"},
+        service={"uploads_dir": tmp_path / "documents/uploads"},
         wiki={"dir": tmp_path / "wiki"},
         database={"backend": "postgresql", "schema_prefix": prefix},
     )

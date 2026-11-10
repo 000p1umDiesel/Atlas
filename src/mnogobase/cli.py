@@ -5,7 +5,7 @@ import shlex
 import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -37,11 +37,11 @@ from mnogobase.config import Settings, load_settings
 from mnogobase.database import (
     DatabaseError,
     DatabaseTarget,
+    PgLock,
     database_lock,
     database_target,
     project_exists,
 )
-from mnogobase.database_cli import app as database_app
 from mnogobase.doctor import Check, run_checks
 from mnogobase.evaluation.cli import app as evaluation_app
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
@@ -104,7 +104,6 @@ app.add_typer(wiki_app, name="wiki")
 app.add_typer(evaluation_app, name="eval")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(worker_app, name="worker")
-app.add_typer(database_app, name="database")
 graph_app = typer.Typer(no_args_is_help=True, help="Graph analysis with APOC/GDS.")
 app.add_typer(graph_app, name="graph")
 models_app = typer.Typer(
@@ -113,7 +112,7 @@ models_app = typer.Typer(
 )
 app.add_typer(models_app, name="models")
 console = Console()
-_state: dict[str, Path | str | None] = {"config": None, "team": None}
+_state: dict[str, Path | str | None] = {"config": None}
 # сервисы, нужные команде до старта: embedder, LLM, векторное хранилище, граф
 PREFLIGHT_CHECKS = ("models", "llm", "qdrant", "neo4j")
 INGEST_CHECKS = (*PREFLIGHT_CHECKS, "tokenizer")  # только ingest режет документы на чанки
@@ -127,12 +126,8 @@ def main(
     config: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to config.yaml.")
     ] = None,
-    team: Annotated[
-        str | None, typer.Option("--team", help="Operator: use a registered team project.")
-    ] = None,
 ) -> None:
     _state["config"] = config
-    _state["team"] = team
 
 
 def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
@@ -147,17 +142,6 @@ def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
     except (yaml.YAMLError, ValueError) as exc:  # битый YAML или ValidationError от pydantic
         console.print(f"[red]Invalid configuration:[/red] {escape(str(exc))}")
         raise typer.Exit(2) from None
-    if _state.get("team") is not None:
-        from mnogobase.service.context import team_settings
-        from mnogobase.service.errors import ServiceError
-        from mnogobase.service.store import ServiceStore
-
-        try:
-            team_id = str(_state["team"])
-            ServiceStore(database_target(settings, "service")).get_team(team_id)
-            settings = team_settings(settings, team_id)
-        except ServiceError as exc:
-            _fail_cleanly(exc)
     if project:
         _require_project(settings, missing_exit)
     configure_logging(settings.logs_dir)
@@ -193,57 +177,18 @@ def _require_project(settings: Settings, code: int = 2) -> None:
         raise typer.Exit(code)
 
 
-class _WriterLocks(ExitStack):
-    def release(self) -> None:
-        self.close()
-
-
-def _lock(settings: Settings) -> filelock.FileLock | _WriterLocks:
-    if settings.neo4j.team_id is not None:
-        locks = _WriterLocks()
-        try:
-            settings.service.root.mkdir(parents=True, exist_ok=True)
-            # Same acquisition order as TeamService.work_once: global worker, then corpus.
-            locks.enter_context(
-                database_lock(
-                    settings, "worker", settings.service.root / "worker.lock", service=True
-                )
-            )
-            locks.enter_context(ingest_lock(settings.data_dir, target=database_target(settings)))
-        except filelock.Timeout:
-            locks.release()
-            console.print("[red]Another service worker or team writer is in progress.[/red]")
-            raise typer.Exit(2) from None
-        except BaseException:
-            locks.release()
-            raise
-        return locks
-    lock = ingest_lock(settings.data_dir, target=database_target(settings))
+def _lock(settings: Settings) -> PgLock:
+    """Блокировка писателя корпуса; второй писатель получает понятный отказ."""
+    lock = ingest_lock(database_target(settings))
     try:
         lock.acquire()
     except filelock.Timeout:
         console.print(
-            "[red]Another ingest / remove / wiki / reindex / reset run is in progress.[/red]"
+            "[red]Another ingest / remove / wiki / reindex / reset run or worker is in progress."
+            "[/red]"
         )
         raise typer.Exit(2) from None
     return lock
-
-
-@contextmanager
-def _read_lock(settings: Settings):
-    if settings.neo4j.team_id is None:
-        yield
-        return
-    lock = ingest_lock(settings.data_dir, target=database_target(settings))
-    try:
-        lock.acquire()
-    except filelock.Timeout:
-        console.print("[red]Another team corpus operation is in progress.[/red]")
-        raise typer.Exit(2) from None
-    try:
-        yield
-    finally:
-        lock.release()
 
 
 def _fail_cleanly(exc: Exception) -> None:
@@ -256,9 +201,7 @@ def _fail_cleanly(exc: Exception) -> None:
 def _graph_writer(settings: Settings):
     # Global GDS gate precedes the existing worker/corpus locks; never reverse this order.
     try:
-        with database_lock(
-            settings, "graph-analysis", settings.service.root / "graph-analysis.lock", service=True
-        ):
+        with database_lock(settings, "graph-analysis"):
             lock = _lock(settings)
             try:
                 yield
@@ -297,10 +240,7 @@ def graph_status() -> None:
     _preflight(settings, ("neo4j",))
     graph = GraphStore.from_settings(settings.neo4j)
     try:
-        with _read_lock(settings):
-            console.print_json(
-                data={**graph.analysis_status(), "entities": graph.analysis_details()}
-            )
+        console.print_json(data={**graph.analysis_status(), "entities": graph.analysis_details()})
     except (Neo4jError, ServiceUnavailable, SessionExpired, ValueError) as exc:
         _fail_cleanly(exc)
     finally:
@@ -463,41 +403,40 @@ def status() -> None:
     """Сводка по загруженным файлам, статусам стадий, ожидающим обновлениям wiki и ошибкам."""
     # status только читает: вне проекта он сообщает об этом и завершается успешно
     settings = _settings(project=True, missing_exit=0)
-    with _read_lock(settings):
-        registry = Registry(_state_db(settings))
-        try:
-            files = registry.files()
-            counts = Counter(f.status for f in files)
-            console.print(
-                f"files: {len(files)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+    registry = Registry(_state_db(settings))
+    try:
+        files = registry.files()
+        counts = Counter(f.status for f in files)
+        console.print(
+            f"files: {len(files)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        )
+        summary = registry.stage_summary()
+        table = Table("stage", "done", "failed", "pending", "running")
+        for stage in STAGES:
+            row = summary.get(stage, {})
+            table.add_row(
+                stage, *(str(row.get(k, 0)) for k in ("done", "failed", "pending", "running"))
             )
-            summary = registry.stage_summary()
-            table = Table("stage", "done", "failed", "pending", "running")
-            for stage in STAGES:
-                row = summary.get(stage, {})
-                table.add_row(
-                    stage, *(str(row.get(k, 0)) for k in ("done", "failed", "pending", "running"))
-                )
-            console.print(table)
-            console.print(f"entities waiting for wiki update: {len(registry.dirty())}")
-            removals = [doc_id for doc_id, _ in registry.pending_removals()]
-            console.print(f"pending document removals: {len(removals)}")
-            if removals:
-                console.print(
-                    f"  unfinished: {', '.join(removals)} — the next ingest / remove / wiki build retries "
-                    "them first",
-                    soft_wrap=True,
-                )
-            if stale_entity_types(registry, settings.extract.entity_types):
-                console.print(f"[yellow]warning:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True)
-            errors = registry.stage_errors()
-            if errors:
-                err_table = Table("doc_id", "stage", "error")
-                for doc_id, stage, error in errors:
-                    err_table.add_row(doc_id, stage, escape(error or ""))
-                console.print(err_table)
-        finally:
-            registry.close()
+        console.print(table)
+        console.print(f"entities waiting for wiki update: {len(registry.dirty())}")
+        removals = [doc_id for doc_id, _ in registry.pending_removals()]
+        console.print(f"pending document removals: {len(removals)}")
+        if removals:
+            console.print(
+                f"  unfinished: {', '.join(removals)} — the next ingest / remove / wiki build retries "
+                "them first",
+                soft_wrap=True,
+            )
+        if stale_entity_types(registry, settings.extract.entity_types):
+            console.print(f"[yellow]warning:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True)
+        errors = registry.stage_errors()
+        if errors:
+            err_table = Table("doc_id", "stage", "error")
+            for doc_id, stage, error in errors:
+                err_table.add_row(doc_id, stage, escape(error or ""))
+            console.print(err_table)
+    finally:
+        registry.close()
 
 
 @app.command()
@@ -692,23 +631,22 @@ def ask(
 ) -> None:
     """Ответить на вопрос со ссылками на источники в одном режиме retrieval."""
     settings = _settings(project=True)
-    with _read_lock(settings):
-        _preflight(settings)
-        application = build_app(settings)
-        try:
-            retrievers, answerer, translator = _answer_setup(application)
-            answer = asyncio.run(
-                run_mode(
-                    question,
-                    mode.value,
-                    retrievers[mode.value],
-                    answerer,
-                    k or settings.retrieval.k,
-                    translator,
-                )
+    _preflight(settings)
+    application = build_app(settings)
+    try:
+        retrievers, answerer, translator = _answer_setup(application)
+        answer = asyncio.run(
+            run_mode(
+                question,
+                mode.value,
+                retrievers[mode.value],
+                answerer,
+                k or settings.retrieval.k,
+                translator,
             )
-        finally:
-            application.close()
+        )
+    finally:
+        application.close()
     _print_answer(answer)
 
 
@@ -719,24 +657,23 @@ def compare(
 ) -> None:
     """Ответить в режимах rag / wiki / graph / all и записать сравнение в runs/compare.jsonl."""
     settings = _settings(project=True)
-    with _read_lock(settings):
-        _preflight(settings)
-        application = build_app(settings)
-        try:
-            retrievers, answerer, translator = _answer_setup(application)
-            answers = asyncio.run(
-                do_compare(
-                    question,
-                    retrievers,
-                    answerer,
-                    k or settings.retrieval.k,
-                    settings.runs_dir,
-                    config_hash(settings),
-                    translator,
-                )
+    _preflight(settings)
+    application = build_app(settings)
+    try:
+        retrievers, answerer, translator = _answer_setup(application)
+        answers = asyncio.run(
+            do_compare(
+                question,
+                retrievers,
+                answerer,
+                k or settings.retrieval.k,
+                settings.runs_dir,
+                config_hash(settings),
+                translator,
             )
-        finally:
-            application.close()
+        )
+    finally:
+        application.close()
     table = Table("mode", "answer", "sources (cited)", "latency ms", "tokens in/out", "context")
     for a in answers:
         cited = ", ".join(_where(x.path, x.page, x.ref) for x in a.sources if x.cited) or "-"
