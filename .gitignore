@@ -22,3 +22,5 @@ docs/superpowers
 CLAUDE.md
 AGENTS.md
 docs/*md
+hybrid_rag_notebooks/
+
