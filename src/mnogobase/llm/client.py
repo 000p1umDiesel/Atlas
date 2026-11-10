@@ -11,7 +11,14 @@ import httpx
 import openai
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    RetryCallState,
+    retry_if_exception_type,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_exponential,
+)
 
 from mnogobase.config import LLMSettings
 from mnogobase.llm.telemetry import CallEvent, new_call, record_call
@@ -28,6 +35,18 @@ _RETRYABLE = (
     openai.InternalServerError,
 )
 _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=1, max=30)
+_MAX_RETRY_AFTER_S = 120.0
+
+
+def _retry_after(exc: BaseException | None) -> float | None:
+    """Секунды из заголовка `Retry-After` ответа 429/503 (только число секунд)."""
+    response = getattr(exc, "response", None)
+    value = response.headers.get("retry-after") if response is not None else None
+    try:
+        seconds = float(value) if value is not None else None
+    except ValueError:
+        return None
+    return min(max(seconds, 0.0), _MAX_RETRY_AFTER_S) if seconds is not None else None
 
 
 class StructuredOutputError(RuntimeError):
@@ -44,6 +63,13 @@ class LLMClient(Protocol):
     usage: Usage
 
     def model_for(self, task: str) -> str: ...
+
+    async def _record(self, event: CallEvent | None) -> None:
+        # Учёт расхода не должен ломать сам вызов LLM и подменять его исключение.
+        try:
+            await record_call(event, self._usage_recorder)
+        except Exception as exc:
+            self._log.warning("llm_usage_record_failed", error_type=type(exc).__name__)
 
     async def complete(self, messages: list[Message], *, task: str) -> str: ...
 
@@ -132,27 +158,34 @@ class OpenAICompatLLM:
             kwargs["response_format"] = response_format
         start = time.perf_counter()
         attempts = 0
-        async with self._sem:
-            async for attempt in AsyncRetrying(
-                retry=retry_if_exception_type(_RETRYABLE),
-                stop=stop_after_attempt(5),
-                wait=self._retry_wait,
-                reraise=True,
-            ):
-                with attempt:
+
+        def wait(state: RetryCallState) -> float:
+            backoff = self._retry_wait(state)
+            hint = _retry_after(state.outcome.exception() if state.outcome else None)
+            return max(backoff, hint) if hint is not None else backoff
+
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type(_RETRYABLE),
+            stop=stop_after_attempt(5) | stop_after_delay(self._settings.retry_deadline_s),
+            wait=wait,
+            reraise=True,
+        ):
+            with attempt:
+                # Слот конкурентности занят только на время запроса, не на паузу между попытками.
+                async with self._sem:
                     attempts += 1
                     event = new_call(
                         model, task, external=self._settings.serve == "api", team_id=self._team_id
                     )
-                    await record_call(event, self._usage_recorder)
+                    await self._record(event)
                     try:
                         response = await self._client.chat.completions.create(**kwargs)
                     except BaseException:
                         if event is not None:
-                            await record_call(replace(event, status="error"), self._usage_recorder)
+                            await self._record(replace(event, status="error"))
                         raise
                     if event is not None:
-                        await record_call(
+                        await self._record(
                             replace(
                                 event,
                                 status="response",
@@ -160,8 +193,7 @@ class OpenAICompatLLM:
                                 tokens_out=response.usage.completion_tokens
                                 if response.usage
                                 else None,
-                            ),
-                            self._usage_recorder,
+                            )
                         )
         usage = response.usage
         tokens_in = usage.prompt_tokens if usage else 0
@@ -178,6 +210,13 @@ class OpenAICompatLLM:
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
         return response.choices[0].message.content or ""
+
+    async def _record(self, event: CallEvent | None) -> None:
+        # Учёт расхода не должен ломать сам вызов LLM и подменять его исключение.
+        try:
+            await record_call(event, self._usage_recorder)
+        except Exception as exc:
+            self._log.warning("llm_usage_record_failed", error_type=type(exc).__name__)
 
     async def complete(self, messages: list[Message], *, task: str) -> str:
         return strip_think(await self._chat(messages, task=task))

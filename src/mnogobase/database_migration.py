@@ -26,7 +26,6 @@ from mnogobase.service.store import ServiceStore
 REGISTRY_TABLES = (
     "files",
     "stages",
-    "chunk_extract",
     "extraction_cache",
     "dirty_entities",
     "meta",

@@ -168,7 +168,6 @@ def test_wiki_page_links_are_replaced(graph):
     assert [r["id"] for r in links] == ["e3"]
     assert [r["id"] for r in cites] == [chunks[1].chunk_id]
     assert graph.wiki_page("e1").version == 2
-    assert graph.page_by_slug("two").page_id == "e2"
     rows = graph.wiki_pages()
     assert {r.page_id for r in rows} == {"e1", "e2", "e3"}
     assert all(r.entity_type == "Method" for r in rows)

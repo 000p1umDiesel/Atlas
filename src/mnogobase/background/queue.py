@@ -40,6 +40,7 @@ class JobQueue:
             CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, available_at, id);
             CREATE TABLE IF NOT EXISTS desired(path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS write_state(path TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS worker_heartbeat(name TEXT PRIMARY KEY, last_seen DOUBLE PRECISION NOT NULL);
         """
         try:
             tables = {
@@ -49,7 +50,7 @@ class JobQueue:
                     (path.schema,),
                 )
             }
-            if not {"jobs", "desired", "write_state"} <= tables:
+            if not {"jobs", "desired", "write_state", "worker_heartbeat"} <= tables:
                 initialize(self._db, script, "queue")
             existing = {
                 r[0]
@@ -121,14 +122,16 @@ class JobQueue:
             self._db.execute("ROLLBACK")
             raise
 
-    def claim(self) -> Job | None:
+    def claim(self, max_attempts: int | None = None) -> Job | None:
+        limit, args = ("", ()) if max_attempts is None else (" AND attempts<?", (max_attempts,))
         self._db.execute("BEGIN")
         try:
             row = self._db.execute(
                 "UPDATE jobs SET status='running',attempts=attempts+1,progress='starting',started_at=?,updated_at=? "
-                "WHERE id=(SELECT id FROM jobs WHERE status='pending' AND available_at<=? "
-                "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *",
-                (self._clock(), self._clock(), self._clock()),
+                "WHERE id=(SELECT id FROM jobs WHERE status='pending' AND available_at<=?"
+                + limit
+                + " ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *",
+                (self._clock(), self._clock(), self._clock(), *args),
             ).fetchone()
             if row:
                 self._db.execute(
@@ -206,8 +209,26 @@ class JobQueue:
             ),
         )
 
-    def recover(self) -> int:
-        # Only while holding worker.lock: never steal another worker's active jobs.
+    def release(self, job_id: int, delay: float) -> None:
+        """Возвращает задачу в очередь, не засчитывая попытку (сбой инфраструктуры, а не файла)."""
+        self._db.execute(
+            "UPDATE jobs SET status='pending',attempts=GREATEST(attempts-1,0),available_at=?,"
+            "progress='waiting for services',updated_at=?,started_at=NULL WHERE id=? AND status='running'",
+            (self._clock() + delay, self._clock(), job_id),
+        )
+
+    def recover(self, max_attempts: int | None = None) -> int:
+        """Возвращает прерванные задачи в очередь. Задача, которая уже исчерпала попытки
+        (например, файл роняет процесс), становится failed, а не берётся снова бесконечно.
+
+        Only while holding the worker lock: never steal another worker's active jobs."""
+        if max_attempts is not None:
+            self._db.execute(
+                "UPDATE jobs SET status='failed',error='InterruptedTooOften',"
+                "progress='interrupted too often',updated_at=?,started_at=NULL "
+                "WHERE status='running' AND attempts>=?",
+                (self._clock(), max_attempts),
+            )
         return self._db.execute(
             "UPDATE jobs SET status='pending',available_at=0,progress='resuming after interruption',updated_at=?,started_at=NULL "
             "WHERE status='running'",
@@ -264,6 +285,20 @@ class JobQueue:
 
     def counts(self) -> dict[str, int]:
         return dict(self._db.execute("SELECT status,COUNT(*) FROM jobs GROUP BY status"))
+
+    def heartbeat(self) -> None:
+        """Отметка живого worker'а для `/api/status`."""
+        self._db.execute(
+            "INSERT INTO worker_heartbeat VALUES('worker',?) "
+            "ON CONFLICT(name) DO UPDATE SET last_seen=excluded.last_seen",
+            (self._clock(),),
+        )
+
+    def last_heartbeat(self) -> float | None:
+        row = self._db.execute(
+            "SELECT last_seen FROM worker_heartbeat WHERE name='worker'"
+        ).fetchone()
+        return row[0] if row else None
 
     def has_unfinished_writes(self) -> bool:
         return self._db.execute("SELECT 1 FROM write_state LIMIT 1").fetchone() is not None

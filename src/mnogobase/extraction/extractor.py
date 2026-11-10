@@ -153,9 +153,6 @@ class Extractor:
             try:
                 result = await self.extract(chunk, title)
             except Exception as exc:  # один плохой чанк не должен ронять документ
-                self._registry.set_chunk_extract(
-                    chunk.chunk_id, "failed", f"{type(exc).__name__}: {exc}"
-                )
                 self._log.warning(
                     "extract_failed",
                     chunk_id=chunk.chunk_id,
@@ -164,7 +161,6 @@ class Extractor:
                 )
                 progress.advance(failed=True)
                 return chunk.chunk_id, None
-            self._registry.set_chunk_extract(chunk.chunk_id, "done")
             progress.advance()
             return chunk.chunk_id, result
 

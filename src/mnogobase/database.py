@@ -121,7 +121,15 @@ def _engine(url: str, timeout: int):
         url,
         isolation_level="AUTOCOMMIT",
         poolclass=NullPool,
-        connect_args={"connect_timeout": timeout},
+        # keepalive: тихо оборванное соединение (NAT, idle timeout) иначе держало бы
+        # advisory lock только на нашей стороне, и в корпус могли бы писать двое.
+        connect_args={
+            "connect_timeout": timeout,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        },
         hide_parameters=True,
     )
 

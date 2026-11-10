@@ -41,13 +41,16 @@ def _completion(content: str) -> dict:
     }
 
 
-def make_llm(replies, settings: LLMSettings | None = None):
+def make_llm(replies, settings: LLMSettings | None = None, **kwargs):
     requests: list[dict] = []
     queue = list(replies)
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
         reply = queue.pop(0)
+        if isinstance(reply, tuple):
+            status, headers = reply
+            return httpx.Response(status, headers=headers, json={"error": {"message": "x"}})
         if isinstance(reply, int):
             return httpx.Response(reply, json={"error": {"message": "server error"}})
         return httpx.Response(200, json=_completion(reply))
@@ -57,6 +60,7 @@ def make_llm(replies, settings: LLMSettings | None = None):
         settings or LLMSettings(base_url="http://test/v1", model="base"),
         http_client=client,
         retry_wait=wait_none(),
+        **kwargs,
     )
     return llm, requests
 
@@ -131,3 +135,36 @@ async def test_model_override_usage_and_think_stripping():
     assert text == "Visible text"
     assert requests[0]["model"] == "big"
     assert (llm.usage.tokens_in, llm.usage.tokens_out) == (3, 5)
+
+
+async def test_retry_after_header_sets_the_pause(monkeypatch):
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+    llm, requests = make_llm([(429, {"retry-after": "7"}), "ok"])
+    assert await llm.complete([{"role": "user", "content": "go"}], task="answer") == "ok"
+    assert len(requests) == 2
+    assert slept == [7.0]
+
+
+async def test_failing_usage_recorder_does_not_break_the_call():
+    def broken(event):
+        raise RuntimeError("usage store down")
+
+    llm, _ = make_llm(["fine"], team_id="t", usage_recorder=broken)
+    assert await llm.complete([{"role": "user", "content": "go"}], task="answer") == "fine"
+
+
+async def test_semaphore_is_free_while_waiting_between_retries(monkeypatch):
+    llm, _ = make_llm([500, "ok"], LLMSettings(base_url="http://test/v1", model="m", concurrency=1))
+    seen = []
+
+    async def fake_sleep(seconds):
+        seen.append(llm._sem.locked())
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+    await llm.complete([{"role": "user", "content": "go"}], task="answer")
+    assert seen == [False]

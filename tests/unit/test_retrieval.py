@@ -6,7 +6,7 @@ from qdrant_client import QdrantClient
 from mnogobase.config import Settings
 from mnogobase.models import ChunkRecord, ChunkView, ContextItem, EmbedInput, SearchHit
 from mnogobase.retrieval import Mode, build_retrievers
-from mnogobase.retrieval.answer import NO_SOURCES, Answerer, build_context
+from mnogobase.retrieval.answer import NO_SOURCES, Answerer, _context_blocks
 from mnogobase.retrieval.combined import CombinedRetriever
 from mnogobase.retrieval.compare import compare
 from mnogobase.retrieval.graph import GraphRetriever
@@ -54,12 +54,13 @@ def test_build_context_numbers_and_budget():
         item("wiki", "p#0", "beta", path="entities/x.md"),
         item("relation", "r", "A —uses→ B"),
     ]
-    context, sources, used = build_context(items, 1000)
+    blocks, sources, used = _context_blocks(items, 1000)
+    context = "\n\n".join(blocks)
     assert context.startswith("[1] (document a.pdf, p.2)\nalpha")
     assert "[2] (wiki entities/x.md)\nbeta" in context
     assert "[3] (graph relation)\nA —uses→ B" in context
     assert [s.n for s in sources] == [1, 2, 3] and used > 0
-    _, few, _ = build_context(items, 1)
+    _, few, _ = _context_blocks(items, 1)
     assert len(few) == 1  # хотя бы один источник, даже сверх бюджета
 
 

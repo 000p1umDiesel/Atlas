@@ -84,7 +84,7 @@ def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
         return SimpleNamespace(failed={}, wiki=None, processed=paths, skipped=[])
 
     app = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: closed.append(1))
-    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(cli, "build_app", lambda *a: app)
     result = runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
     assert result.exit_code == 0, result.output
@@ -115,7 +115,7 @@ def test_worker_wiki_failure_remains_retryable(project, monkeypatch):
     async def ingest(paths, **options):
         return SimpleNamespace(failed={}, wiki=SimpleNamespace(failed=["page"]))
 
-    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
         cli,
         "build_app",
@@ -138,7 +138,7 @@ def test_worker_never_acknowledges_missing_or_changing_source(project, monkeypat
             processed = paths
         return SimpleNamespace(processed=processed, skipped=[], failed={}, wiki=None)
 
-    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
         cli,
         "build_app",
@@ -161,7 +161,7 @@ def test_worker_handles_cancellation_and_restores_sigterm(project, monkeypatch):
         observed.append(signal.getsignal(signal.SIGTERM))
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
         cli,
         "build_app",
@@ -185,7 +185,7 @@ def test_worker_rebinds_changed_queued_revision_before_ingest(project, monkeypat
         calls.extend(paths)
         return SimpleNamespace(processed=paths, skipped=[], failed={}, wiki=None)
 
-    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
         cli,
         "build_app",
@@ -463,7 +463,7 @@ def test_worker_watch_joins_watcher_before_closing_app(project, monkeypatch, tra
 
     monkeypatch.setattr(background_cli, "_watch_loop", observe_watch)
     monkeypatch.setattr(background_cli, "process_one", cancellable_process_one)
-    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
         cli,
         "build_app",

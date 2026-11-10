@@ -168,7 +168,7 @@ def _models_endpoint(monkeypatch, status: int, payload: dict | None = None) -> l
 def test_llm_without_models_endpoint_is_ok(tmp_path, monkeypatch, status):
     seen = _models_endpoint(monkeypatch, status)
     [check] = run_checks(make_settings(tmp_path), only=["llm"])
-    assert seen == ["https://codex.sale/v1/models"]
+    assert seen == ["http://localhost:8000/v1/models"]
     assert check.ok, check.detail
     assert "models endpoint not available" in check.detail
 
@@ -181,7 +181,7 @@ def test_llm_auth_or_server_error_fails(tmp_path, monkeypatch, status):
 
 
 def test_llm_model_listed_or_empty_list_is_ok(tmp_path, monkeypatch):
-    _models_endpoint(monkeypatch, 200, {"data": [{"id": "gpt-6-luna"}]})
+    _models_endpoint(monkeypatch, 200, {"data": [{"id": "local"}]})
     assert run_checks(make_settings(tmp_path), only=["llm"])[0].ok
     _models_endpoint(monkeypatch, 200, {"data": []})
     assert run_checks(make_settings(tmp_path), only=["llm"])[0].ok

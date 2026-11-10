@@ -36,10 +36,12 @@ def test_defaults_without_config_file(tmp_path, clean_env):
     assert s.embedder.dim == "auto"
     assert s.embedder.url == "http://localhost:8001/v1"
     assert s.rerank.url == "http://localhost:8002/v1"
-    assert s.llm.url == "https://codex.sale/v1"
+    # без явного config.yaml документы не уходят во внешний API
+    assert s.llm.url == "http://localhost:8000/v1"
     assert s.qdrant.prefix == "mb_"
-    assert s.llm.model == "gpt-6-luna"
-    assert s.llm.model_for("extract") == "gpt-6-luna"
+    assert s.llm.model == "local"
+    assert s.llm.model_for("extract") == "local"
+    assert (s.jobs.max_attempts, s.jobs.retry_delay_s) == (5, 30.0)
     assert s.wiki.dir == Path("wiki")
     assert s.retrieval.budget == {"rag": 0.4, "wiki": 0.3, "graph": 0.3}
 
@@ -275,3 +277,29 @@ def test_serve_requires_what_the_backend_needs():
     remote = EmbedderSettings(base_url="http://gpu:8001/v1/")  # модель поднята на другой машине
     assert remote.url == "http://gpu:8001/v1"
     assert remote.weights == "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "llm:\n  modle: x\n",  # опечатка во вложенной секции
+        "retrival:\n  k: 3\n",  # опечатка в имени секции
+        "llm:\n  concurrency: 0\n",
+        "embedder:\n  batch_size: 0\n",
+        "retrieval:\n  budget: {rag: 0.7, wiki: 0.7}\n",
+        "retrieval:\n  budget: {rag: 0.5, vector: 0.5}\n",
+        'embedder:\n  query_template: "Query: {question}"\n',
+        'embedder:\n  doc_template: "{title}"\n',
+    ],
+)
+def test_invalid_config_is_rejected(tmp_path, clean_env, text):
+    clean_env.chdir(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_settings(cfg)
+
+
+def test_repo_config_is_valid(clean_env):
+    clean_env.chdir(Path(__file__).resolve().parents[2])
+    load_settings()

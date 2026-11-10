@@ -12,8 +12,9 @@ import typer
 from filelock import Timeout
 from rich.markup import escape
 from rich.table import Table
+from sqlalchemy.exc import DBAPIError
 
-from mnogobase.database import database_lock, database_target, target_exists
+from mnogobase.database import DatabaseError, database_lock, database_target, target_exists
 from mnogobase.ids import file_doc_id
 from mnogobase.log import get_logger, new_run_id
 from mnogobase.processing import measured_ingest
@@ -21,7 +22,7 @@ from mnogobase.progress import NullProgress
 
 from .queue import JobQueue
 from .watch import Watcher, discover
-from .worker import process_one
+from .worker import ServicesUnavailable, process_one
 
 jobs_app = typer.Typer(no_args_is_help=True, help="Persistent local ingest queue.")
 worker_app = typer.Typer(no_args_is_help=True, help="Run a single local ingest worker.")
@@ -157,8 +158,12 @@ def run_worker(
     once: Annotated[bool, typer.Option(help="Drain ready jobs, then exit; no watching.")] = False,
     interval: Annotated[float, typer.Option(min=0.1)] = 2.0,
     settle: Annotated[float, typer.Option(min=0)] = 2.0,
-    max_attempts: Annotated[int, typer.Option(min=1)] = 3,
-    retry_delay: Annotated[float, typer.Option(min=0.1)] = 10.0,
+    max_attempts: Annotated[
+        int | None, typer.Option(min=1, help="Default: jobs.max_attempts.")
+    ] = None,
+    retry_delay: Annotated[
+        float | None, typer.Option(min=0.1, help="Default: jobs.retry_delay_s.")
+    ] = None,
 ) -> None:
     from mnogobase import cli
 
@@ -185,8 +190,10 @@ def run_worker(
     try:
         if threading.current_thread() is threading.main_thread():
             previous_term = signal.signal(signal.SIGTERM, signal.default_int_handler)
+        max_attempts = max_attempts or settings.jobs.max_attempts
+        retry_delay = retry_delay or settings.jobs.retry_delay_s
         q = JobQueue(database_target(settings, "jobs"))
-        resumed = q.recover()
+        resumed = q.recover(max_attempts)
         cli.console.print(f"Worker started; recovered {resumed}; queue {q.counts()}")
         if watch:
             thread = threading.Thread(
@@ -215,7 +222,9 @@ def run_worker(
                 q.defer(replacement, max(settle, interval))
                 q.supersede(job.id)
                 return
-            cli._preflight(settings, cli.INGEST_CHECKS)
+            failed = [c for c in cli.run_checks(settings, only=cli.INGEST_CHECKS) if not c.ok]
+            if failed:
+                raise ServicesUnavailable(", ".join(c.name for c in failed))
             if application is None:
                 application = cli.build_app(settings)
             cli.console.print(f"Processing job {job.id}: {escape(job.path)}")
@@ -233,12 +242,27 @@ def run_worker(
             if report.failed or (report.wiki and report.wiki.failed):
                 raise RuntimeError("Ingest or wiki failed; see project status/logs")
 
+        def reconnect(exc):
+            # Соединения App могли оборваться (рестарт PostgreSQL): следующая задача
+            # создаст App заново.
+            nonlocal application
+            cli.console.print(f"Services unavailable ({type(exc).__name__}); job deferred.")
+            if application is not None and isinstance(exc, DatabaseError | DBAPIError):
+                application.close()
+                application = None
+
         async def dispatch():
             while True:
                 if health:
                     raise RuntimeError(f"Watcher stopped: {health[0]}; restart the worker")
                 processed = await process_one(
-                    q, handle, settings.data_dir, max_attempts=max_attempts, delay=retry_delay
+                    q,
+                    handle,
+                    settings.data_dir,
+                    max_attempts=max_attempts,
+                    delay=retry_delay,
+                    timeout=settings.jobs.timeout_s,
+                    on_transient=reconnect,
                 )
                 if processed:
                     cli.console.print(f"Queue: {q.counts()}")

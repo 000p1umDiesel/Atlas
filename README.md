@@ -11,7 +11,6 @@
 | Настроить модели и параметры | [Текущая конфигурация](#26-что-задано-в-configyaml) → [все настройки](#6-справочник-настроек) |
 | Обрабатывать новые файлы автоматически | [Очередь и worker](#15-фоновая-обработка-и-воспроизводимые-эксперименты) |
 | Измерить качество и затраты | [Оценка Ragas](#14-оценка-hybrid-rag-wikillm-и-graphrag) → [измерение build/update](#152-измерение-build-и-update) |
-| Изучить Hybrid RAG по шагам | [Учебные ноутбуки](#16-учебные-ноутбуки) |
 | Работать с командами, API и чатами | [Командный backend и CLI-клиент](#17-командный-backend-api-и-чат) |
 | Изменить реализацию | [Архитектура](#5-как-это-устроено-внутри) → [карта модулей](#81-карта-модулей) |
 
@@ -32,7 +31,6 @@
 13. [Что дальше](#13-что-дальше)
 14. [Оценка Hybrid RAG, WikiLLM и GraphRAG](#14-оценка-hybrid-rag-wikillm-и-graphrag)
 15. [Фоновая обработка и воспроизводимые эксперименты](#15-фоновая-обработка-и-воспроизводимые-эксперименты)
-16. [Учебные ноутбуки](#16-учебные-ноутбуки)
 17. [Командный backend, API и чат](#17-командный-backend-api-и-чат)
 
 ---
@@ -1806,7 +1804,6 @@ uv run mnogobase reset            # покажет, что удалит, и сп
 
 ```bash
 uv run pytest                    # модульные (~10 с, без сервисов)
-uv run pytest hybrid_rag_notebooks/tests  # отдельные офлайн-проверки учебных ноутбуков
 uv run pytest -m integration     # интеграционные: сами поднимают PostgreSQL, Neo4j и Qdrant в Docker (testcontainers)
 uv run pytest -m e2e -s          # сквозной: Docker + модели (uv run mnogobase models up) + LLM (LLM_API_KEY в .env); тратит запросы к LLM
 uv run ruff check . && uv run ruff format --check .
@@ -1977,7 +1974,6 @@ mnogobase/
 ├── docker-compose.models.yml  # серверы моделей для `mnogobase models up` (llama.cpp, vLLM)
 ├── docs/neo4j/mnogobase.grass     # стиль Neo4j Browser
 ├── eval/questions.jsonl           # 40 вопросов по Attention Is All You Need
-├── hybrid_rag_notebooks/          # самостоятельный учебный маршрут, 3 ноутбука
 ├── src/mnogobase/
 │   ├── cli.py  app.py  pipeline.py  registry.py  config.py
 │   ├── models.py  ids.py  log.py  device.py  doctor.py  maintenance.py  serving.py
@@ -2025,7 +2021,7 @@ mnogobase/
 
 ## 14. Оценка Hybrid RAG, WikiLLM и GraphRAG
 
-Оценка работает через пакет и CLI, независимо от ноутбуков. По умолчанию сравниваются **существующие реализации проекта**: `rag` (Hybrid RAG), `wiki` (WikiLLM), `graph` (GraphRAG). Режим `graph` использует текущий поиск по графу проекта; эта оценка не добавляет алгоритмы Microsoft GraphRAG. Объединённый `all` можно включить явно.
+Оценка работает через пакет и CLI. По умолчанию сравниваются **существующие реализации проекта**: `rag` (Hybrid RAG), `wiki` (WikiLLM), `graph` (GraphRAG). Режим `graph` использует текущий поиск по графу проекта; эта оценка не добавляет алгоритмы Microsoft GraphRAG. Объединённый `all` можно включить явно.
 
 ```mermaid
 flowchart TD
@@ -2056,7 +2052,7 @@ flowchart TD
 
 Из корня репозитория установите обычные зависимости (`uv sync`). Ragas включён в основной набор; для совместимости с Instructor используются OpenAI SDK `>=3.3,<3.36` и Rich `>=14,<15`.
 
-В `eval/questions.jsonl` находится отдельная копия 40 вопросов с эталонами по статье *Attention Is All You Need*. Она не импортирует код и данные из ноутбуков. Файл статьи пользователь помещает в `documents/`; короткие Markdown-примеры из `tests/fixtures/` не заменяют полную статью.
+В `eval/questions.jsonl` находится отдельная копия 40 вопросов с эталонами по статье *Attention Is All You Need*. Файл статьи пользователь помещает в `documents/`; короткие Markdown-примеры из `tests/fixtures/` не заменяют полную статью.
 
 ```bash
 docker compose up -d
@@ -2238,18 +2234,6 @@ uv run mnogobase eval benchmark eval/questions.jsonl --output runs/eval/experime
 Используйте неизменные вопросы, модель ответов, язык, промпт и предел контекста, чтобы сравнение отражало изменения корпуса. Полный холодный опыт требует отдельного проекта и пустых хранилищ ([раздел 7.14](#714-отдельные-проекты)).
 
 Обычный `ingest` и worker сохраняют измерения в `.mnogobase/processing.jsonl`; `eval ingest` — в каталоге эксперимента. Сохраняются все попытки, включая ошибки и прерывания. Время этапов уже входит в общее время; складывать их повторно нельзя. Учёт токенов охватывает успешные вызовы основной LLM; VLM, embeddings, реранкер, судья и неуспешные сетевые вызовы не включены. Денежная стоимость и энергопотребление не измеряются. Несоответствие измерений снимку корпуса отражается в отчёте; измерения другого проекта отклоняются.
-
-## 16. Учебные ноутбуки
-
-В [hybrid_rag_notebooks/](hybrid_rag_notebooks/README.md) находится самостоятельный учебный маршрут Hybrid RAG по статье *Attention Is All You Need*. Он помогает посмотреть на промежуточные данные и понять алгоритм до изменения основного приложения.
-
-| Ноутбук | Что разбирает |
-|---|---|
-| [01 — индексация](hybrid_rag_notebooks/01_indexing.ipynb) | Docling + VLM → HybridChunker → dense + BM25 → Qdrant; текст, таблицы, описания рисунков, чанки, векторы |
-| [02 — поиск и ответ](hybrid_rag_notebooks/02_retrieval_and_answer.ipynb) | dense и BM25 по отдельности → RRF → реранкер → соседи → контекст → ответ со ссылками; сравнение dense / BM25 / hybrid / hybrid+reranker по страницам-источникам |
-| [03 — оценка](hybrid_rag_notebooks/03_evaluation.ipynb) | пять метрик Ragas на восьми вопросах, проверка метрики на искажённом ответе, разбор худшего ответа |
-
-У папки свои [зависимости и инструкция](hybrid_rag_notebooks/SETUP.md), `.env`, helpers и артефакты. Пакет `mnogobase`, Neo4j и wiki ей не нужны. Ноутбуки не заменяют CLI-конвейер и не строят граф/wiki основного проекта. Ячейки с генерацией и оценкой делают реальные вызовы моделей.
 
 ## 17. Командный backend, API и чат
 

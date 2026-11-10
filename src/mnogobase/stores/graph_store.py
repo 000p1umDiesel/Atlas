@@ -758,10 +758,6 @@ class GraphStore:
         rows = self._run(f"MATCH (p:WikiPage {{page_id: $id}}) RETURN {_PAGE_FIELDS}", id=page_id)
         return WikiPageRecord(**rows[0]["page"]) if rows else None
 
-    def page_by_slug(self, slug: str) -> WikiPageRecord | None:
-        rows = self._run(f"MATCH (p:WikiPage {{slug: $slug}}) RETURN {_PAGE_FIELDS}", slug=slug)
-        return WikiPageRecord(**rows[0]["page"]) if rows else None
-
     def wiki_pages(self) -> list[PageIndexRow]:
         rows = self._run(
             "MATCH (p:WikiPage)-[:ABOUT]->(e:Entity) "

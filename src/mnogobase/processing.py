@@ -150,14 +150,17 @@ async def measured_ingest(
     progress=NULL_PROGRESS,
     verify_sources=False,
     expected=None,
+    snapshot=True,
     **options,
 ):
+    """Ingest с замером. `snapshot=False` (worker) не снимает полный снимок корпуса до и
+    после: на очереди из N задач это давало бы O(N²) работы."""
     if phase is not None and phase not in ("build", "update"):
         raise ValueError("phase must be build or update")
     settings = settings or application.settings
     output = output or settings.data_dir / "processing.jsonl"
-    before = corpus_snapshot(settings)
-    phase = phase or ("build" if before["documents"] == 0 else "update")
+    before = corpus_snapshot(settings) if snapshot else None
+    phase = phase or ("build" if before is not None and before["documents"] == 0 else "update")
     measurement = Measurement(progress, getattr(application, "llm", None))
     row = {
         "id": uuid.uuid4().hex,
@@ -199,7 +202,7 @@ async def measured_ingest(
                 failed=len(report.failed),
                 wiki_failed=len(report.wiki.failed) if report.wiki else 0,
             )
-        row["after"] = corpus_snapshot(settings)
+        row["after"] = corpus_snapshot(settings) if snapshot else None
         append_jsonl(output, row)
 
 

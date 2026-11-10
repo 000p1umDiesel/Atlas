@@ -23,11 +23,6 @@ def _label(item: ContextItem) -> str:
     return f"graph {item.kind}"
 
 
-def build_context(items: list[ContextItem], max_tokens: int) -> tuple[str, list[Source], int]:
-    blocks, sources, used = _context_blocks(items, max_tokens)
-    return "\n\n".join(blocks), sources, used
-
-
 def _context_blocks(
     items: list[ContextItem], max_tokens: int
 ) -> tuple[list[str], list[Source], int]:

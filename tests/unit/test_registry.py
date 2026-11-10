@@ -50,13 +50,11 @@ def test_files_and_paths(reg):
 
 def test_clear_doc_removes_stage_and_chunk_rows(reg):
     reg.set_stage("d1", "parse", "done")
-    reg.set_chunk_extract("d1:00000", "failed", "x")
-    reg.set_chunk_extract("d2:00000", "done")
     reg.put_extraction("d1:00000", "v1", "m", "{}")
+    reg.put_extraction("d2:00000", "v1", "m", "{}")
     reg.clear_doc("d1")
     assert reg.pending_stages("d1") == list(STAGES)
-    assert reg.chunk_extract_counts("d1") == {}
-    assert reg.chunk_extract_counts("d2") == {"done": 1}
+    assert reg.get_extraction("d2:00000", "v1", "m") == "{}"
     assert reg.get_extraction("d1:00000", "v1", "m") is None
 
 

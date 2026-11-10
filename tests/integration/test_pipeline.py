@@ -918,7 +918,6 @@ async def test_remove_cleans_all_layers_and_relinks_wiki_without_deleting_source
     assert not (tmp_path / "wiki/entities/softmax.md").exists()
     assert not app.pipeline.chunks_path(doc_id).exists()
     assert not app.parser.cache_path(doc_id).exists()
-    assert app.registry.chunk_extract_counts(doc_id) == {}
     assert "Softmax" in report.wiki.deleted
     assert "Transformer" in report.wiki.updated
     assert "[[softmax|" not in transformer_page.read_text()

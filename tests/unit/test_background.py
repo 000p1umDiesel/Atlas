@@ -163,6 +163,58 @@ async def test_worker_resumes_after_interruption_and_respects_writer_lock(tmp_pa
     q.close()
 
 
+def test_recover_fails_jobs_that_keep_crashing_the_worker(tmp_path):
+    q = queue(tmp_path / "q.db")
+    q.enqueue(Path("crash.pdf"), "v1")
+    q.enqueue(Path("fine.pdf"), "v1")
+    for _ in range(2):
+        assert q.claim(2).path.endswith("crash.pdf")
+        q.recover(2)  # процесс упал посреди задачи
+    jobs = {Path(j.path).name: j for j in q.jobs()}
+    assert jobs["crash.pdf"].status == "failed"
+    assert jobs["crash.pdf"].error == "InterruptedTooOften"
+    assert q.claim(2).path.endswith("fine.pdf")
+    q.close()
+
+
+def test_release_does_not_spend_an_attempt(tmp_path):
+    now = [100.0]
+    q = queue(tmp_path / "q.db", lambda: now[0])
+    q.enqueue(Path("a.md"), "v1")
+    job = q.claim()
+    q.release(job.id, 30)
+    assert q.claim() is None
+    now[0] += 31
+    assert q.claim().attempts == 1
+    q.close()
+
+
+async def test_worker_defers_on_unavailable_services_and_times_out(tmp_path):
+    from mnogobase.background.worker import ServicesUnavailable, process_one
+
+    now = [100.0]
+    q = queue(tmp_path / "jobs.db", lambda: now[0])
+    q.enqueue(Path("a.md"), "v1")
+    seen = []
+
+    async def offline(job):
+        raise ServicesUnavailable("models")
+
+    assert await process_one(q, offline, tmp_path, delay=5, on_transient=seen.append)
+    job = q.jobs()[0]
+    assert (job.status, job.attempts) == ("pending", 0)
+    assert isinstance(seen[0], ServicesUnavailable)
+
+    async def hangs(job):
+        await asyncio.sleep(10)
+
+    now[0] += 10
+    assert await process_one(q, hangs, tmp_path, max_attempts=1, timeout=0.05)
+    job = q.jobs()[0]
+    assert (job.status, job.error) == ("failed", "JobTimeout")
+    q.close()
+
+
 async def test_worker_records_failures_and_continues_other_files(tmp_path):
     from mnogobase.background.worker import process_one
 

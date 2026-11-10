@@ -77,7 +77,6 @@ def test_same_ids_documents_chunks_entities_and_pages_are_local(scopes):
         assert store.get_entity("e1").mention_count == 1
         assert {e.entity_id for e in store.entities()} == {"e1", "e2"}
         assert store.wiki_page("e1").path == f"{title}/e1.md"
-        assert store.page_by_slug("e1").title == title
         assert {p.page_id for p in store.wiki_pages()} == {"e1", "e2"}
         assert store.pages_citing_document(DOC_ID) == ["e1", "e2"]
         assert store.pages_linking_to(["e2"]) == ["e1"]

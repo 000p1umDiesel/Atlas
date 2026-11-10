@@ -86,15 +86,6 @@ def test_cli_unknown_metric_rejected_without_judge(offline, tmp_path):
     assert "metrics" in result.output
 
 
-def test_dataset_copy_is_standalone():
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    assert (root / "eval/questions.jsonl").read_bytes() == (
-        root / "hybrid_rag_notebooks/data/questions.jsonl"
-    ).read_bytes()
-
-
 def test_eval_ingest_saves_processing_and_closes_app(offline, tmp_path, monkeypatch):
     closed = []
 

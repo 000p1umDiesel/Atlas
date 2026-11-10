@@ -99,7 +99,6 @@ async def test_extract_many_isolates_failures(tmp_path):
     ok, bad = chunk("Transformer text", 0), chunk("BROKEN", 1)
     results = await ex.extract_many([ok, bad], "Doc")
     assert list(results) == [ok.chunk_id]
-    assert reg.chunk_extract_counts(DOC) == {"done": 1, "failed": 1}
 
 
 async def test_extract_many_advances_once_per_chunk_with_cache_hits_and_failures(tmp_path):

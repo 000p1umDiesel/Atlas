@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, Self
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, PositiveInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 LLM_TASKS = ("extract", "resolve", "wiki", "answer", "query")
@@ -96,7 +96,13 @@ DEFAULT_EXTENSIONS = [
 Serve = Literal["llamacpp", "vllm", "api"]
 
 
-class ServerSettings(BaseModel):
+class Section(BaseModel):
+    """Секция конфига: неизвестный ключ (опечатка в YAML или env) — ошибка, а не тихий игнор."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ServerSettings(Section):
     """Как `mnogobase models up` запускает модель роли (при `serve: llamacpp | vllm`)."""
 
     ctx: int = Field(default=8192, ge=512)  # окно контекста: --ctx-size / --max-model-len
@@ -104,7 +110,7 @@ class ServerSettings(BaseModel):
     args: list[str] = Field(default_factory=list)  # дополнительные флаги сервера
 
 
-class ServedModel(BaseModel):
+class ServedModel(Section):
     """Модель на OpenAI-совместимом сервере.
 
     `serve` — где она работает: `llamacpp` или `vllm` поднимает `mnogobase models up` на порту
@@ -152,16 +158,19 @@ class LLMSettings(ServedModel):
     role: ClassVar[str] = "llm"
     port: ClassVar[int] = 8000
 
-    model: str = "gpt-6-luna"
+    # По умолчанию — локальный OpenAI-совместимый сервер на порту роли. Внешний API
+    # (куда уходят тексты документов) задаётся только явно в config.yaml.
+    model: str = "local"
     serve: Serve = "api"
-    base_url: str | None = "https://codex.sale/v1"
+    base_url: str | None = "http://localhost:8000/v1"
     api_key_env: str | None = "LLM_API_KEY"
     server: ServerSettings = Field(
         default_factory=lambda: ServerSettings(ctx=32768, gpu_memory=0.6)
     )
-    concurrency: int = 4
-    temperature: float = 0.0
-    timeout_s: float = 120.0
+    concurrency: int = Field(default=4, ge=1)
+    temperature: float = Field(default=0.0, ge=0, le=2)
+    timeout_s: float = Field(default=120.0, gt=0)
+    retry_deadline_s: float = Field(default=900.0, gt=0)  # общий предел повторов одного вызова
     overrides: dict[str, str | None] = Field(default_factory=lambda: dict.fromkeys(LLM_TASKS))
 
     def model_for(self, task: str) -> str:
@@ -182,11 +191,26 @@ class EmbedderSettings(ServedModel):
     # `auto` — полная размерность модели (узнаётся пробным запросом); число меньше неё —
     # Matryoshka-усечение
     dim: PositiveInt | Literal["auto"] = "auto"
-    batch_size: int = 32
+    batch_size: int = Field(default=32, ge=1)
     doc_template: str = "{text}"
     query_template: str = (
         "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
     )
+
+    @model_validator(mode="after")
+    def _check_templates(self) -> Self:
+        # Ошибка в шаблоне иначе всплывает только посреди ingest или ask.
+        try:
+            self.doc_template.format(title="t", text="x")
+            self.query_template.format(query="q")
+        except (KeyError, IndexError, ValueError) as exc:
+            raise ValueError(
+                "embedder templates may only use {text}/{title} (doc) and {query} (query); "
+                "write literal braces as {{ }}"
+            ) from exc
+        if "{text}" not in self.doc_template or "{query}" not in self.query_template:
+            raise ValueError("embedder.doc_template needs {text}, query_template needs {query}")
+        return self
 
     @property
     def model_id(self) -> str:
@@ -195,24 +219,24 @@ class EmbedderSettings(ServedModel):
         return f"{self.serve}:{self.weights}"
 
 
-class SparseSettings(BaseModel):
+class SparseSettings(Section):
     model: str = "Qdrant/bm25"
 
 
-class ParsingSettings(BaseModel):
+class ParsingSettings(Section):
     ocr: bool = True
     # языки OCR (BCP-47 с префиксом iso:); без них Docling берёт китайскую модель RapidOCR
     ocr_lang: list[str] = Field(default_factory=lambda: ["iso:ru", "iso:en"])
     extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_EXTENSIONS))
 
 
-class ChunkingSettings(BaseModel):
+class ChunkingSettings(Section):
     # `auto` — токенизатор модели эмбеддера с её сервера; иначе это HF-репозиторий
     tokenizer: str = "auto"
-    max_tokens: int = 512
+    max_tokens: int = Field(default=512, ge=16)
 
 
-class ExtractSettings(BaseModel):
+class ExtractSettings(Section):
     # имя -> описание (YAML mapping, порядок сохраняется); подойдёт и простой список имён
     entity_types: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ENTITY_TYPES))
     max_failed_ratio: float = 0.2
@@ -256,7 +280,7 @@ def _list_entry(item: object) -> tuple[str, object]:
     return str(item), ""
 
 
-class ResolveSettings(BaseModel):
+class ResolveSettings(Section):
     # 1.0: по одному косинусу не сливать, всё через LLM. Замер на размеченных парах: при 0.92
     # вектор склеивал "X. Zhang" с "H. Zhang" и "Gaia DR3" с "DR2", а верные пары давали 0.75-0.97
     auto_merge: float = 1.0
@@ -264,7 +288,7 @@ class ResolveSettings(BaseModel):
     max_descriptions: int = 5
 
 
-class WikiSettings(BaseModel):
+class WikiSettings(Section):
     dir: Path = Path("wiki")
     language: str = "en"
     min_mentions: int = 2
@@ -272,15 +296,27 @@ class WikiSettings(BaseModel):
     obsidian: bool = True  # писать .obsidian/graph.json: фильтр и цвета по типам
 
 
-class RetrievalSettings(BaseModel):
-    k: int = 8
-    context_tokens: int = 6000
+class RetrievalSettings(Section):
+    k: int = Field(default=8, ge=1)
+    context_tokens: int = Field(default=6000, ge=1)
     neighbors: int = Field(default=0, ge=0)  # rag: доп. чанки той же секции с каждой стороны хита
     translate: bool = True  # искать ещё и по английскому переводу неанглийского вопроса
     answer_language: str = "auto"  # код языка (en, ru, ...) или auto: язык вопроса
     budget: dict[str, float] = Field(
         default_factory=lambda: {"rag": 0.4, "wiki": 0.3, "graph": 0.3}
     )
+
+    @field_validator("budget")
+    @classmethod
+    def _check_budget(cls, value: dict[str, float]) -> dict[str, float]:
+        unknown = sorted(set(value) - {"rag", "wiki", "graph"})
+        if unknown:
+            raise ValueError(f"retrieval.budget: unknown mode {', '.join(unknown)}")
+        if any(share < 0 for share in value.values()):
+            raise ValueError("retrieval.budget: shares must be >= 0")
+        if sum(value.values()) > 1 + 1e-9:
+            raise ValueError("retrieval.budget: shares must sum to at most 1")
+        return value
 
 
 class RerankSettings(ServedModel):
@@ -324,7 +360,7 @@ class VisionSettings(ServedModel):
         default_factory=lambda: ["logo", "icon", "qr_code", "bar_code", "signature", "stamp"]
     )
     concurrency: int = Field(default=4, ge=1)
-    timeout_s: float = 120.0
+    timeout_s: float = Field(default=120.0, gt=0)
 
     @field_validator("skip")
     @classmethod
@@ -341,7 +377,7 @@ class VisionSettings(ServedModel):
         return value
 
 
-class GraphAnalysisSettings(BaseModel):
+class GraphAnalysisSettings(Section):
     max_nodes: PositiveInt = 100_000
     max_relationships: PositiveInt = 500_000
     memory_mb: PositiveInt = 1536
@@ -350,7 +386,7 @@ class GraphAnalysisSettings(BaseModel):
     apoc_timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
 
 
-class GraphCommunitySettings(BaseModel):
+class GraphCommunitySettings(Section):
     enabled: bool = False
     max_communities: int = Field(default=3, gt=0, le=20)
     max_entities: int = Field(default=30, gt=0, le=500)
@@ -358,7 +394,7 @@ class GraphCommunitySettings(BaseModel):
     timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
 
 
-class GraphSettings(BaseModel):
+class GraphSettings(Section):
     hops: int = 2
     max_relations: int = 30
     seeds: int = 5
@@ -369,12 +405,12 @@ class GraphSettings(BaseModel):
     analysis: GraphAnalysisSettings = Field(default_factory=GraphAnalysisSettings)
 
 
-class QdrantSettings(BaseModel):
+class QdrantSettings(Section):
     url: str = "http://localhost:6333"
     prefix: str = "mb_"
 
 
-class Neo4jSettings(BaseModel):
+class Neo4jSettings(Section):
     uri: str = "bolt://localhost:7687"
     user: str = "neo4j"
     password_env: str = "NEO4J_PASSWORD"
@@ -390,6 +426,9 @@ class _YamlSource(YamlConfigSettingsSource):
 
     def __call__(self) -> dict[str, Any]:
         data = super().__call__()
+        unknown = sorted(set(data) - set(self.settings_cls.model_fields))
+        if unknown:
+            raise ValueError(f"config.yaml: unknown key {', '.join(unknown)}")
         higher = self.current_state.get("extract")
         own = data.get("extract")
         if isinstance(higher, dict) and "entity_types" in higher and isinstance(own, dict):
@@ -400,7 +439,7 @@ class _YamlSource(YamlConfigSettingsSource):
         return data
 
 
-class EvaluationSettings(BaseModel):
+class EvaluationSettings(Section):
     base_url: str | None = None
     model: str | None = None
     api_key_env: str | None = None
@@ -412,7 +451,7 @@ class EvaluationSettings(BaseModel):
     strictness: PositiveInt = 3
 
 
-class DatabaseSettings(BaseModel):
+class DatabaseSettings(Section):
     backend: Literal["postgresql"] = "postgresql"
     url_env: str = "DATABASE_URL"
     schema_prefix: str = Field(default="mnogobase", pattern=r"^[a-z][a-z0-9_]{0,15}$")
@@ -420,17 +459,25 @@ class DatabaseSettings(BaseModel):
     connect_timeout: int = Field(default=5, ge=1, le=60)
 
 
-class ServingSettings(BaseModel):
+class JobsSettings(Section):
+    """Фоновая очередь (`worker run`)."""
+
+    max_attempts: int = Field(default=5, ge=1)
+    retry_delay_s: float = Field(default=30.0, gt=0)  # удваивается с каждой попыткой, до 1 ч
+    timeout_s: float = Field(default=3600.0, gt=0)  # зависший разбор не держит worker вечно
+
+
+class ServingSettings(Section):
     compose_override: Path | None = None
 
 
-class LLMRate(BaseModel):
+class LLMRate(Section):
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     input_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
     output_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
 
 
-class MonitorSettings(BaseModel):
+class MonitorSettings(Section):
     heartbeat_s: float = Field(default=30, gt=0, allow_inf_nan=False)
     worker_stale_s: float = Field(default=120, gt=0, allow_inf_nan=False)
     pending_s: float = Field(default=900, gt=0, allow_inf_nan=False)
@@ -443,7 +490,7 @@ class MonitorSettings(BaseModel):
         return self
 
 
-class ServiceSettings(BaseModel):
+class ServiceSettings(Section):
     llm_rates: dict[str, LLMRate] = Field(default_factory=dict)
     monitor: MonitorSettings = Field(default_factory=MonitorSettings)
     root: Path = Path("data")
@@ -467,6 +514,7 @@ class Settings(BaseSettings):
     service: ServiceSettings = Field(default_factory=ServiceSettings)
     serving: ServingSettings = Field(default_factory=ServingSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    jobs: JobsSettings = Field(default_factory=JobsSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embedder: EmbedderSettings = Field(default_factory=EmbedderSettings)
     sparse: SparseSettings = Field(default_factory=SparseSettings)
