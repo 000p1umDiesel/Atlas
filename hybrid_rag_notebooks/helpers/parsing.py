@@ -1,52 +1,43 @@
-"""Разбор документов через Docling и адаптеры токенизатора для RAG."""
+"""Токенизатор для HybridChunker и описания рисунков через VLM."""
 
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 from pathlib import Path
 
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 from pydantic import ConfigDict, PrivateAttr
 
-EXTENSIONS = {
-    ".pdf",
-    ".docx",
-    ".pptx",
-    ".xlsx",
-    ".html",
-    ".htm",
-    ".md",
-    ".adoc",
-    ".csv",
-    ".txt",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".tif",
-    ".tiff",
-    ".bmp",
-    ".webp",
-}
-IMAGES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff"}
+
+# Не пишите здесь, зачем нужно описание («for retrieval» и т. п.): модель переносит
+# эти слова в описание. Так Transformer у нас однажды стал «model for document retrieval».
+DESCRIBE_PROMPT = (
+    "Describe this figure from a scientific paper. List the components, labels, numbers "
+    "and arrows you can see and how they are connected. Do not guess anything that is not visible."
+)
+DESCRIPTION_PREFIX = "Image description: "
 
 
 class ServerTokenizer(BaseTokenizer):
+    """Считает токены через /tokenize у llama-server с моделью embeddings.
+
+    Так лимит чанка измеряется тем же токенизатором, что и у модели, которая
+    потом будет эти чанки кодировать. Отдельный HF-токенизатор для GGUF не нужен.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     api: object
     max_tokens: int = 512
-    _cache: dict[str, int] = PrivateAttr(default_factory=dict)
+    _cache: dict = PrivateAttr(default_factory=dict)
 
     def count_tokens(self, text: str) -> int:
         if text not in self._cache:
-            if len(self._cache) >= 50000:
-                self._cache.clear()
             root = str(self.api.http.base_url).rstrip("/").removesuffix("/v1")
+            body = {"content": text, "add_special": False}
             self._cache[text] = len(
-                self.api.request(
-                    "POST", root + "/tokenize", json={"content": text, "add_special": False}
-                )["tokens"]
+                self.api.request("POST", root + "/tokenize", json=body)["tokens"]
             )
         return self._cache[text]
 
@@ -57,193 +48,64 @@ class ServerTokenizer(BaseTokenizer):
         return self.count_tokens
 
 
-def make_tokenizer(api, max_tokens: int = 512, hf_repo: str = ""):
-    if hf_repo:
-        from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
-        from transformers import AutoTokenizer
-
-        return HuggingFaceTokenizer(
-            tokenizer=AutoTokenizer.from_pretrained(hf_repo), max_tokens=max_tokens
-        )
-    tokenizer = ServerTokenizer(api=api, max_tokens=max_tokens)
-    tokenizer.count_tokens("tokenizer probe")
+def make_tokenizer(embedder, max_tokens: int = 512) -> ServerTokenizer:
+    tokenizer = ServerTokenizer(api=embedder, max_tokens=max_tokens)
+    tokenizer.count_tokens("probe")  # сразу проверяем, что /tokenize отвечает
     return tokenizer
-
-
-def discover_documents(root: Path) -> list[Path]:
-    paths = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in EXTENSIONS)
-    if not paths:
-        raise ValueError(f"{root}: no supported documents; expected {sorted(EXTENSIONS)}")
-    return paths
 
 
 def describe_image(image, vision) -> str:
     buffer = io.BytesIO()
     image.convert("RGB").save(buffer, format="PNG")
     url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-    response = vision.chat(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": url}},
-                    {
-                        "type": "text",
-                        "text": "Describe the image in detail for document retrieval. "
-                        "Preserve visible facts, labels, numbers and relationships. Do not invent facts.",
-                    },
-                ],
-            }
-        ],
-        max_tokens=400,
-    )
-    text = response["choices"][0]["message"]["content"] or ""
-    if not text.strip():
-        raise ValueError("VLM returned an empty picture description")
-    return text.strip()
+    content = [
+        {"type": "image_url", "image_url": {"url": url}},
+        {"type": "text", "text": DESCRIBE_PROMPT},
+    ]
+    response = vision.chat([{"role": "user", "content": content}], max_tokens=400)
+    text = (response["choices"][0]["message"]["content"] or "").strip()
+    if not text:
+        raise ValueError("VLM вернула пустое описание")
+    return text
 
 
-def add_image_descriptions(doc, path: Path, vision, *, min_area: float, skip):
-    """Добавляем описания до сохранения Docling JSON и чанкирования."""
+def add_image_descriptions(doc, path: Path, vision, *, min_area: float = 0.05):
+    """Вставляет текстовое описание сразу после каждого рисунка в DoclingDocument.
+
+    Описание получает ту же страницу и тот же раздел, что и рисунок, поэтому
+    HybridChunker положит его в чанк рядом с подписью к рисунку.
+    """
     from docling_core.types.doc import DocItemLabel
 
     if vision is None:
         return doc
-    if path.suffix.lower() in IMAGES:
+    if path.suffix.lower() in IMAGE_EXTENSIONS:
         from PIL import Image
 
         with Image.open(path) as image:
-            text = describe_image(image, vision)
-        doc.add_text(label=DocItemLabel.TEXT, text="Image description: " + text)
-    else:
-        for picture in list(doc.pictures):
-            predictions = getattr(getattr(picture.meta, "classification", None), "predictions", [])
-            if any(str(p.class_name) in skip and (p.confidence or 0) >= 0.5 for p in predictions):
-                continue
-            if picture.prov:
-                prov = picture.prov[0]
-                page = doc.pages.get(prov.page_no)
-                if page and prov.bbox.area() / (page.size.width * page.size.height) < min_area:
-                    continue
-            image = picture.get_image(doc)
-            if image is None:
-                raise ValueError(f"{path}: no pixels available for picture {picture.self_ref}")
-            text = describe_image(image, vision)
-            parent = picture.parent.resolve(doc) if picture.parent else doc.body
             doc.add_text(
-                label=DocItemLabel.TEXT,
-                text="Image description: " + text,
-                prov=picture.prov[0] if picture.prov else None,
-                parent=parent,
+                label=DocItemLabel.TEXT, text=DESCRIPTION_PREFIX + describe_image(image, vision)
             )
-            # Сохраняем раздел и страницу рисунка: описание идёт сразу после него.
-            description_ref = parent.children.pop()
-            picture_index = next(
-                index for index, ref in enumerate(parent.children) if ref.cref == picture.self_ref
-            )
-            parent.children.insert(picture_index + 1, description_ref)
+        return doc
+
+    for picture in list(doc.pictures):
+        if picture.prov:
+            prov = picture.prov[0]
+            page = doc.pages.get(prov.page_no)
+            if page and prov.bbox.area() / (page.size.width * page.size.height) < min_area:
+                continue
+        image = picture.get_image(doc)
+        if image is None:
+            raise ValueError(f"{path.name}: у рисунка {picture.self_ref} нет пикселей")
+        parent = picture.parent.resolve(doc) if picture.parent else doc.body
+        doc.add_text(
+            label=DocItemLabel.TEXT,
+            text=DESCRIPTION_PREFIX + describe_image(image, vision),
+            prov=picture.prov[0] if picture.prov else None,
+            parent=parent,
+        )
+        # add_text добавляет элемент в конец раздела; переносим его сразу за рисунок.
+        description = parent.children.pop()
+        position = next(i for i, ref in enumerate(parent.children) if ref.cref == picture.self_ref)
+        parent.children.insert(position + 1, description)
     return doc
-
-
-class DocumentParser:
-    def __init__(
-        self,
-        *,
-        ocr=True,
-        device="cpu",
-        vision=None,
-        min_area=0.05,
-        skip=("logo", "icon", "qr_code", "bar_code", "signature", "stamp"),
-    ):
-        from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import (
-            ConvertPipelineOptions,
-            OcrAutoOptions,
-            PdfPipelineOptions,
-        )
-        from docling.document_converter import (
-            DocumentConverter,
-            ImageFormatOption,
-            PdfFormatOption,
-            PowerpointFormatOption,
-            WordFormatOption,
-        )
-
-        self.vision, self.min_area, self.skip = vision, min_area, set(skip)
-        options = PdfPipelineOptions(
-            do_ocr=ocr,
-            ocr_options=OcrAutoOptions(lang=["iso:ru", "iso:en"]),
-            generate_picture_images=True,
-            images_scale=2,
-            accelerator_options=AcceleratorOptions(device=AcceleratorDevice(device)),
-        )
-        options.do_picture_classification = vision is not None and bool(skip)
-        formats = {
-            InputFormat.PDF: PdfFormatOption(pipeline_options=options),
-            InputFormat.IMAGE: ImageFormatOption(pipeline_options=options),
-        }
-        if vision is not None:
-            office = ConvertPipelineOptions()
-            office.do_picture_classification = bool(skip)
-            formats.update(
-                {
-                    InputFormat.DOCX: WordFormatOption(pipeline_options=office),
-                    InputFormat.PPTX: PowerpointFormatOption(pipeline_options=office),
-                }
-            )
-        self.converter = DocumentConverter(format_options=formats)
-
-    def parse(self, path: Path):
-        from docling_core.types.doc import DocItemLabel, DoclingDocument
-
-        if path.suffix.lower() == ".txt":
-            # У Docling нет встроенного обработчика TXT: сохраняем текст по абзацам.
-            doc = DoclingDocument(name=path.stem)
-            for paragraph in path.read_text(encoding="utf-8-sig").split("\n\n"):
-                if paragraph.strip():
-                    doc.add_text(label=DocItemLabel.TEXT, text=paragraph.strip())
-            return doc
-        result = self.converter.convert(path, raises_on_error=True)
-        if str(result.status.value) not in ("success",):
-            raise ValueError(f"{path}: Docling status {result.status}; {result.errors}")
-        return add_image_descriptions(
-            result.document, path, self.vision, min_area=self.min_area, skip=self.skip
-        )
-
-
-def chunk_document(doc, *, path: str, doc_id: str, tokenizer) -> list[dict]:
-    from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
-
-    chunker = HybridChunker(tokenizer=tokenizer, merge_peers=True)
-    chunks = []
-    for raw in chunker.chunk(doc):
-        if not raw.text.strip():
-            continue
-        pages = sorted({p.page_no for item in raw.meta.doc_items for p in item.prov})
-        idx = len(chunks)
-        chunks.append(
-            {
-                "chunk_id": f"{doc_id}:{idx:05d}",
-                "doc_id": doc_id,
-                "idx": idx,
-                "text": raw.text.strip(),
-                "headings": list(raw.meta.headings or []),
-                "page": pages[0] if pages else None,
-                "path": path,
-                "n_tokens": tokenizer.count_tokens(chunker.contextualize(raw)),
-            }
-        )
-    if not chunks:
-        raise ValueError(f"{path}: parsing produced no text chunks")
-    return chunks
-
-
-def document_inventory(paths: list[Path], root: Path) -> list[dict]:
-    return [
-        {
-            "path": p.relative_to(root).as_posix(),
-            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
-        }
-        for p in paths
-    ]

@@ -1,4 +1,4 @@
-# Python 3.12. Установите в отдельное окружение; пакет mnogobase не требуется.
+# Python 3.12. Ставить в отдельное окружение: pip install -r requirements.txt
 docling==2.142.0
 docling-core==2.104.0
 qdrant-client==1.19.1

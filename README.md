@@ -2245,12 +2245,11 @@ uv run mnogobase eval benchmark eval/questions.jsonl --output runs/eval/experime
 
 | Ноутбук | Что разбирает |
 |---|---|
-| [01 — Документы и индекс](hybrid_rag_notebooks/01_hybrid_rag.ipynb) | Docling → структурные чанки → dense + BM25 → Qdrant; просмотр текста, таблиц, векторов и payload |
-| [02 — Поиск и inference](hybrid_rag_notebooks/02_hybrid_rag_inference.ipynb) | RRF → реранкер → соседи → контекст → генерация ответа с источниками |
-| [03 — Ragas](hybrid_rag_notebooks/03_hybrid_rag_ragas.ipynb) | одиночная метрика, пять метрик на наборе, ошибки, пропуски и сравнение запусков |
+| [01 — индексация](hybrid_rag_notebooks/01_indexing.ipynb) | Docling + VLM → HybridChunker → dense + BM25 → Qdrant; текст, таблицы, описания рисунков, чанки, векторы |
+| [02 — поиск и ответ](hybrid_rag_notebooks/02_retrieval_and_answer.ipynb) | dense и BM25 по отдельности → RRF → реранкер → соседи → контекст → ответ со ссылками; сравнение dense / BM25 / hybrid / hybrid+reranker по страницам-источникам |
+| [03 — оценка](hybrid_rag_notebooks/03_evaluation.ipynb) | пять метрик Ragas на восьми вопросах, проверка метрики на искажённом ответе, разбор худшего ответа |
 
-У папки свои [зависимости и инструкция](hybrid_rag_notebooks/SETUP.md), `.env`, helpers и артефакты. Пакет `mnogobase`, Neo4j и wiki ей не требуются; для запуска нужны сервисы, перечисленные в SETUP. Ноутбуки не заменяют CLI-конвейер и не строят граф/wiki основного проекта. Выполнение ячеек с генерацией и оценкой делает реальные модельные вызовы.
-
+У папки свои [зависимости и инструкция](hybrid_rag_notebooks/SETUP.md), `.env`, helpers и артефакты. Пакет `mnogobase`, Neo4j и wiki ей не нужны. Ноутбуки не заменяют CLI-конвейер и не строят граф/wiki основного проекта. Ячейки с генерацией и оценкой делают реальные вызовы моделей.
 
 ## 17. Командный backend, API и чат
 
