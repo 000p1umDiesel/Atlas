@@ -1,7 +1,0 @@
-#!/bin/sh
-# Certbot deploy hook: install root-owned executable in renewal-hooks/deploy/.
-set -eu
-if /bin/systemctl is-active --quiet nginx.service; then
-    /usr/sbin/nginx -t -q
-    /bin/systemctl reload nginx.service
-fi

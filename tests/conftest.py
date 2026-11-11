@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from mnogobase.stores.graph_store import GraphStore
 
 QDRANT_IMAGE = "qdrant/qdrant:v1.19.2"
+POSTGRES_IMAGE = "postgres:18.6"
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +68,7 @@ def qdrant_client(qdrant_container: QdrantContainer) -> Iterator[QdrantClient]:
         client.close()
 
 
-NEO4J_IMAGE = "neo4j:5.26-community"
+NEO4J_IMAGE = "neo4j:5.26.32-community"  # те же версии, что в compose.yaml
 
 
 @pytest.fixture(scope="session")
@@ -122,5 +123,5 @@ def postgresql_url():
         return
     from testcontainers.community.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:18", driver="psycopg") as container:
+    with PostgresContainer(POSTGRES_IMAGE, driver="psycopg") as container:
         yield container.get_connection_url()

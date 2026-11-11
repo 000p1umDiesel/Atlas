@@ -93,7 +93,7 @@ DEFAULT_EXTENSIONS = [
 ]
 
 
-Serve = Literal["llamacpp", "vllm", "api"]
+Serve = Literal["llamacpp", "api"]
 
 
 class Section(BaseModel):
@@ -103,22 +103,22 @@ class Section(BaseModel):
 
 
 class ServerSettings(Section):
-    """Как `mnogobase models up` запускает модель роли (при `serve: llamacpp | vllm`)."""
+    """Как `mnogobase models up` запускает llama-server роли (при `serve: llamacpp`)."""
 
-    ctx: int = Field(default=8192, ge=512)  # окно контекста: --ctx-size / --max-model-len
-    gpu_memory: float = Field(default=0.15, gt=0, lt=1)  # vLLM: доля ВСЕЙ видеопамяти
+    ctx: int = Field(default=8192, ge=512)  # окно контекста: --ctx-size
     args: list[str] = Field(default_factory=list)  # дополнительные флаги сервера
 
 
 class ServedModel(Section):
     """Модель на OpenAI-совместимом сервере.
 
-    `serve` — где она работает: `llamacpp` или `vllm` поднимает `mnogobase models up` на порту
-    роли (`port`), `api` — уже работающий сервер или API по `base_url`. `model` — что
-    запускается и как модель называется на сервере: у llama.cpp — GGUF-репозиторий с квантом
-    (`repo:квант`, токенизатор берётся из самого GGUF), у vLLM — HF-репозиторий исходной
-    модели, у `api` — имя модели на сервере. `gguf` (только llama.cpp, необязательно) — веса
-    отдельно от имени: тогда запускается он, а `model` остаётся именем (`--alias`)."""
+    `serve` — где она работает: `llamacpp` — llama-server на порту роли (`port`; локально его
+    поднимает `mnogobase models up`, в compose — сервис модели), `api` — уже работающий
+    сервер или API по `base_url`. `model` — что запускается и как модель называется на
+    сервере: у llama.cpp — GGUF-репозиторий с квантом (`repo:квант`, токенизатор берётся из
+    самого GGUF), у `api` — имя модели на сервере. `gguf` (только llama.cpp, необязательно) —
+    веса отдельно от имени: тогда запускается он, а `model` остаётся именем (`--alias`).
+    `timeout_s` — предел одного HTTP-запроса к серверу."""
 
     role: ClassVar[str]
     port: ClassVar[int]
@@ -129,16 +129,10 @@ class ServedModel(Section):
     base_url: str | None = None  # до /v1 включительно; по умолчанию localhost:<port> роли
     api_key_env: str | None = None  # переменная с Bearer-ключом сервера (--api-key)
     server: ServerSettings = Field(default_factory=ServerSettings)
+    timeout_s: float = Field(default=120.0, gt=0)
 
     @model_validator(mode="after")
     def _check_serve(self) -> Self:
-        if self.serve == "vllm" and self.gguf:
-            raise ValueError(f"{self.role}.gguf is only for serve: llamacpp; vLLM runs model")
-        if self.serve == "vllm" and ":" in self.model:
-            raise ValueError(
-                f"{self.role}.model {self.model!r} looks like a GGUF with quant: serve: vllm "
-                "needs the original Hugging Face repo (e.g. Qwen/Qwen3-Embedding-4B)"
-            )
         if self.serve == "api" and not self.base_url:
             raise ValueError(f"{self.role}.base_url is required for serve: api")
         return self
@@ -164,9 +158,7 @@ class LLMSettings(ServedModel):
     serve: Serve = "api"
     base_url: str | None = "http://localhost:8000/v1"
     api_key_env: str | None = "LLM_API_KEY"
-    server: ServerSettings = Field(
-        default_factory=lambda: ServerSettings(ctx=32768, gpu_memory=0.6)
-    )
+    server: ServerSettings = Field(default_factory=lambda: ServerSettings(ctx=32768))
     concurrency: int = Field(default=4, ge=1)
     temperature: float = Field(default=0.0, ge=0, le=2)
     timeout_s: float = Field(default=120.0, gt=0)
@@ -321,7 +313,7 @@ class RetrievalSettings(Section):
 
 class RerankSettings(ServedModel):
     """Cross-encoder reranking хитов rag: `/rerank` с Qwen3-Reranker (llama.cpp — GGUF с
-    классификатором yes/no, например от gorse-io; vLLM — исходная модель)."""
+    классификатором yes/no, например от gorse-io; старые конвертации грузятся, но врут)."""
 
     role: ClassVar[str] = "rerank"
     port: ClassVar[int] = 8002
@@ -455,7 +447,15 @@ class EvaluationSettings(Section):
 
 
 class DatabaseSettings(Section):
+    """PostgreSQL: адрес — здесь, пароль — в `.env` (`password_env`). Полный DSN в
+    переменной `url_env` (если задана) переопределяет оба."""
+
     backend: Literal["postgresql"] = "postgresql"
+    host: str = "localhost"
+    port: int = Field(default=5432, ge=1, le=65535)
+    name: str = "mnogobase"
+    user: str = "mnogobase"
+    password_env: str = "POSTGRES_PASSWORD"
     url_env: str = "DATABASE_URL"
     schema_prefix: str = Field(default="mnogobase", pattern=r"^[a-z][a-z0-9_]{0,15}$")
     project: str = Field(default="default", pattern=r"^[a-z][a-z0-9_]{0,36}$")
@@ -468,10 +468,6 @@ class JobsSettings(Section):
     max_attempts: int = Field(default=5, ge=1)
     retry_delay_s: float = Field(default=30.0, gt=0)  # удваивается с каждой попыткой, до 1 ч
     timeout_s: float = Field(default=3600.0, gt=0)  # зависший разбор не держит worker вечно
-
-
-class ServingSettings(Section):
-    compose_override: Path | None = None
 
 
 class LLMRate(Section):
@@ -504,7 +500,6 @@ class Settings(BaseSettings):
     logs_dir: Path = Path("logs")
     runs_dir: Path = Path("runs")
     service: ServiceSettings = Field(default_factory=ServiceSettings)
-    serving: ServingSettings = Field(default_factory=ServingSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     jobs: JobsSettings = Field(default_factory=JobsSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
@@ -541,27 +536,9 @@ class Settings(BaseSettings):
         )
 
 
-_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
-
-
-def _bypass_proxy_for_local_hosts() -> None:
-    """Не пускает запросы к локальным сервисам (llama.cpp, Qdrant) через системный прокси.
-
-    На Windows httpx при отсутствии env-переменных *_PROXY берёт прокси из реестра, но
-    игнорирует список исключений из реестра, поэтому запросы к localhost идут в прокси (503).
-    """
-    current = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
-    hosts = [h.strip() for h in current.split(",") if h.strip()]
-    if "*" in hosts:
-        return
-    hosts += [h for h in _LOCAL_HOSTS if h not in hosts]
-    os.environ["NO_PROXY"] = os.environ["no_proxy"] = ",".join(hosts)
-
-
 def load_settings(config_path: Path | None = None) -> Settings:
     """Загружает секреты из `.env` в CWD, затем настройки из YAML + env."""
     load_dotenv(Path.cwd() / ".env", override=False)
-    _bypass_proxy_for_local_hosts()
     explicit = config_path or os.environ.get("MNOGOBASE_CONFIG")
     path = Path(explicit or "config.yaml")
     # Отсутствие неявного ./config.yaml значит "берём умолчания"; отсутствие явно

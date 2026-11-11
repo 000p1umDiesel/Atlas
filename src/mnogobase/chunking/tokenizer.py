@@ -8,7 +8,7 @@ from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTok
 from pydantic import ConfigDict, PrivateAttr
 
 from mnogobase.config import ChunkingSettings, EmbedderSettings
-from mnogobase.embedding.http import auth_headers, server_root
+from mnogobase.http import auth_headers, server_root
 
 AUTO = "auto"
 _HF_HINT = "set chunking.tokenizer to the model's Hugging Face repo"
@@ -54,31 +54,24 @@ def load_tokenizer(
     """Токенизатор для подсчёта токенов чанка: HF-репозиторий `chunking.tokenizer` или, при
     `auto`, токенизатор самой модели эмбеддера, чтобы он всегда соответствовал её смене.
 
-    У llama.cpp (`serve: llamacpp`) — `/tokenize` сервера: токенизатор зашит в GGUF, HF-
-    репозиторий исходной модели не нужен. У vLLM — HF-репозиторий `embedder.model`. У внешнего
-    сервера (`api`) — репозиторий, который он сообщает (`root` у vLLM), или его `/tokenize`
-    (llama.cpp). `client` — клиент корня сервера эмбеддера (тесты)."""
+    `auto` — `/tokenize` сервера эмбеддера (llama.cpp, в том числе внешнего с `serve: api`):
+    токенизатор зашит в GGUF, HF-репозиторий исходной модели не нужен. Сервер без `/tokenize`
+    требует явный `chunking.tokenizer`. `client` — клиент корня сервера эмбеддера (тесты)."""
     if settings.tokenizer != AUTO:
         return _from_hf(settings.tokenizer, settings.max_tokens)
-    if embedder.serve == "vllm":
-        return _from_hf(embedder.model, settings.max_tokens)
     if client is None:
         client = httpx.Client(
             base_url=server_root(embedder.url),
-            timeout=60,
+            timeout=embedder.timeout_s,
             headers=auth_headers(embedder.api_key_env),
         )
-    if embedder.serve == "api":
-        repo = _served_repo(embedder.model, client)
-        if repo:
-            return _from_hf(repo, settings.max_tokens)
     tokenizer = ServerTokenizer(client=client, max_tokens=settings.max_tokens)
     try:
         tokenizer.count_tokens("tokenizer probe")
     except httpx.HTTPStatusError as exc:
         raise TokenizerError(
-            f"{embedder.model} has no Hugging Face repo in /v1/models and its server has no "
-            f"/tokenize (HTTP {exc.response.status_code}): {_HF_HINT}"
+            f"the server of {embedder.model} has no /tokenize "
+            f"(HTTP {exc.response.status_code}): {_HF_HINT}"
         ) from exc
     return tokenizer
 
@@ -99,20 +92,3 @@ def _from_hf(repo: str, max_tokens: int) -> HuggingFaceTokenizer:
         )
     except OSError as exc:  # нет такого репозитория, нет доступа или сети
         raise TokenizerError(f"cannot load the tokenizer {repo!r}: {exc}") from exc
-
-
-def _served_repo(model: str, client: httpx.Client) -> str | None:
-    """HF-репозиторий модели `model` по `/v1/models`: vLLM пишет его в `root`; у llama.cpp его
-    нет (None)."""
-    response = client.get("/v1/models")
-    response.raise_for_status()
-    for entry in response.json().get("data", []):
-        if model in (entry.get("id"), *(entry.get("aliases") or [])):
-            root = entry.get("root")
-            if not root:
-                return None
-            # vLLM с локальной моделью отдаёт путь на сервере, а не репозиторий
-            if root.startswith(("/", ".")):
-                raise TokenizerError(f"{model} is served from a local path {root!r}: {_HF_HINT}")
-            return root
-    raise TokenizerError(f"{model} is not served by {client.base_url}: check embedder.model")

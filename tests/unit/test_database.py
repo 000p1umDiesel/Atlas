@@ -61,12 +61,15 @@ def test_missing_database_url_is_a_clean_cli_error(monkeypatch):
     from mnogobase import cli
     from mnogobase.config import Settings
 
-    settings = Settings(database={"backend": "postgresql", "url_env": "MISSING_TEST_DATABASE_URL"})
+    settings = Settings(
+        database={"url_env": "MISSING_TEST_DATABASE_URL", "password_env": "MISSING_TEST_PG"}
+    )
     monkeypatch.delenv("MISSING_TEST_DATABASE_URL", raising=False)
+    monkeypatch.delenv("MISSING_TEST_PG", raising=False)
     monkeypatch.setattr(cli, "load_settings", lambda *args: settings)
     result = CliRunner().invoke(cli.app, ["status"])
     assert result.exit_code == 2
-    assert "Set MISSING_TEST_DATABASE_URL" in result.output
+    assert "Set MISSING_TEST_PG (or MISSING_TEST_DATABASE_URL)" in result.output
     assert "Traceback" not in result.output
 
 
@@ -84,3 +87,16 @@ def test_file_database_target_is_rejected_without_creating_files(tmp_path):
     with pytest.raises(DatabaseError, match="PostgreSQL"):
         connect(path)
     assert not path.parent.exists()
+
+
+def test_url_is_built_from_config_and_password(monkeypatch):
+    from mnogobase.config import Settings
+    from mnogobase.database import database_target
+
+    monkeypatch.delenv("DATABASE_URL")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss/word")
+    settings = Settings(database={"host": "postgres", "port": 5433, "name": "kb", "user": "u"})
+    url = database_target(settings).url
+    assert url == "postgresql+psycopg://u:p%40ss%2Fword@postgres:5433/kb"
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x:y@h/db")  # явный DSN важнее
+    assert database_target(settings).url == "postgresql://x:y@h/db"

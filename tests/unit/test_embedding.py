@@ -183,5 +183,4 @@ def test_signature_follows_the_backend_and_the_quant():
     split = model_id(model="Qwen/Qwen3-Embedding-4B", gguf="Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M")
     assert split == model_id()
     hf = "Qwen/Qwen3-Embedding-4B"
-    assert model_id(serve="vllm", model=hf) == "vllm:Qwen/Qwen3-Embedding-4B"
     assert model_id(serve="api", base_url="http://x/v1", model=hf) == "api:Qwen/Qwen3-Embedding-4B"

@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from filelock import Timeout
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.pool import NullPool
 
@@ -49,9 +49,20 @@ def database_target(settings: Settings, kind: str = "state") -> DatabaseTarget:
     загрузки, пользователи и учёт LLM. `kind` оставлен для читаемости вызовов."""
     if kind not in {"state", "jobs", "uploads"}:
         raise ValueError("Unknown database kind")
-    url = os.environ.get(settings.database.url_env)
+    db = settings.database
+    url = os.environ.get(db.url_env)
     if not url:
-        raise DatabaseError(f"Set {settings.database.url_env} for PostgreSQL")
+        password = os.environ.get(db.password_env)
+        if not password:
+            raise DatabaseError(f"Set {db.password_env} (or {db.url_env}) for PostgreSQL")
+        url = URL.create(
+            "postgresql+psycopg",
+            username=db.user,
+            password=password,
+            host=db.host,
+            port=db.port,
+            database=db.name,
+        ).render_as_string(hide_password=False)
     return DatabaseTarget(
         url,
         f"{settings.database.schema_prefix}_project_{settings.database.project}",
@@ -157,7 +168,7 @@ class PgConnection:
             if hasattr(self, "raw"):
                 self.raw.close()
             raise DatabaseError(
-                "PostgreSQL unavailable; check DATABASE_URL and database server"
+                "PostgreSQL unavailable; check the database settings and server"
             ) from None
 
     def execute(self, sql, params=()):

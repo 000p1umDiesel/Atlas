@@ -4,7 +4,6 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 import httpx
-from qdrant_client import QdrantClient
 from tenacity import wait_none
 
 from mnogobase.chunking.tokenizer import AUTO, load_tokenizer, tokenizer_source
@@ -16,12 +15,12 @@ from mnogobase.database import (
 )
 from mnogobase.device import detect_device
 from mnogobase.embedding.base import embedder_signature, signature_mismatch
-from mnogobase.embedding.http import auth_headers
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
+from mnogobase.http import auth_headers
 from mnogobase.registry import Registry
 from mnogobase.stores.graph_store import GraphStore
-from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.stores.qdrant_store import QdrantStore, connect_qdrant
 
 CHECKS: tuple[str, ...] = (
     "device",
@@ -159,12 +158,7 @@ def run_checks(
 
     def qdrant() -> Check:
         # проверка сообщает о доступности; warning клиента о проверке версии пропускаем
-        client = QdrantClient(
-            url=settings.qdrant.url,
-            api_key=settings.qdrant.api_key(),
-            timeout=int(timeout),
-            check_compatibility=False,
-        )
+        client = connect_qdrant(settings.qdrant, timeout=int(timeout), check_compatibility=False)
         try:
             store = QdrantStore(client, settings.qdrant.prefix, lambda: embedder.dim)
             dim = store.collection_dim(store.chunks)

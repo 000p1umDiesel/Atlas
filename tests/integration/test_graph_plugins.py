@@ -8,17 +8,22 @@ from mnogobase.config import GraphAnalysisSettings, Settings
 from mnogobase.database import database_target, mark_project
 from mnogobase.models import EntityRecord
 from mnogobase.stores.graph_store import GraphStore
+from tests.conftest import NEO4J_IMAGE
 from tests.integration.graph_seed import CHUNKS, DOC_ID, populate
 
 pytestmark = pytest.mark.integration
+ROOT = Path(__file__).parents[2]
 
 
 @pytest.fixture(scope="module")
 def plugin_container(tmp_path_factory):
     from testcontainers.community.neo4j import Neo4jContainer
 
-    container = Neo4jContainer("neo4j:5.26-community", password="testpassword")
-    if jar := os.environ.get("MNOGOBASE_TEST_GDS_JAR"):
+    container = Neo4jContainer(NEO4J_IMAGE, password="testpassword")
+    # jar GDS: явный путь или проверенный по sha256 из deploy/prepare-data.sh; без него
+    # Neo4j качает 63 МБ при каждом старте и на медленной сети не укладывается в таймаут
+    local = sorted(ROOT.glob("data/neo4j-plugins/neo4j-graph-data-science-*.jar"))
+    if jar := os.environ.get("MNOGOBASE_TEST_GDS_JAR") or (local and str(local[-1])):
         # The official entrypoint chowns /plugins. Only a disposable copy is writable.
         plugins = tmp_path_factory.mktemp("neo4j-plugin-jars")
         shutil.copyfile(Path(jar).resolve(strict=True), plugins / "graph-data-science.jar")

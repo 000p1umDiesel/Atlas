@@ -1,0 +1,7 @@
+# В образ попадают только pyproject.toml, uv.lock, README.md и src/ (см. Dockerfile).
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+src/**/__pycache__

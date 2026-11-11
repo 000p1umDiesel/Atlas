@@ -36,10 +36,9 @@ from docling_core.types.doc import (
 )
 from docling_core.types.doc.labels import PictureClassificationLabel
 from PIL import Image
-from tenacity import Retrying, retry_if_exception, stop_after_attempt
 
 from mnogobase.config import ParsingSettings, VisionSettings
-from mnogobase.embedding.http import DEFAULT_RETRY_WAIT, auth_headers, retryable
+from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
 from mnogobase.log import get_logger
 
 _CUDA_BATCH_SIZE = 16
@@ -215,15 +214,9 @@ def _ask_vlm(
         base_url=vision.url, timeout=vision.timeout_s, headers=auth_headers(vision.api_key_env)
     )
     try:
-        for attempt in Retrying(
-            retry=retry_if_exception(retryable),
-            stop=stop_after_attempt(3),
-            wait=retry_wait,
-            reraise=True,
-        ):
-            with attempt:
-                response = http.post("/chat/completions", json=payload)
-                response.raise_for_status()
+        response = post_json_with_retry(
+            http, "/chat/completions", payload, attempts=3, wait=retry_wait
+        )
     finally:
         if client is None:
             http.close()

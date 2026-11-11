@@ -213,7 +213,7 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
     client = QdrantClient(":memory:")
     QdrantStore(client, "mb_", 64).ensure_collections()
     monkeypatch.setattr(client, "close", lambda: None)  # run_checks закрывает свой клиент
-    monkeypatch.setattr(doctor, "QdrantClient", lambda **kwargs: client)
+    monkeypatch.setattr(doctor, "connect_qdrant", lambda *args, **kwargs: client)
     settings = make_settings(tmp_path)  # embedder.dim 2560
 
     [strict] = run_checks(settings, only=["qdrant"])
@@ -230,7 +230,7 @@ def test_auto_dimension_is_compared_with_what_the_embedder_returns(tmp_path, mon
     client = QdrantClient(":memory:")
     QdrantStore(client, "mb_", 64).ensure_collections()
     monkeypatch.setattr(client, "close", lambda: None)
-    monkeypatch.setattr(doctor, "QdrantClient", lambda **kwargs: client)
+    monkeypatch.setattr(doctor, "connect_qdrant", lambda *args, **kwargs: client)
     settings = make_settings(tmp_path, embedder=EmbedderSettings())  # dim: auto
     store_signature(tmp_path, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:64")
     calls = []

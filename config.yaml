@@ -1,24 +1,23 @@
-device: cpu                         # auto | cuda | mps | cpu; cpu: CPU-контейнеры llama.cpp, vLLM требует CUDA
+device: cpu                         # auto | mps | cpu: устройство Docling/BM25; cpu — llama-server без GPU
 
 # Модели ролей (llm, embedder, rerank, vision). serve — где работает модель:
-#   llamacpp / vllm — сервер поднимает `mnogobase models up` на порту роли (8000/8001/8002/8003);
-#   api             — уже работающий сервер или API по base_url.
+#   llamacpp — llama-server на порту роли (8000/8001/8002/8003): локально его поднимает
+#              `mnogobase models up`, в compose.yaml это сервисы embed / rerank / vision;
+#   api      — уже работающий OpenAI-совместимый сервер или API по base_url.
 #
-# Что писать в model (под этим же именем модель видна на сервере), зависитLf от serve:
+# Что писать в model (под этим же именем модель видна на сервере):
 #   llamacpp — GGUF-репозиторий с квантом, repo:квант (Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M).
 #              Токенайзер берётся из самого GGUF, исходный HF-репозиторий не нужен.
-#   vllm     — HF-репозиторий исходной модели (Qwen/Qwen3-Embedding-4B); GGUF vLLM не запускает.
 #   api      — имя модели на сервере, как его отдаёт /v1/models.
-# gguf — необязательно, только llamacpp: веса repo:квант отдельно от имени; тогда запускается
-# gguf, а model остаётся именем на сервере. При переводе роли между llamacpp и vllm меняйте и
-# model. Смена весов или serve эмбеддера — `mnogobase reindex`.
+# gguf — необязательно, только llamacpp: веса repo:квант отдельно от имени. Смена весов или
+# serve эмбеддера — `mnogobase reindex`. Модели в compose.yaml должны совпадать с этими.
 
 llm:
   model: gpt-6-luna
   serve: api
   base_url: https://codex.sale/v1
-  # локально: serve: llamacpp, model: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M
-  #   или serve: vllm, model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8 (base_url убрать)
+  # Сюда уходят тексты документов: выбирайте провайдера с понятными условиями обработки.
+  # Локально: serve: llamacpp, model: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M (base_url убрать)
   concurrency: 16
   temperature: 0.1
   timeout_s: 360
@@ -113,6 +112,7 @@ graph:
 qdrant:
   url: http://localhost:6333
   prefix: mb_
+  api_key_env: QDRANT_API_KEY   # ключ в .env; Qdrant из compose.yaml без него не пускает
 
 neo4j:
   uri: bolt://localhost:7687
@@ -131,8 +131,11 @@ evaluation:
   temperature: 0
   strictness: 3
 
-database:
+database:                          # адрес PostgreSQL; пароль — POSTGRES_PASSWORD в .env
   backend: postgresql
-  url_env: DATABASE_URL
+  host: localhost
+  port: 5432
+  name: mnogobase
+  user: mnogobase
   schema_prefix: mnogobase
   project: default

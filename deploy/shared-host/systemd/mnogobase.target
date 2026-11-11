@@ -1,9 +1,0 @@
-[Unit]
-Description=Mnogobase stack (storage, CPU models, API, worker and monitor)
-RequiresMountsFor=/srv/mnogobase
-Requires=mnogobase-storage.service mnogobase-models.service
-Wants=mnogobase-api.service mnogobase-worker.service mnogobase-monitor.service
-After=mnogobase-storage.service mnogobase-models.service mnogobase-api.service mnogobase-worker.service mnogobase-monitor.service
-
-[Install]
-WantedBy=multi-user.target

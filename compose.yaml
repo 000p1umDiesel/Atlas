@@ -1,0 +1,218 @@
+# mnogobase целиком: API, worker, базы и серверы моделей (CPU). Внешний LLM — по API (config.yaml).
+#   docker compose up -d --build                               # весь стек (Mac и сервер одинаково)
+#   docker compose exec api mnogobase ...                      # операторские команды
+#   docker compose up -d postgres qdrant neo4j embed rerank vision   # только базы и модели
+#                                                              # для `uv run mnogobase ...` на Mac
+# Все порты открыты только на 127.0.0.1 — для программ этого же компьютера, не для сети:
+# API 8080 (на сервере перед ним nginx), PostgreSQL 5432, Qdrant 6333 (сайт /dashboard),
+# Neo4j 7474 (сайт) и 7687, модели 8001 / 8002 / 8003 — те же адреса, что в config.yaml.
+# MB_BIND меняет адрес (учебное восстановление на сервере — 127.0.0.2, рядом с рабочим стеком).
+# Базы закрыты паролями и ключом из .env. Нативные `mnogobase models up` занимают те же
+# порты 8001–8003: запускайте либо их, либо контейнеры embed / rerank / vision.
+# В .env — только секреты; настройки приложения — в config.yaml (он монтируется в контейнеры).
+# Данные лежат в ./data рядом с кодом (на сервере /srv/mnogobase/app — смонтированный том);
+# MB_DATA переопределяет каталог (учебное восстановление). Каталоги создаёт
+# deploy/prepare-data.sh; если каталога нет, контейнер не стартует и не пишет мимо тома.
+name: mnogobase-kb
+
+x-logging: &logging
+  driver: local
+  options:
+    mode: non-blocking
+    max-buffer-size: "1m"
+    max-size: "10m"
+    max-file: "3"
+
+x-app: &app
+  image: mnogobase:${MB_TAG:-latest}
+  build: .
+  pull_policy: never   # образ только локальный: нет — собрать, есть — взять, не ходить в Docker Hub
+  env_file: .env
+  environment:
+    # адреса сервисов внутри сети compose; всё остальное — из того же config.yaml
+    MNOGOBASE_DATABASE__HOST: postgres
+    MNOGOBASE_DATABASE__PORT: "5432"
+    MNOGOBASE_QDRANT__URL: http://qdrant:6333
+    QDRANT_API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}"
+    MNOGOBASE_NEO4J__URI: bolt://neo4j:7687
+    MNOGOBASE_EMBEDDER__BASE_URL: http://embed:8080/v1
+    MNOGOBASE_RERANK__BASE_URL: http://rerank:8080/v1
+    MNOGOBASE_VISION__BASE_URL: http://vision:8080/v1
+    DATABASE_URL: ""   # не наследовать локальный DSN из .env
+  volumes:
+    - type: bind
+      source: ${MB_DATA:-./data}/app
+      target: /data
+      bind: {create_host_path: false}
+    - type: bind
+      source: ${MB_DATA:-./data}/cache
+      target: /home/app/.cache
+      bind: {create_host_path: false}
+    - ./config.yaml:/data/config.yaml:ro
+  restart: on-failure:5
+  logging: *logging
+  depends_on:
+    postgres: {condition: service_healthy}
+    qdrant: {condition: service_healthy}
+    neo4j: {condition: service_healthy}
+
+x-model: &model
+  image: ghcr.io/ggml-org/llama.cpp:server-b11804
+  environment:
+    LLAMA_CACHE: /models        # старые сборки llama.cpp
+    HF_HOME: /models            # новые: кэш Hugging Face в /models/hub
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes:
+    - type: bind
+      source: ${MB_DATA:-./data}/models
+      target: /models
+      bind: {create_host_path: false}
+  restart: on-failure:5
+  logging: *logging
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+    interval: 15s
+    timeout: 5s
+    retries: 10
+    start_period: 30m  # первая загрузка GGUF с Hugging Face
+
+services:
+  api:
+    <<: *app
+    command: ["mnogobase", "api", "serve", "--host", "0.0.0.0", "--port", "8080"]
+    ports: ["${MB_BIND:-127.0.0.1}:${MB_API_PORT:-8080}:8080"]
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  worker:
+    <<: *app
+    command: ["mnogobase", "worker", "run", "--watch", "/data/inbox"]
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2.0
+    stop_signal: SIGINT        # задача дорабатывает шаг и остаётся в очереди
+    stop_grace_period: 15m
+    depends_on:
+      postgres: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+      embed: {condition: service_healthy}
+
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: mnogobase
+      POSTGRES_USER: mnogobase
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+    ports: ["${MB_BIND:-127.0.0.1}:5432:5432"]
+    volumes:
+      - type: bind
+        source: ${MB_DATA:-./data}/postgres
+        target: /var/lib/postgresql
+        bind: {create_host_path: false}
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 0.75
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mnogobase -d mnogobase"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: on-failure:5
+    logging: *logging
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.2
+    environment:
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}"
+      QDRANT__TELEMETRY_DISABLED: "true"
+    ports: ["${MB_BIND:-127.0.0.1}:6333:6333"]
+    volumes:
+      - type: bind
+        source: ${MB_DATA:-./data}/qdrant
+        target: /qdrant/storage
+        bind: {create_host_path: false}
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: on-failure:5
+    logging: *logging
+
+  neo4j:
+    image: neo4j:5.26.32-community
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}"
+      # APOC входит в образ (labs) и копируется без загрузки; GDS — закреплённый jar
+      # в data/neo4j-plugins (кладёт deploy/prepare-data.sh), без скачивания при старте.
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 768M
+      NEO4J_server_memory_pagecache_size: 256M
+    ports: ["${MB_BIND:-127.0.0.1}:7474:7474", "${MB_BIND:-127.0.0.1}:7687:7687"]
+    volumes:
+      - type: bind
+        source: ${MB_DATA:-./data}/neo4j
+        target: /data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MB_DATA:-./data}/neo4j-plugins
+        target: /plugins
+        bind: {create_host_path: false}
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:7474/ || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 90s
+    restart: on-failure:5
+    logging: *logging
+
+  # Модели и флаги должны совпадать с config.yaml (embedder / rerank / vision .model);
+  # при смене модели правятся оба места, а эмбеддер ещё требует `mnogobase reindex`.
+  embed:
+    <<: *model
+    ports: ["${MB_BIND:-127.0.0.1}:8001:8080"]
+    command: ["-hf", "mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0", "--alias", "mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+              "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--embedding", "--ubatch-size", "4096",
+              "--n-gpu-layers", "0", "--threads", "2", "--threads-batch", "2", "--parallel", "1"]
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+
+  rerank:
+    <<: *model
+    ports: ["${MB_BIND:-127.0.0.1}:8002:8080"]
+    command: ["-hf", "gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0", "--alias", "gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0",
+              "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--rerank", "--ubatch-size", "4096",
+              "--n-gpu-layers", "0", "--threads", "2", "--threads-batch", "2", "--parallel", "1"]
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+
+  vision:
+    <<: *model
+    ports: ["${MB_BIND:-127.0.0.1}:8003:8080"]
+    command: ["-hf", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K", "--alias", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K",
+              "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--image-min-tokens", "1024",
+              "--n-gpu-layers", "0", "--threads", "2", "--threads-batch", "2", "--parallel", "1"]
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2.0

@@ -113,7 +113,7 @@ def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
 
 
 class OpenAICompatLLM:
-    """Работает с любым OpenAI-совместимым endpoint: OpenAI, llama.cpp server, vLLM, LM Studio, прокси."""
+    """Работает с любым OpenAI-совместимым endpoint: OpenAI, llama.cpp server, LM Studio, прокси."""
 
     def __init__(
         self,

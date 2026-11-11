@@ -7,7 +7,7 @@ from collections import Counter
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated
 
 import filelock
 import typer
@@ -51,6 +51,17 @@ from mnogobase.log import configure_logging, new_run_id
 from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
+from mnogobase.model_servers import (
+    NativeRunner,
+    Served,
+    ServeError,
+    bring_up,
+    health_state,
+    is_ready,
+    make_runner,
+    served_roles,
+    server_args,
+)
 from mnogobase.models import Answer
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError
 from mnogobase.processing import measured_ingest
@@ -62,21 +73,6 @@ from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.compare import compare as do_compare
 from mnogobase.retrieval.compare import config_hash, run_mode
 from mnogobase.retrieval.translate import QueryTranslator
-from mnogobase.serving import (
-    CONTAINER_PORT,
-    DockerRunner,
-    ModelRunner,
-    Runner,
-    Served,
-    ServeError,
-    bring_up,
-    health_state,
-    is_ready,
-    make_runner,
-    resolve_runner,
-    served_roles,
-    server_args,
-)
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.wiki.builder import WikiReport
@@ -108,7 +104,7 @@ graph_app = typer.Typer(no_args_is_help=True, help="Graph analysis with APOC/GDS
 app.add_typer(graph_app, name="graph")
 models_app = typer.Typer(
     no_args_is_help=True,
-    help="Model servers from config.yaml (serve: llamacpp | vllm): up, down, status, logs.",
+    help="Local llama.cpp model servers from config.yaml (serve: llamacpp): up, down, status, logs.",
 )
 app.add_typer(models_app, name="models")
 console = Console()
@@ -760,29 +756,14 @@ RolesArg = Annotated[
     list[str] | None,
     typer.Argument(help="Roles: embedder, rerank, vision, llm (default: all served)."),
 ]
-RunnerOpt = Annotated[
-    str,
-    typer.Option(
-        "--runner", help="docker (CPU/CUDA), native (llama-server; default on macOS) or auto."
-    ),
-]
 
 
-def _runner(runner: str) -> Runner:
-    if runner not in ("auto", "docker", "native"):
-        console.print("[red]--runner must be auto, docker or native.[/red]")
-        raise typer.Exit(2)
-    return cast(Runner, runner)
-
-
-def _models(
-    roles: list[str] | None, runner: Runner
-) -> tuple[list[Served], list[Served], ModelRunner]:
+def _models(roles: list[str] | None) -> tuple[list[Served], list[Served], NativeRunner]:
     """Роли из `roles` (все, если не заданы), все роли с локальным сервером и раннер."""
     settings = _settings()
     try:
         everything = served_roles(settings)
-        return served_roles(settings, roles or ()), everything, make_runner(runner, settings)
+        return served_roles(settings, roles or ()), everything, make_runner(settings)
     except ServeError as exc:
         _fail_cleanly(exc)
         raise AssertionError("unreachable") from exc
@@ -791,29 +772,19 @@ def _models(
 @models_app.command("up")
 def models_up(
     roles: RolesArg = None,
-    runner: RunnerOpt = "auto",
     timeout: Annotated[
         float, typer.Option(help="Seconds to wait for the servers (first start downloads models).")
     ] = 1800,
 ) -> None:
-    """Поднять серверы ролей с `serve: llamacpp | vllm` и дождаться их готовности."""
-    served, everything, model_runner = _models(roles, _runner(runner))
+    """Поднять llama-server для ролей с `serve: llamacpp` и дождаться их готовности."""
+    served, everything, model_runner = _models(roles)
     if not served:
         console.print("Nothing to start: every role is serve: api (or disabled).")
         return
-    where = resolve_runner(_runner(runner))
-    if isinstance(model_runner, DockerRunner):
-        where = "docker"
     for s in served:
-        port = s.port if where == "native" else CONTAINER_PORT[s.backend]
-        program = "llama-server" if s.backend == "llamacpp" else "vllm serve"
-        location = f"{where}, cpu" if s.device == "cpu" else where
-        try:
-            command = shlex.join(server_args(s, port))
-        except ServeError as exc:
-            _fail_cleanly(exc)
+        command = shlex.join(server_args(s, s.port, gpu=model_runner.gpu))
         console.print(
-            f"{s.role} → {s.settings.url} ({location}): {program} {command}",
+            f"{s.role} → {s.settings.url}: llama-server {command}",
             soft_wrap=True,
             highlight=False,
         )
@@ -842,25 +813,16 @@ def models_up(
 
     try:
         # `models up vision` не трогает серверы других ролей из конфига
-        def fallback(served: Served, reason: str) -> None:
-            console.print(
-                f"{stamp()} {served.role}: GPU startup failed ({reason}); retrying in a CPU container.",
-                style="yellow",
-                soft_wrap=True,
-                highlight=False,
-                markup=False,
-            )
-
-        bring_up(served, model_runner, timeout, waiting, keep=everything, on_fallback=fallback)
-    except (ServeError, OSError) as exc:  # OSError: нет docker / llama-server в PATH
+        bring_up(served, model_runner, timeout, waiting, keep=everything)
+    except (ServeError, OSError) as exc:  # OSError: нет llama-server в PATH
         _fail_cleanly(exc)
     console.print(f"[green]{stamp()} All model servers are ready.[/green]", highlight=False)
 
 
 @models_app.command("down")
-def models_down(runner: RunnerOpt = "auto") -> None:
+def models_down() -> None:
     """Остановить серверы моделей (скачанные модели остаются в кэше)."""
-    _, _, model_runner = _models(None, _runner(runner))
+    _, _, model_runner = _models(None)
     try:
         model_runner.stop()
     except (ServeError, OSError) as exc:
@@ -899,10 +861,9 @@ def models_logs(
     follow: Annotated[
         bool, typer.Option("--follow", "-f", help="Keep printing new lines.")
     ] = False,
-    runner: RunnerOpt = "auto",
 ) -> None:
     """Последние строки лога сервера роли."""
-    served, _, model_runner = _models([role], _runner(runner))
+    served, _, model_runner = _models([role])
     if not served:
         _fail_cleanly(ServeError(f"{role} is not served locally (serve: api or disabled)"))
     try:

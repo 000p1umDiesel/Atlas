@@ -1,0 +1,20 @@
+# Запуск и остановка всего стека compose. Включением управляет host-mode
+# (режимы Mnogobase ↔ Minecraft), поэтому юнит не нужно `enable`.
+[Unit]
+Description=mnogobase (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/mnogobase
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/mnogobase/app
+ExecStart=/usr/bin/docker compose up -d --wait --wait-timeout 1800
+ExecStop=/usr/bin/docker compose stop --timeout 120
+TimeoutStartSec=35min
+TimeoutStopSec=20min
+
+[Install]
+WantedBy=multi-user.target

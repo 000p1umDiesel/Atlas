@@ -5,60 +5,63 @@ description = "LLM Wiki core: ingest documents into Qdrant + Neo4j, build a pers
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "docling>=2.142",
-  "qdrant-client>=1.19.1",
-  "fastembed>=0.9",
-  "neo4j>=6.4",
-  "openai>=3.3,<3.36",  # Instructor 1.17 requires jiter<0.15; OpenAI 3.36+ needs >=0.16
+  # Точные версии всех прямых зависимостей; транзитивные закреплены в uv.lock.
+  # Обновление: поменять версию здесь, затем `uv lock` и тесты.
+  # ядро: разбор, хранилища, модели
+  "docling==2.142.0",
+  "docling-core==2.104.0",
+  "pillow==13.0.0",
+  "qdrant-client==1.19.1",
+  "fastembed==0.9.1",
+  "neo4j==6.4.1",
+  "openai==3.3.0",  # instructor 1.17 (через ragas) требует jiter<0.15, а openai 3.36+ — >=0.16
+  "httpx==0.28.1",
+  "transformers==5.20.2",
+  # на Linux (сервер, Docker) — CPU-колёса из индекса pytorch-cpu, см. [tool.uv.sources]
+  "torch==2.15.0",
+  "torchvision==0.29.2",
+  # CLI, конфиг, логи
+  "typer==0.26.8",
+  "rich==14.3.4",
+  "structlog==26.1.0",
+  "pydantic==2.14.1",
+  "pydantic-settings[yaml]==2.16.1",
+  "python-dotenv==1.2.4",
+  "pyyaml==6.0.3",
+  "tenacity==9.2.1",
+  "filelock==4.2.4",
+  # состояние в PostgreSQL и HTTP API
+  "sqlalchemy==2.1.6",
+  "psycopg[binary]==3.3.6",
+  "fastapi==0.162.0",
+  "uvicorn==0.54.0",
+  "argon2-cffi==25.1.0",
+  # оценка Ragas (`mnogobase eval score`)
   "ragas==0.4.3",
-  "langchain-community>=0.3,<0.4",
-  "httpx>=0.28",
-  "typer>=0.19",
-  "rich>=14.0,<15",
-  "structlog>=26.1",
-  "pydantic>=2.14",
-  "pydantic-settings[yaml]>=2.16",
-  "python-dotenv>=1.1",
-  "tenacity>=9.2",
-  "filelock>=4.2",
-  "pyyaml>=6.0",
-  "fastapi>=0.115,<1",
-  "uvicorn>=0.30,<1",
-  "argon2-cffi>=23.1",
-  "sqlalchemy>=2.0,<3",
-  "psycopg[binary]>=3.2,<4",
-  "transformers>=5.20",
-  # закреплено здесь, чтобы [tool.uv.sources] мог брать CUDA-колёса на Windows (PyPI там отдаёт только CPU-сборки)
-  "torch>=2.14",
-  "torchvision>=0.29",
-  # GPU OCR (RapidOCR) и BM25 на Windows; сборка под CUDA 13, совпадает с torch cu130. Заменяет там CPU-onnxruntime.
-  "onnxruntime-gpu[cuda,cudnn]>=1.30; sys_platform == 'win32'",
+  "langchain-community==0.3.31",  # не импортируется: ragas 0.4.3 падает на импорте с 0.4
+  # тесты и линтер
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "testcontainers[neo4j,qdrant]==4.15.0",
+  "reportlab==5.1.0",
+  "python-docx==1.2.0",
+  "ruff==0.17.1",
 ]
 
 [project.scripts]
 mnogobase = "mnogobase.cli:app"
 
-[dependency-groups]
-dev = [
-  "pytest>=9.1",
-  "pytest-asyncio>=1.4",
-  "testcontainers[neo4j,qdrant]>=4.15",
-  "reportlab>=4.4",
-  "python-docx>=1.1",
-  "ruff>=0.16",
-]
-
 [tool.uv]
-# onnxruntime и onnxruntime-gpu ставят один и тот же модуль `onnxruntime`: на Windows оставляем только GPU-версию
-override-dependencies = ["onnxruntime>=1.30; sys_platform != 'win32'"]
+# поддерживаемые платформы: macOS (разработка) и Linux (сервер, Docker)
+environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]
-torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [build-system]

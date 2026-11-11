@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -223,41 +222,6 @@ def test_bad_entity_type_names_are_rejected(value, problem):
         ExtractSettings(entity_types=value)
 
 
-@pytest.fixture
-def no_proxy_env(monkeypatch):
-    for name in (
-        "NO_PROXY",
-        "no_proxy",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-    ):
-        monkeypatch.setenv(name, "x")
-        monkeypatch.delenv(name)
-    return monkeypatch
-
-
-def test_local_hosts_bypass_proxy_when_no_proxy_configured(tmp_path, no_proxy_env):
-    no_proxy_env.chdir(tmp_path)
-    load_settings()
-    assert os.environ["NO_PROXY"] == "localhost,127.0.0.1,::1"
-
-
-def test_existing_no_proxy_is_kept(tmp_path, no_proxy_env):
-    no_proxy_env.chdir(tmp_path)
-    no_proxy_env.setenv("NO_PROXY", "corp.local,localhost")
-    load_settings()
-    assert os.environ["NO_PROXY"] == "corp.local,localhost,127.0.0.1,::1"
-
-
-def test_wildcard_no_proxy_is_untouched(tmp_path, no_proxy_env):
-    no_proxy_env.chdir(tmp_path)
-    no_proxy_env.setenv("NO_PROXY", "*")
-    load_settings()
-    assert os.environ["NO_PROXY"] == "*"
-
-
 def test_vision_skip_takes_docling_picture_classes():
     assert VisionSettings(skip=["logo", "bar_chart"]).skip == ["logo", "bar_chart"]
     with pytest.raises(ValueError, match="unknown picture class logotype"):
@@ -265,15 +229,12 @@ def test_vision_skip_takes_docling_picture_classes():
 
 
 def test_serve_requires_what_the_backend_needs():
-    # vLLM запускает HF-репозиторий: GGUF с квантом в model или gguf — ошибка конфига
-    with pytest.raises(ValueError, match="embedder.model .* looks like a GGUF with quant"):
-        EmbedderSettings(serve="vllm")
-    with pytest.raises(ValueError, match="llm.gguf is only for serve: llamacpp"):
-        LLMSettings(model="Qwen/Qwen3-8B", serve="vllm", gguf="Qwen/Qwen3-8B-GGUF:Q4_K_M")
     with pytest.raises(ValueError, match="embedder.base_url is required for serve: api"):
         EmbedderSettings(serve="api")
-    vllm = LLMSettings(model="Qwen/Qwen3-8B", serve="vllm", base_url=None)
-    assert vllm.url == "http://localhost:8000/v1" and vllm.weights == "Qwen/Qwen3-8B"
+    with pytest.raises(ValueError):  # старое значение serve: vllm удалено
+        EmbedderSettings(serve="vllm")
+    local = LLMSettings(model="Qwen/Qwen3-8B", serve="llamacpp", base_url=None)
+    assert local.url == "http://localhost:8000/v1" and local.weights == "Qwen/Qwen3-8B"
     remote = EmbedderSettings(base_url="http://gpu:8001/v1/")  # модель поднята на другой машине
     assert remote.url == "http://gpu:8001/v1"
     assert remote.weights == "Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"

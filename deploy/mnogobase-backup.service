@@ -1,0 +1,10 @@
+[Unit]
+Description=mnogobase restic backup
+Requires=docker.service
+After=docker.service
+RequiresMountsFor=/srv/mnogobase
+
+[Service]
+Type=oneshot
+Environment=APP_DIR=/srv/mnogobase/app
+ExecStart=/srv/mnogobase/app/deploy/backup.sh

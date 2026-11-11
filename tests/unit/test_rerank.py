@@ -66,7 +66,7 @@ def test_api_reranker_sends_raw_texts_once_and_maps_scores_back_to_input_order()
         return httpx.Response(200, json={"results": results})
 
     settings = RerankSettings(
-        base_url="http://vllm:8002/v1",
+        base_url="http://rerank:8002/v1",
         model="Qwen/Qwen3-Reranker-4B",
         max_chars=100,
     )
@@ -74,7 +74,7 @@ def test_api_reranker_sends_raw_texts_once_and_maps_scores_back_to_input_order()
     reranker = ApiReranker(settings, client=client)
     assert reranker.score("q", ["a" * 150, "b", "c"]) == [0.2, 0.9, 0.0]  # c не вернулся
     assert reranker.score("q", []) == []
-    assert len(seen) == 1 and str(seen[0].url) == "http://vllm:8002/v1/rerank"
+    assert len(seen) == 1 and str(seen[0].url) == "http://rerank:8002/v1/rerank"
     body = json.loads(seen[0].content)
     assert body == {
         "model": "Qwen/Qwen3-Reranker-4B",

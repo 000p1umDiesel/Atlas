@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,15 @@ from mnogobase.models import ChunkRecord, EntityRecord, SearchHit
 
 if TYPE_CHECKING:
     from mnogobase.wiki.render import Section
+
+
+def connect_qdrant(settings: QdrantSettings, *, timeout: int = 60, **kwargs: Any) -> QdrantClient:
+    """Клиент Qdrant из настроек. Ключ идёт по HTTP: Qdrant доступен только в сети Docker и
+    на 127.0.0.1, поэтому предупреждение клиента о незашифрованном соединении не выводим."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Api key is used with an insecure connection")
+        return QdrantClient(url=settings.url, api_key=settings.api_key(), timeout=timeout, **kwargs)
+
 
 DENSE = "dense"
 SPARSE = "bm25"
@@ -52,8 +62,7 @@ class QdrantStore:
 
     @classmethod
     def from_settings(cls, settings: QdrantSettings, dim: int | Callable[[], int]) -> QdrantStore:
-        client = QdrantClient(url=settings.url, api_key=settings.api_key(), timeout=60)
-        return cls(client, settings.prefix, dim)
+        return cls(connect_qdrant(settings), settings.prefix, dim)
 
     @property
     def dim(self) -> int:

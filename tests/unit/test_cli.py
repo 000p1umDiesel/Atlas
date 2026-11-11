@@ -12,10 +12,10 @@ from mnogobase.database import database_target, mark_project
 from mnogobase.doctor import Check
 from mnogobase.extraction.extractor import PROMPT_VERSION
 from mnogobase.maintenance import ReindexError
+from mnogobase.model_servers import NativeRunner, ServeError
 from mnogobase.models import Answer, Source
 from mnogobase.pipeline import PendingRemovalError
 from mnogobase.registry import Registry
-from mnogobase.serving import ServeError
 
 pytestmark = pytest.mark.integration
 
@@ -664,24 +664,23 @@ def test_wiki_build_and_reindex_report_progress(tmp_path, monkeypatch):
 def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text(
-        "rerank: {enabled: true, serve: vllm, model: Qwen/Qwen3-Reranker-4B}\nllm: {serve: api, base_url: http://cloud/v1}\n",
+        "device: cpu\nrerank: {enabled: true}\nllm: {serve: api, base_url: http://cloud/v1}\n",
         encoding="utf-8",
     )
     started: list = []
-    monkeypatch.setattr(cli, "make_runner", lambda runner, settings: f"runner:{runner}")
+    monkeypatch.setattr(
+        cli, "make_runner", lambda settings: NativeRunner(tmp_path, tmp_path, gpu=False)
+    )
     monkeypatch.setattr(
         cli,
         "bring_up",
-        lambda served, model_runner, timeout, on_wait, keep, on_fallback: started.append(
-            (served, keep)
-        ),
+        lambda served, model_runner, timeout, on_wait, keep: started.append((served, keep)),
     )
-    result = runner.invoke(cli.app, ["models", "up", "--runner", "docker"])
+    result = runner.invoke(cli.app, ["models", "up"])
     assert result.exit_code == 0, result.output
-    assert [s.service for s in started[0][0]] == ["embed-llamacpp", "rerank-vllm"]
-    assert "rerank → http://localhost:8002/v1 (docker): vllm serve Qwen/Qwen3-Reranker-4B" in (
-        result.output
-    )
+    assert [s.role for s in started[0][0]] == ["embedder", "rerank"]
+    assert "rerank → http://localhost:8002/v1: llama-server -hf" in result.output
+    assert "--n-gpu-layers 0" in result.output  # device: cpu
     # одна роль: остальные серверы из конфига не останавливаются
     result = runner.invoke(cli.app, ["models", "up", "rerank"])
     served, keep = started[1]
@@ -690,8 +689,8 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
         "rerank",
     ]
 
-    def broken(served, model_runner, timeout, on_wait, keep, on_fallback):
-        raise ServeError("embedder: the llamacpp server exited")
+    def broken(served, model_runner, timeout, on_wait, keep):
+        raise ServeError("embedder: llama-server exited")
 
     monkeypatch.setattr(cli, "bring_up", broken)
     result = runner.invoke(cli.app, ["models", "up", "embedder"])
@@ -700,10 +699,10 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
 
 def test_models_up_reports_waiting_and_ready_servers(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "make_runner", lambda runner, settings: "runner")
+    monkeypatch.setattr(cli, "make_runner", lambda settings: NativeRunner(tmp_path, tmp_path))
     monkeypatch.setattr(cli, "health_state", lambda served: "loading the model")
 
-    def bring_up(served, model_runner, timeout, on_wait, keep, on_fallback):
+    def bring_up(served, model_runner, timeout, on_wait, keep):
         on_wait(served, 5)  # эмбеддер ещё грузится
         on_wait(served, 10)  # через 5 с: повтор строки не печатается
         on_wait([], 15)  # готов

@@ -13,18 +13,16 @@ from mnogobase.chunking.tokenizer import (
 from mnogobase.config import ChunkingSettings, EmbedderSettings
 
 AUTO = ChunkingSettings(max_tokens=64)
-# внешний сервер: токенизатор по его /v1/models или /tokenize
+# внешний llama.cpp: токенизатор по его /tokenize
 EMBEDDER = EmbedderSettings(model="emb", serve="api", base_url="http://llama:8001/v1")
 
 
-def _server(models: list[dict], seen: list | None = None, tokenize_status: int = 200):
-    """Корень сервера: `/v1/models` и `/tokenize`, токен — слово."""
+def _server(seen: list | None = None, tokenize_status: int = 200):
+    """Корень сервера с `/tokenize`, токен — слово."""
 
     def handler(request):
         if seen is not None:
             seen.append((request.url.path, request.content))
-        if request.url.path == "/v1/models":
-            return httpx.Response(200, json={"data": models})
         if request.url.path == "/tokenize" and tokenize_status == 200:
             text = json.loads(request.content)["content"]
             return httpx.Response(200, json={"tokens": list(range(len(text.split())))})
@@ -39,46 +37,23 @@ def test_explicit_repo_skips_the_server(monkeypatch):
         tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append((repo, max_tokens))
     )
     settings = ChunkingSettings(tokenizer="Qwen/Qwen3-Embedding-4B", max_tokens=128)
-    load_tokenizer(settings, EMBEDDER, client=_server([]))
+    load_tokenizer(settings, EMBEDDER, client=_server())
     assert loaded == [("Qwen/Qwen3-Embedding-4B", 128)]
-
-
-def test_auto_on_local_vllm_is_the_hf_tokenizer_of_the_model(monkeypatch):
-    loaded: list = []
-    monkeypatch.setattr(
-        tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append(repo) or "tok"
-    )
-    embedder = EmbedderSettings(model="Qwen/Qwen3-Embedding-4B", serve="vllm")
-    # сервер не спрашивается: клиент, который упадёт на любом запросе
-    boom = httpx.Client(transport=httpx.MockTransport(lambda request: 1 / 0))
-    assert load_tokenizer(AUTO, embedder, client=boom) == "tok"
-    assert loaded == ["Qwen/Qwen3-Embedding-4B"]
 
 
 def test_auto_on_local_llama_cpp_counts_with_the_gguf_tokenizer(monkeypatch):
     monkeypatch.setattr(tokenizer_module, "_from_hf", lambda repo, max_tokens: 1 / 0)
     seen: list = []
-    # model — GGUF без HF-репозитория рядом: /v1/models не спрашивается, считает /tokenize
+    # model — GGUF без HF-репозитория рядом: считает /tokenize
     embedder = EmbedderSettings(model="mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0")
-    tok = load_tokenizer(AUTO, embedder, client=_server([], seen))
+    tok = load_tokenizer(AUTO, embedder, client=_server(seen))
     assert isinstance(tok, ServerTokenizer) and tok.count_tokens("one two") == 2
     assert [path for path, _ in seen] == ["/tokenize", "/tokenize"]
 
 
-def test_auto_on_api_vllm_loads_the_repo_it_reports(monkeypatch):
-    loaded: list = []
-    monkeypatch.setattr(
-        tokenizer_module, "_from_hf", lambda repo, max_tokens: loaded.append(repo) or "tok"
-    )
-    client = _server([{"id": "emb", "root": "Qwen/Qwen3-Embedding-4B"}])
-    assert load_tokenizer(AUTO, EMBEDDER, client=client) == "tok"
-    assert loaded == ["Qwen/Qwen3-Embedding-4B"]
-
-
 def test_auto_on_api_llama_cpp_counts_with_its_tokenize_and_caches():
     seen: list = []
-    client = _server([{"id": "emb", "aliases": ["emb"]}], seen)
-    tok = load_tokenizer(AUTO, EMBEDDER, client=client)
+    tok = load_tokenizer(AUTO, EMBEDDER, client=_server(seen))
     assert isinstance(tok, ServerTokenizer) and tok.get_max_tokens() == 64
     assert tok.count_tokens("one two three") == 3
     assert tok.count_tokens("one two three") == 3
@@ -91,17 +66,9 @@ def test_auto_on_api_llama_cpp_counts_with_its_tokenize_and_caches():
     assert tokenizer_source(tok) == "http://llama:8001/tokenize"
 
 
-@pytest.mark.parametrize(
-    ("models", "status", "message"),
-    [
-        ([{"id": "emb"}], 404, "no /tokenize"),  # сервер без репозитория и без /tokenize
-        ([{"id": "emb", "root": "/models/qwen"}], 200, "local path"),  # vLLM с локальной моделью
-        ([{"id": "other", "root": "Qwen/Other"}], 200, "not served"),
-    ],
-)
-def test_auto_without_a_way_to_tokenize_points_to_the_config(models, status, message):
-    with pytest.raises(TokenizerError, match=message):
-        load_tokenizer(AUTO, EMBEDDER, client=_server(models, tokenize_status=status))
+def test_auto_without_tokenize_points_to_the_config():
+    with pytest.raises(TokenizerError, match="no /tokenize .*chunking.tokenizer"):
+        load_tokenizer(AUTO, EMBEDDER, client=_server(tokenize_status=404))
 
 
 def test_unknown_repo_is_a_tokenizer_error(monkeypatch):
