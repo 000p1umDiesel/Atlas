@@ -87,14 +87,18 @@ async def test_upload_ingest_answer_and_remove(env):
 
         answer = await kb.ask("What is the Transformer?", mode="rag")
         assert "[1]" in answer["text"]
-        assert any(s.get("url") == doc["url"] for s in answer["sources"])
-        assert (await kb.search("Transformer attention", k=3))[0]["doc_id"] == doc["id"]
+        cited = [s for s in answer["sources"] if s.get("url") == doc["url"]]
+        # источник назван так, как файл загрузили, а не внутренним `<doc_id>.md`
+        assert cited and {s["path"] for s in cited} == {"Attention paper.md"}
+        hit = (await kb.search("Transformer attention", k=3))[0]
+        assert hit["doc_id"] == doc["id"] and hit["path"] == "Attention paper.md"
         assert await kb.ask("What is the Transformer?", mode="all")
 
         chat = kb.store.create_conversation(user["id"], "Chat")
         reply = await kb.send_message(user["id"], chat["id"], "What is the Transformer?")
         await kb.send_message(user["id"], chat["id"], "And its attention?")  # с историей
         assert reply["role"] == "assistant" and reply["sources"]
+        assert "Attention paper.md" in {s.get("path") for s in reply["sources"]}
         history = kb.history(user["id"], chat["id"])
         assert [m["role"] for m in history] == ["user", "assistant"] * 2
         assert any(s.get("available") for s in history[1]["sources"])

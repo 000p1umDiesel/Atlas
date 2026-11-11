@@ -339,6 +339,22 @@ class KnowledgeBase:
             out["url"] = f"/api/wiki/{str(out['ref']).split('#')[0]}"
         return out
 
+    def _items(self, sources: list[dict]) -> list[dict]:
+        """Источники для ответа API. Загруженный файл лежит на диске как `<doc_id>.md`:
+        вместо этого имени — то, под которым его загрузили."""
+        items = [self._item(source) for source in sources]
+        names: dict[str, str | None] = {}
+        for item in items:
+            doc_id = item.get("doc_id")
+            if not doc_id or not item.get("path"):
+                continue
+            if doc_id not in names:
+                upload = self.uploads.get(doc_id)
+                names[doc_id] = upload["name"] if upload else None
+            if names[doc_id]:
+                item["path"] = names[doc_id]
+        return items
+
     def _retrievers(self, app: App):
         return build_retrievers(
             app.vectors, app.graph, app.embedder, app.sparse, self.settings, app.reranker
@@ -356,7 +372,7 @@ class KnowledgeBase:
             translator = QueryTranslator(app.llm) if self.settings.retrieval.translate else None
             alt = await translator.alt_queries(question) if translator else []
             items = self._retrievers(app)[mode].retrieve(question, k, alt)
-            return [self._item(x.model_dump()) for x in items]
+            return self._items([x.model_dump() for x in items])
 
         async with self._asks:
             return await self._with_app(run, "Search service unavailable")
@@ -390,7 +406,7 @@ class KnowledgeBase:
         )
         out = answer.model_dump(exclude={"contexts"})
         out["question"], out["query"] = question, query
-        out["sources"] = [self._item(s) for s in out["sources"]]
+        out["sources"] = self._items(out["sources"])
         return out
 
     async def ask(self, question: str, mode: str = "rag") -> dict:
