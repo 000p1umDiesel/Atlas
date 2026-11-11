@@ -27,6 +27,8 @@ DOC = "d" * 16
 
 @pytest.fixture
 def world(graph, tmp_path):
+    registries: list[Registry] = []
+
     def factory(
         min_mentions: int = 2,
         handler=scripted_llm_handler,
@@ -88,6 +90,7 @@ def world(graph, tmp_path):
             vectors.set_chunk_entities(chunk.chunk_id, ids)
         graph.merge_relation("e1", "e2", "uses", "Transformer uses softmax.", 5, chunks[2].chunk_id)
         registry = Registry(database_target(Settings(), "state"))
+        registries.append(registry)
         registry.mark_dirty(["e1", "e2"])
         llm = FakeLLM(handler)
         wiki_dir = tmp_path / "wiki"
@@ -112,7 +115,9 @@ def world(graph, tmp_path):
             chunks=chunks,
         )
 
-    return factory
+    yield factory
+    for registry in registries:
+        registry.close()
 
 
 def wiki_points(vectors: QdrantStore, page_id: str) -> list[dict]:
