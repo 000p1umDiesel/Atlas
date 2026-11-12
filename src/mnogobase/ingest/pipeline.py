@@ -77,6 +77,8 @@ class _RemovalPlan(BaseModel):
     relinked: int  # сколько из них лишь ссылались на удалённую страницу
     forgotten_paths: list[str] = Field(default_factory=list)
     affected_entities: list[str] = Field(default_factory=list)
+    # сущности, записанные стадией graph документа, в том числе без MENTIONS (стадия упала)
+    touched_entities: list[str] = Field(default_factory=list)
 
 
 def _holds(path: str, doc_id: str) -> bool:
@@ -416,18 +418,22 @@ class Pipeline:
     def _removal_plan(self, doc_id: str) -> _RemovalPlan:
         """Только чтение: всё, что должно подчистить удаление, пока это ещё есть в графе."""
         linkers = self._pages_linking_into(doc_id)
-        result = self._graph.document_deletion_plan(doc_id)
+        touched = self._registry.doc_entities(doc_id)
+        result = self._graph.document_deletion_plan(doc_id, touched)
         removed = set(result.removed_entity_ids)
         # страницы, ссылающиеся на удалённую, переписываются, чтобы устаревшая ссылка исчезла
         stale_linkers = {p for target in removed for p in linkers.get(target, [])}
+        # страницы, цитирующие чанки документа, даже если MENTIONS этих чанков не записаны
+        citing = set(self._graph.pages_citing_document(doc_id))
         return _RemovalPlan(
             removed_entities=dict(
                 zip(result.removed_entity_ids, result.removed_names, strict=True)
             ),
             removed_pages=result.removed_pages,
-            dirty=sorted((set(result.affected) | stale_linkers) - removed),
+            dirty=sorted((set(result.affected) | stale_linkers | citing) - removed),
             relinked=len(stale_linkers - removed),
             affected_entities=sorted(result.affected),
+            touched_entities=touched,
         )
 
     def _apply_removal(
@@ -443,13 +449,17 @@ class Pipeline:
         графа: их данных уже нет, поэтому их стадии сбрасываются (кэши сохраняются), и они
         ingest-ятся заново, а не остаются "done".
         Возвращает имена сущностей, которые действительно удалены."""
-        self._graph.delete_document(doc_id)  # одна транзакция; после коммита — no-op
+        # одна транзакция; после коммита — no-op
+        self._graph.delete_document(doc_id, plan.touched_entities)
         gone = {e: n for e, n in plan.removed_entities.items() if self._graph.get_entity(e) is None}
         revived = set(plan.removed_entities) - set(gone)
         self._registry.mark_dirty(set(plan.dirty) | revived)
         self._registry.clear_dirty(gone)
         self._vectors.delete_doc(doc_id)
         self._vectors.delete_entities(sorted(gone))
+        for eid in gone:
+            # секции страницы, которая так и не попала в граф (сбой между Qdrant и Neo4j)
+            self._vectors.delete_wiki_page(eid)
         # Merged descriptions have no per-source provenance. Keep entity identities,
         # but discard summaries that may depend on the removed source, in both stores.
         affected = list(plan.affected_entities)
@@ -636,6 +646,9 @@ class Pipeline:
             ids_by_name: dict[str, str] = {}
             for extracted in result.entities:
                 record = await self._resolver.resolve(extracted)
+                # resolver уже записал сущность в Qdrant и Neo4j, а MENTIONS появятся только
+                # после всего чанка: запоминаем её сразу, чтобы удаление документа её нашло
+                self._registry.add_doc_entity(doc_id, record.entity_id)
                 progress.advance()
                 ids_by_name[normalize_name(extracted.name)] = record.entity_id
                 for alias in extracted.aliases:

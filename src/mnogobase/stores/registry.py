@@ -25,6 +25,10 @@ CREATE INDEX IF NOT EXISTS extraction_cache_chunk_seq
 CREATE TABLE IF NOT EXISTS dirty_entities(entity_id TEXT PRIMARY KEY, marked_at TEXT);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS pending_removals(doc_id TEXT PRIMARY KEY, plan_json TEXT NOT NULL);
+-- сущности, которые стадия graph документа уже записала в хранилища (даже если MENTIONS
+-- до графа не дошли): удаление документа подчищает и их
+CREATE TABLE IF NOT EXISTS doc_entities(
+    doc_id TEXT NOT NULL, entity_id TEXT NOT NULL, PRIMARY KEY(doc_id, entity_id));
 """
 # версия 2: файлы больше 2 ГиБ
 _MIGRATIONS = ("ALTER TABLE files ALTER COLUMN size TYPE BIGINT",)
@@ -142,6 +146,7 @@ class Registry:
     def clear_doc(self, doc_id: str) -> None:
         prefix = f"{doc_id}:%"
         self._db.execute("DELETE FROM stages WHERE doc_id=?", (doc_id,))
+        self._db.execute("DELETE FROM doc_entities WHERE doc_id=?", (doc_id,))
         self._db.execute("DELETE FROM extraction_cache WHERE chunk_id LIKE ?", (prefix,))
 
     def get_extraction(self, chunk_id: str, prompt_version: str, model: str) -> str | None:
@@ -195,6 +200,19 @@ class Registry:
             "DELETE FROM dirty_entities WHERE entity_id=?", [(e,) for e in set(entity_ids)]
         )
 
+    # ---- сущности, записанные стадией graph документа ----
+    def add_doc_entity(self, doc_id: str, entity_id: str) -> None:
+        self._db.execute(
+            "INSERT INTO doc_entities(doc_id, entity_id) VALUES(?, ?) ON CONFLICT DO NOTHING",
+            (doc_id, entity_id),
+        )
+
+    def doc_entities(self, doc_id: str) -> list[str]:
+        rows = self._db.execute(
+            "SELECT entity_id FROM doc_entities WHERE doc_id=? ORDER BY entity_id", (doc_id,)
+        )
+        return [r[0] for r in rows]
+
     # ---- незавершённые удаления документов (журнал: доделываются после сбоя) ----
     def put_removal(self, doc_id: str, plan_json: str) -> None:
         self._db.execute(
@@ -247,6 +265,7 @@ class Registry:
             "dirty_entities",
             "meta",
             "pending_removals",
+            "doc_entities",
         ):
             self._db.execute(f"DELETE FROM {table}")
 

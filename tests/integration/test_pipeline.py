@@ -1150,3 +1150,64 @@ async def test_invalidated_wiki_page_is_hidden_until_rebuilt(make_app, tmp_path)
     assert again.updated == ["Softmax"] and page.exists()
     assert not app.graph.wiki_page(softmax).stale
     assert [r.page_id for r in app.graph.wiki_pages()] == [softmax]
+
+
+async def test_removal_cleans_entities_left_by_a_failed_graph_stage(make_app, tmp_path):
+    """Стадия graph упала посреди чанка: уже записанные сущности не имеют MENTIONS, но
+    удаление документа всё равно должно их убрать (и их секции wiki в Qdrant)."""
+    gone = tmp_path / "gone.md"
+    gone.write_text("# Notes\n\nThe Transformer uses softmax.\n")
+    app = make_app()
+    real, calls = app.pipeline._resolver.resolve, []
+
+    async def fail_second(extracted):
+        calls.append(extracted.name)
+        if len(calls) == 2:
+            raise RuntimeError("LLM unavailable")
+        return await real(extracted)
+
+    app.pipeline._resolver.resolve = fail_second
+    report = await app.pipeline.ingest([gone], build_wiki=False)
+    assert str(gone) in report.failed
+    app.pipeline._resolver.resolve = real
+    [orphan] = [e.entity_id for e in app.graph.entities() if e.mention_count == 0]
+    app.wiki.index_page(orphan, orphan, "entities/orphan.md", "# Orphan\n\nText.\n")
+
+    await app.pipeline.remove([gone])
+
+    assert app.graph.get_entity(orphan) is None
+    assert _points(app, app.vectors.entities, "entity_id", orphan) == 0
+    assert _points(app, app.vectors.wiki, "page_id", orphan) == 0
+
+
+async def test_removal_plan_includes_pages_citing_the_document(make_app, tmp_path):
+    """Страница, цитирующая чанк документа без MENTIONS (частично записанный чанк), тоже
+    перестраивается при удалении документа."""
+    gone, kept = tmp_path / "gone.md", tmp_path / "kept.md"
+    gone.write_text("# Models\n\nThe Transformer is a network.\n")
+    kept.write_text("# Notes\n\nSoftmax turns scores into probabilities.\n")
+    app = make_app()
+    await app.pipeline.ingest([gone, kept])
+    # страница Softmax не упоминает Transformer и не ссылается на него
+    [transformer] = [e.entity_id for e in app.graph.entities() if e.name == "Softmax"]
+    assert transformer not in app.pipeline._removal_plan(file_doc_id(gone)).dirty
+    app.graph._write(
+        "MATCH (p:WikiPage {page_id: $p}), (c:Chunk {chunk_id: $c}) MERGE (p)-[:CITES]->(c)",
+        p=transformer,
+        c=f"{file_doc_id(gone)}:00000",
+    )
+    plan = app.pipeline._removal_plan(file_doc_id(gone))
+    assert transformer in plan.dirty
+
+
+async def test_reindex_skips_documents_with_a_pending_removal(make_app, docs):
+    app = make_app()
+    await app.pipeline.ingest([docs], build_wiki=False)
+    doc_id = file_doc_id(docs / "attention_en.md")
+    plan = _RemovalPlan(removed_entities={}, removed_pages=[], dirty=[], relinked=0)
+    app.registry.put_removal(doc_id, plan.model_dump_json())  # удаление начато, но не закончено
+
+    reindex(app)
+
+    assert chunk_count(app, doc_id) == 0  # удалённые чанки не возвращаются в индекс
+    assert chunk_count(app, file_doc_id(docs / "vnimanie_ru.md")) > 0

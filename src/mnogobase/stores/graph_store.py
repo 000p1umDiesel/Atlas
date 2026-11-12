@@ -181,12 +181,20 @@ class GraphStore:
     def has_document(self, doc_id: str) -> bool:
         return bool(self._run("MATCH (d:Document {doc_id: $id}) RETURN 1 AS x LIMIT 1", id=doc_id))
 
-    def document_deletion_plan(self, doc_id: str) -> DeleteResult:
-        """Только чтение: что удалил бы `delete_document(doc_id)` (пусто, если документ
-        неизвестен). Сущности удаляются, если их не упоминает ни один чанк вне этого
-        документа."""
+    def document_deletion_plan(
+        self, doc_id: str, extra_entity_ids: Sequence[str] = ()
+    ) -> DeleteResult:
+        """Только чтение: что удалил бы `delete_document(doc_id, extra_entity_ids)` (пусто,
+        если документ неизвестен). Затронуты сущности, которые упоминают чанки документа, и
+        `extra_entity_ids` (записанные стадией graph документа, даже без MENTIONS). Сущность
+        удаляется, если её не упоминает ни один чанк вне этого документа."""
         rows = self._run(
-            "MATCH (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(e:Entity) "
+            "CALL () { "
+            "  MATCH (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(e:Entity) "
+            "  RETURN e "
+            "  UNION "
+            "  MATCH (e:Entity) WHERE e.entity_id IN $extra RETURN e "
+            "} "
             "WITH DISTINCT e "
             "OPTIONAL MATCH (p:WikiPage)-[:ABOUT]->(e) "
             "WITH e, collect(p) AS pages "
@@ -195,6 +203,7 @@ class GraphStore:
             "COUNT { (e)<-[:MENTIONS]-(x:Chunk) "
             "WHERE NOT (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(x) } AS others",
             doc_id=doc_id,
+            extra=list(extra_entity_ids),
         )
         removed = [r for r in rows if r["others"] == 0]
         return DeleteResult(
@@ -204,12 +213,12 @@ class GraphStore:
             removed_pages=[(p[0], p[1]) for r in removed for p in r["page_refs"]],
         )
 
-    def delete_document(self, doc_id: str) -> DeleteResult:
+    def delete_document(self, doc_id: str, extra_entity_ids: Sequence[str] = ()) -> DeleteResult:
         # одна write-транзакция: падение посреди каскада не должно оставить Document удалённым,
         # а его сущности — с устаревшими счётчиками упоминаний / осиротевшими wiki-страницами
         # (повтор ничего бы не сделал)
         with self._driver.session() as session:
-            return session.execute_write(_delete_document_tx, doc_id)
+            return session.execute_write(_delete_document_tx, doc_id, list(extra_entity_ids))
 
     def chunks_by_ids(self, chunk_ids: list[str]) -> list[ChunkView]:
         rows = self._run(
@@ -775,7 +784,9 @@ class GraphStore:
         return [PageIndexRow(**r) for r in rows]
 
 
-def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
+def _delete_document_tx(
+    tx: ManagedTransaction, doc_id: str, extra_entity_ids: list[str]
+) -> DeleteResult:
     run = tx.run
 
     run(_INVALIDATE_ANALYSIS).consume()
@@ -787,7 +798,9 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
         doc_id=doc_id,
     ).data()
     cids = found[0]["cids"] if found else []
-    eids = found[0]["eids"] if found else []
+    # сущности без MENTIONS от этого документа тоже пересчитываются (и удаляются, если их
+    # больше ничто не упоминает): их оставила упавшая посреди чанка стадия graph
+    eids = sorted(set(found[0]["eids"] if found else []) | set(extra_entity_ids))
     if cids:
         # убираем подтверждения из удалённых чанков; рёбра, оставшиеся без подтверждений, исчезают
         # связь подтверждает чанк, который упоминает оба её конца, поэтому искать её
