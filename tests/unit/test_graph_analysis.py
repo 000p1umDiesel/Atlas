@@ -101,6 +101,20 @@ def test_apoc_traversal_timeout_falls_back_to_one_hop_cypher():
     assert fallback == [(["seed"], 1, 40)]
 
 
+def test_fulltext_query_is_deduplicated_and_bounded():
+    """Длинный вопрос не превышает лимит клауз Lucene: слова без повторов и не больше лимита."""
+    from mnogobase.stores.graph_store import FULLTEXT_MAX_TOKENS, GraphStore
+
+    store = GraphStore(None)
+    seen = {}
+    store._run = lambda query, **params: seen.update(params) or []
+    words = [f"word{i}" for i in range(2000)]
+    store.fulltext_entities(" ".join(["Attention", "attention", *words]), 5)
+    tokens = seen["q"].split()
+    assert tokens[:2] == ["attention", "word0"]
+    assert len(tokens) == len(set(tokens)) == FULLTEXT_MAX_TOKENS
+
+
 def test_retrieval_uses_pagerank_only_to_break_equal_relation_weights():
     from types import SimpleNamespace
 

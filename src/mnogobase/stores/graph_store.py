@@ -49,6 +49,9 @@ _SCHEMA = [
     "ON (e.analytics_run_id, e.analytics_community)",
 ]
 _WORD = re.compile(r"\w+", re.UNICODE)
+# Каждое слово запроса — клауза по двум полям индекса `entity_names`; без предела вопрос
+# в несколько сотен слов превысил бы лимит клауз Lucene (1024) и уронил бы поиск по графу.
+FULLTEXT_MAX_TOKENS = 64
 _PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version, stale: coalesce(p.stale, false)} AS page"
 _REL_MAP = (
     "{src_id: startNode(r).entity_id, src_name: startNode(r).name, predicate: r.predicate, "
@@ -373,7 +376,8 @@ class GraphStore:
 
     def fulltext_entities(self, query: str, k: int) -> list[tuple[str, float]]:
         # простые словесные токены в нижнем регистре: операторы Lucene и спецсимволы не проходят
-        tokens = [t.casefold() for t in _WORD.findall(query)]
+        tokens = list(dict.fromkeys(t.casefold() for t in _WORD.findall(query)))
+        tokens = tokens[:FULLTEXT_MAX_TOKENS]
         if not tokens:
             return []
         rows = self._run(
