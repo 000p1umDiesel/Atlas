@@ -1877,7 +1877,7 @@ uv run mnogobase api serve                 # по желанию: API на 127.0
 uv run mnogobase worker run --watch documents/
 ```
 
-Compose требует непустые `POSTGRES_PASSWORD`, `NEO4J_PASSWORD` и `QDRANT_API_KEY` в `.env`. Модели в контейнерах работают на CPU с контекстом 4096; нативные `uv run mnogobase models up` (без `embed rerank vision` в команде выше) используют `server.ctx` и флаги из `config.yaml`. Контейнеры пишут логи драйвером `local` (3 файла по 10 МБ).
+Compose требует непустые `POSTGRES_PASSWORD`, `NEO4J_PASSWORD` и `QDRANT_API_KEY` в `.env`. Модели в контейнерах работают на CPU с контекстом 4096; нативные `uv run mnogobase models up` (без `embed rerank vision` в команде выше) используют `server.ctx` и флаги из `config.yaml`. Логи контейнеров на Mac пишет драйвер `local` (ротирует сам, до ~100 МБ на контейнер); на сервере `MB_LOG_DRIVER=journald` в `.env` отправляет их в журнал хоста с его лимитом и сроком хранения (`deploy/README.md`).
 
 ### 11.2 Полный стек в Docker
 
@@ -1920,7 +1920,7 @@ uv run mnogobase client ask "О чём статья?"
 - **Модели** — образ `ghcr.io/ggml-org/llama.cpp` с явными командами, `--n-gpu-layers 0`, окно 4096. Имена моделей должны совпадать с `config.yaml` (раздел [7.15](#715-где-работают-модели-serve)).
 - **Данные** — bind-каталоги `data/{app,cache,models,postgres,qdrant,neo4j,neo4j-plugins}` рядом с `compose.yaml` с `create_host_path: false`: если каталога нет (том не смонтирован), контейнер не стартует и не пишет на корневую ФС. Каталоги создаёт `deploy/prepare-data.sh`; переменная `MB_DATA` переопределяет корень (учебное восстановление).
 - **Сеть и защита.** Наружу публикуется только API на `127.0.0.1:${MB_API_PORT:-8080}`; порты баз и моделей не публикуются, поэтому Neo4j Browser и панель Qdrant в этом режиме недоступны. Qdrant закрыт API-ключом, Neo4j и PostgreSQL — паролями из `.env`.
-- **Ресурсы.** У каждого контейнера `mem_limit` (swap запрещён через `memswap_limit`) и `cpus`: api 1.5 ГБ / 1 CPU, worker 3 ГБ / 2, postgres 768 МБ / 0.75, qdrant 1 ГБ / 1, neo4j 2 ГБ / 2 (heap 768 МБ, page cache 256 МБ), embed и rerank по 2 ГБ / 2, vision 3 ГБ / 2 — профиль сервера на 8 vCPU / 16 ГБ, общего с другими сервисами. Логи ротирует драйвер `local` (3 файла по 10 МБ, `non-blocking`). Политика перезапуска — `on-failure:5`.
+- **Ресурсы.** У каждого контейнера `mem_limit` (swap запрещён через `memswap_limit`) и `cpus`: api 1.5 ГБ / 1 CPU, worker 3 ГБ / 2, postgres 768 МБ / 0.75, qdrant 1 ГБ / 1, neo4j 2 ГБ / 2 (heap 768 МБ, page cache 256 МБ), embed и rerank по 2 ГБ / 2, vision 3 ГБ / 2 — профиль сервера на 8 vCPU / 16 ГБ, общего с другими сервисами. Логи: `non-blocking`, драйвер `local` на Mac и journald на сервере (`MB_LOG_DRIVER`). Политика перезапуска — `on-failure:5`.
 - **Worker** останавливается по `SIGINT` с `stop_grace_period: 15m`: текущее задание дорабатывает шаг и остаётся в очереди до перезапуска.
 
 Операторские команды выполняются внутри контейнера: `docker compose exec api mnogobase status | doctor | graph analyze | reindex | jobs list | user ...`.

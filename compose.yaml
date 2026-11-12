@@ -15,13 +15,14 @@
 # deploy/prepare-data.sh; если каталога нет, контейнер не стартует и не пишет мимо тома.
 name: mnogobase-kb
 
+# Логи: на Mac — драйвер local (до ~100 МБ на контейнер, ротирует сам); на сервере в .env
+# MB_LOG_DRIVER=journald — общий журнал хоста с его лимитом и сроком хранения, тег — имя
+# контейнера из настроек демона. Здесь только опции, которые понимают оба драйвера.
 x-logging: &logging
-  driver: local
+  driver: ${MB_LOG_DRIVER:-local}
   options:
     mode: non-blocking
     max-buffer-size: "1m"
-    max-size: "10m"
-    max-file: "3"
 
 x-app: &app
   image: mnogobase:${MB_TAG:-latest}

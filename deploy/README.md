@@ -32,6 +32,7 @@ sudo ufw allow 22,80,443/tcp && sudo ufw enable
 #    поэтому и /srv/mnogobase/app/data лежит на нём)
 sudo git clone <repo> /srv/mnogobase/app && cd /srv/mnogobase/app
 sudo cp .env.example .env && sudo nano .env       # только секреты: openssl rand -hex 24
+echo MB_LOG_DRIVER=journald | sudo tee -a .env     # логи контейнеров — в журнал хоста
 sudo deploy/prepare-data.sh
 
 # 3. Запуск: стек поднимает systemd-юнит (им управляет host-mode)
@@ -106,7 +107,7 @@ ssh -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 admin@<
 ## Защита
 
 - Все порты (API, базы, модели) открыты только на `127.0.0.1`: из интернета к ним не попасть, наружу смотрит лишь nginx на 80/443. Программы самого сервера базы видят, поэтому Qdrant закрыт API-ключом, Neo4j и PostgreSQL — длинными паролями из `.env`.
-- У каждого контейнера есть лимиты памяти и CPU, логи ротирует драйвер `local`.
+- У каждого контейнера есть лимиты памяти и CPU. Логи на сервере идут в journald (`MB_LOG_DRIVER=journald` в `.env`): там их ограничивает политика хоста, читает `docker compose logs` и `journalctl CONTAINER_NAME=mnogobase-kb-api-1`.
 - Образы закреплены по версиям, плагин GDS проверяется по sha256.
 - nginx: TLS 1.2/1.3, ответ 444 на чужой Host, лимит тела 64 KiB (50 МБ только для загрузки документа), предел частоты на `/api/auth/login`, журнал без строки запроса.
 - API: нет `/docs` и `/openapi.json`, пароли argon2 (не больше двух хешей одновременно), неудачный вход пишется в журнал как `login_failed` (для fail2ban). Пользователи создаются только из CLI.
