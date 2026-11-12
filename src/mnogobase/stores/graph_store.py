@@ -111,10 +111,14 @@ class GraphStore:
         self._run("CALL db.awaitIndexes(60)")
 
     def wipe(self) -> None:
-        self._run(
-            "MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage "
-            "OR n:AnalysisState DETACH DELETE n"
-        )
+        """Удаляет узлы mnogobase пачками по своим транзакциям: одна транзакция на весь
+        большой граф не помещается в heap Neo4j."""
+        with self._driver.session(database=self._db) as session:
+            session.run(
+                "MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage "
+                "OR n:AnalysisState "
+                "CALL (n) { DETACH DELETE n } IN TRANSACTIONS OF 1000 ROWS"
+            ).consume()
 
     def counts(self) -> dict[str, int]:
         out = {
@@ -267,19 +271,36 @@ class GraphStore:
         rows = self._run("MATCH (e:Entity {entity_id: $id}) RETURN e {.*} AS e", id=entity_id)
         return EntityRecord(**rows[0]["e"]) if rows else None
 
+    def get_entities(self, entity_ids: list[str]) -> list[EntityRecord]:
+        rows = self._run(
+            "UNWIND $ids AS id MATCH (e:Entity {entity_id: id}) RETURN e {.*} AS e",
+            ids=entity_ids,
+        )
+        return [EntityRecord(**r["e"]) for r in rows]
+
     def upsert_entity(self, entity: EntityRecord) -> None:
+        self.upsert_entities([entity])
+
+    def upsert_entities(self, entities: list[EntityRecord]) -> None:
+        if not entities:
+            return
         self._write(
-            "MERGE (e:Entity {entity_id: $entity_id}) "
-            "SET e.name = $name, e.type = $type, e.aliases = $aliases, e.aliases_text = $aliases_text, "
-            "e.description = $description, e.descriptions = $descriptions, "
-            "e.mention_count = coalesce(e.mention_count, 0)",
-            entity_id=entity.entity_id,
-            name=entity.name,
-            type=entity.type,
-            aliases=entity.aliases,
-            aliases_text=" | ".join(entity.aliases),
-            description=entity.description,
-            descriptions=entity.descriptions,
+            "UNWIND $rows AS row MERGE (e:Entity {entity_id: row.entity_id}) "
+            "SET e.name = row.name, e.type = row.type, e.aliases = row.aliases, "
+            "e.aliases_text = row.aliases_text, e.description = row.description, "
+            "e.descriptions = row.descriptions, e.mention_count = coalesce(e.mention_count, 0)",
+            rows=[
+                {
+                    "entity_id": e.entity_id,
+                    "name": e.name,
+                    "type": e.type,
+                    "aliases": e.aliases,
+                    "aliases_text": " | ".join(e.aliases),
+                    "description": e.description,
+                    "descriptions": e.descriptions,
+                }
+                for e in entities
+            ],
         )
 
     def entities(self, min_mentions: int = 0) -> list[EntityRecord]:

@@ -10,7 +10,7 @@ from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.maintenance import ReindexError, reindex, reset
-from mnogobase.pipeline import EmbedderMismatchError
+from mnogobase.pipeline import EmbedderMismatchError, InterruptedResetError
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import (
     FakeEmbedder,
@@ -98,6 +98,23 @@ async def test_reindex_after_embedder_change_then_reset(graph, tmp_path, docs, s
     assert second.registry.files() == []
     assert not client.collection_exists(second.vectors.chunks)
     second.registry.close()
+
+
+async def test_interrupted_reset_blocks_work_until_rerun(graph, docs, settings, monkeypatch):
+    app = make_app(settings, graph, QdrantClient(":memory:"), FakeEmbedder(64))
+    await app.pipeline.ingest([docs])
+    monkeypatch.setattr(app.graph, "wipe", lambda: (_ for _ in ()).throw(RuntimeError("lost")))
+    with pytest.raises(RuntimeError):
+        reset(app)
+    monkeypatch.undo()
+    # registry ещё помнит документы, но работать с полуудалёнными данными нельзя
+    assert app.registry.files()
+    with pytest.raises(InterruptedResetError, match="reset"):
+        app.pipeline.prepare()
+    reset(app)
+    assert app.registry.files() == [] and graph.counts()["Entity"] == 0
+    app.pipeline.prepare()
+    app.registry.close()
 
 
 async def test_reindex_without_chunk_cache_uses_graph_chunks(graph, docs, settings):

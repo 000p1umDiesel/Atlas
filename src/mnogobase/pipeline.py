@@ -29,9 +29,15 @@ from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.builder import WikiBuilder, WikiReport
 
+ENTITY_BATCH = 64  # сущностей на один запрос эмбеддера и одну транзакцию графа
+
 
 class EmbedderMismatchError(RuntimeError):
-    pass
+    """Индекс нельзя использовать в текущем виде; команда сообщает, что запустить."""
+
+
+class InterruptedResetError(EmbedderMismatchError):
+    """Прерванный `reset`: данных частично нет, пока reset не запущен снова."""
 
 
 class ExtractionFailedError(RuntimeError):
@@ -110,6 +116,10 @@ class Pipeline:
 
     # ---- подготовка ----
     def prepare(self, check_embedder: bool = True, resume: bool = True) -> None:
+        if self._registry.get_meta("reset") is not None:
+            raise InterruptedResetError(
+                "an interrupted `mnogobase reset` left partial data; run `mnogobase reset` again"
+            )
         signature = embedder_signature(self._embedder)
         stored = self._registry.get_meta("embedder")
         mismatch = signature_mismatch(stored, self._embedder)
@@ -446,13 +456,16 @@ class Pipeline:
         self._vectors.delete_entities(sorted(gone))
         # Merged descriptions have no per-source provenance. Keep entity identities,
         # but discard summaries that may depend on the removed source, in both stores.
-        for eid in plan.affected_entities:
-            record = self._graph.get_entity(eid)
-            if record is not None:
-                record = record.model_copy(update={"description": "", "descriptions": []})
-                vector = self._embedder.embed_documents([entity_embed_input(record)])[0]
-                self._vectors.upsert_entities([record], [vector])
-                self._graph.upsert_entity(record)
+        affected = list(plan.affected_entities)
+        for start in range(0, len(affected), ENTITY_BATCH):
+            records = [
+                record.model_copy(update={"description": "", "descriptions": []})
+                for record in self._graph.get_entities(affected[start : start + ENTITY_BATCH])
+            ]
+            if records:
+                vectors = self._embedder.embed_documents([entity_embed_input(r) for r in records])
+                self._vectors.upsert_entities(records, vectors)
+                self._graph.upsert_entities(records)
         # Invalidate generated pages before LLM calls. A failed rebuild must not leave
         # deleted claims searchable, and old prose must not seed the next generation.
         for eid in sorted(set(plan.dirty) | revived):

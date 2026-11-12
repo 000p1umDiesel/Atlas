@@ -14,7 +14,10 @@ def make_app(tmp_path, calls: list[str]):
         settings=settings,
         vectors=SimpleNamespace(drop_collections=lambda: calls.append("vectors")),
         graph=SimpleNamespace(wipe=lambda: calls.append("graph")),
-        registry=SimpleNamespace(wipe=lambda: calls.append("registry")),
+        registry=SimpleNamespace(
+            set_meta=lambda key, value: calls.append(f"flag {key}"),
+            wipe=lambda: calls.append("registry"),
+        ),
     )
 
 
@@ -32,7 +35,8 @@ def test_reset_deletes_only_the_wiki_files_mnogobase_writes(tmp_path):
 
     reset(make_app(tmp_path, calls))
 
-    assert calls == ["vectors", "graph", "registry"]
+    # флаг первым, registry последней: прерванный reset не оставит registry без данных
+    assert calls == ["flag reset", "vectors", "graph", "registry"]
     assert not (tmp_path / ".mb" / "cache").exists()
     assert sorted(p.relative_to(wiki).as_posix() for p in wiki.rglob("*")) == [
         "drafts",

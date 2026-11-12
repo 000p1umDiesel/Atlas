@@ -501,7 +501,7 @@ async def test_embedder_template_change_is_refused(make_app, docs):
 async def test_signature_upgrade_never_overwrites_a_concurrent_reindex(make_app, monkeypatch):
     app = make_app()
     app.registry.set_meta("embedder", "reindex-in-progress")  # тем временем запущен reindex
-    read = {"embedder": "fake-embed:64"}  # что этот процесс прочитал до этого
+    read = {"embedder": "fake-embed:64", "reset": None}  # что этот процесс прочитал до этого
     monkeypatch.setattr(app.registry, "get_meta", lambda key: read[key])
     app.pipeline.prepare(resume=False)
     monkeypatch.undo()

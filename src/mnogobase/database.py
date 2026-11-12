@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from uuid import uuid4
@@ -213,7 +214,10 @@ def connect(target: DatabaseTarget, *, pooled: bool = True) -> PgConnection:
     return PgConnection(target, pooled=pooled)
 
 
-def initialize(connection, script: str, component: str):
+def initialize(connection, script: str, component: str, migrations: Sequence[str] = ()):
+    """Создаёт таблицы `script` (`IF NOT EXISTS`) и применяет `migrations`, которых ещё нет у
+    компонента: версия 1 — исходный `script`, миграция i переводит на версию i + 2. Миграции
+    должны быть безопасны и на свежей схеме (script уже даёт новую форму)."""
     with connection:
         target = connection.target
         connection.execute("SELECT pg_advisory_xact_lock(?)", (_lock_key(target, "ddl"),))
@@ -226,6 +230,16 @@ def initialize(connection, script: str, component: str):
             "INSERT INTO schema_migrations VALUES(?,1) ON CONFLICT(component) DO NOTHING",
             (component,),
         )
+        (version,) = connection.execute(
+            "SELECT version FROM schema_migrations WHERE component=?", (component,)
+        ).fetchone()
+        for statement in migrations[version - 1 :]:
+            connection.execute(statement)
+        if len(migrations) + 1 > version:
+            connection.execute(
+                "UPDATE schema_migrations SET version=? WHERE component=?",
+                (len(migrations) + 1, component),
+            )
 
 
 def target_exists(target: DatabaseTarget, table="files") -> bool:

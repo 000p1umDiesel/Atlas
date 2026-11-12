@@ -32,6 +32,34 @@ def test_postgresql_registry_preserves_cache_order_and_cas(pg_settings):
         b.close()
 
 
+def test_registry_migrates_file_size_to_bigint(pg_settings):
+    from mnogobase.database import connect
+    from mnogobase.registry import Registry
+
+    target = database_target(pg_settings)
+    Registry(target).close()
+    db = connect(target)
+    try:  # схема до миграции: версия 1, size INTEGER
+        db.execute("ALTER TABLE files ALTER COLUMN size TYPE INTEGER")
+        db.execute("UPDATE schema_migrations SET version=1 WHERE component='registry'")
+    finally:
+        db.close()
+    registry = Registry(target)
+    try:
+        registry.upsert_file("/big.iso", "doc", 5 * 1024**3, 1.0, "done")
+        assert registry.get_file("/big.iso").size == 5 * 1024**3
+    finally:
+        registry.close()
+    db = connect(target)
+    try:
+        version = db.execute(
+            "SELECT version FROM schema_migrations WHERE component='registry'"
+        ).fetchone()[0]
+        assert version == 2
+    finally:
+        db.close()
+
+
 def test_postgresql_service_sessions_and_private_chats(pg_settings):
     from mnogobase.service.errors import ServiceError
     from mnogobase.service.store import ServiceStore

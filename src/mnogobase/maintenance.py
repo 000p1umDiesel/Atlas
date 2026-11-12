@@ -8,9 +8,10 @@ from mnogobase.embedding.base import embedder_signature
 from mnogobase.extraction.resolver import entity_embed_input
 from mnogobase.log import get_logger
 from mnogobase.progress import NULL_PROGRESS, ProgressSink
+from mnogobase.registry import RESET_IN_PROGRESS
 
 ENTITY_BATCH = 64
-WIKI_FILES = ("index.md", "log.md")
+WIKI_FILES = ("index.md", "log.md", "log.1.md")
 # Хранится, пока идёт reindex: прерванный reindex оставляет неполный индекс, и
 # `Pipeline.prepare` отказывается с ним работать, пока `mnogobase reindex` не завершится.
 REINDEX_IN_PROGRESS = "reindex-in-progress"
@@ -117,10 +118,14 @@ def reset(app: App) -> None:
     """Удаляет все векторы, узлы графа, строки registry, файлы кэша и страницы wiki.
 
     Удаляются только файлы wiki, которые пишет mnogobase (`entities/`, `index.md`, `log.md`);
-    сам каталог wiki удаляется, только если в нём больше ничего не осталось."""
+    сам каталог wiki удаляется, только если в нём больше ничего не осталось.
+
+    Сначала ставится флаг в registry, последней очищается сама registry (вместе с флагом):
+    прерванный reset не оставит registry, которая считает удалённые документы загруженными,
+    а `Pipeline.prepare` до повторного reset откажется работать с полуудалёнными данными."""
+    app.registry.set_meta("reset", RESET_IN_PROGRESS)
     app.vectors.drop_collections()
     app.graph.wipe()
-    app.registry.wipe()
     shutil.rmtree(app.settings.data_dir / "cache", ignore_errors=True)
     wiki_dir = app.settings.wiki.dir
     shutil.rmtree(wiki_dir / "entities", ignore_errors=True)
@@ -128,4 +133,5 @@ def reset(app: App) -> None:
         (wiki_dir / name).unlink(missing_ok=True)
     with contextlib.suppress(OSError):  # его нет, или в нём чужие для mnogobase файлы
         wiki_dir.rmdir()
+    app.registry.wipe()
     get_logger(__name__).info("reset_done")
