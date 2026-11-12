@@ -1,0 +1,12 @@
+# fail2ban: блокировка подбора пароля к mnogobase. Установка: /etc/fail2ban/jail.d/mnogobase-login.local
+# 10 неудачных входов с одного IP за 10 минут — бан на час, только порты 80/443 (SSH не трогает).
+# Повторные баны подхватывает jail recidive, если он включён на хосте.
+[mnogobase-login]
+enabled = true
+filter = mnogobase-login
+port = http,https
+logpath = /var/log/nginx/mnogobase.access.log
+backend = auto
+maxretry = 10
+findtime = 10m
+bantime = 1h

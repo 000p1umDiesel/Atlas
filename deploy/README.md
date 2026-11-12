@@ -25,7 +25,7 @@ uv run mnogobase client ask "О чём статья?"
 
 ```bash
 # 1. Пакеты и firewall
-sudo apt-get install -y docker.io docker-compose-v2 nginx certbot restic
+sudo apt-get install -y docker.io docker-compose-v2 nginx certbot restic fail2ban
 sudo ufw allow 22,80,443/tcp && sudo ufw enable
 
 # 2. Код, секреты, каталоги данных (/srv/mnogobase — отдельный смонтированный том,
@@ -47,7 +47,12 @@ sudo certbot certonly --standalone -d kb.example.org \
 sudo sed 's/SERVER_NAME/kb.example.org/g' deploy/nginx.conf | sudo tee /etc/nginx/conf.d/mnogobase.conf
 sudo nginx -t && sudo systemctl reload nginx
 
-# 5. Бэкапы: restic-репозиторий вне сервера (S3, B2, SFTP)
+# 5. fail2ban: бан IP за подбор пароля по журналу nginx из шага 4
+sudo cp deploy/fail2ban/mnogobase-login.filter.conf /etc/fail2ban/filter.d/mnogobase-login.conf
+sudo cp deploy/fail2ban/mnogobase-login.jail.local /etc/fail2ban/jail.d/mnogobase-login.local
+sudo fail2ban-client -t && sudo fail2ban-client reload
+
+# 6. Бэкапы: restic-репозиторий вне сервера (S3, B2, SFTP)
 echo 'sftp:backup@other-host:/srv/restic/mnogobase' | sudo tee /root/.restic-repo
 openssl rand -hex 32 | sudo tee /root/.restic-pass && sudo chmod 600 /root/.restic-*
 sudo restic -r "$(sudo cat /root/.restic-repo)" -p /root/.restic-pass init
@@ -70,6 +75,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 | Логи | `sudo docker compose logs -f api worker`, `journalctl -u mnogobase` |
 | Операторские команды | `sudo docker compose exec api mnogobase status / doctor / graph analyze / reindex / jobs list` |
 | Пользователь | `sudo docker compose exec api mnogobase user passwd owner` / `user disable NAME` |
+| Баны за подбор пароля | `sudo fail2ban-client status mnogobase-login`, снять: `sudo fail2ban-client set mnogobase-login unbanip IP` |
 
 Схема базы создаётся при старте (`CREATE ... IF NOT EXISTS`). Разрушающих миграций нет. Если они понадобятся, бэкап уже входит в команду обновления.
 
@@ -110,4 +116,5 @@ ssh -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 admin@<
 - У каждого контейнера есть лимиты памяти и CPU. Логи на сервере идут в journald (`MB_LOG_DRIVER=journald` в `.env`): там их ограничивает политика хоста, читает `docker compose logs` и `journalctl CONTAINER_NAME=mnogobase-kb-api-1`.
 - Образы закреплены по версиям, плагин GDS проверяется по sha256.
 - nginx: TLS 1.2/1.3, ответ 444 на чужой Host, лимит тела 64 KiB (50 МБ только для загрузки документа), предел частоты на `/api/auth/login`, журнал без строки запроса.
-- API: нет `/docs` и `/openapi.json`, пароли argon2 (не больше двух хешей одновременно), неудачный вход пишется в журнал как `login_failed` (для fail2ban). Пользователи создаются только из CLI.
+- fail2ban (`deploy/fail2ban/`): 10 неудачных входов (401 или 429 на `/api/auth/login` в журнале nginx) с одного IP за 10 минут — бан на час, только на 80/443. Журнал nginx, а не API: API за прокси видит адрес nginx, а не клиента. Если на хосте включён jail `recidive`, повторные баны он превращает в долгий бан на все порты, включая SSH.
+- API: нет `/docs` и `/openapi.json`, пароли argon2 (не больше двух хешей одновременно), неудачный вход пишется в журнал как `login_failed` (без IP и с хешем имени). Пользователи создаются только из CLI.
