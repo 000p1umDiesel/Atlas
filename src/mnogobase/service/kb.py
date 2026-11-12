@@ -120,13 +120,15 @@ class KnowledgeBase:
         self._core.close()
 
     # ---- App в потоке ядра ----
-    def _ensure_app(self) -> App:
+    async def _ensure_app(self) -> App:
+        """App, созданный лениво в потоке ядра; при неудачной проверке индекса закрывается
+        целиком (`aclose` закрывает и HTTP-клиенты моделей и Qdrant, а не только базы)."""
         if self._app is None:
             app = self._factory(self.settings)
             try:
                 app.pipeline.prepare(resume=False)
             except BaseException:
-                app.close()
+                await app.aclose()
                 raise
             self._app = app
         return self._app
@@ -142,7 +144,7 @@ class KnowledgeBase:
     async def _with_app[T](self, operation: Callable[[App], Awaitable[T]], failure: str) -> T:
         async def run() -> T:
             try:
-                return await operation(self._ensure_app())
+                return await operation(await self._ensure_app())
             except ServiceError:
                 raise
             except EmbedderMismatchError:
