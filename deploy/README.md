@@ -70,7 +70,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 |---|---|
 | Обновление | `sudo deploy/backup.sh && sudo git pull --ff-only && sudo MB_TAG=$(git rev-parse --short HEAD) docker compose up -d --build --wait` |
 | Откат | `sudo git checkout <commit> && sudo MB_TAG=<commit> docker compose up -d --wait` (старый образ уже есть локально) |
-| Minecraft ↔ mnogobase | `sudo host-mode minecraft` / `sudo host-mode mnogobase` |
+| Minecraft ↔ mnogobase | `sudo host-mode vanilla` (или `neoforge`) / `sudo host-mode mnogobase`; `sudo host-mode status` |
 | Состояние | `sudo docker compose ps`, `mnogobase client status` |
 | Логи | `sudo docker compose logs -f api worker`, `journalctl -u mnogobase` |
 | Операторские команды | `sudo docker compose exec api mnogobase status / doctor / graph analyze / reindex / jobs list` |
