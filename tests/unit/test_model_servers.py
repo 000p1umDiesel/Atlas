@@ -41,7 +41,7 @@ def test_served_roles_skip_api_and_disabled():
     assert [s.role for s in served_roles(full, ["llm"])] == ["llm"]
     with_vision = settings(vision=VisionSettings(enabled=True), llm=LOCAL_LLM)
     assert [s.role for s in served_roles(with_vision)] == ["embedder", "vision", "llm"]
-    with pytest.raises(ServeError, match="unknown role nope"):
+    with pytest.raises(ServeError, match="неизвестная роль nope"):
         served_roles(full, ["nope"])
 
 
@@ -154,10 +154,10 @@ def test_bring_up_of_one_role_keeps_the_other_servers():
 
 def test_wait_ready_reports_exited_and_slow_servers():
     served = served_roles(settings())
-    with pytest.raises(ServeError, match="embedder: llama-server exited"):
+    with pytest.raises(ServeError, match="embedder: llama-server завершился"):
         wait_ready(served, FakeRunner(dead={"embedder"}), 60, ready=lambda s: False)
     clock = iter(range(0, 1000, 100))
-    with pytest.raises(ServeError, match="embedder not ready after 150 s"):
+    with pytest.raises(ServeError, match="готовности за 150 с"):
         wait_ready(
             served,
             FakeRunner(),
@@ -172,10 +172,10 @@ def test_wait_ready_reports_exited_and_slow_servers():
     ("respond", "state"),
     [
         (lambda request: httpx.Response(200), "ready"),
-        (lambda request: httpx.Response(503), "loading the model"),
+        (lambda request: httpx.Response(503), "загрузка модели"),
         (lambda request: httpx.Response(500), "HTTP 500"),
         (lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused")),
-         "starting or downloading the model"),
+         "запуск или скачивание модели"),
     ],
 )  # fmt: skip
 def test_health_state_says_what_the_server_is_doing(respond, state):

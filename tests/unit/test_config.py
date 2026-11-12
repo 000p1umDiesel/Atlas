@@ -208,13 +208,13 @@ def test_yaml_list_of_one_key_mappings(tmp_path, clean_env):
 @pytest.mark.parametrize(
     ("value", "problem"),
     [
-        (["Person", "person"], "duplicate"),
-        ({"Person": "a", "PERSON": "b"}, "duplicate"),
-        (["Person", "  "], "blank"),
-        ({"": "x", "Other": ""}, "blank"),
+        (["Person", "person"], "повторяется"),
+        ({"Person": "a", "PERSON": "b"}, "повторяется"),
+        (["Person", "  "], "пустое"),
+        ({"": "x", "Other": ""}, "пустое"),
         (["Per:son", "Other"], "':'"),
-        (["Per\nson", "Other"], "newline"),
-        ([{"Person": "a", "Other": "b"}], "one key"),
+        (["Per\nson", "Other"], "перевод строки"),
+        ([{"Person": "a", "Other": "b"}], "одним ключом"),
     ],
 )
 def test_bad_entity_type_names_are_rejected(value, problem):
@@ -224,12 +224,12 @@ def test_bad_entity_type_names_are_rejected(value, problem):
 
 def test_vision_skip_takes_docling_picture_classes():
     assert VisionSettings(skip=["logo", "bar_chart"]).skip == ["logo", "bar_chart"]
-    with pytest.raises(ValueError, match="unknown picture class logotype"):
+    with pytest.raises(ValueError, match="неизвестный класс картинок logotype"):
         VisionSettings(skip=["logotype"])
 
 
 def test_serve_requires_what_the_backend_needs():
-    with pytest.raises(ValueError, match="embedder.base_url is required for serve: api"):
+    with pytest.raises(ValueError, match="embedder.base_url обязателен при serve: api"):
         EmbedderSettings(serve="api")
     local = LLMSettings(model="Qwen/Qwen3-8B", serve="llamacpp", base_url=None)
     assert local.url == "http://localhost:8000/v1" and local.weights == "Qwen/Qwen3-8B"

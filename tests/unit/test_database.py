@@ -64,7 +64,7 @@ def test_missing_database_url_is_a_clean_cli_error(monkeypatch):
     monkeypatch.setattr(cli.common, "load_settings", lambda *args: settings)
     result = CliRunner().invoke(cli.app, ["status"])
     assert result.exit_code == 2
-    assert "Set MISSING_TEST_PG (or MISSING_TEST_DATABASE_URL)" in result.output
+    assert "задайте MISSING_TEST_PG (или MISSING_TEST_DATABASE_URL)" in result.output
     assert "Traceback" not in result.output
 
 

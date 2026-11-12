@@ -31,7 +31,7 @@ def test_partial_publication_is_rejected_without_replacing_snapshot(graph):
     revision = graph.analysis_status()["revision"]
     assert graph.publish_analysis(revision, score_rows("e1", "e2"), {})
     run = graph.analysis_status()["run_id"]
-    with pytest.raises(ValueError, match="complete"):
+    with pytest.raises(ValueError, match="все сущности"):
         graph.publish_analysis(revision, score_rows("e1"), {})
     assert graph.analysis_status()["run_id"] == run
     assert graph.analysis_scores(["e1", "e2"]) == {"e1": 1.0, "e2": 2.0}

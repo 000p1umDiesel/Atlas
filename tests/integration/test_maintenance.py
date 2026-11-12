@@ -148,13 +148,13 @@ async def test_reindex_reports_progress(graph, docs, settings):
     reindex(app, progress=progress)
     entities, pages = len(app.graph.entities()), len(app.graph.wiki_pages())
     assert progress.steps() == [
-        ("step", "reindex chunks", 2),  # документы
-        ("step", "reindex entities", entities),
-        ("step", "reindex wiki", pages),
+        ("step", "переиндексация чанков", 2),  # документы
+        ("step", "переиндексация сущностей", entities),
+        ("step", "переиндексация wiki", pages),
     ]
-    assert progress.advanced("reindex chunks") == [("advance", 1, False)] * 2
-    assert sum(n for _, n, _ in progress.advanced("reindex entities")) == entities
-    assert progress.advanced("reindex wiki") == [("advance", 1, False)] * pages
+    assert progress.advanced("переиндексация чанков") == [("advance", 1, False)] * 2
+    assert sum(n for _, n, _ in progress.advanced("переиндексация сущностей")) == entities
+    assert progress.advanced("переиндексация wiki") == [("advance", 1, False)] * pages
     app.registry.close()
 
 
@@ -202,7 +202,7 @@ async def test_reindex_refuses_missing_inputs_before_dropping_index(graph, docs,
                 (settings.wiki.dir / page.path).unlink()
             else:
                 (settings.wiki.dir / page.path).write_bytes(b"\xff")
-        with pytest.raises(ReindexError, match="missing|unreadable"):
+        with pytest.raises(ReindexError, match="отсутствует|не читается"):
             reindex(app)
         assert chunk_payloads(app) == before
         assert app.registry.get_meta("embedder") == signature
@@ -279,11 +279,13 @@ def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tm
     cli_project(32)  # например, MRL-усечение: embedder.dim 768 -> 512
     refused = runner.invoke(cli.app, ["ingest", "docs"])
     assert refused.exit_code == 2, refused.output
-    assert "has dim 64, config 32" in refused.output and "mnogobase reindex" in refused.output
+    assert (
+        "размерность 64, а в конфиге 32" in refused.output and "mnogobase reindex" in refused.output
+    )
 
     result = runner.invoke(cli.app, ["reindex"])
     assert result.exit_code == 0, result.output
-    assert "reindexed:" in result.output
+    assert "переиндексировано:" in result.output
 
     settings = load_settings(tmp_path / "config.yaml")
     app = cli.common.build_app(settings)
@@ -299,7 +301,7 @@ def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tm
         app.close()
     again = runner.invoke(cli.app, ["ingest", "docs"])
     assert again.exit_code == 0, again.output
-    assert "skipped 2" in again.output
+    assert "пропущено 2" in again.output
 
 
 def test_cli_template_change_requires_reindex(cli_project, tmp_path):
@@ -314,7 +316,7 @@ def test_cli_template_change_requires_reindex(cli_project, tmp_path):
     for args in (["ingest", "docs"], ["ask", "what is attention?"]):
         refused = runner.invoke(cli.app, args)
         assert refused.exit_code == 2, refused.output
-        assert "templates changed" in refused.output, refused.output
+        assert "изменились шаблоны эмбеддера" in refused.output, refused.output
         assert "mnogobase reindex" in refused.output
 
     result = runner.invoke(cli.app, ["reindex"])
@@ -359,7 +361,7 @@ def test_cli_reindex_interrupted_at_a_new_dimension_can_be_rerun(
 
     result = runner.invoke(cli.app, ["reindex"])  # preflight проходит, повторный запуск завершается
     assert result.exit_code == 0, result.output
-    assert "reindexed:" in result.output
+    assert "переиндексировано:" in result.output
     settings = load_settings(tmp_path / "config.yaml")
     app = cli.common.build_app(settings)
     try:
@@ -369,4 +371,4 @@ def test_cli_reindex_interrupted_at_a_new_dimension_can_be_rerun(
         app.close()
     again = runner.invoke(cli.app, ["ingest", "docs"])
     assert again.exit_code == 0, again.output
-    assert "skipped 2" in again.output
+    assert "пропущено 2" in again.output

@@ -36,7 +36,7 @@ REINDEX_IN_PROGRESS = "reindex-in-progress"
 class ReindexError(RuntimeError):
     """`reindex` не может выполниться.
 
-    Если сообщение говорит "nothing was changed", ошибка найдена до удаления коллекций и
+    Если сообщение говорит "ничего не изменено", ошибка найдена до удаления коллекций и
     старый индекс цел; иначе (страница wiki пропала по ходу) индекс неполон, в meta стоит
     маркер, и `reindex` нужно запустить снова."""
 
@@ -50,11 +50,11 @@ def _check_embedder(app: App) -> None:
     try:
         got = len(app.embedder.embed_query("dimension check"))
     except ValueError as exc:  # напр. truncate_normalize: модель отдаёт меньше измерений
-        raise ReindexError(f"embedder check failed: {exc}; nothing was changed") from exc
+        raise ReindexError(f"проверка эмбеддера не прошла: {exc}; ничего не изменено") from exc
     if got != expected:
         raise ReindexError(
-            f"embedder check failed: it returns {got} dims, config expects {expected}; "
-            "nothing was changed"
+            f"проверка эмбеддера не прошла: размерность его векторов {got}, а конфиг ждёт "
+            f"{expected}; ничего не изменено"
         )
 
 
@@ -69,7 +69,7 @@ def _document_input(app: App, doc_id: str):
         stored = app.graph.doc_chunks(doc_id)
         if stored is None:
             raise ReindexError(
-                f"missing or unreadable document {doc_id}; restore its cache or graph data"
+                f"документ {doc_id} отсутствует или не читается: восстановите его кэш чанков или данные в графе"
             ) from None
         return stored
 
@@ -107,14 +107,14 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
         try:
             _document_input(app, doc_id)
         except ReindexError as exc:
-            raise ReindexError(f"{exc}; nothing was changed") from exc
+            raise ReindexError(f"{exc}; ничего не изменено") from exc
     pages = app.graph.wiki_pages()
     for row in pages:
         try:
             (app.settings.wiki.dir / row.path).read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise ReindexError(
-                f"missing or unreadable wiki page {row.path}; restore it before reindex; nothing was changed"
+                f"страница wiki {row.path} отсутствует или не читается: восстановите её до reindex; ничего не изменено"
             ) from exc
     # маркер ставится до удаления коллекций: прерванный reindex не оставит годную на вид
     # сигнатуру рядом с неполным индексом
@@ -125,7 +125,7 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     stats = {"chunks": 0, "entities": 0, "wiki_sections": 0}
 
     # каждый документ с завершённой стадией embed, что бы ни было на поздних стадиях
-    progress.step("reindex chunks", len(doc_ids))
+    progress.step("переиндексация чанков", len(doc_ids))
     for doc_id in doc_ids:
         doc, chunks = _document_input(app, doc_id)
         app.pipeline.index_chunks(doc, chunks)
@@ -136,7 +136,7 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
         progress.advance()
 
     entities = app.graph.entities()
-    progress.step("reindex entities", len(entities))
+    progress.step("переиндексация сущностей", len(entities))
     for start in range(0, len(entities), ENTITY_BATCH):
         batch = entities[start : start + ENTITY_BATCH]
         dense = app.embedder.embed_documents([entity_embed_input(e) for e in batch])
@@ -144,12 +144,12 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
         progress.advance(len(batch))
     stats["entities"] = len(entities)
 
-    progress.step("reindex wiki", len(pages))
+    progress.step("переиндексация wiki", len(pages))
     for row in pages:
         file = app.settings.wiki.dir / row.path
         if not file.exists():
             raise ReindexError(
-                f"wiki page {row.path} disappeared during reindex; restore it and rerun reindex"
+                f"страница wiki {row.path} пропала во время reindex: восстановите её и запустите `mnogobase reindex` снова"
             )
         # page_id == entity_id: одна страница на сущность
         text = file.read_text(encoding="utf-8")

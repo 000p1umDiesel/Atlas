@@ -38,9 +38,9 @@ from mnogobase.stores.registry import Registry
 
 PROMPT_VERSION = "extract-v4"
 TYPES_CHANGED = (
-    "entity types changed in config: already-ingested documents keep their old types "
-    "(new and changed documents use the new ones); run `mnogobase reset`, then "
-    "`mnogobase ingest`, to re-extract everything"
+    "типы сущностей в конфиге изменились: уже загруженные документы сохраняют старые типы "
+    "(новые и изменённые документы получают новые); чтобы извлечь всё заново, запустите "
+    "`mnogobase reset`, затем `mnogobase ingest`"
 )
 
 

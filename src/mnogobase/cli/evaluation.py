@@ -46,7 +46,7 @@ from mnogobase.ingest.processing import corpus_snapshot, measured_ingest
 from mnogobase.retrieval import Mode
 from mnogobase.stores.registry import ingest_lock
 
-app = typer.Typer(no_args_is_help=True, help="Compare retrieval modes with Ragas metrics.")
+app = typer.Typer(no_args_is_help=True, help="Сравнение режимов retrieval по метрикам Ragas")
 common.app.add_typer(app, name="eval")
 
 
@@ -85,9 +85,9 @@ def _progress(console):
         if event == "start":
             total, remaining = fields["total"], fields["remaining"]
             console.print(
-                f"Planned: {total}; completed: {total - remaining}; remaining: {remaining}"
+                f"Запланировано: {total}; выполнено: {total - remaining}; осталось: {remaining}"
             )
-            task = bars.add_task("starting", total=total, completed=total - remaining)
+            task = bars.add_task("подготовка", total=total, completed=total - remaining)
         elif event == "item":
             bars.update(task, description=escape(fields["label"]))
         elif event == "done":
@@ -98,14 +98,14 @@ def _progress(console):
 
     with bars:
         yield update
-    console.print(f"Finished phase; failed/undefined attempts: {failed}")
+    console.print(f"Фаза завершена; попыток с ошибкой или без оценки: {failed}")
 
 
 def _print_summary(output: Path, console):
     """Пересобирает отчёты по сохранённым артефактам, печатает сводную таблицу и
     возвращает её строки (список словарей из `summary.csv`)."""
     summary = report(output)
-    table = Table("approach", "metric", "mean", "ok/planned", "skipped", "error/undefined/missing")
+    table = Table("подход", "метрика", "среднее", "ok/план", "пропущено", "error/undefined/missing")
     for row in summary:
         table.add_row(
             row["approach"],
@@ -116,22 +116,31 @@ def _print_summary(output: Path, console):
             f"{row['error']}/{row['undefined']}/{row['missing']}",
         )
     console.print(table)
-    console.print(f"Reports: {escape(str(output / 'report.md'))}, details.csv, summary.csv")
+    console.print(f"Отчёты: {escape(str(output / 'report.md'))}, details.csv, summary.csv")
     return summary
 
 
 @app.command()
 def run(
     dataset: Annotated[
-        Path, typer.Argument(help="JSONL questions with id, question, optional reference.")
+        Path, typer.Argument(help="Вопросы в JSONL: id, question и необязательный reference")
     ],
-    output: Annotated[Path, typer.Option("--output", "-o", help="New or matching run directory.")],
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Новый каталог запуска или каталог с тем же планом"),
+    ],
     mode: Annotated[
         list[Mode] | None,
-        typer.Option("--mode", "-m", help="Repeat to select modes (default: rag, wiki, graph)."),
+        typer.Option(
+            "--mode", "-m", help="Режим; повторите для нескольких (по умолчанию rag, wiki, graph)"
+        ),
     ] = None,
-    limit: Annotated[int | None, typer.Option("--limit", min=1)] = None,
-    k: Annotated[int | None, typer.Option("--k", min=1)] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", min=1, help="Взять только первые N вопросов")
+    ] = None,
+    k: Annotated[
+        int | None, typer.Option("--k", min=1, help="Сколько результатов берёт каждый retriever")
+    ] = None,
 ) -> None:
     """Сгенерировать и сохранить ответы на вопросы набора в выбранных режимах.
 
@@ -167,7 +176,8 @@ def run(
     except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
         common.fail(exc)
     common.console.print(
-        f"Answers saved in {escape(str(output))}; failed: {failed}. Next: eval score {escape(str(output))}"
+        f"Ответы сохранены в {escape(str(output))}; с ошибкой: {failed}. "
+        f"Дальше: `mnogobase eval score {escape(str(output))}`"
     )
     if failed:
         raise typer.Exit(1)
@@ -175,10 +185,10 @@ def run(
 
 @app.command()
 def score(
-    output: Annotated[Path, typer.Argument(help="Saved run directory.")],
+    output: Annotated[Path, typer.Argument(help="Каталог сохранённого запуска")],
     metric: Annotated[
         list[str] | None,
-        typer.Option("--metric", help="Repeat to select metrics; default: all five."),
+        typer.Option("--metric", help="Метрика; повторите для нескольких (по умолчанию все пять)"),
     ] = None,
 ) -> None:
     """Оценить сохранённые ответы метриками Ragas с LLM-судьёй.
@@ -203,7 +213,9 @@ def score(
 
 
 @app.command(name="report")
-def report_command(output: Annotated[Path, typer.Argument(help="Saved run directory.")]) -> None:
+def report_command(
+    output: Annotated[Path, typer.Argument(help="Каталог сохранённого запуска")],
+) -> None:
     """Пересобрать отчёты по сохранённым ответам и оценкам.
 
     Пишет report.md, summary.csv, details.csv и файлы сравнения; модели и сервисы не
@@ -226,10 +238,10 @@ class Phase(StrEnum):
 
 @app.command("ingest")
 def ingest_measured(
-    paths: Annotated[list[Path], typer.Argument(help="Sources to ingest and measure.")],
-    output: Annotated[Path, typer.Option("--output", "-o", help="Experiment directory.")],
+    paths: Annotated[list[Path], typer.Argument(help="Источники для загрузки с замером")],
+    output: Annotated[Path, typer.Option("--output", "-o", help="Каталог эксперимента")],
     phase: Annotated[
-        Phase, typer.Option(help="Label initial construction or later changes.")
+        Phase, typer.Option(help="Метка замера: первичная сборка (build) или обновление (update)")
     ] = Phase.BUILD,
 ) -> None:
     """Загрузить документы с замером времени и токенов для отчёта о затратах.
@@ -245,7 +257,8 @@ def ingest_measured(
             locks.callback(corpus_lock.release)
             if (output / "run.json").exists():
                 raise ValueError(
-                    "This experiment already has an answer plan; use a new output directory for updates"
+                    "У этого эксперимента уже есть план ответов. "
+                    "Для замеров обновлений укажите новый каталог --output."
                 )
             common.preflight(settings, common.INGEST_CHECKS)
             application = common.build_app(settings)
@@ -266,20 +279,27 @@ def ingest_measured(
                 application.close()
     except (OSError, ValueError, RuntimeError, filelock.Timeout, LockBusyError) as exc:
         common.fail(exc)
-    common.console.print(f"Processing measurements: {escape(str(output / 'processing.jsonl'))}")
+    common.console.print(f"Замеры обработки: {escape(str(output / 'processing.jsonl'))}")
     if result.failed or (result.wiki and result.wiki.failed):
         raise typer.Exit(1)
 
 
 @app.command()
 def benchmark(
-    dataset: Annotated[Path, typer.Argument(help="Question dataset JSONL.")],
-    output: Annotated[Path, typer.Option("--output", "-o")],
-    mode: Annotated[list[Mode] | None, typer.Option("--mode", "-m")] = None,
-    limit: Annotated[int | None, typer.Option(min=1)] = None,
-    k: Annotated[int | None, typer.Option(min=1)] = None,
+    dataset: Annotated[Path, typer.Argument(help="Набор вопросов в JSONL")],
+    output: Annotated[Path, typer.Option("--output", "-o", help="Каталог запуска")],
+    mode: Annotated[
+        list[Mode] | None,
+        typer.Option(
+            "--mode", "-m", help="Режим; повторите для нескольких (по умолчанию rag, wiki, graph)"
+        ),
+    ] = None,
+    limit: Annotated[int | None, typer.Option(min=1, help="Взять только первые N вопросов")] = None,
+    k: Annotated[
+        int | None, typer.Option(min=1, help="Сколько результатов берёт каждый retriever")
+    ] = None,
     skip_score: Annotated[
-        bool, typer.Option(help="Save answers/report without calling a judge.")
+        bool, typer.Option(help="Сохранить ответы и отчёт без вызова судьи")
     ] = False,
 ) -> None:
     """Полный прогон: ответы, оценка Ragas и отчёты.

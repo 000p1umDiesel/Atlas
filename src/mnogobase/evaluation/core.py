@@ -47,11 +47,11 @@ def prepare_run(
     questions = load_questions(dataset)
     modes = list(("rag", "wiki", "graph") if modes is None else modes)
     if not modes or len(set(modes)) != len(modes) or set(modes) - set(MODES):
-        raise ValueError("Choose distinct modes: rag, wiki, graph, all")
+        raise ValueError("Выберите неповторяющиеся режимы из списка: rag, wiki, graph, all")
     if limit is not None and limit < 1:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit должен быть положительным")
     if k is not None and k < 1:
-        raise ValueError("k must be positive")
+        raise ValueError("k должен быть положительным")
     snapshot = settings.model_dump(mode="json", exclude={"evaluation", "logs_dir", "runs_dir"})
     config = {
         "implementation": 1,
@@ -75,7 +75,7 @@ def load_run(output: Path) -> dict:
     path = output / "run.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if manifest.get("fingerprint") != fingerprint(manifest["config"]):
-        raise ValueError(f"{path}: invalid manifest fingerprint")
+        raise ValueError(f"{path}: отпечаток манифеста не совпадает с содержимым")
     return manifest
 
 
@@ -97,13 +97,13 @@ def planned_answers(output: Path):
             if row.get("question") != sample["question"] or row.get("reference") != sample.get(
                 "reference"
             ):
-                raise ValueError(f"Answer does not match dataset: {sample['id']} / {mode}")
+                raise ValueError(f"Ответ не соответствует набору вопросов: {sample['id']} / {mode}")
             if row["status"] == "ok":
                 answer = Answer.model_validate(row)
                 if not answer.text.strip():
-                    raise ValueError(f"Empty answer: {sample['id']} / {mode}")
+                    raise ValueError(f"Пустой ответ: {sample['id']} / {mode}")
                 if "contexts" not in row or not all(isinstance(c, str) for c in row["contexts"]):
-                    raise ValueError(f"Missing full contexts: {sample['id']} / {mode}")
+                    raise ValueError(f"Нет полных текстов контекста: {sample['id']} / {mode}")
             planned.append(row)
     return manifest, planned
 
@@ -143,7 +143,7 @@ async def run_answers(
                 translator,
             )
             if not answer.text.strip():
-                raise ValueError("Model returned an empty answer")
+                raise ValueError("Модель вернула пустой ответ")
             result = {**sample, **answer.model_dump(mode="json"), "status": "ok"}
         except Exception as exc:
             result = {**sample, "mode": mode, "status": "error", "error": type(exc).__name__}
@@ -173,7 +173,7 @@ async def score_run(output: Path, judge: dict, *, names=None, metrics=None, prog
     пересобираются отчёты."""
     names = list(METRIC_NAMES if names is None else names)
     if not names or len(set(names)) != len(names) or set(names) - set(METRIC_NAMES):
-        raise ValueError(f"Choose distinct metrics: {', '.join(METRIC_NAMES)}")
+        raise ValueError(f"Выберите неповторяющиеся метрики из списка: {', '.join(METRIC_NAMES)}")
     manifest, planned = planned_answers(output)
     ensure_manifest(
         output / "judge.json",
@@ -201,7 +201,7 @@ async def score_run(output: Path, judge: dict, *, names=None, metrics=None, prog
     try:
         needed = {name for row, name in work if not skip_reason(row, name)}
         if needed and metrics is None:
-            _notify(progress, "item", label="initializing Ragas judge")
+            _notify(progress, "item", label="инициализация судьи Ragas")
             adapter = RagasJudge(judge)
             metrics = adapter.metrics(needed)
         for row, name in work:

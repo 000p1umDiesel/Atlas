@@ -36,7 +36,7 @@ def test_algorithm_memory_is_added_to_projection_memory():
     from mnogobase.ops.graph_analysis import AnalysisError, check_memory
 
     check_memory(700_000, 300_000, budget_mb=1)
-    with pytest.raises(AnalysisError, match="memory"):
+    with pytest.raises(AnalysisError, match="памяти"):
         check_memory(700_000, 400_000, budget_mb=1)
 
 

@@ -46,7 +46,7 @@ def test_paired_comparison_uses_same_questions_and_reports_categories(tmp_path):
     assert float(faith["delta_b_minus_a"]) == -0.5
     categories = list(csv.DictReader((output / "by_category.csv").open()))
     assert {r["category"] for r in categories} == {"fact", "multi_hop"}
-    assert "paired" in (output / "report.md").read_text().lower()
+    assert "## Парные сравнения" in (output / "report.md").read_text()
 
 
 def test_processing_report_keeps_failed_attempts_and_labels_shared_cost(tmp_path):
@@ -83,5 +83,5 @@ def test_processing_report_keeps_failed_attempts_and_labels_shared_cost(tmp_path
     rows = list(csv.DictReader((output / "processing.csv").open()))
     assert len(rows) == 2 and {r["status"] for r in rows} == {"error", "ok"}
     text = (output / "report.md").read_text()
-    assert "shared preprocessing" in text
+    assert "общая предобработка" in text
     assert "200" in text  # Failed work is included in total wall time.

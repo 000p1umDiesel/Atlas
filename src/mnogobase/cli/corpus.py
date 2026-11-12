@@ -29,16 +29,16 @@ from mnogobase.stores.qdrant_store import DimensionMismatchError
 from mnogobase.stores.registry import Registry
 
 app = common.app
-wiki_app = typer.Typer(no_args_is_help=True, help="Wiki commands.")
+wiki_app = typer.Typer(no_args_is_help=True, help="Команды wiki")
 app.add_typer(wiki_app, name="wiki")
 
 
 @app.command()
 def ingest(
-    paths: Annotated[list[Path] | None, typer.Argument(help="Files or folders to ingest.")] = None,
-    no_wiki: Annotated[bool, typer.Option("--no-wiki", help="Skip the wiki update.")] = False,
+    paths: Annotated[list[Path] | None, typer.Argument(help="Файлы или папки для загрузки")] = None,
+    no_wiki: Annotated[bool, typer.Option("--no-wiki", help="Не обновлять wiki")] = False,
     retry_failed: Annotated[
-        bool, typer.Option("--retry-failed", help="Re-run failed stages.")
+        bool, typer.Option("--retry-failed", help="Повторить упавшие стадии")
     ] = False,
 ) -> None:
     """Загрузить документы в базу знаний и обновить wiki.
@@ -60,7 +60,7 @@ def ingest(
                 # без путей `--retry-failed` повторяет все файлы с упавшими стадиями
                 targets = [Path(p) for p in application.registry.failed_paths()]
             if not targets:
-                console.print("Nothing to ingest.")
+                console.print("Нечего загружать.")
                 return
             run_id = new_run_id()
             with render.progress() as progress:
@@ -83,13 +83,15 @@ def ingest(
     finally:
         lock.release()
     console.print(
-        f"run {run_id}: processed {len(report.processed)}, skipped {len(report.skipped)}, "
-        f"failed {len(report.failed)}"
+        f"запуск {run_id}: обработано {len(report.processed)}, пропущено {len(report.skipped)}, "
+        f"с ошибкой {len(report.failed)}"
     )
     if report.wiki:
         render.print_wiki_report(report.wiki)
     if report.types_warning:
-        console.print(f"[yellow]warning:[/yellow] {escape(report.types_warning)}", soft_wrap=True)
+        console.print(
+            f"[yellow]предупреждение:[/yellow] {escape(report.types_warning)}", soft_wrap=True
+        )
     for path, error in report.failed.items():
         console.print(f"[red]✗[/red] {escape(path)}: {escape(error)}")
     if report.failed or (report.wiki and report.wiki.failed):
@@ -100,15 +102,20 @@ def ingest(
 def remove(
     paths: Annotated[
         list[Path] | None,
-        typer.Argument(help="Registered source files or folders; files on disk are preserved."),
+        typer.Argument(
+            help="Зарегистрированные файлы или папки источников; файлы на диске сохраняются"
+        ),
     ] = None,
     missing: Annotated[
-        bool, typer.Option("--missing", help="Only forget missing sources, optionally under PATH.")
+        bool,
+        typer.Option(
+            "--missing", help="Забыть только пропавшие источники (при необходимости внутри PATH)"
+        ),
     ] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="List matching registered sources without deleting.")
+        bool, typer.Option("--dry-run", help="Показать подходящие источники, ничего не удаляя")
     ] = False,
-    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Не спрашивать подтверждение")] = False,
 ) -> None:
     """Забыть источники: удалить их знания из индексов, графа и wiki.
 
@@ -129,16 +136,16 @@ def remove(
         finally:
             registry.close()
         if not selected and not recovery:
-            console.print("No matching registered sources.")
+            console.print("Подходящих зарегистрированных источников нет.")
             return
-        console.print(f"Selected sources: {len(selected)} (original files are preserved)")
+        console.print(f"Выбрано источников: {len(selected)} (сами файлы сохраняются)")
         for row in selected:
             console.print(f"  {escape(row.path)}", soft_wrap=True)
         if recovery:
-            console.print("Pending removals and wiki updates will also be resumed.")
+            console.print("Заодно будут доделаны незавершённые удаления и обновления wiki.")
         if dry_run:
             return
-        if not yes and not typer.confirm("Remove this knowledge and update wiki?", default=False):
+        if not yes and not typer.confirm("Удалить эти знания и обновить wiki?", default=False):
             raise typer.Exit(1)
         common.preflight(settings)
         application = common.build_app(settings)
@@ -163,19 +170,19 @@ def remove(
     finally:
         lock.release()
     console.print(
-        f"run {run_id}: removed {len(report.removed)} source paths, "
-        f"retained {len(report.retained)} documents with another copy"
+        f"запуск {run_id}: удалено путей источников: {len(report.removed)}, "
+        f"сохранено документов с другой копией: {len(report.retained)}"
     )
     if report.wiki:
         render.print_wiki_report(report.wiki)
         if report.wiki.failed:
-            console.print("Run `mnogobase wiki build` to retry the remaining pages.")
+            console.print("Оставшиеся страницы можно повторить командой `mnogobase wiki build`.")
             raise typer.Exit(1)
 
 
 @wiki_app.command("build")
 def wiki_build(
-    rebuild_all: Annotated[bool, typer.Option("--all", help="Regenerate every page.")] = False,
+    rebuild_all: Annotated[bool, typer.Option("--all", help="Пересобрать все страницы")] = False,
 ) -> None:
     """Пересобрать страницы wiki для сущностей с новыми упоминаниями.
 

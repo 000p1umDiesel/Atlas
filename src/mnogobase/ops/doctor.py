@@ -153,17 +153,17 @@ def run_checks(
                 if all(s.serve == "api" for s in wanted):
                     raise
                 problems.append(
-                    f"{url} is not reachable ({type(exc).__name__}): "
-                    "start the local models with `mnogobase models up`"
+                    f"{url} недоступен ({type(exc).__name__}): "
+                    "запустите локальные модели командой `mnogobase models up`"
                 )
                 continue
             for model in (s.model for s in wanted):
                 if model not in served:
-                    listed = ", ".join(sorted(served)) or "nothing"
-                    problems.append(f"{model} is not served by {url} (it serves {listed})")
+                    listed = ", ".join(sorted(served)) or "пуст"
+                    problems.append(f"{url} не отдаёт модель {model} (список моделей: {listed})")
         if problems:
             return Check("models", False, "; ".join(problems))
-        return Check("models", True, ", ".join(f"{r} {s.model}" for r, s in roles) + " available")
+        return Check("models", True, "доступны: " + ", ".join(f"{r} {s.model}" for r, s in roles))
 
     def tokenizer() -> Check:
         """Токенизатор чанкера загружается и считает токены (при `auto` — `/tokenize`
@@ -186,17 +186,17 @@ def run_checks(
         if resp.status_code in (404, 405):
             # некоторые OpenAI-совместимые endpoint'ы отдают chat completions без списка
             # моделей; 401/403 (неверный ключ) и прочие ошибки всё равно падают ниже
-            return Check("llm", True, f"{where} (models endpoint not available)")
+            return Check("llm", True, f"{where} (эндпоинт /models недоступен)")
         resp.raise_for_status()
         ids = {m["id"] for m in resp.json().get("data", [])}
         if not ids or settings.llm.model in ids:
             return Check("llm", True, where)
-        return Check("llm", False, f"{settings.llm.model} is not served by {settings.llm.url}")
+        return Check("llm", False, f"{settings.llm.url} не отдаёт модель {settings.llm.model}")
 
     def qdrant() -> Check:
         """Qdrant доступен, и размерность коллекции чанков совпадает с embedder.
 
-        Нет коллекции — успех ("no index yet"). При `check_dim=False` несовпадение только
+        Нет коллекции — успех ("индекса пока нет"). При `check_dim=False` несовпадение только
         упоминается, потому что `reindex` пересоздаст коллекции."""
         # проверка сообщает о доступности; warning клиента о проверке версии пропускаем
         client = connect_qdrant(settings.qdrant, timeout=int(timeout), check_compatibility=False)
@@ -206,18 +206,20 @@ def run_checks(
         finally:
             client.close()
         if dim is None:
-            return Check("qdrant", True, f"{settings.qdrant.url} (no index yet)")
+            return Check("qdrant", True, f"{settings.qdrant.url} (индекса пока нет)")
         expected = embedder_dim()
         if expected is None:
-            detail = f"dim {dim}, not compared: the embedder is not reachable"
+            detail = f"размерность {dim}, не сверена: эмбеддер недоступен"
             return Check("qdrant", True, f"{settings.qdrant.url} ({detail})")
         if dim != expected:
-            source = "embedder" if settings.embedder.dim == "auto" else "config"
-            mismatch = f"{store.chunks} has dim {dim}, {source} {expected}"
+            source = "эмбеддер отдаёт" if settings.embedder.dim == "auto" else "в конфиге"
+            mismatch = f"у {store.chunks} размерность {dim}, а {source} {expected}"
             if check_dim:
-                return Check("qdrant", False, f"{mismatch}: run `mnogobase reindex`")
-            return Check("qdrant", True, f"{settings.qdrant.url} ({mismatch}: rebuilt)")
-        return Check("qdrant", True, f"{settings.qdrant.url} (dim {dim})")
+                return Check("qdrant", False, f"{mismatch}: выполните `mnogobase reindex`")
+            return Check(
+                "qdrant", True, f"{settings.qdrant.url} ({mismatch}: reindex пересоздаст коллекции)"
+            )
+        return Check("qdrant", True, f"{settings.qdrant.url} (размерность {dim})")
 
     def neo4j() -> Check:
         """Neo4j принимает подключение с настроенными учётными данными."""
@@ -236,9 +238,9 @@ def run_checks(
             status = graph.plugin_status()
         finally:
             graph.close()
-        detail = f"APOC {status['apoc'] or 'unavailable'}, GDS {status['gds'] or 'unavailable'}"
+        detail = f"APOC {status['apoc'] or 'недоступен'}, GDS {status['gds'] or 'недоступен'}"
         if status["missing"]:
-            detail += "; missing: " + ", ".join(status["missing"])
+            detail += "; нет процедур: " + ", ".join(status["missing"])
         # Плагины не нужны обычным ingest / rag / wiki; `graph analyze` проверяет их строго.
         return Check("graph_plugins", True, detail, warn=bool(status["missing"]))
 
@@ -249,9 +251,9 @@ def run_checks(
         неуспех с причиной."""
         db = database_target(settings)
         if not target_exists(db):
-            return Check("index", True, "no index yet")
+            return Check("index", True, "индекса пока нет")
         if embedder_dim() is None:
-            return Check("index", False, f"embedder dimension unknown: {unreachable[0]}")
+            return Check("index", False, f"размерность эмбеддера неизвестна: {unreachable[0]}")
         expected = embedder_signature(embedder)
         registry = Registry(db)
         try:
@@ -260,15 +262,15 @@ def run_checks(
             registry.close()
         mismatch = signature_mismatch(stored, embedder)
         if mismatch:
-            return Check("index", False, f"{mismatch}: run `mnogobase reindex`")
-        return Check("index", True, f"embedder {expected}")
+            return Check("index", False, f"{mismatch}: выполните `mnogobase reindex`")
+        return Check("index", True, f"эмбеддер {expected}")
 
     def types() -> Check:
         """Предупреждение, если часть корпуса извлечена с другим набором
         `extract.entity_types`."""
         db = database_target(settings)
         if not target_exists(db):
-            return Check("types", True, "no index yet")
+            return Check("types", True, "индекса пока нет")
         registry = Registry(db)
         try:
             stale = stale_entity_types(registry, settings.extract.entity_types)
@@ -276,7 +278,7 @@ def run_checks(
             registry.close()
         if stale:
             return Check("types", True, TYPES_CHANGED, warn=True)
-        return Check("types", True, f"{len(settings.extract.entity_types)} entity types")
+        return Check("types", True, f"типов сущностей: {len(settings.extract.entity_types)}")
 
     checks = {
         "device": device,

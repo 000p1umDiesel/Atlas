@@ -84,11 +84,11 @@ def read_jsonl(path: Path, *, recover_tail: bool = False) -> list[dict]:
         try:
             row = json.loads(line.decode("utf-8"))
             if not isinstance(row, dict):
-                raise ValueError("expected an object")
+                raise ValueError("ожидался JSON-объект")
         except (ValueError, TypeError) as exc:
             if recover_tail and number == len(lines) and not body.endswith(b"\n"):
                 break  # оборванную строку исправит append_jsonl перед следующей записью
-            raise ValueError(f"{path}, line {number}: {exc}") from exc
+            raise ValueError(f"{path}, строка {number}: {exc}") from exc
         rows.append(row)
     return rows
 

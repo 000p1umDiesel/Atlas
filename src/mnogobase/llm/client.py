@@ -367,4 +367,6 @@ class OpenAICompatLLM:
                         f"{last_error[:500]}\nReply again with only the corrected JSON.",
                     },
                 ]
-        raise StructuredOutputError(f"{schema.__name__}: {last_error[:500]}")
+        raise StructuredOutputError(
+            f"ответ модели не соответствует схеме {schema.__name__}: {last_error[:500]}"
+        )

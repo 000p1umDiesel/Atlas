@@ -63,7 +63,7 @@ def api_key(env_name: str | None) -> str:
     """Ключ API из переменной окружения `env_name`; без имени — заглушка `local` для
     локальных серверов без авторизации. Имя задано, а переменная пуста — `ValueError`."""
     if env_name and not os.environ.get(env_name):
-        raise ValueError(f"Set {env_name} for the evaluation endpoint")
+        raise ValueError(f"Задайте переменную окружения {env_name} для сервера судьи оценки")
     return os.environ[env_name] if env_name else "local"
 
 
@@ -109,7 +109,7 @@ async def evaluate_one(row: dict, name: str, metric) -> dict:
     разные наборы аргументов, поэтому они собираются по имени метрики. Делает сетевые
     вызовы судьи."""
     if name not in METRIC_NAMES:
-        raise ValueError(f"Unknown metric: {name}")
+        raise ValueError(f"Неизвестная метрика: {name}")
     reason = skip_reason(row, name)
     if reason:
         return {"status": "skipped", "reason": reason, "value": None}

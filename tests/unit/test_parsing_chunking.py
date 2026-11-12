@@ -312,7 +312,7 @@ def test_parse_image_caches_whole_image_description_before_chunking(
     ("status", "body", "error"),
     [
         (400, {"error": "invalid image"}, "HTTPStatusError"),
-        (200, {"choices": [{"message": {"content": ""}}]}, "empty description"),
+        (200, {"choices": [{"message": {"content": ""}}]}, "пустое описание"),
         (200, {"choices": []}, "IndexError"),
     ],
 )
@@ -407,7 +407,7 @@ def test_files_over_the_parsing_limits_fail_before_docling(tmp_path):
     pages = [Image.new("RGB", (100, 100), "white") for _ in range(3)]
     pages[0].save(pdf, save_all=True, append_images=pages[1:])
     parser = DoclingParser(ParsingSettings(max_pages=2, ocr=False), "cpu", tmp_path / "c")
-    with pytest.raises(docling_parser.ParseLimitError, match="3 pages"):
+    with pytest.raises(docling_parser.ParseLimitError, match="3 стр."):
         parser.parse(pdf, DOC)
     assert not parser.cache_path(DOC).exists()
 
@@ -417,7 +417,7 @@ def test_a_failed_description_fails_the_parse(tmp_path):
     doc = DoclingDocument(name="d")
     picture = doc.add_picture()
     picture.meta = PictureMeta(description=DescriptionMetaField(text="", created_by="vl"))
-    with pytest.raises(VisionError, match="1 of 1 pictures got no description"):
+    with pytest.raises(VisionError, match="1 из 1 изображений не получили описания"):
         docling_parser._check_descriptions(doc, VISION)
 
     shot = tmp_path / "shot.png"
@@ -428,11 +428,11 @@ def test_a_failed_description_fails_the_parse(tmp_path):
         attempts.append(request)
         raise httpx.ConnectError("refused")
 
-    with pytest.raises(VisionError, match="shot.png: the VLM at http://vl:8003/v1 failed: Conn"):
+    with pytest.raises(VisionError, match="shot.png: ошибка VLM по адресу http://vl:8003/v1: Conn"):
         docling_parser._describe_whole_image(
             DoclingDocument(name="s"), shot, VISION, _vlm(down), retry_wait=lambda state: 0
         )
     assert len(attempts) == 3  # сетевые ошибки повторяются
     empty = _vlm(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]}))
-    with pytest.raises(VisionError, match="returned an empty description"):
+    with pytest.raises(VisionError, match="вернула пустое описание"):
         docling_parser._describe_whole_image(DoclingDocument(name="s"), shot, VISION, empty)

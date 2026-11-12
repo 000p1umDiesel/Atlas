@@ -61,7 +61,9 @@ def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
     `enabled`; `roles` сужает список."""
     unknown = set(roles) - set(ROLES)
     if unknown:
-        raise ServeError(f"unknown role {', '.join(sorted(unknown))}: use {', '.join(ROLES)}")
+        raise ServeError(
+            f"неизвестная роль {', '.join(sorted(unknown))}: допустимы {', '.join(ROLES)}"
+        )
     candidates: list[tuple[str, ServedModel]] = [("embedder", settings.embedder)]
     if settings.rerank.enabled:
         candidates.append(("rerank", settings.rerank))
@@ -105,11 +107,11 @@ def health_state(served: Served, client: httpx.Client | None = None) -> str:
     try:
         response = (client or httpx).get(served.health_url, timeout=2)
     except httpx.TransportError:
-        return "starting or downloading the model"
+        return "запуск или скачивание модели"
     if response.status_code == 200:
         return "ready"
     if response.status_code == 503:  # модель ещё грузится в память
-        return "loading the model"
+        return "загрузка модели"
     return f"HTTP {response.status_code}"
 
 
@@ -164,7 +166,9 @@ class NativeRunner:
         `ServeError`."""
         binary = self._which("llama-server")
         if served and binary is None:
-            raise ServeError("llama-server not found: brew install llama.cpp")
+            raise ServeError(
+                "llama-server не найден: установите его через `brew install llama.cpp`"
+            )
         self._state.mkdir(parents=True, exist_ok=True)
         self._logs.mkdir(parents=True, exist_ok=True)
         for s in served:
@@ -210,7 +214,7 @@ class NativeRunner:
         Лога ещё нет — `ServeError`."""
         path = self.log_path(served.role)
         if not path.exists():
-            raise ServeError(f"no log yet: {path}")
+            raise ServeError(f"лога пока нет: {path}")
         subprocess.run(["tail", "-n", "200", *(["-f"] if follow else []), str(path)], check=False)
 
 
@@ -258,13 +262,13 @@ def wait_ready(
         for s in pending:
             if not runner.alive(s):
                 raise ServeError(
-                    f"{s.role}: llama-server exited, see `mnogobase models logs {s.role}`"
+                    f"{s.role}: llama-server завершился, смотрите `mnogobase models logs {s.role}`"
                 )
         elapsed = clock() - start
         if elapsed > timeout:
             names = ", ".join(s.role for s in pending)
             raise ServeError(
-                f"{names} not ready after {int(timeout)} s: see `mnogobase models logs`"
+                f"{names}: нет готовности за {int(timeout)} с, смотрите `mnogobase models logs`"
             )
         on_wait(pending, elapsed)
         sleep(5)

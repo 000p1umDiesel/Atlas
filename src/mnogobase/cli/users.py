@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+from typing import Annotated
 
 import typer
 
@@ -22,9 +23,9 @@ from mnogobase.service.errors import ServiceError
 from mnogobase.service.store import ServiceStore
 
 user_app = typer.Typer(
-    no_args_is_help=True, help="API accounts (created only here, never over HTTP)."
+    no_args_is_help=True, help="Учётные записи API (создаются только здесь, не через HTTP)"
 )
-api_app = typer.Typer(no_args_is_help=True, help="HTTP API for the knowledge base.")
+api_app = typer.Typer(no_args_is_help=True, help="HTTP API базы знаний")
 common.app.add_typer(user_app, name="user")
 common.app.add_typer(api_app, name="api")
 
@@ -49,7 +50,7 @@ def _call(operation):
     try:
         return operation()
     except DatabaseError:
-        typer.echo("PostgreSQL unavailable; check database configuration", err=True)
+        typer.echo("PostgreSQL недоступен. Проверьте настройки базы данных.", err=True)
         raise typer.Exit(2) from None
     except ServiceError as exc:
         typer.echo(exc.detail, err=True)
@@ -58,11 +59,21 @@ def _call(operation):
 
 def _password_option():
     """Пароль вводится скрыто и дважды; в истории оболочки он не остаётся."""
-    return typer.Option(..., "--password", prompt=True, hide_input=True, confirmation_prompt=True)
+    return typer.Option(
+        ...,
+        "--password",
+        prompt="Пароль",
+        hide_input=True,
+        confirmation_prompt="Повторите пароль",
+        help="Пароль (не короче 12 символов); без опции запрашивается скрыто",
+    )
 
 
 @user_app.command("create")
-def create_user(username: str, password: str = _password_option()):
+def create_user(
+    username: Annotated[str, typer.Argument(help="Имя пользователя")],
+    password: str = _password_option(),
+):
     """Создать учётную запись API.
 
     Пароль (не короче 12 символов) вводится скрыто и дважды. Печатает id и имя нового
@@ -73,28 +84,31 @@ def create_user(username: str, password: str = _password_option()):
 
 
 @user_app.command("passwd")
-def change_password(username: str, password: str = _password_option()):
+def change_password(
+    username: Annotated[str, typer.Argument(help="Имя пользователя")],
+    password: str = _password_option(),
+):
     """Сменить пароль пользователя; все его сессии отзываются.
 
     Новый пароль (не короче 12 символов) вводится скрыто и дважды."""
     _call(lambda: _store().set_password(username, password))
-    typer.echo("Password changed; sessions revoked")
+    typer.echo("Пароль изменён, сессии отозваны")
 
 
 @user_app.command("disable")
-def disable_user(username: str):
+def disable_user(username: Annotated[str, typer.Argument(help="Имя пользователя")]):
     """Отключить пользователя; все его сессии отзываются.
 
     Отключённый пользователь не может войти, пока его не включат снова (user enable)."""
     _call(lambda: _store().set_active(username, False))
-    typer.echo("User disabled; sessions revoked")
+    typer.echo("Пользователь отключён, сессии отозваны")
 
 
 @user_app.command("enable")
-def enable_user(username: str):
+def enable_user(username: Annotated[str, typer.Argument(help="Имя пользователя")]):
     """Снова включить отключённого пользователя."""
     _call(lambda: _store().set_active(username, True))
-    typer.echo("User enabled")
+    typer.echo("Пользователь включён")
 
 
 @user_app.command("list")
@@ -105,8 +119,8 @@ def list_users():
 
 @api_app.command("serve")
 def serve(
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8080, "--port", min=1, max=65535),
+    host: str = typer.Option("127.0.0.1", "--host", help="Адрес, на котором слушать"),
+    port: int = typer.Option(8080, "--port", min=1, max=65535, help="Порт"),
 ):
     """Запустить HTTP API базы знаний.
 

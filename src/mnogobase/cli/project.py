@@ -34,7 +34,7 @@ def doctor() -> None:
     совместимость индекса с текущим эмбеддером и типы сущностей. Статус warn — предупреждение,
     а не ошибка. Код выхода 1, если хотя бы одна проверка не прошла."""
     checks = common.run_checks(common.get_settings())
-    table = Table("check", "status", "detail")
+    table = Table("проверка", "статус", "подробности")
     for c in checks:
         table.add_row(c.name, render.check_status(c), escape(c.detail))
     common.console.print(table)
@@ -57,30 +57,32 @@ def status() -> None:
         files = registry.files()
         counts = Counter(f.status for f in files)
         console.print(
-            f"files: {len(files)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            f"файлов: {len(files)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
         )
         summary = registry.stage_summary()
-        table = Table("stage", "done", "failed", "pending", "running")
+        table = Table("стадия", "done", "failed", "pending", "running")
         for stage in STAGES:
             row = summary.get(stage, {})
             table.add_row(
                 stage, *(str(row.get(k, 0)) for k in ("done", "failed", "pending", "running"))
             )
         console.print(table)
-        console.print(f"entities waiting for wiki update: {len(registry.dirty())}")
+        console.print(f"сущностей ждут обновления wiki: {len(registry.dirty())}")
         removals = [doc_id for doc_id, _ in registry.pending_removals()]
-        console.print(f"pending document removals: {len(removals)}")
+        console.print(f"незавершённых удалений документов: {len(removals)}")
         if removals:
             console.print(
-                f"  unfinished: {', '.join(removals)} — the next ingest / remove / wiki build retries "
-                "them first",
+                f"  не завершены: {', '.join(removals)} — следующий ingest / remove / wiki build "
+                "доделает их первыми",
                 soft_wrap=True,
             )
         if stale_entity_types(registry, settings.extract.entity_types):
-            console.print(f"[yellow]warning:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True)
+            console.print(
+                f"[yellow]предупреждение:[/yellow] {escape(TYPES_CHANGED)}", soft_wrap=True
+            )
         errors = registry.stage_errors()
         if errors:
-            err_table = Table("doc_id", "stage", "error")
+            err_table = Table("doc_id", "стадия", "ошибка")
             for doc_id, stage, error in errors:
                 err_table.add_row(doc_id, stage, escape(error or ""))
             console.print(err_table)
@@ -112,8 +114,8 @@ def reindex() -> None:
     finally:
         lock.release()
     common.console.print(
-        f"reindexed: {stats['chunks']} chunks, {stats['entities']} entities, "
-        f"{stats['wiki_sections']} wiki sections"
+        f"переиндексировано: чанков {stats['chunks']}, сущностей {stats['entities']}, "
+        f"разделов wiki {stats['wiki_sections']}"
     )
 
 
@@ -122,16 +124,16 @@ def _reset_targets(settings: Settings) -> list[str]:
     подтверждением. Пути разрешаются в абсолютные, чтобы было видно, какой проект стирается."""
     wiki_dir = settings.wiki.dir.resolve()
     return [
-        f"Neo4j {settings.neo4j.uri}: all nodes in the default database",
-        f"Qdrant {settings.qdrant.url}: collections with prefix {settings.qdrant.prefix!r}",
-        f"registry in {database_target(settings)}; file caches in {settings.data_dir.resolve()}",
-        f"wiki pages in {wiki_dir}: entities/, index.md, log.md",
+        f"Neo4j {settings.neo4j.uri}: все узлы базы по умолчанию",
+        f"Qdrant {settings.qdrant.url}: коллекции с префиксом {settings.qdrant.prefix!r}",
+        f"registry в {database_target(settings)}; файловые кэши в {settings.data_dir.resolve()}",
+        f"страницы wiki в {wiki_dir}: entities/, index.md, log.md",
     ]
 
 
 @app.command()
 def reset(
-    yes: Annotated[bool, typer.Option("--yes", help="Do not ask for confirmation.")] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Не спрашивать подтверждение")] = False,
 ) -> None:
     """Удалить ВСЕ векторы, данные графа, состояние registry, кэши и страницы wiki.
 
@@ -145,16 +147,16 @@ def reset(
     if not project_exists(settings):
         # --yes это не обходит: неверный CWD или конфиг не должен стереть чужие данные
         console.print(
-            f"[red]No mnogobase project here: {escape(str(database_target(settings)))} "
-            "does not exist.[/red] Run reset from the project directory or pass its --config.",
+            f"[red]Здесь нет проекта mnogobase: {escape(str(database_target(settings)))} "
+            "не существует.[/red] Запустите reset из каталога проекта или укажите его --config.",
             soft_wrap=True,
         )
         raise typer.Exit(2)
     common.preflight(settings, common.RESET_CHECKS)
-    console.print("This deletes:", soft_wrap=True)
+    console.print("Будет удалено:", soft_wrap=True)
     for target in _reset_targets(settings):
         console.print(f"  - {escape(target)}", soft_wrap=True)
-    if not yes and not typer.confirm("Delete all of the above?"):
+    if not yes and not typer.confirm("Удалить всё перечисленное?"):
         raise typer.Exit(1)
     lock = common.corpus_lock(settings)
     try:
@@ -165,4 +167,4 @@ def reset(
             application.close()
     finally:
         lock.release()
-    console.print("All data deleted.")
+    console.print("Все данные удалены.")

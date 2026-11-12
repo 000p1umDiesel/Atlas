@@ -17,11 +17,15 @@ restart() {
     # shellcheck disable=SC2086  # список сервисов разбивается на слова намеренно
     if [ -n "$running" ]; then docker compose up -d --no-recreate $running; fi
 }
-trap restart EXIT   # до stop: и сбой посреди остановки не оставит стек лежать
+# trap ставится до stop: даже если скрипт упадёт посреди остановки или бэкапа, при выходе
+# сервисы поднимутся снова, а не останутся лежать.
+trap restart EXIT
+# Базы останавливаются, чтобы копия их файлов была согласованной (холодный бэкап).
 docker compose stop --timeout 120 api worker postgres qdrant neo4j
 
 restic backup --tag mnogobase \
     "$data_dir/app" "$data_dir/postgres" "$data_dir/qdrant" "$data_dir/neo4j" \
     "$app_dir/.env" "$app_dir/config.yaml" \
     --exclude "$data_dir/app/.mnogobase/cache"
+# Хранить 7 ежедневных, 4 еженедельных и 6 ежемесячных снимков; остальные удалить (--prune).
 restic forget --tag mnogobase --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune

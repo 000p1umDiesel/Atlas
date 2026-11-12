@@ -42,7 +42,7 @@ def test_document_fields_cannot_enter_system_message(name):
 def test_message_builder_rejects_template_without_data_boundary():
     from mnogobase.llm.templates import render_messages
 
-    with pytest.raises(ValueError, match="no untrusted-data boundary"):
+    with pytest.raises(ValueError, match="нет границы untrusted-data"):
         render_messages("untrusted_data")
 
 

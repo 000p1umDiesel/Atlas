@@ -19,7 +19,7 @@ def mock_api(monkeypatch, answer=None):
         if request.url.path == "/api/ask":
             return httpx.Response(200, json=answer)
         if request.url.path == "/api/jobs":
-            return httpx.Response(503, json={"detail": "Service temporarily unavailable"})
+            return httpx.Response(503, json={"detail": "Сервис временно недоступен"})
         return httpx.Response(200, json={"status": "ok"})
 
     real = httpx.Client
@@ -49,7 +49,7 @@ def test_login_stores_private_token_and_uses_unscoped_paths(tmp_path, monkeypatc
     result = client(tmp_path, "ask", "What is attention?")
     assert result.exit_code == 0, result.output
     assert "Transformers use attention [1]." in result.output
-    assert "[1] paper.pdf, p.2  /api/documents/abc/content" in result.output
+    assert "[1] paper.pdf, стр. 2  /api/documents/abc/content" in result.output
     assert seen[-1] == ("POST", "/api/ask", "Bearer tok")
 
     result = client(tmp_path, "ask", "What is attention?", "--json")
@@ -70,7 +70,7 @@ def test_errors_show_only_the_safe_detail(tmp_path, monkeypatch):
     client(tmp_path, "login", "owner", "--password", "long-enough-password")
     result = client(tmp_path, "jobs", "list")
     assert result.exit_code == 2
-    assert "API 503: Service temporarily unavailable" in result.output
+    assert "API 503: Сервис временно недоступен" in result.output
 
 
 def test_requires_login_and_valid_url(tmp_path, monkeypatch):

@@ -220,7 +220,7 @@ class JobQueue:
         self._db.execute("BEGIN")
         try:
             row = self._db.execute(
-                "UPDATE jobs SET status='running',attempts=attempts+1,progress='starting',started_at=?,updated_at=? "
+                "UPDATE jobs SET status='running',attempts=attempts+1,progress='запуск',started_at=?,updated_at=? "
                 "WHERE id=(SELECT id FROM jobs WHERE status='pending' AND available_at<=?"
                 + limit
                 + " ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *",
@@ -245,7 +245,7 @@ class JobQueue:
             if source:
                 transaction_lock(self._db, f"queue-path:{source[0]}")
             row = self._db.execute(
-                "UPDATE jobs SET status='done',error=NULL,progress='completed',updated_at=? "
+                "UPDATE jobs SET status='done',error=NULL,progress='завершено',updated_at=? "
                 "WHERE id=? AND status='running' RETURNING path,fingerprint",
                 (self._clock(), job_id),
             ).fetchone()
@@ -256,7 +256,7 @@ class JobQueue:
                 ).fetchone()
             ):
                 self._db.execute(
-                    "UPDATE jobs SET status='superseded',progress='current source operation completed',updated_at=? "
+                    "UPDATE jobs SET status='superseded',progress='текущая операция с источником завершена',updated_at=? "
                     "WHERE path=? AND id<>? AND status IN ('pending','running','failed')",
                     (self._clock(), row[0], job_id),
                 )
@@ -308,7 +308,7 @@ class JobQueue:
         """Переводит `running`-задачу в `superseded`: worker обнаружил, что файл изменился, и
         уже поставил задачу на новую версию."""
         self._db.execute(
-            "UPDATE jobs SET status='superseded',progress='new content queued',updated_at=? "
+            "UPDATE jobs SET status='superseded',progress='в очередь поставлено новое содержимое',updated_at=? "
             "WHERE id=? AND status='running'",
             (self._clock(), job_id),
         )
@@ -332,7 +332,7 @@ class JobQueue:
         job = self._db.execute("SELECT attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
         attempts = job[0]
         self._db.execute(
-            "UPDATE jobs SET status=?,available_at=?,error=?,progress='failed attempt',updated_at=?,started_at=NULL "
+            "UPDATE jobs SET status=?,available_at=?,error=?,progress='попытка не удалась',updated_at=?,started_at=NULL "
             "WHERE id=? AND status='running'",
             (
                 "failed" if attempts >= max_attempts else "pending",
@@ -350,7 +350,7 @@ class JobQueue:
         удвоения — инфраструктура может лежать долго, и задача не должна стать `failed`."""
         self._db.execute(
             "UPDATE jobs SET status='pending',attempts=GREATEST(attempts-1,0),available_at=?,"
-            "progress='waiting for services',updated_at=?,started_at=NULL WHERE id=? AND status='running'",
+            "progress='ожидание сервисов',updated_at=?,started_at=NULL WHERE id=? AND status='running'",
             (self._clock() + delay, self._clock(), job_id),
         )
 
@@ -368,12 +368,12 @@ class JobQueue:
         if max_attempts is not None:
             self._db.execute(
                 "UPDATE jobs SET status='failed',error='InterruptedTooOften',"
-                "progress='interrupted too often',updated_at=?,started_at=NULL "
+                "progress='слишком много прерываний',updated_at=?,started_at=NULL "
                 "WHERE status='running' AND attempts>=?",
                 (self._clock(), max_attempts),
             )
         return self._db.execute(
-            "UPDATE jobs SET status='pending',available_at=0,progress='resuming after interruption',updated_at=?,started_at=NULL "
+            "UPDATE jobs SET status='pending',available_at=0,progress='возобновление после прерывания',updated_at=?,started_at=NULL "
             "WHERE status='running'",
             (self._clock(),),
         ).rowcount

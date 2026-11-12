@@ -91,7 +91,10 @@ class _Embedder:
 @pytest.mark.parametrize(
     ("reply", "message"),
     [
-        ([1.0, 0.0], "returns 2 dims, config expects 4"),  # провайдер, который не обрезает
+        (
+            [1.0, 0.0],
+            "размерность его векторов 2, а конфиг ждёт 4",
+        ),  # провайдер, который не обрезает
         (ValueError("model returned 2 dims, config expects 4"), "model returned 2 dims"),
     ],
 )
@@ -104,5 +107,5 @@ def test_reindex_checks_the_embedder_dimension_before_touching_the_index(tmp_pat
 
     with pytest.raises(ReindexError, match=message) as info:
         reindex(app)
-    assert "nothing was changed" in str(info.value)
+    assert "ничего не изменено" in str(info.value)
     assert calls == []  # старым индексом ещё можно пользоваться

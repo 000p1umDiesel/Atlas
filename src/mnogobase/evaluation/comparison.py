@@ -57,13 +57,13 @@ def comparison_reports(output: Path, manifest: dict, answers: list, details: lis
     paired = []
     lines = [
         "",
-        "## Paired comparisons",
+        "## Парные сравнения",
         "",
-        "Differences use exactly the same successfully scored questions in both modes.",
-        "Positive delta means mode B has a higher metric value. Missing/error scores are excluded, not zero.",
-        "CI is an exploratory 95% paired bootstrap interval (1000 resamples); small samples do not establish a winner.",
+        "Разности считаются только по вопросам, успешно оценённым в обоих режимах.",
+        "Положительная разность значит, что у режима B метрика выше. Пропущенные и упавшие оценки исключаются, а не считаются нулём.",
+        "ДИ — разведочный 95% парный bootstrap-интервал (1000 перевыборок); на малой выборке победителя он не определяет.",
         "",
-        "| Mode A | Mode B | Metric | Paired N | Mean B - A | CI low | CI high |",
+        "| Режим A | Режим B | Метрика | Пар | Среднее B − A | ДИ от | ДИ до |",
         "|---|---|---|---:|---:|---:|---:|",
     ]
     ids = [q["id"] for q in manifest["config"]["questions"]]
@@ -131,8 +131,8 @@ def comparison_reports(output: Path, manifest: dict, answers: list, details: lis
     lines.extend(
         [
             "",
-            "Category breakdown: by_category.csv. Paired differences: paired.csv.",
-            "These compare the implemented retrieval modes. Wiki generation uses graph relations; this is not an independent graph-free wiki baseline.",
+            "Разбивка по категориям: by_category.csv. Парные разности: paired.csv.",
+            "Здесь сравниваются реализованные режимы retrieval. Вики строится с использованием связей графа, поэтому режим wiki — не независимый базовый вариант без графа.",
         ]
     )
     lines.extend(_processing_report(output, manifest))
@@ -149,7 +149,7 @@ def _processing_report(output, manifest):
     rows = read_jsonl(output / "processing.jsonl", recover_tail=True)
     corpus = manifest["config"].get("corpus")
     if corpus and any(r["after"]["project"] != corpus["project"] for r in rows):
-        raise ValueError("Processing history belongs to a different project")
+        raise ValueError("История предобработки (processing.jsonl) относится к другому проекту")
     costs, stages = [], []
     for row in rows:
         costs.append(
@@ -221,18 +221,18 @@ def _processing_report(output, manifest):
     )
     lines = [
         "",
-        "## Processing cost",
+        "## Затраты предобработки",
         "",
-        "Measured shared preprocessing, not independent per-architecture build cost.",
-        "Main LLM successful calls only; excludes vision, embeddings, reranker, judge calls and failed network calls.",
-        "Stage totals are a breakdown of run time; do not add them to the end-to-end run time.",
+        "Замерена общая предобработка корпуса, а не отдельная стоимость построения каждой архитектуры.",
+        "Учтены только успешные вызовы основной LLM; без vision, эмбеддингов, реранкера, судьи и упавших сетевых вызовов.",
+        "Итоги по стадиям — разбивка времени прогона; не прибавляйте их к общему времени.",
     ]
     if not rows:
-        return [*lines, "No processing measurements attached. Use eval ingest before benchmarking."]
+        return [*lines, "Замеров предобработки нет. Запустите eval ingest перед сравнением."]
     lines.extend(
         [
             "",
-            "| Phase | Attempts | Failed/interrupted | Total ms | LLM tokens in / out |",
+            "| Фаза | Попыток | С ошибкой / прервано | Всего, мс | Токены LLM вход / выход |",
             "|---|---:|---:|---:|---:|",
         ]
     )
@@ -244,7 +244,7 @@ def _processing_report(output, manifest):
         usage = (
             f"{sum(r['tokens_in'] for r in part)} / {sum(r['tokens_out'] for r in part)}"
             if known
-            else "unavailable"
+            else "нет данных"
         )
         lines.append(
             f"| {phase} | {len(part)} | {sum(r['status'] != 'ok' for r in part)} | {sum(r['duration_ms'] for r in part)} | {usage} |"
@@ -253,7 +253,7 @@ def _processing_report(output, manifest):
         lines.extend(
             [
                 "",
-                "WARNING: latest processing snapshot differs from the evaluated corpus; these costs do not fully describe that corpus.",
+                "ВНИМАНИЕ: последний снимок корпуса после предобработки отличается от оценённого корпуса; эти затраты описывают его не полностью.",
             ]
         )
     return lines

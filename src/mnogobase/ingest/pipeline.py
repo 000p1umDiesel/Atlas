@@ -225,13 +225,13 @@ class Pipeline:
         и не должны трогать стадии, которые сейчас выполняет писатель."""
         if self._registry.get_meta("reset") is not None:
             raise InterruptedResetError(
-                "an interrupted `mnogobase reset` left partial data; run `mnogobase reset` again"
+                "прерванный `mnogobase reset` оставил часть данных; запустите `mnogobase reset` ещё раз"
             )
         signature = embedder_signature(self._embedder)
         stored = self._registry.get_meta("embedder")
         mismatch = signature_mismatch(stored, self._embedder)
         if check_embedder and mismatch:
-            raise EmbedderMismatchError(f"{mismatch}; run `mnogobase reindex`")
+            raise EmbedderMismatchError(f"{mismatch}; запустите `mnogobase reindex`")
         self._vectors.ensure_collections()
         self._graph.ensure_schema()
         if stored is None:
@@ -418,8 +418,8 @@ class Pipeline:
                 self._registry.set_meta(_UNREPORTED_REMOVALS, json.dumps(deleted))
                 progress.file_done("failed")
                 raise PendingRemovalError(
-                    f"cannot remove document {doc_id}: {type(exc).__name__}: {exc}. "
-                    "Retry remove, ingest, or wiki build after fixing the cause."
+                    f"не удалось удалить документ {doc_id}: {type(exc).__name__}: {exc}. "
+                    "Устраните причину и повторите remove, ingest или wiki build."
                 ) from exc
             report.removed.extend(selected)
             for _ in selected:
@@ -475,7 +475,7 @@ class Pipeline:
         if failed_stage and not retry_failed:
             self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "failed")
             raise _PreviouslyFailed(
-                f"stage {failed_stage} failed earlier; rerun with --retry-failed"
+                f"стадия {failed_stage} упала в прошлый раз; запустите с --retry-failed"
             )
         self._registry.upsert_file(key, doc_id, stat.st_size, stat.st_mtime, "processing")
         bind_context(doc_id=doc_id)
@@ -538,10 +538,10 @@ class Pipeline:
             self._registry.set_meta(_UNREPORTED_REMOVALS, json.dumps(names))
             causes = "; ".join(f"{d}: {type(e).__name__}: {e}" for d, e in failed.items())
             raise PendingRemovalError(
-                f"cannot finish removing old document version(s) {', '.join(failed)} "
-                f"({causes}). Fix the cause (see `mnogobase doctor`) and rerun: the removal "
-                "is retried first, nothing else runs until it is done. `mnogobase reset` "
-                "starts over instead."
+                f"не удаётся завершить удаление старых версий документов {', '.join(failed)} "
+                f"({causes}). Устраните причину (см. `mnogobase doctor`) и запустите команду "
+                "снова: сначала повторится удаление, и пока оно не завершится, ничего другого "
+                "не выполняется. Начать с нуля можно через `mnogobase reset`."
             ) from next(iter(failed.values()))
         self._registry.set_meta(_UNREPORTED_REMOVALS, "[]")
         return names
@@ -801,7 +801,7 @@ class Pipeline:
         elif stage == "graph":
             await self._build_graph(doc_id, progress)
         else:
-            raise ValueError(f"unknown stage {stage}")
+            raise ValueError(f"неизвестная стадия {stage}")
 
     def index_chunks(self, doc: DocumentRecord, chunks: list[ChunkRecord]) -> None:
         """Эмбеддит чанки (dense + sparse) и делает их upsert в Qdrant.
@@ -842,7 +842,7 @@ class Pipeline:
         results = await self._extractor.extract_many(chunks, doc.title, progress)
         failed = len(chunks) - len(results)
         if failed / len(chunks) > self._s.extract.max_failed_ratio:
-            raise ExtractionFailedError(f"{failed}/{len(chunks)} chunks failed extraction")
+            raise ExtractionFailedError(f"извлечение не удалось для {failed}/{len(chunks)} чанков")
         if failed:
             self._log.warning("extract_partial", failed=failed, total=len(chunks))
 
@@ -870,8 +870,8 @@ class Pipeline:
             # никогда не помечаем graph как done без знаний; повтор сначала перезапустит extract
             self._registry.set_stage(doc_id, "extract", "pending")
             raise ExtractionFailedError(
-                f"{missing}/{len(chunks)} chunks have no cached extraction; "
-                "rerun with --retry-failed to extract them again"
+                f"у {missing}/{len(chunks)} чанков нет извлечения в кэше; "
+                "запустите с --retry-failed, чтобы извлечь их заново"
             )
         progress.step("graph", sum(len(r.entities) for r in results.values() if r is not None))
         touched: set[str] = set()

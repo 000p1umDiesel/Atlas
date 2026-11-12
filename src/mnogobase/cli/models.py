@@ -36,7 +36,7 @@ from mnogobase.ops.model_servers import (
 
 app = typer.Typer(
     no_args_is_help=True,
-    help="Local llama.cpp model servers from config.yaml (serve: llamacpp): up, down, status, logs.",
+    help="Локальные серверы моделей llama.cpp из config.yaml (serve: llamacpp): up, down, status, logs",
 )
 common.app.add_typer(app, name="models")
 
@@ -44,7 +44,7 @@ WAIT_REPORT_EVERY = 15.0  # секунд между строками о серв
 
 RolesArg = Annotated[
     list[str] | None,
-    typer.Argument(help="Roles: embedder, rerank, vision, llm (default: all served)."),
+    typer.Argument(help="Роли: embedder, rerank, vision, llm (по умолчанию все локальные)"),
 ]
 
 
@@ -67,7 +67,7 @@ def _models(roles: list[str] | None) -> tuple[list[Served], list[Served], Native
 def models_up(
     roles: RolesArg = None,
     timeout: Annotated[
-        float, typer.Option(help="Seconds to wait for the servers (first start downloads models).")
+        float, typer.Option(help="Сколько секунд ждать серверы (первый запуск скачивает модели)")
     ] = 1800,
 ) -> None:
     """Поднять llama-server для ролей с `serve: llamacpp` и дождаться их готовности.
@@ -79,7 +79,7 @@ def models_up(
     console = common.console
     served, everything, model_runner = _models(roles)
     if not served:
-        console.print("Nothing to start: every role is serve: api (or disabled).")
+        console.print("Запускать нечего: у всех ролей serve: api (или они выключены).")
         return
     for s in served:
         command = shlex.join(server_args(s, s.port, gpu=model_runner.gpu))
@@ -104,7 +104,7 @@ def models_up(
         # роли, пропавшие из списка ожидания, уже готовы — сообщаем об этом один раз
         names = {s.role for s in pending}
         for role in [r for r in shown if r not in names]:
-            console.print(f"{stamp()} {role}: ready", highlight=False)
+            console.print(f"{stamp()} {role}: готов", highlight=False)
             del shown[role]
         now = time.monotonic()
         for s in pending:
@@ -112,7 +112,7 @@ def models_up(
                 shown[s.role] = now
                 console.print(
                     f"{stamp()} {s.role}: {health_state(s)} "
-                    f"(server log: `mnogobase models logs {s.role} -f`)",
+                    f"(лог сервера: `mnogobase models logs {s.role} -f`)",
                     soft_wrap=True,
                     highlight=False,
                 )
@@ -122,7 +122,7 @@ def models_up(
         bring_up(served, model_runner, timeout, waiting, keep=everything)
     except (ServeError, OSError) as exc:  # OSError: нет llama-server в PATH
         common.fail(exc)
-    console.print(f"[green]{stamp()} All model servers are ready.[/green]", highlight=False)
+    console.print(f"[green]{stamp()} Все серверы моделей готовы.[/green]", highlight=False)
 
 
 @app.command("down")
@@ -136,7 +136,7 @@ def models_down() -> None:
         model_runner.stop()
     except (ServeError, OSError) as exc:
         common.fail(exc)
-    common.console.print("Model servers stopped.")
+    common.console.print("Серверы моделей остановлены.")
 
 
 @app.command("status")
@@ -146,10 +146,10 @@ def models_status() -> None:
     Для локальных ролей проверяется готовность сервера (ready или down), роли с serve: api
     и выключенные роли только отмечаются как api и disabled."""
     settings = common.get_settings()
-    table = Table("role", "serve")
-    for column in ("model", "url"):
+    table = Table("роль", "serve")
+    for column in ("модель", "url"):
         table.add_column(column, overflow="fold")
-    table.add_column("state")
+    table.add_column("состояние")
     roles = [
         ("embedder", settings.embedder),
         ("rerank", settings.rerank),
@@ -169,9 +169,9 @@ def models_status() -> None:
 
 @app.command("logs")
 def models_logs(
-    role: Annotated[str, typer.Argument(help="embedder, rerank, vision or llm.")],
+    role: Annotated[str, typer.Argument(help="embedder, rerank, vision или llm")],
     follow: Annotated[
-        bool, typer.Option("--follow", "-f", help="Keep printing new lines.")
+        bool, typer.Option("--follow", "-f", help="Продолжать печатать новые строки")
     ] = False,
 ) -> None:
     """Показать последние строки лога сервера роли.
@@ -180,7 +180,12 @@ def models_logs(
     не обслуживается локально."""
     served, _, model_runner = _models([role])
     if not served:
-        common.fail(ServeError(f"{role} is not served locally (serve: api or disabled)"))
+        common.fail(
+            ServeError(
+                f"Роль {role} не обслуживается локально (serve: api или выключена). "
+                "Логи есть только у ролей с serve: llamacpp."
+            )
+        )
     try:
         model_runner.logs(served[0], follow)
     except (ServeError, OSError) as exc:

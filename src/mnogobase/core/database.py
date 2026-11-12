@@ -78,10 +78,10 @@ class DatabaseTarget:
 
     def __post_init__(self):
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", self.schema):
-            raise ValueError("Invalid PostgreSQL schema name")
+            raise ValueError("Недопустимое имя схемы PostgreSQL")
 
     def __str__(self):
-        return f"PostgreSQL schema {self.schema}"
+        return f"схема PostgreSQL {self.schema}"
 
 
 def utc_timestamp() -> str:
@@ -106,7 +106,7 @@ def database_target(settings: Settings) -> DatabaseTarget:
     if not url:
         password = os.environ.get(db.password_env)
         if not password:
-            raise DatabaseError(f"Set {db.password_env} (or {db.url_env}) for PostgreSQL")
+            raise DatabaseError(f"Для PostgreSQL задайте {db.password_env} (или {db.url_env})")
         url = URL.create(
             "postgresql+psycopg",
             username=db.user,
@@ -146,7 +146,7 @@ def bind_sql(sql: str, params=()):
         try:
             bound[key] = next(values)
         except StopIteration:
-            raise ValueError("Not enough SQL parameters") from None
+            raise ValueError("Не хватает параметров для SQL-запроса") from None
         return f":{key}"
 
     parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", sql)
@@ -154,7 +154,7 @@ def bind_sql(sql: str, params=()):
         parts[index] = re.sub(r"\?", parameter, parts[index])
     sentinel = object()
     if next(values, sentinel) is not sentinel:
-        raise ValueError("Too many SQL parameters")
+        raise ValueError("Слишком много параметров для SQL-запроса")
     return "".join(parts), bound
 
 
@@ -209,7 +209,9 @@ def _engine(url: str, timeout: int, pooled: bool = True):
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg://" + url.removeprefix("postgresql://")
     if not url.startswith("postgresql+psycopg://"):
-        raise DatabaseError("DATABASE_URL must use postgresql:// or postgresql+psycopg://")
+        raise DatabaseError(
+            "DATABASE_URL должен начинаться с postgresql:// или postgresql+psycopg://"
+        )
     pool = (
         {"pool_size": 5, "max_overflow": 10, "pool_pre_ping": True, "pool_recycle": 1800}
         if pooled
@@ -267,7 +269,7 @@ class PgConnection:
                 with contextlib.suppress(SQLAlchemyError):
                     self.raw.close()
             raise DatabaseError(
-                "PostgreSQL unavailable; check the database settings and server"
+                "PostgreSQL недоступен: проверьте настройки базы и сервер"
             ) from None
 
     def _reconnect(self) -> None:
@@ -305,7 +307,7 @@ class PgConnection:
                 if statement == "ROLLBACK":
                     return None  # откатывать нечего: сервер уже отменил транзакцию
                 raise DatabaseError(
-                    "PostgreSQL connection was lost during a transaction; nothing was committed"
+                    "Соединение с PostgreSQL оборвалось посреди транзакции: ничего не записано"
                 )
             self._reconnect()
         try:
@@ -523,7 +525,7 @@ def _project_identity(target: DatabaseTarget) -> dict:
     try:
         url = make_url(target.url).set(password=None)
     except Exception:
-        raise DatabaseError("Invalid PostgreSQL DATABASE_URL") from None
+        raise DatabaseError("Некорректный DATABASE_URL для PostgreSQL") from None
     return {"schema": target.schema, "server": hashlib.sha256(str(url).encode()).hexdigest()}
 
 

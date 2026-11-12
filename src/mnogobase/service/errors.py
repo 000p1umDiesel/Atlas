@@ -27,4 +27,4 @@ MAX_QUESTION_CHARS = 16000
 def check_pagination(limit: int, offset: int) -> None:
     """Общая проверка `limit` / `offset` для списков API и хранилища (422 при ошибке)."""
     if type(limit) is not int or type(offset) is not int or not 1 <= limit <= 1000 or offset < 0:
-        raise ServiceError(422, "Invalid pagination")
+        raise ServiceError(422, "Неверные параметры пагинации")

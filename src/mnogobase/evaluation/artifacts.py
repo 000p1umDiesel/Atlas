@@ -25,7 +25,8 @@ def ensure_manifest(path: Path, config: dict) -> dict:
         actual = json.loads(path.read_text(encoding="utf-8"))
         if actual != expected:
             raise ValueError(
-                f"{path}: configuration changed; choose a new output directory/index name"
+                f"{path}: конфигурация эксперимента изменилась; выберите новый каталог"
+                " результатов или имя индекса"
             )
     else:
         write_json(path, expected)
@@ -44,7 +45,7 @@ def latest_records(path: Path, keys: tuple[str, ...] = ("id",)) -> dict:
     for number, row in enumerate(read_jsonl(path, recover_tail=True), 1):
         missing = [k for k in keys if k not in row]
         if missing:
-            raise ValueError(f"{path}, record {number}: no {', '.join(missing)}")
+            raise ValueError(f"{path}, запись {number}: нет поля {', '.join(missing)}")
         key = tuple(row[k] for k in keys)
         result[key[0] if len(key) == 1 else key] = row
     return result
@@ -63,18 +64,20 @@ def load_questions(path: Path) -> list[dict]:
     seen = set()
     for number, row in enumerate(rows, 1):
         if any(not isinstance(row.get(k), str) or not row[k].strip() for k in ("id", "question")):
-            raise ValueError(f"{path}, line {number}: nonempty string id and question required")
+            raise ValueError(
+                f"{path}, строка {number}: id и question должны быть непустыми строками"
+            )
         # Поиск также удаляет крайние пробелы: манифест и ответ должны хранить один вопрос.
         row["question"] = row["question"].strip()
         if row["id"] in seen:
-            raise ValueError(f"{path}, line {number}: duplicate id {row['id']}")
+            raise ValueError(f"{path}, строка {number}: повторяется id {row['id']}")
         if (
             "reference" in row
             and row["reference"] is not None
             and not isinstance(row["reference"], str)
         ):
-            raise ValueError(f"{path}, line {number}: reference must be a string or null")
+            raise ValueError(f"{path}, строка {number}: reference должен быть строкой или null")
         seen.add(row["id"])
     if not rows:
-        raise ValueError(f"{path}: dataset is empty")
+        raise ValueError(f"{path}: набор вопросов пуст")
     return rows

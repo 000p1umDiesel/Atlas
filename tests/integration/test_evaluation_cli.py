@@ -54,7 +54,7 @@ def test_cli_run_uses_three_modes_and_closes_app(offline, tmp_path, monkeypatch)
     rows = core.latest_records(tmp_path / "run/answers.jsonl", ("id", "mode"))
     assert set(rows) == {("q", "rag"), ("q", "wiki"), ("q", "graph")}
     assert closed == [True]
-    assert "remaining" in result.output.lower()
+    assert "осталось" in result.output.lower()
 
 
 def test_cli_report_and_score_do_not_build_app_or_preflight(offline, tmp_path, monkeypatch):
@@ -76,14 +76,14 @@ def test_cli_invalid_dataset_fails_before_services(offline, tmp_path, monkeypatc
     monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("app was built"))
     result = runner.invoke(cli.app, ["eval", "run", str(offline), "--output", "run"])
     assert result.exit_code == 2, result.output
-    assert "id and question" in result.output
+    assert "id и question" in " ".join(result.output.split())  # Rich переносит длинные строки
 
 
 def test_cli_unknown_metric_rejected_without_judge(offline, tmp_path):
     core.prepare_run(offline, tmp_path / "run", Settings())
     result = runner.invoke(cli.app, ["eval", "score", "run", "--metric", "invented"])
     assert result.exit_code == 2, result.output
-    assert "metrics" in result.output
+    assert "метрики" in result.output
 
 
 def test_eval_ingest_saves_processing_and_closes_app(offline, tmp_path, monkeypatch):
@@ -157,7 +157,7 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
     (wiki / "changed.md").write_text("changed")
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
-    assert "configuration changed" in result.output
+    assert "конфигурация эксперимента изменилась" in result.output
 
 
 def test_benchmark_scores_the_answers_that_succeeded(offline, tmp_path, monkeypatch):
@@ -205,5 +205,5 @@ def test_benchmark_scores_the_answers_that_succeeded(offline, tmp_path, monkeypa
 def test_latest_records_reports_a_record_without_its_key(tmp_path):
     path = tmp_path / "rows.jsonl"
     path.write_text('{"id": "a"}\n{"value": 1}\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="record 2: no id"):
+    with pytest.raises(ValueError, match="запись 2: нет поля id"):
         core.latest_records(path)

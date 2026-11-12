@@ -14,7 +14,9 @@ dependencies = [
   "qdrant-client==1.19.1",
   "fastembed==0.9.1",
   "neo4j==6.4.1",
-  "openai==3.3.0",  # instructor 1.17 (через ragas) требует jiter<0.15, а openai 3.36+ — >=0.16
+  # 3.3.0 — последняя openai, совместимая с instructor 1.17 (зависимость ragas): тот требует
+  # jiter<0.15, а openai начиная с 3.3.1 — jiter>=0.16
+  "openai==3.3.0",
   "httpx==0.28.1",
   "transformers==5.20.2",
   # на Linux (сервер, Docker) — CPU-колёса из индекса pytorch-cpu, см. [tool.uv.sources]
@@ -38,13 +40,14 @@ dependencies = [
   "argon2-cffi==25.1.0",
   # оценка Ragas (`mnogobase eval score`)
   "ragas==0.4.3",
-  "langchain-community==0.3.31",  # не импортируется: ragas 0.4.3 падает на импорте с 0.4
-  # тесты и линтер
+  # сами не импортируем; пин нужен ragas 0.4.3, который падает на импорте с langchain-community 0.4
+  "langchain-community==0.3.31",
+  # тесты и линтер (обычные зависимости, без extras и групп: они есть и в образе)
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "testcontainers[neo4j,qdrant]==4.15.0",
-  "reportlab==5.1.0",
-  "python-docx==1.2.0",
+  "reportlab==5.1.0",  # PDF для тестов разбора
+  "python-docx==1.2.0",  # DOCX для тестов разбора
   "ruff==0.17.1",
 ]
 
@@ -59,6 +62,8 @@ environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
+# индекс CPU-сборок PyTorch (без CUDA, намного меньше); explicit — только для пакетов,
+# которые явно на него ссылаются в [tool.uv.sources]
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
@@ -79,12 +84,13 @@ markers = [
   "integration: needs a running Docker daemon (testcontainers)",
   "e2e: needs Docker + model servers (mnogobase models up) + the LLM endpoint",
 ]
+# по умолчанию только unit-тесты; integration и e2e запускаются явно через -m
 addopts = "-m 'not integration and not e2e'"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["docs"]  # ruff >=0.16 форматирует и Markdown; примеры кода в plan/spec — не код проекта
+extend-exclude = ["docs"]  # ruff >=0.16 форматирует и Markdown; примеры кода в планах и спецификациях docs/ — не код проекта
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

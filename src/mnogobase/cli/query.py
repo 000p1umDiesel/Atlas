@@ -26,9 +26,11 @@ app = common.app
 
 @app.command()
 def ask(
-    question: Annotated[str, typer.Argument(help="Question to answer from the knowledge base.")],
+    question: Annotated[str, typer.Argument(help="Вопрос к базе знаний")],
     mode: Annotated[Mode, typer.Option("--mode", "-m", help="rag | wiki | graph | all")] = Mode.ALL,
-    k: Annotated[int | None, typer.Option("--k", min=1, help="Results per retriever.")] = None,
+    k: Annotated[
+        int | None, typer.Option("--k", min=1, help="Сколько результатов берёт каждый retriever")
+    ] = None,
 ) -> None:
     """Ответить на вопрос со ссылками на источники в одном режиме retrieval.
 
@@ -59,8 +61,12 @@ def ask(
 
 @app.command()
 def compare(
-    question: Annotated[str, typer.Argument(help="Question to answer in all four modes.")],
-    k: Annotated[int | None, typer.Option("--k", min=1, help="Results per retriever.")] = None,
+    question: Annotated[
+        str, typer.Argument(help="Вопрос, на который ответить во всех четырёх режимах")
+    ],
+    k: Annotated[
+        int | None, typer.Option("--k", min=1, help="Сколько результатов берёт каждый retriever")
+    ] = None,
 ) -> None:
     """Ответить во всех режимах rag / wiki / graph / all и сравнить ответы.
 
@@ -86,7 +92,9 @@ def compare(
             )
     finally:
         application.close()
-    table = Table("mode", "answer", "sources (cited)", "latency ms", "tokens in/out", "context")
+    table = Table(
+        "режим", "ответ", "источники (цит.)", "задержка, мс", "токены вход/выход", "контекст"
+    )
     for a in answers:
         cited = (
             ", ".join(render.source_label(x.path, x.page, x.ref) for x in a.sources if x.cited)

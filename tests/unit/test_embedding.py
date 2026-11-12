@@ -98,7 +98,7 @@ def test_signature_covers_the_templates():
     legacy = signature_mismatch("llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560", emb)
     assert legacy is not None  # подпись без шаблонов больше не принимается
     templates = signature_mismatch(sig(doc_template="title: {title} | {text}"), emb)
-    assert templates is not None and "templates changed" in templates
+    assert templates is not None and "изменились шаблоны эмбеддера" in templates
     model = signature_mismatch("ollama:qwen3-embedding:4b:2560:tpl-dbe41d80", emb)
     assert model is not None and "templates" not in model
     assert "ollama:qwen3-embedding:4b:2560" in model and default in model
@@ -123,7 +123,7 @@ def test_embedder_retries_server_errors():
 def test_embedder_rejects_too_small_vectors():
     handler = lambda request: httpx.Response(200, json=_data([[1.0]]))  # noqa: E731
     emb = OpenAICompatEmbedder(EmbedderSettings(dim=2), client=_client(handler))
-    with pytest.raises(ValueError, match="dims"):
+    with pytest.raises(ValueError, match="размерности"):
         emb.embed_query("x")
 
 
@@ -135,13 +135,13 @@ def test_embedder_rejects_missing_or_duplicate_response_indexes(indexes):
         )
 
     emb = OpenAICompatEmbedder(EmbedderSettings(dim=2), client=_client(handler))
-    with pytest.raises(ValueError, match="indexes"):
+    with pytest.raises(ValueError, match="повторяющиеся индексы"):
         emb.embed_documents([EmbedInput(text="first"), EmbedInput(text="second")])
 
 
 @pytest.mark.parametrize("vector", [[0.0, 0.0], [float("nan"), 1.0], [float("inf"), 1.0]])
 def test_normalization_rejects_invalid_vectors(vector):
-    with pytest.raises(ValueError, match="zero or nonfinite"):
+    with pytest.raises(ValueError, match="нулевой или содержит нечисловые"):
         truncate_normalize(vector, 2)
 
 

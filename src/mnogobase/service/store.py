@@ -96,7 +96,7 @@ def _token_hash(token: str) -> str:
 def _check_password(password: str) -> None:
     """400, если пароль короче `MIN_PASSWORD` символов."""
     if len(password) < MIN_PASSWORD:
-        raise ServiceError(400, f"Password must have at least {MIN_PASSWORD} characters")
+        raise ServiceError(400, f"Пароль должен содержать не менее {MIN_PASSWORD} символов")
 
 
 class ServiceStore:
@@ -130,7 +130,7 @@ class ServiceStore:
                 "40P01",
                 "40001",
             }:
-                raise ServiceError(409, "Service database is busy") from None
+                raise ServiceError(409, "База данных сервиса занята") from None
             raise
         finally:
             conn.close()
@@ -140,7 +140,7 @@ class ServiceStore:
         """Занимает один из двух слотов argon2 на время блока; если слот не освободился за
         `_ARGON2_WAIT_S` секунд — 429."""
         if not _ARGON2_SLOTS.acquire(timeout=_ARGON2_WAIT_S):
-            raise ServiceError(429, "Too many login attempts; retry later")
+            raise ServiceError(429, "Слишком много попыток входа, повторите позже")
         try:
             yield
         finally:
@@ -159,7 +159,7 @@ class ServiceStore:
         429 — заняты слоты argon2."""
         username = username.strip()
         if not username:
-            raise ServiceError(400, "Username is required")
+            raise ServiceError(400, "Требуется имя пользователя")
         _check_password(password)
         user = {"id": uuid.uuid4().hex, "username": username}
         password_hash = self._hash(password)
@@ -170,7 +170,7 @@ class ServiceStore:
                     (user["id"], username, password_hash),
                 )
         except IntegrityError:
-            raise ServiceError(409, "Username already exists") from None
+            raise ServiceError(409, "Пользователь с таким именем уже существует") from None
         return user
 
     def _user_id(self, conn: PgConnection, username: str) -> str:
@@ -180,7 +180,7 @@ class ServiceStore:
             "SELECT id FROM users WHERE username=? FOR UPDATE", (username.strip(),)
         ).fetchone()
         if row is None:
-            raise ServiceError(404, "User not found")
+            raise ServiceError(404, "Пользователь не найден")
         return row["id"]
 
     def set_password(self, username: str, password: str) -> None:
@@ -224,7 +224,7 @@ class ServiceStore:
         400 — неверный `ttl_hours`, 401 — неверное имя/пароль или пользователя отключили
         между проверкой пароля и созданием сессии, 429 — заняты слоты argon2."""
         if not isinstance(ttl_hours, (int, float)) or not 0 < ttl_hours <= 24 * 365:
-            raise ServiceError(400, "Invalid session lifetime")
+            raise ServiceError(400, "Неверный срок действия сессии")
         with self._connection() as conn:
             user = conn.execute(
                 "SELECT * FROM users WHERE username=? AND active=1", (username.strip(),)
@@ -242,7 +242,7 @@ class ServiceStore:
                 "login_failed",
                 user=hashlib.sha256(username.strip().encode()).hexdigest()[:12],
             )
-            raise ServiceError(401, "Invalid username or password") from None
+            raise ServiceError(401, "Неверное имя пользователя или пароль") from None
         token = secrets.token_urlsafe(32)
         with self._connection() as conn:
             # Пользователя могли отключить, пока проверялся пароль: тогда тоже отказ.
@@ -250,7 +250,7 @@ class ServiceStore:
                 "SELECT id FROM users WHERE id=? AND active=1 FOR UPDATE",
                 (user["id"],),
             ).fetchone():
-                raise ServiceError(401, "Invalid username or password")
+                raise ServiceError(401, "Неверное имя пользователя или пароль")
             conn.execute("DELETE FROM sessions WHERE expires_at<=?", (time.time(),))
             conn.execute(
                 "INSERT INTO sessions(token_hash, user_id, expires_at) VALUES(?, ?, ?)",
@@ -268,7 +268,7 @@ class ServiceStore:
                 (_token_hash(token), time.time()),
             ).fetchone()
             if user is None:
-                raise ServiceError(401, "Invalid or expired session")
+                raise ServiceError(401, "Сессия недействительна или истекла")
             return dict(user)
 
     def logout(self, token: str) -> None:
@@ -284,7 +284,7 @@ class ServiceStore:
             "SELECT * FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)
         ).fetchone()
         if chat is None:
-            raise ServiceError(404, "Conversation not found")
+            raise ServiceError(404, "Диалог не найден")
         return chat
 
     def create_conversation(self, user_id: str, title: str = "") -> dict:
@@ -378,13 +378,13 @@ class ServiceStore:
         переписанный с учётом истории). Существование и владелец диалога проверяются в той
         же транзакции. 400 — неверные `role` или `sources`, 404 — нет диалога."""
         if role not in {"user", "assistant", "system"}:
-            raise ServiceError(400, "Invalid message role")
+            raise ServiceError(400, "Неверная роль сообщения")
         if sources is not None and not isinstance(sources, list):
-            raise ServiceError(400, "Invalid message sources")
+            raise ServiceError(400, "Неверные источники сообщения")
         try:
             sources_json = json.dumps(sources if sources is not None else [], ensure_ascii=False)
         except (TypeError, ValueError):
-            raise ServiceError(400, "Invalid message sources") from None
+            raise ServiceError(400, "Неверные источники сообщения") from None
         message = {
             "id": uuid.uuid4().hex,
             "conversation_id": conversation_id,

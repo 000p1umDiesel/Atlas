@@ -821,7 +821,7 @@ class GraphStore:
         Имя алгоритма подставляется в текст запроса, поэтому разрешены только два значения;
         иначе `ValueError`."""
         if algorithm not in {"pageRank", "leiden"}:
-            raise ValueError("Unsupported graph algorithm")
+            raise ValueError("неподдерживаемый алгоритм графа")
         return int(
             self._run(
                 f"CALL gds.{algorithm}.stream.estimate($name, "
@@ -873,7 +873,7 @@ class GraphStore:
         Исключения: `ValueError` для имени без `PROJECTION_PREFIX` (чужие проекции не
         трогаем)."""
         if not name.startswith(PROJECTION_PREFIX):
-            raise ValueError("Cannot drop a projection mnogobase did not create")
+            raise ValueError("нельзя удалить проекцию, которую создал не mnogobase")
         self._run("CALL gds.graph.drop($name, false) YIELD graphName RETURN graphName", name=name)
 
     def clear_analysis(self) -> None:
@@ -904,7 +904,7 @@ class GraphStore:
             not math.isfinite(r["pagerank"]) or r["pagerank"] < 0 or not r["community"]
             for r in rows
         ):
-            raise ValueError("Analysis requires complete, unique, finite scores")
+            raise ValueError("для аналитики нужны полные, уникальные и конечные оценки")
         run_id = uuid.uuid4().hex
 
         def publish(tx):
@@ -919,7 +919,7 @@ class GraphStore:
                 return False
             count = run("MATCH (e:Entity) RETURN count(e) AS n").single()["n"]
             if count != len(rows):
-                raise ValueError("Analysis must contain the complete entity set")
+                raise ValueError("аналитика должна охватывать все сущности")
             written = run(
                 "UNWIND $rows AS row MATCH (e:Entity {entity_id: row.entity_id}) "
                 "SET e.analytics_run_id = $run, e.analytics_pagerank = row.pagerank, "
@@ -928,7 +928,7 @@ class GraphStore:
                 run=run_id,
             ).single()["n"]
             if written != count:
-                raise ValueError("Analysis must contain the complete entity set")
+                raise ValueError("аналитика должна охватывать все сущности")
             run(
                 "MATCH (s:AnalysisState {key: 'graph'}) SET s.run_id = $run, "
                 "s.metadata = $metadata, s.completed_at = datetime()",

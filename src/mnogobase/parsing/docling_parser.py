@@ -165,7 +165,7 @@ class DoclingParser:
         size_mb = path.stat().st_size / (1024 * 1024)
         if size_mb > self._s.max_file_mb:
             raise ParseLimitError(
-                f"{path.name}: {size_mb:.0f} MB is over parsing.max_file_mb={self._s.max_file_mb}"
+                f"{path.name}: {size_mb:.0f} МБ, это больше parsing.max_file_mb={self._s.max_file_mb}"
             )
         result = self._get_converter().convert(
             path, raises_on_error=False, max_num_pages=self._s.max_pages
@@ -176,10 +176,12 @@ class DoclingParser:
             pages = getattr(result.input, "page_count", 0) or 0
             if pages > self._s.max_pages:
                 raise ParseLimitError(
-                    f"{path.name}: {pages} pages is over parsing.max_pages={self._s.max_pages}"
+                    f"{path.name}: {pages} стр., это больше parsing.max_pages={self._s.max_pages}"
                 )
             details = "; ".join(e.error_message for e in result.errors)[:500]
-            raise ParseError(f"{path.name}: Docling failed ({result.status.value}) {details}")
+            raise ParseError(
+                f"{path.name}: Docling не смог разобрать файл ({result.status.value}) {details}"
+            )
         doc = result.document
         if self._vision is not None and self._vision.enabled:
             if result.input.format == InputFormat.IMAGE:
@@ -262,10 +264,10 @@ def _describe_whole_image(
         text = _ask_vlm(image, vision, client, retry_wait)
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
         raise VisionError(
-            f"{path.name}: the VLM at {vision.url} failed: {type(exc).__name__}: {exc}"
+            f"{path.name}: ошибка VLM по адресу {vision.url}: {type(exc).__name__}: {exc}"
         ) from exc
     if not text.strip():
-        raise VisionError(f"{path.name}: the VLM at {vision.url} returned an empty description")
+        raise VisionError(f"{path.name}: VLM по адресу {vision.url} вернула пустое описание")
     # рамка картинки — вся первая страница (у картинки она одна) или сам размер картинки
     page = doc.pages.get(1)
     width, height = (page.size.width, page.size.height) if page else image.size
@@ -333,8 +335,8 @@ def _check_descriptions(doc: DoclingDocument, vision: VisionSettings) -> None:
     ]
     if empty:
         raise VisionError(
-            f"{len(empty)} of {len(doc.pictures)} pictures got no description from the VLM at "
-            f"{vision.url} (see the log); rerun with --retry-failed"
+            f"{len(empty)} из {len(doc.pictures)} изображений не получили описания от VLM по адресу "
+            f"{vision.url} (см. лог); запустите с --retry-failed"
         )
 
 

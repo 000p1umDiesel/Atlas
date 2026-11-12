@@ -106,7 +106,7 @@ def test_gds_rejects_budget_and_cleans_up_after_algorithm_failure(plugin_store, 
 
     store = plugin_store
     populate(store, "Legacy")
-    with pytest.raises(AnalysisError, match="nodes"):
+    with pytest.raises(AnalysisError, match="Узлов"):
         analyze(store, GraphAnalysisSettings(max_nodes=1))
     assert store.owned_projections() == []
 
@@ -139,7 +139,7 @@ def test_invalid_weights_are_rejected_before_projection(plugin_store, weight):
     store = plugin_store
     populate(store, "Legacy")
     store._run("MATCH (:Entity)-[r:RELATED]->(:Entity) SET r.weight = $weight", weight=weight)
-    with pytest.raises(AnalysisError, match="positive finite"):
+    with pytest.raises(AnalysisError, match="положительными конечными"):
         analyze(store, GraphAnalysisSettings())
     assert store.owned_projections() == []
 
@@ -157,7 +157,7 @@ def test_changed_graph_cannot_publish_scores_from_old_projection(plugin_store, m
         return rows
 
     monkeypatch.setattr(store, "gds_pagerank", concurrent_write)
-    with pytest.raises(AnalysisError, match="changed"):
+    with pytest.raises(AnalysisError, match="изменился"):
         analyze(store, GraphAnalysisSettings())
     assert store.owned_projections() == []
     assert not store.analysis_status()["ready"]

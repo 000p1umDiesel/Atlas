@@ -104,9 +104,9 @@ def test_manifest_blocks_changed_config_and_dataset(tmp_path):
     run = tmp_path / "run"
     core.prepare_run(path, run, Settings(), limit=1)
     core.prepare_run(path, run, Settings(), limit=1)
-    with pytest.raises(ValueError, match="configuration changed"):
+    with pytest.raises(ValueError, match="конфигурация эксперимента изменилась"):
         core.prepare_run(path, run, Settings(), limit=2)
-    with pytest.raises(ValueError, match="configuration changed"):
+    with pytest.raises(ValueError, match="конфигурация эксперимента изменилась"):
         core.prepare_run(path, run, Settings(), limit=1, k=19)
 
 
@@ -124,7 +124,7 @@ def test_manifest_blocks_resume_after_security_policy_changes(tmp_path, monkeypa
         return result + "\nUpdated security policy." if name == "untrusted_data" else result
 
     monkeypatch.setattr(templates, "render", changed_policy)
-    with pytest.raises(ValueError, match="configuration changed"):
+    with pytest.raises(ValueError, match="конфигурация эксперимента изменилась"):
         core.prepare_run(path, run, Settings())
 
 
@@ -132,13 +132,13 @@ def test_manifest_blocks_resume_after_security_policy_changes(tmp_path, monkeypa
 @pytest.mark.parametrize(
     "options, match",
     [
-        pytest.param({"modes": []}, "distinct modes", id="empty-modes"),
-        pytest.param({"modes": ["rag", "rag"]}, "distinct modes", id="duplicate-modes"),
-        pytest.param({"modes": ["rag", "unknown"]}, "distinct modes", id="unknown-mode"),
-        pytest.param({"limit": 0}, "limit must be positive", id="zero-limit"),
-        pytest.param({"limit": -1}, "limit must be positive", id="negative-limit"),
-        pytest.param({"k": 0}, "k must be positive", id="zero-k"),
-        pytest.param({"k": -1}, "k must be positive", id="negative-k"),
+        pytest.param({"modes": []}, "неповторяющиеся режимы", id="empty-modes"),
+        pytest.param({"modes": ["rag", "rag"]}, "неповторяющиеся режимы", id="duplicate-modes"),
+        pytest.param({"modes": ["rag", "unknown"]}, "неповторяющиеся режимы", id="unknown-mode"),
+        pytest.param({"limit": 0}, "limit должен быть положительным", id="zero-limit"),
+        pytest.param({"limit": -1}, "limit должен быть положительным", id="negative-limit"),
+        pytest.param({"k": 0}, "k должен быть положительным", id="zero-k"),
+        pytest.param({"k": -1}, "k должен быть положительным", id="negative-k"),
     ],
 )
 def test_invalid_run_options_do_not_create_or_replace_manifest(
@@ -193,9 +193,9 @@ async def test_tampered_manifest_blocks_resume_before_retrieval_and_preserves_fi
     retriever = RecordingRetriever()
     llm = FakeLLM(lambda *a: "Answer")
 
-    with pytest.raises(ValueError, match="invalid manifest fingerprint"):
+    with pytest.raises(ValueError, match="отпечаток манифеста не совпадает"):
         core.load_run(run)
-    with pytest.raises(ValueError, match="invalid manifest fingerprint"):
+    with pytest.raises(ValueError, match="отпечаток манифеста не совпадает"):
         await core.run_answers(run, {"rag": retriever}, Answerer(llm, 1000))
 
     assert retriever.calls == []
@@ -210,21 +210,26 @@ async def test_tampered_manifest_blocks_resume_before_retrieval_and_preserves_fi
         pytest.param(
             {"question": "Another question?"},
             None,
-            "Answer does not match dataset: q1 / rag",
+            "Ответ не соответствует набору вопросов: q1 / rag",
             id="mismatched-question",
         ),
         pytest.param(
             {"reference": "Another reference."},
             None,
-            "Answer does not match dataset: q1 / rag",
+            "Ответ не соответствует набору вопросов: q1 / rag",
             id="mismatched-reference",
         ),
         pytest.param(
-            {}, "reference", "Answer does not match dataset: q1 / rag", id="missing-reference"
+            {},
+            "reference",
+            "Ответ не соответствует набору вопросов: q1 / rag",
+            id="missing-reference",
         ),
-        pytest.param({"text": ""}, None, "Empty answer: q1 / rag", id="empty-answer"),
-        pytest.param({"text": " \n\t "}, None, "Empty answer: q1 / rag", id="whitespace-answer"),
-        pytest.param({}, "contexts", "Missing full contexts: q1 / rag", id="missing-contexts"),
+        pytest.param({"text": ""}, None, "Пустой ответ: q1 / rag", id="empty-answer"),
+        pytest.param({"text": " \n\t "}, None, "Пустой ответ: q1 / rag", id="whitespace-answer"),
+        pytest.param(
+            {}, "contexts", "Нет полных текстов контекста: q1 / rag", id="missing-contexts"
+        ),
         pytest.param({"contexts": [7]}, None, "contexts", id="integer-context"),
         pytest.param({"contexts": ["Evidence.", None]}, None, "contexts", id="mixed-context-types"),
         pytest.param({"contexts": "Evidence."}, None, "contexts", id="string-context-container"),
@@ -275,7 +280,7 @@ def test_jsonl_recovers_utf8_tail_but_rejects_middle_corruption(tmp_path):
     append_jsonl(path, {"id": "next"})
     assert read_jsonl(path) == [{"id": "ok"}, {"id": "next"}]
     path.write_bytes(b'broken\n{"id":"ok"}\n')
-    with pytest.raises(ValueError, match="line 1"):
+    with pytest.raises(ValueError, match="строка 1"):
         read_jsonl(path, recover_tail=True)
 
 
@@ -349,7 +354,7 @@ async def test_scores_resume_latest_failure_and_invalidate_changed_answers(tmp_p
     assert core.report(run)[0]["missing"] == 1
     await core.score_run(run, {"model": "fake"}, metrics=metrics)
     assert len(metrics["faithfulness"].calls) == 3
-    with pytest.raises(ValueError, match="configuration changed"):
+    with pytest.raises(ValueError, match="конфигурация эксперимента изменилась"):
         await core.score_run(run, {"model": "other"}, metrics=metrics)
 
 

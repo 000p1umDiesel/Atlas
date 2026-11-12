@@ -164,7 +164,7 @@ class ServedModel(Section):
     def _check_serve(self) -> Self:
         """Для `serve: api` адрес обязателен: угадывать, где работает чужой сервер, нельзя."""
         if self.serve == "api" and not self.base_url:
-            raise ValueError(f"{self.role}.base_url is required for serve: api")
+            raise ValueError(f"{self.role}.base_url обязателен при serve: api")
         return self
 
     @property
@@ -245,11 +245,13 @@ class EmbedderSettings(ServedModel):
             self.query_template.format(query="q")
         except (KeyError, IndexError, ValueError) as exc:
             raise ValueError(
-                "embedder templates may only use {text}/{title} (doc) and {query} (query); "
-                "write literal braces as {{ }}"
+                "в шаблонах эмбеддера допустимы только {text}/{title} (doc) и {query} "
+                "(query); буквальные фигурные скобки пишите как {{ }}"
             ) from exc
         if "{text}" not in self.doc_template or "{query}" not in self.query_template:
-            raise ValueError("embedder.doc_template needs {text}, query_template needs {query}")
+            raise ValueError(
+                "embedder.doc_template должен содержать {text}, а query_template — {query}"
+            )
         return self
 
     @property
@@ -316,19 +318,19 @@ class ExtractSettings(Section):
         # `Name:` без описания в YAML — это null
         types = {str(k).strip(): str(v or "").strip() for k, v in value.items()}
         if not types:
-            raise ValueError("entity_types must list at least one type")
+            raise ValueError("entity_types: укажите хотя бы один тип")
         seen: dict[str, str] = {}
         for name in [str(k) for k in value]:
             if not name.strip():
-                raise ValueError("entity_types: a type name is blank")
+                raise ValueError("entity_types: пустое имя типа")
             if ":" in name or "\n" in name or "\r" in name:
-                problem = "':'" if ":" in name else "a newline"
-                raise ValueError(f"entity_types: type name {name!r} must not contain {problem}")
+                problem = "':'" if ":" in name else "перевод строки"
+                raise ValueError(f"entity_types: имя типа {name!r} не должно содержать {problem}")
             key = name.strip().casefold()
             if key in seen:
                 raise ValueError(
-                    f"entity_types: duplicate type name {name.strip()!r} (same as {seen[key]!r}; "
-                    "names are compared case-insensitively)"
+                    f"entity_types: имя типа {name.strip()!r} повторяется (совпадает с "
+                    f"{seen[key]!r}: регистр не учитывается)"
                 )
             seen[key] = name.strip()
         return types
@@ -341,7 +343,7 @@ def _list_entry(item: object) -> tuple[str, object]:
     if isinstance(item, dict):
         if len(item) != 1:
             raise ValueError(
-                f"entity_types: a list entry must be a name or a mapping with one key, got {item!r}"
+                f"entity_types: элемент списка должен быть именем или словарём с одним ключом, а не {item!r}"
             )
         return next(iter(item.items()))
     return str(item), ""
@@ -391,12 +393,12 @@ class RetrievalSettings(Section):
         """Ключи только rag/wiki/graph, доли неотрицательны, сумма не больше 1."""
         unknown = sorted(set(value) - {"rag", "wiki", "graph"})
         if unknown:
-            raise ValueError(f"retrieval.budget: unknown mode {', '.join(unknown)}")
+            raise ValueError(f"retrieval.budget: неизвестный режим {', '.join(unknown)}")
         if any(share < 0 for share in value.values()):
-            raise ValueError("retrieval.budget: shares must be >= 0")
+            raise ValueError("retrieval.budget: доли должны быть >= 0")
         # допуск на погрешность float: 0.4 + 0.3 + 0.3 не всегда ровно 1.0
         if sum(value.values()) > 1 + 1e-9:
-            raise ValueError("retrieval.budget: shares must sum to at most 1")
+            raise ValueError("retrieval.budget: сумма долей должна быть не больше 1")
         return value
 
 
@@ -464,8 +466,8 @@ class VisionSettings(ServedModel):
         unknown = [v for v in value if v not in known]
         if unknown:
             raise ValueError(
-                f"vision.skip: unknown picture class {', '.join(unknown)} "
-                f"(known: {', '.join(sorted(known))})"
+                f"vision.skip: неизвестный класс картинок {', '.join(unknown)} "
+                f"(известные: {', '.join(sorted(known))})"
             )
         return value
 
@@ -545,7 +547,7 @@ class _YamlSource(YamlConfigSettingsSource):
         data = super().__call__()
         unknown = sorted(set(data) - set(self.settings_cls.model_fields))
         if unknown:
-            raise ValueError(f"config.yaml: unknown key {', '.join(unknown)}")
+            raise ValueError(f"config.yaml: неизвестный ключ {', '.join(unknown)}")
         # `current_state` — уже собранные значения источников с большим приоритетом
         higher = self.current_state.get("extract")
         own = data.get("extract")
@@ -696,7 +698,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     # Отсутствие неявного ./config.yaml значит "берём умолчания"; отсутствие явно
     # указанного пути — опечатка.
     if explicit and not path.is_file():
-        raise FileNotFoundError(f"Config file not found: {path}")
+        raise FileNotFoundError(f"Файл конфига не найден: {path}")
 
     # Путь к YAML задаётся в model_config класса, поэтому нужен подкласс на каждый вызов.
     class _FileSettings(Settings):

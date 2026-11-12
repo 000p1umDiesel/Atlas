@@ -166,8 +166,8 @@ class QdrantStore:
         existing = self.collection_dim(name)
         if existing != self.dim:
             raise DimensionMismatchError(
-                f"collection {name} has dim {existing}, the embedder produces {self.dim}; "
-                "run `mnogobase reindex`"
+                f"у коллекции {name} размерность {existing}, а эмбеддер выдаёт {self.dim}; "
+                "запустите `mnogobase reindex`"
             )
         info = self._call(self.client.get_collection, name)
         missing = [f for f in indexes if f not in (info.payload_schema or {})]

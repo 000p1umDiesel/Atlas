@@ -1,4 +1,11 @@
-device: cpu                         # auto | mps | cpu: устройство Docling/BM25; cpu — llama-server без GPU
+# Все ключи можно переопределить переменными MNOGOBASE_<СЕКЦИЯ>__<КЛЮЧ> (списки и словари — JSON);
+# неизвестные ключи и значения вне допустимых пределов — ошибка проверки конфига.
+# Секреты здесь не хранятся: только имена переменных окружения (*_env), значения — в .env.
+
+# auto | mps | cpu: устройство для моделей Docling (layout, OCR); auto берёт MPS на Mac, если
+# он доступен, иначе CPU. С cpu ещё и `mnogobase models up` запускает llama-server без GPU
+# (--n-gpu-layers 0). Эмбеддер, реранкер, VLM и LLM устройство выбирают сами на своих серверах.
+device: cpu
 
 # Модели ролей (llm, embedder, rerank, vision). serve — где работает модель:
 #   llamacpp — llama-server на порту роли (8000/8001/8002/8003): локально его поднимает
@@ -18,23 +25,27 @@ llm:
   base_url: https://codex.sale/v1
   # Сюда уходят тексты документов: выбирайте провайдера с понятными условиями обработки.
   # Локально: serve: llamacpp, model: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M (base_url убрать)
-  concurrency: 16
+  # Ключ API — переменная LLM_API_KEY из .env (llm.api_key_env по умолчанию).
+  concurrency: 16                    # одновременных запросов к LLM
   temperature: 0.1
-  timeout_s: 360
+  timeout_s: 360                     # предел одного запроса, секунды
 
 embedder:
   model: mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0
   serve: llamacpp
+  # Шаблоны текста для эмбеддинга: документы как есть, вопросы — с инструкцией Qwen3-Embedding.
+  # Смена модели, размерности или шаблонов блокирует ingest и ask до `mnogobase reindex`.
   doc_template: "{text}"
   query_template: "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"
 
 parsing:
-  ocr: true
+  ocr: true                          # распознавать текст на сканах и картинках
   ocr_lang: ["iso:ru", "iso:en"]     # языки OCR; у RapidOCR работает первый (кириллическая модель читает и латиницу)
+  # какие файлы брать при ingest каталога
   extensions: [pdf, docx, pptx, xlsx, html, htm, md, adoc, csv, txt, png, jpg, jpeg, tif, tiff, bmp, webp]
 
 chunking:
-  max_tokens: 512
+  max_tokens: 512                    # размер чанка в токенах токенайзера эмбеддера
 
 extract:
   # имя типа: однострочное описание для промпта извлечения (Other остаётся последним)
@@ -57,25 +68,27 @@ extract:
     Condition: A disease, disorder, symptom or other medical or psychological condition.
     Organism: A species, organism, cell type, organ or other living thing or part of one.
     Other: Anything meaningful that fits none of the types above.
-  max_failed_ratio: 0.2
+  max_failed_ratio: 0.2              # доля чанков без извлечения, выше которой стадия extract документа — failed
 
+# Слияние сущностей: кандидаты с косинусом от llm_check проверяет LLM; описаний больше
+# max_descriptions сжимаются LLM в одно.
 resolve:
   llm_check: 0.75
   max_descriptions: 5
 
 wiki:
-  language: en
-  min_mentions: 2
-  evidence_k: 12
+  language: en                       # язык страниц wiki
+  min_mentions: 2                    # страница появляется у сущности с не меньшим числом упоминаний
+  evidence_k: 12                     # сколько чанков-доказательств получает LLM на одну страницу
   obsidian: true                     # .obsidian/graph.json: index/log скрыты из графа, цвета по типам
 
 retrieval:
-  k: 8
+  k: 8                               # сколько найденных источников отбирается для ответа
   context_tokens: 20000              # с neighbors: 2 попадание rag может занимать до ~2.5k токенов
   neighbors: 2                       # rag: чанки той же секции, добавляемые с каждой стороны от попадания
   translate: true                    # искать также по английскому переводу неанглийского вопроса
   answer_language: ru                # ru | en | ... | auto (язык вопроса)
-  budget: {rag: 0.2, wiki: 0.2, graph: 0.6}
+  budget: {rag: 0.2, wiki: 0.2, graph: 0.6}   # режим all: доли context_tokens по режимам
 
 rerank:
   enabled: true                      # rag: переоценка гибридных попаданий cross-encoder'ом
@@ -96,30 +109,31 @@ vision:
   skip: [logo, icon, qr_code, bar_code, signature, stamp]   # классы картинок без описания
 
 graph:
-  traversal: apoc                   # bounded BFS; без APOC — обычный Cypher
-  use_gds: true                      # читать готовый graph analyze; не запускать при ask
+  traversal: apoc                   # apoc — ограниченный обход в ширину (BFS) процедурами APOC; cypher — обычный Cypher без плагина
+  use_gds: true                      # читать снимок PageRank/сообществ от `graph analyze`; сам GDS при ask не запускается
   community:
-    enabled: true                   # Leiden: добирать исходные чанки сообществ seeds
+    enabled: true                   # добирать исходные чанки из сообществ Leiden, в которые входят seed-сущности
     max_communities: 3
     max_entities: 30                 # на сообщество, отбор по PageRank
     max_chunks: 3                    # внутри retrieval.k, с резервом локальных источников
     timeout_s: 5
-  hops: 2
-  max_relations: 30
-  seeds: 5
-  seed_threshold: 0.3
+  hops: 2                            # глубина обхода от seed-сущностей
+  max_relations: 30                  # предел связей в контексте ответа
+  seeds: 5                           # seed-сущностей (найденных по вектору вопроса) на запрос
+  seed_threshold: 0.3                # минимальный косинус для seed-сущности
 
 qdrant:
   url: http://localhost:6333
-  prefix: mb_
+  prefix: mb_                        # префикс имён коллекций (mb_chunks, mb_entities, mb_wiki_pages)
   api_key_env: QDRANT_API_KEY   # ключ в .env; Qdrant из compose.yaml без него не пускает
 
 neo4j:
   uri: bolt://localhost:7687
   user: neo4j
-  password_env: NEO4J_PASSWORD
+  password_env: NEO4J_PASSWORD       # пароль — в .env
 
-# eval score: null наследует подключение llm / embedder; ключи — только имена env.
+# Судья `mnogobase eval score` (Ragas): null берёт подключение llm (модель задачи answer) и
+# embedder; ключи — только имена переменных окружения, сами значения — в .env.
 evaluation:
   base_url: null
   model: null
@@ -129,12 +143,13 @@ evaluation:
   embedding_api_key_env: null
   timeout_s: 360
   temperature: 0
-  strictness: 3
+  strictness: 3                      # сколько вопросов генерирует answer_relevancy на ответ
 
 database:                          # адрес PostgreSQL; пароль — POSTGRES_PASSWORD в .env
   host: localhost
   port: 5432
   name: mnogobase
   user: mnogobase
+  # все таблицы проекта — в одной схеме <schema_prefix>_project_<project>
   schema_prefix: mnogobase
   project: default

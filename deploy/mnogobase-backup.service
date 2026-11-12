@@ -1,3 +1,7 @@
+# Холодный бэкап mnogobase через restic (deploy/backup.sh). Запускается таймером
+# mnogobase-backup.timer; установка: /etc/systemd/system/, затем
+#   systemctl enable --now mnogobase-backup.timer
+# Вручную: systemctl start mnogobase-backup.service (журнал — journalctl -u mnogobase-backup).
 [Unit]
 Description=mnogobase restic backup
 Requires=docker.service

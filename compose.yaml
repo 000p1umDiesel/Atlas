@@ -10,59 +10,76 @@
 # Базы закрыты паролями и ключом из .env. Нативные `mnogobase models up` занимают те же
 # порты 8001–8003: запускайте либо их, либо контейнеры embed / rerank / vision.
 # В .env — только секреты; настройки приложения — в config.yaml (он монтируется в контейнеры).
-# Данные лежат в ./data рядом с кодом (на сервере /srv/mnogobase/app — смонтированный том);
-# MB_DATA переопределяет каталог (учебное восстановление). Каталоги создаёт
-# deploy/prepare-data.sh; если каталога нет, контейнер не стартует и не пишет мимо тома.
+# Данные лежат в ./data рядом с кодом (на сервере /srv/mnogobase/app/data — на отдельном
+# смонтированном томе /srv/mnogobase); MB_DATA переопределяет каталог (учебное
+# восстановление). Каталоги создаёт deploy/prepare-data.sh; если каталога нет, контейнер не
+# стартует (create_host_path: false) и не пишет мимо тома.
+# Базы общие для нативного CLI и контейнеров, а wiki/ и .mnogobase/ — нет (корень репозитория
+# против ./data/app): писать в одну базу должен кто-то один — либо worker, либо нативный CLI.
+# Никогда не запускайте `docker compose down -v` и prune томов: это удалит данные.
 name: mnogobase-kb
 
 # Логи: на Mac — драйвер local (до ~100 МБ на контейнер, ротирует сам); на сервере в .env
 # MB_LOG_DRIVER=journald — общий журнал хоста с его лимитом и сроком хранения, тег — имя
-# контейнера из настроек демона. Здесь только опции, которые понимают оба драйвера.
+# контейнера из настроек демона. Здесь только опции, которые понимают оба драйвера:
+# non-blocking — контейнер не ждёт медленный драйвер логов (при переполнении буфера
+# в 1 МБ строки теряются, а не тормозят приложение).
 x-logging: &logging
   driver: ${MB_LOG_DRIVER:-local}
   options:
     mode: non-blocking
     max-buffer-size: "1m"
 
+# Общая часть api и worker: один образ из Dockerfile, один config.yaml и один каталог данных.
 x-app: &app
   image: mnogobase:${MB_TAG:-latest}
   build: .
   pull_policy: never   # образ только локальный: нет — собрать, есть — взять, не ходить в Docker Hub
-  env_file: .env
+  env_file: .env       # секреты: LLM_API_KEY, POSTGRES_PASSWORD, NEO4J_PASSWORD, QDRANT_API_KEY
   environment:
-    # адреса сервисов внутри сети compose; всё остальное — из того же config.yaml
+    # адреса сервисов внутри сети compose (вместо localhost из config.yaml);
+    # всё остальное — из того же config.yaml
     MNOGOBASE_DATABASE__HOST: postgres
     MNOGOBASE_DATABASE__PORT: "5432"
     MNOGOBASE_QDRANT__URL: http://qdrant:6333
-    QDRANT_API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}"
+    QDRANT_API_KEY: "${QDRANT_API_KEY:?задайте QDRANT_API_KEY в .env}"
     MNOGOBASE_NEO4J__URI: bolt://neo4j:7687
+    # серверы моделей внутри сети слушают 8080 (наружу они опубликованы как 8001–8003)
     MNOGOBASE_EMBEDDER__BASE_URL: http://embed:8080/v1
     MNOGOBASE_RERANK__BASE_URL: http://rerank:8080/v1
     MNOGOBASE_VISION__BASE_URL: http://vision:8080/v1
-    DATABASE_URL: ""   # не наследовать локальный DSN из .env
+    # DATABASE_URL перекрывает адрес из database.*; пустое значение не даёт унаследовать
+    # локальный DSN из .env, и приложение собирает адрес из host=postgres и POSTGRES_PASSWORD
+    DATABASE_URL: ""
   volumes:
+    # /data — рабочий каталог приложения: .mnogobase/, wiki/, logs/, runs/, inbox/ (WORKDIR в Dockerfile)
     - type: bind
       source: ${MB_DATA:-./data}/app
       target: /data
       bind: {create_host_path: false}
+    # кэш моделей Docling (layout, OCR) и Hugging Face: не скачивать их заново после пересборки
     - type: bind
       source: ${MB_DATA:-./data}/cache
       target: /home/app/.cache
       bind: {create_host_path: false}
+    # настройки только для чтения: правка config.yaml в репозитории + перезапуск контейнера
     - ./config.yaml:/data/config.yaml:ro
-  restart: on-failure:5
+  restart: on-failure:5   # после сбоя — не больше 5 перезапусков подряд, без бесконечного цикла
   logging: *logging
+  # стартовать только после того, как базы прошли свои healthcheck
   depends_on:
     postgres: {condition: service_healthy}
     qdrant: {condition: service_healthy}
     neo4j: {condition: service_healthy}
 
+# Общая часть серверов моделей: llama.cpp (llama-server) на CPU, по одному контейнеру на роль.
+# Модель скачивается с Hugging Face по `-hf repo:квант` при первом старте и хранится в data/models.
 x-model: &model
   image: ghcr.io/ggml-org/llama.cpp:server-b11804
   environment:
-    LLAMA_CACHE: /models        # старые сборки llama.cpp
-    HF_HOME: /models            # новые: кэш Hugging Face в /models/hub
-    HF_TOKEN: ${HF_TOKEN:-}
+    LLAMA_CACHE: /models        # кэш моделей для старых сборок llama.cpp
+    HF_HOME: /models            # для новых: кэш Hugging Face в /models/hub
+    HF_TOKEN: ${HF_TOKEN:-}     # нужен только для закрытых репозиториев
   volumes:
     - type: bind
       source: ${MB_DATA:-./data}/models
@@ -70,21 +87,26 @@ x-model: &model
       bind: {create_host_path: false}
   restart: on-failure:5
   logging: *logging
+  # /health отвечает 200, только когда модель загружена и сервер готов принимать запросы
   healthcheck:
     test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
     interval: 15s
     timeout: 5s
     retries: 10
-    start_period: 30m  # первая загрузка GGUF с Hugging Face
+    start_period: 30m  # первая загрузка GGUF с Hugging Face (несколько ГБ) бывает долгой
 
 services:
+  # HTTP API для владельца; на сервере снаружи доступен только через nginx (deploy/nginx.conf).
+  # API ничего не пишет в корпус сам: загрузки и удаления ставятся в очередь для worker.
   api:
     <<: *app
     command: ["mnogobase", "api", "serve", "--host", "0.0.0.0", "--port", "8080"]
     ports: ["${MB_BIND:-127.0.0.1}:${MB_API_PORT:-8080}:8080"]
+    # memswap_limit = mem_limit: контейнер не уходит в swap, при нехватке памяти его убивает OOM
     mem_limit: 1536m
     memswap_limit: 1536m
     cpus: 1.0
+    # в slim-образе нет curl, поэтому /health проверяется стандартной библиотекой Python
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
       interval: 15s
@@ -92,6 +114,9 @@ services:
       retries: 5
       start_period: 60s
 
+  # Единственный писатель корпуса: выполняет задачи очереди (ingest / remove) и следит за
+  # каталогом /data/inbox (на хосте data/app/inbox) — положенные туда файлы индексируются сами.
+  # Портов нет: worker только ходит к базам и моделям.
   worker:
     <<: *app
     command: ["mnogobase", "worker", "run", "--watch", "/data/inbox"]
@@ -99,21 +124,26 @@ services:
     memswap_limit: 3g
     cpus: 2.0
     stop_signal: SIGINT        # задача дорабатывает шаг и остаётся в очереди
-    stop_grace_period: 15m
+    stop_grace_period: 15m     # столько ждать завершения шага, прежде чем убить процесс
+    # кроме баз ждёт эмбеддер: без него индексировать нечем
     depends_on:
       postgres: {condition: service_healthy}
       qdrant: {condition: service_healthy}
       neo4j: {condition: service_healthy}
       embed: {condition: service_healthy}
 
+  # PostgreSQL: реестр документов и стадий, очередь задач, пользователи, сессии, чаты и
+  # учёт вызовов LLM — всё в одной схеме проекта.
   postgres:
     image: postgres:18.6
     environment:
       POSTGRES_DB: mnogobase
       POSTGRES_USER: mnogobase
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}"
     ports: ["${MB_BIND:-127.0.0.1}:5432:5432"]
     volumes:
+      # PostgreSQL 18 хранит данные в /var/lib/postgresql/<версия>/docker, поэтому монтируется
+      # родительский каталог
       - type: bind
         source: ${MB_DATA:-./data}/postgres
         target: /var/lib/postgresql
@@ -121,6 +151,7 @@ services:
     mem_limit: 768m
     memswap_limit: 768m
     cpus: 0.75
+    # готов, когда принимает подключения к базе mnogobase
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mnogobase -d mnogobase"]
       interval: 5s
@@ -130,11 +161,12 @@ services:
     restart: on-failure:5
     logging: *logging
 
+  # Qdrant: векторы чанков, сущностей и страниц wiki (гибридный поиск dense + sparse).
   qdrant:
     image: qdrant/qdrant:v1.19.2
     environment:
-      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}"
-      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?задайте QDRANT_API_KEY в .env}"
+      QDRANT__TELEMETRY_DISABLED: "true"   # не отправлять телеметрию разработчикам Qdrant
     ports: ["${MB_BIND:-127.0.0.1}:6333:6333"]
     volumes:
       - type: bind
@@ -144,6 +176,7 @@ services:
     mem_limit: 1g
     memswap_limit: 1g
     cpus: 1.0
+    # в образе нет curl и wget: проверяется только, что порт 6333 принимает TCP-подключение
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 5s
@@ -153,17 +186,21 @@ services:
     restart: on-failure:5
     logging: *logging
 
+  # Neo4j: граф сущностей, связей, упоминаний и страниц wiki; APOC — для обхода графа,
+  # GDS — для `mnogobase graph analyze` (PageRank и сообщества Leiden).
   neo4j:
     image: neo4j:5.26.32-community
     environment:
-      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}"
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?задайте NEO4J_PASSWORD в .env}"
       # APOC входит в образ (labs) и копируется без загрузки; GDS — закреплённый jar
       # в data/neo4j-plugins (кладёт deploy/prepare-data.sh), без скачивания при старте.
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      # память JVM: куча до 768 МБ и кэш страниц 256 МБ — укладываются в mem_limit 2g
       NEO4J_server_memory_heap_initial__size: 512M
       NEO4J_server_memory_heap_max__size: 768M
       NEO4J_server_memory_pagecache_size: 256M
+    # 7474 — сайт Neo4j Browser, 7687 — протокол bolt для приложения
     ports: ["${MB_BIND:-127.0.0.1}:7474:7474", "${MB_BIND:-127.0.0.1}:7687:7687"]
     volumes:
       - type: bind
@@ -177,6 +214,7 @@ services:
     mem_limit: 2g
     memswap_limit: 2g
     cpus: 2.0
+    # готов, когда отвечает HTTP-порт 7474; первый старт с копированием плагинов долгий
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:7474/ || exit 1"]
       interval: 10s
@@ -188,6 +226,10 @@ services:
 
   # Модели и флаги должны совпадать с config.yaml (embedder / rerank / vision .model);
   # при смене модели правятся оба места, а эмбеддер ещё требует `mnogobase reindex`.
+  # --alias — имя модели в API, которое ждёт приложение (= model из config.yaml);
+  # --n-gpu-layers 0 — всё на CPU; --parallel 1 — один запрос за раз, чтобы уложиться в память.
+  # Эмбеддер (Qwen3-Embedding-0.6B): векторы чанков, сущностей и вопросов; также /tokenize
+  # для разбиения на чанки (chunking.tokenizer: auto).
   embed:
     <<: *model
     ports: ["${MB_BIND:-127.0.0.1}:8001:8080"]
@@ -198,6 +240,8 @@ services:
     memswap_limit: 2g
     cpus: 2.0
 
+  # Реранкер (Qwen3-Reranker-0.6B из gorse-io — конвертация с головой классификатора):
+  # пересортировывает найденные чанки в режиме rag.
   rerank:
     <<: *model
     ports: ["${MB_BIND:-127.0.0.1}:8002:8080"]
@@ -208,6 +252,8 @@ services:
     memswap_limit: 2g
     cpus: 2.0
 
+  # VLM для описания картинок при разборе документов (vision.enabled);
+  # --image-min-tokens 1024 — достаточно деталей для небольших картинок из PDF.
   vision:
     <<: *model
     ports: ["${MB_BIND:-127.0.0.1}:8003:8080"]

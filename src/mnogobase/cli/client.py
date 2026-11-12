@@ -35,7 +35,9 @@ def _default_api_url() -> str:
     try:
         return common.load_settings(common.state.get("config")).service.api_url
     except (OSError, ValueError, yaml.YAMLError) as exc:  # нет файла, битый YAML, схема
-        raise typer.BadParameter("Cannot load client configuration") from exc
+        raise typer.BadParameter(
+            "Не удалось загрузить конфигурацию клиента. Укажите адрес API через --url."
+        ) from exc
 
 
 def _client(ctx: typer.Context) -> Client:
@@ -63,7 +65,7 @@ def _print_answer(value: dict, as_json: bool) -> None:
         typer.echo("")
         for number, source in enumerate(sources, 1):
             where = source.get("path") or source.get("ref") or source.get("kind", "")
-            page = f", p.{source['page']}" if source.get("page") is not None else ""
+            page = f", стр. {source['page']}" if source.get("page") is not None else ""
             link = f"  {source['url']}" if source.get("url") else ""
             typer.echo(f"[{number}] {where}{page}{link}")
 
@@ -75,13 +77,13 @@ def _id(value: str) -> str:
 
 
 client_app = typer.Typer(
-    no_args_is_help=True, help="HTTP client for the mnogobase API (local or on a server)."
+    no_args_is_help=True, help="HTTP-клиент API mnogobase (локального или на сервере)"
 )
-documents = typer.Typer(no_args_is_help=True)
-jobs = typer.Typer(no_args_is_help=True)
-chat = typer.Typer(no_args_is_help=True)
-wiki = typer.Typer(no_args_is_help=True)
-graph = typer.Typer(no_args_is_help=True)
+documents = typer.Typer(no_args_is_help=True, help="Документы базы знаний")
+jobs = typer.Typer(no_args_is_help=True, help="Задачи фоновой очереди")
+chat = typer.Typer(no_args_is_help=True, help="Беседы с базой знаний")
+wiki = typer.Typer(no_args_is_help=True, help="Страницы wiki")
+graph = typer.Typer(no_args_is_help=True, help="Граф знаний: поиск сущностей и соседей")
 common.app.add_typer(client_app, name="client")
 for name, group in [
     ("documents", documents),
@@ -96,9 +98,14 @@ for name, group in [
 @client_app.callback()
 def configure(
     ctx: typer.Context,
-    url: str | None = typer.Option(None, "--url", envvar="MNOGOBASE_API_URL"),
+    url: str | None = typer.Option(
+        None, "--url", envvar="MNOGOBASE_API_URL", help="Адрес API (по умолчанию service.api_url)"
+    ),
     credentials: Annotated[
-        Path, typer.Option("--credentials", envvar="MNOGOBASE_CREDENTIALS")
+        Path,
+        typer.Option(
+            "--credentials", envvar="MNOGOBASE_CREDENTIALS", help="Файл с сохранёнными токенами"
+        ),
     ] = DEFAULT_CREDENTIALS,
 ):
     """Общие параметры `client`: создаёт `Client` для подкоманды.
@@ -111,7 +118,7 @@ def configure(
         parsed = urlsplit(url)
         _ = parsed.port  # чтение порта проверяет и сам порт, и хост в квадратных скобках
     except ValueError as exc:
-        raise typer.BadParameter("Invalid API URL") from exc
+        raise typer.BadParameter("Неверный адрес API.") from exc
     if (
         parsed.scheme not in ("http", "https")
         or not parsed.hostname
@@ -120,15 +127,23 @@ def configure(
         or parsed.query
         or parsed.fragment
     ):
-        raise typer.BadParameter("Use an http(s) API URL without credentials, query or fragment")
+        raise typer.BadParameter(
+            "Укажите адрес API вида http(s)://хост[:порт] без логина, пароля, query и фрагмента."
+        )
     ctx.obj = Client(url.rstrip("/"), Credentials(credentials))
 
 
 @client_app.command()
 def login(
     ctx: typer.Context,
-    username: str,
-    password: str = typer.Option(..., "--password", prompt=True, hide_input=True),
+    username: Annotated[str, typer.Argument(help="Имя пользователя")],
+    password: str = typer.Option(
+        ...,
+        "--password",
+        prompt="Пароль",
+        hide_input=True,
+        help="Пароль; без опции запрашивается скрыто",
+    ),
 ):
     """Войти в API и сохранить токен сессии.
 
@@ -139,7 +154,7 @@ def login(
         "POST", "/api/auth/login", auth=False, json={"username": username, "password": password}
     ).json()
     c.credentials.save(c.url, result["token"])
-    typer.echo("Logged in")
+    typer.echo("Вход выполнен")
 
 
 @client_app.command()
@@ -148,7 +163,7 @@ def logout(ctx: typer.Context):
     c = _client(ctx)
     c.request("POST", "/api/auth/logout")
     c.credentials.remove(c.url)
-    typer.echo("Logged out")
+    typer.echo("Выход выполнен")
 
 
 @client_app.command("status")
@@ -161,8 +176,8 @@ def status(ctx: typer.Context):
 @documents.command("list")
 def documents_list(
     ctx: typer.Context,
-    limit: int = typer.Option(50, min=1, max=200),
-    offset: int = typer.Option(0, min=0),
+    limit: int = typer.Option(50, min=1, max=200, help="Размер страницы"),
+    offset: int = typer.Option(0, min=0, help="Сколько записей пропустить"),
 ):
     """Показать документы базы знаний постранично."""
     c = _client(ctx)
@@ -173,7 +188,10 @@ def documents_list(
 def documents_upload(
     ctx: typer.Context,
     path: Annotated[
-        Path, typer.Argument(exists=True, file_okay=True, dir_okay=False, readable=True)
+        Path,
+        typer.Argument(
+            exists=True, file_okay=True, dir_okay=False, readable=True, help="Файл для загрузки"
+        ),
     ],
 ):
     """Загрузить файл в базу знаний.
@@ -191,7 +209,9 @@ def documents_upload(
 
 
 @documents.command("remove")
-def documents_remove(ctx: typer.Context, doc_id: str):
+def documents_remove(
+    ctx: typer.Context, doc_id: Annotated[str, typer.Argument(help="doc_id документа")]
+):
     """Удалить документ из базы знаний по его doc_id.
 
     Сервер ставит задачу remove; знания документа исчезнут, когда её выполнит worker."""
@@ -201,7 +221,9 @@ def documents_remove(ctx: typer.Context, doc_id: str):
 
 @documents.command("source")
 def documents_source(
-    ctx: typer.Context, doc_id: str, output: Annotated[Path, typer.Option("--output", "-o")]
+    ctx: typer.Context,
+    doc_id: Annotated[str, typer.Argument(help="doc_id документа")],
+    output: Annotated[Path, typer.Option("--output", "-o", help="Новый файл для сохранения")],
 ):
     """Скачать исходный файл документа в новый файл --output.
 
@@ -217,8 +239,8 @@ def documents_source(
 @jobs.command("list")
 def jobs_list(
     ctx: typer.Context,
-    limit: int = typer.Option(50, min=1, max=200),
-    offset: int = typer.Option(0, min=0),
+    limit: int = typer.Option(50, min=1, max=200, help="Размер страницы"),
+    offset: int = typer.Option(0, min=0, help="Сколько записей пропустить"),
 ):
     """Показать задачи фоновой очереди постранично."""
     c = _client(ctx)
@@ -226,7 +248,7 @@ def jobs_list(
 
 
 @jobs.command("retry")
-def jobs_retry(ctx: typer.Context, job_id: str):
+def jobs_retry(ctx: typer.Context, job_id: Annotated[str, typer.Argument(help="id задачи")]):
     """Вернуть упавшую задачу в очередь и показать её состояние."""
     c = _client(ctx)
     _print(c.request("POST", c.path(f"jobs/{_id(job_id)}/retry")).json())
@@ -235,9 +257,9 @@ def jobs_retry(ctx: typer.Context, job_id: str):
 @client_app.command("ask")
 def ask(
     ctx: typer.Context,
-    question: str,
-    mode: str = typer.Option("rag", "--mode", "-m"),
-    as_json: bool = typer.Option(False, "--json"),
+    question: Annotated[str, typer.Argument(help="Вопрос")],
+    mode: str = typer.Option("rag", "--mode", "-m", help="Режим: rag | wiki | graph | all"),
+    as_json: bool = typer.Option(False, "--json", help="Напечатать полный ответ сервера в JSON"),
 ):
     """Задать вопрос базе знаний и получить ответ со ссылками на источники.
 
@@ -252,9 +274,9 @@ def ask(
 @client_app.command("search")
 def search(
     ctx: typer.Context,
-    question: str,
-    mode: str = typer.Option("rag", "--mode", "-m"),
-    k: int = typer.Option(8, min=1, max=100),
+    question: Annotated[str, typer.Argument(help="Вопрос")],
+    mode: str = typer.Option("rag", "--mode", "-m", help="Режим: rag | wiki | graph | all"),
+    k: int = typer.Option(8, min=1, max=100, help="Сколько фрагментов вернуть"),
 ):
     """Найти фрагменты по вопросу без генерации ответа.
 
@@ -268,7 +290,7 @@ def search(
 
 
 @chat.command("new")
-def chat_new(ctx: typer.Context, title: str = typer.Option("", "--title")):
+def chat_new(ctx: typer.Context, title: str = typer.Option("", "--title", help="Название беседы")):
     """Создать новую беседу и показать её id."""
     c = _client(ctx)
     _print(c.request("POST", c.path("conversations"), json={"title": title}).json())
@@ -277,8 +299,8 @@ def chat_new(ctx: typer.Context, title: str = typer.Option("", "--title")):
 @chat.command("list")
 def chat_list(
     ctx: typer.Context,
-    limit: int = typer.Option(50, min=1, max=200),
-    offset: int = typer.Option(0, min=0),
+    limit: int = typer.Option(50, min=1, max=200, help="Размер страницы"),
+    offset: int = typer.Option(0, min=0, help="Сколько записей пропустить"),
 ):
     """Показать свои беседы постранично."""
     c = _client(ctx)
@@ -290,9 +312,9 @@ def chat_list(
 @chat.command("history")
 def chat_history(
     ctx: typer.Context,
-    conversation_id: str,
-    limit: int = typer.Option(100, min=1, max=200),
-    offset: int = typer.Option(0, min=0),
+    conversation_id: Annotated[str, typer.Argument(help="id беседы")],
+    limit: int = typer.Option(100, min=1, max=200, help="Размер страницы"),
+    offset: int = typer.Option(0, min=0, help="Сколько записей пропустить"),
 ):
     """Показать сообщения беседы постранично."""
     c = _client(ctx)
@@ -308,10 +330,10 @@ def chat_history(
 @chat.command("send")
 def chat_send(
     ctx: typer.Context,
-    conversation_id: str,
-    question: str,
-    mode: str = typer.Option("rag", "--mode", "-m"),
-    as_json: bool = typer.Option(False, "--json"),
+    conversation_id: Annotated[str, typer.Argument(help="id беседы")],
+    question: Annotated[str, typer.Argument(help="Вопрос")],
+    mode: str = typer.Option("rag", "--mode", "-m", help="Режим: rag | wiki | graph | all"),
+    as_json: bool = typer.Option(False, "--json", help="Напечатать полный ответ сервера в JSON"),
 ):
     """Отправить вопрос в беседу и показать ответ.
 
@@ -330,9 +352,9 @@ def chat_send(
 @chat.command("open")
 def chat_open(
     ctx: typer.Context,
-    conversation_id: str | None = typer.Argument(None),
-    title: str = typer.Option("", "--title"),
-    mode: str = typer.Option("rag", "--mode", "-m"),
+    conversation_id: str | None = typer.Argument(None, help="id беседы; без него создаётся новая"),
+    title: str = typer.Option("", "--title", help="Название беседы"),
+    mode: str = typer.Option("rag", "--mode", "-m", help="Режим: rag | wiki | graph | all"),
 ):
     """Открыть беседу в интерактивном режиме.
 
@@ -343,14 +365,14 @@ def chat_open(
         conversation_id = c.request("POST", c.path("conversations"), json={"title": title}).json()[
             "id"
         ]
-    typer.echo(f"Conversation {conversation_id}; /exit ends the session")
+    typer.echo(f"Беседа {conversation_id}; /exit завершает сеанс")
     for message in c.request(
         "GET", c.path(f"conversations/{_id(conversation_id)}/messages")
     ).json():
         typer.echo(f"{message['role']}: {message['content']}")
     while True:
         try:
-            question = typer.prompt("You")
+            question = typer.prompt("Вы")
         except (EOFError, KeyboardInterrupt, typer.Abort):
             break
         if question.strip() in ("/exit", "/quit"):
@@ -370,8 +392,8 @@ def chat_open(
 @wiki.command("list")
 def wiki_list(
     ctx: typer.Context,
-    limit: int = typer.Option(50, min=1, max=200),
-    offset: int = typer.Option(0, min=0),
+    limit: int = typer.Option(50, min=1, max=200, help="Размер страницы"),
+    offset: int = typer.Option(0, min=0, help="Сколько записей пропустить"),
 ):
     """Показать страницы wiki постранично."""
     c = _client(ctx)
@@ -379,14 +401,18 @@ def wiki_list(
 
 
 @wiki.command("show")
-def wiki_show(ctx: typer.Context, page_id: str):
+def wiki_show(ctx: typer.Context, page_id: Annotated[str, typer.Argument(help="id страницы")]):
     """Показать страницу wiki по её id."""
     c = _client(ctx)
     _print(c.request("GET", c.path(f"wiki/{_id(page_id)}")).json())
 
 
 @graph.command("search")
-def graph_search(ctx: typer.Context, query: str, limit: int = typer.Option(20, min=1, max=100)):
+def graph_search(
+    ctx: typer.Context,
+    query: Annotated[str, typer.Argument(help="Поисковый запрос")],
+    limit: int = typer.Option(20, min=1, max=100, help="Сколько сущностей вернуть"),
+):
     """Найти сущности графа знаний полнотекстовым поиском."""
     c = _client(ctx)
     _print(c.request("GET", c.path("graph/search"), params={"q": query, "limit": limit}).json())
@@ -395,9 +421,9 @@ def graph_search(ctx: typer.Context, query: str, limit: int = typer.Option(20, m
 @graph.command("neighbors")
 def graph_neighbors(
     ctx: typer.Context,
-    entity_id: str,
-    depth: int = typer.Option(1, min=1, max=3),
-    limit: int = typer.Option(50, min=1, max=200),
+    entity_id: Annotated[str, typer.Argument(help="id сущности")],
+    depth: int = typer.Option(1, min=1, max=3, help="Глубина обхода (число связей)"),
+    limit: int = typer.Option(50, min=1, max=200, help="Сколько соседей вернуть"),
 ):
     """Показать соседей сущности в графе знаний на глубину до 3 связей."""
     c = _client(ctx)

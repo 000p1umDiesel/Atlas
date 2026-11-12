@@ -21,7 +21,7 @@ from mnogobase.llm.client import LLMClient, usage_scope
 from mnogobase.llm.templates import render_messages
 from mnogobase.retrieval.base import estimate_tokens
 
-NO_SOURCES = "The knowledge base has no relevant sources for this question."
+NO_SOURCES = "В базе знаний нет подходящих источников для этого вопроса."
 # ссылка на источник в тексте ответа: `[3]`
 _CITED = re.compile(r"\[(\d+)\]")
 

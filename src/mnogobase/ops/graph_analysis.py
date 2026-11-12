@@ -37,7 +37,7 @@ def check_memory(projection: int, workspace: int, *, budget_mb: int) -> None:
     превышают бюджет `budget_mb` МиБ."""
     if projection + workspace > budget_mb * 1024 * 1024:
         raise AnalysisError(
-            f"GDS memory estimate {projection + workspace} bytes exceeds {budget_mb} MiB budget"
+            f"Оценка памяти GDS ({projection + workspace} байт) превышает бюджет {budget_mb} МиБ"
         )
 
 
@@ -85,21 +85,19 @@ def analyze(
     plugins = graph.plugin_status()
     missing = [name for name in plugins["missing"] if name.startswith("gds.")]
     if not plugins["gds"] or missing:
-        raise AnalysisError(
-            f"GDS procedures are unavailable: {', '.join(missing) or 'gds.version'}"
-        )
+        raise AnalysisError(f"Процедуры GDS недоступны: {', '.join(missing) or 'gds.version'}")
     state = graph.analysis_status()
     if state["revision"] is None:
-        raise AnalysisError("Graph schema is missing: initialize the project first")
+        raise AnalysisError("Схемы графа нет: сначала инициализируйте проект")
     counts = graph.analysis_counts()
     if counts["nodes"] > settings.max_nodes:
-        raise AnalysisError(f"Graph has {counts['nodes']} nodes; limit is {settings.max_nodes}")
+        raise AnalysisError(f"Узлов в графе: {counts['nodes']}, лимит {settings.max_nodes}")
     if counts["relationships"] > settings.max_relationships:
         raise AnalysisError(
-            f"Graph has {counts['relationships']} relationships; limit is {settings.max_relationships}"
+            f"Связей в графе: {counts['relationships']}, лимит {settings.max_relationships}"
         )
     if counts["invalid_weights"]:
-        raise AnalysisError("RELATED weights must be positive finite numbers")
+        raise AnalysisError("Веса RELATED должны быть положительными конечными числами")
     report = {
         **counts,
         "revision": state["revision"],
@@ -118,7 +116,9 @@ def analyze(
         return report
     if not counts["nodes"]:
         if not graph.publish_analysis(state["revision"], [], report):
-            raise AnalysisError("Graph changed during analysis; rerun graph analyze")
+            raise AnalysisError(
+                "Граф изменился во время анализа: запустите `mnogobase graph analyze` снова"
+            )
         return report
     name = f"{PROJECTION_PREFIX}{uuid.uuid4().hex}"
     try:
@@ -141,11 +141,13 @@ def analyze(
                 [{"entity_id": row["entity_id"], "community_id": row["entity_id"]} for row in ranks]
             )
         if set(communities) != {row["entity_id"] for row in ranks}:
-            raise AnalysisError("GDS algorithms returned different entity sets")
+            raise AnalysisError("Алгоритмы GDS вернули разные наборы сущностей")
         report["communities"] = len(set(communities.values()))
         rows = [{**row, "community": communities[row["entity_id"]]} for row in ranks]
         if not graph.publish_analysis(state["revision"], rows, report):
-            raise AnalysisError("Graph changed during analysis; rerun graph analyze")
+            raise AnalysisError(
+                "Граф изменился во время анализа: запустите `mnogobase graph analyze` снова"
+            )
         return report
     finally:
         # летит ли уже исключение: тогда ошибка очистки его не заменяет

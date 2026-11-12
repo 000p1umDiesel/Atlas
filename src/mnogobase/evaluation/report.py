@@ -23,7 +23,7 @@ from .ragas import METRIC_NAMES
 # статусы оценки метрики: missing — оценки нет или она относится к другой версии ответа
 STATUSES = ("ok", "skipped", "error", "undefined", "missing")
 # названия подходов в отчёте для режимов retrieval
-LABELS = {"rag": "Hybrid RAG", "wiki": "WikiLLM", "graph": "GraphRAG", "all": "Combined"}
+LABELS = {"rag": "Гибридный RAG", "wiki": "WikiLLM", "graph": "GraphRAG", "all": "Комбинированный"}
 
 
 def _csv(path: Path, rows: list[dict]) -> None:
@@ -50,7 +50,7 @@ def report(output: Path) -> list[dict]:
             judge.get("fingerprint") != fingerprint(judge["config"])
             or judge["config"]["run_fingerprint"] != manifest["fingerprint"]
         ):
-            raise ValueError("Judge manifest does not match this run")
+            raise ValueError("Манифест судьи (judge.json) не соответствует этому прогону")
     scores = (
         latest_records(output / "scores.jsonl", ("id", "mode", "metric"))
         if judge_path.exists()
@@ -107,11 +107,11 @@ def report(output: Path) -> list[dict]:
     _csv(output / "details.csv", details)
     _csv(output / "summary.csv", summary)
     lines = [
-        "# Retrieval evaluation",
+        "# Оценка режимов retrieval",
         "",
-        "Means include successful metric values only; skipped/error/missing are not zero scores.",
+        "Средние считаются только по успешным значениям метрик; skipped/error/missing — не нулевые оценки.",
         "",
-        "| Approach | Metric | Mean | OK / planned | Skipped | Errors | Undefined | Missing |",
+        "| Подход | Метрика | Среднее | Успешно / план | Пропущено | Ошибки | Не определено | Нет оценки |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for s in summary:
@@ -122,7 +122,7 @@ def report(output: Path) -> list[dict]:
     lines.extend(
         [
             "",
-            "| Approach | Answers OK / planned | Failed | Missing | Mean latency, ms | Tokens in / out |",
+            "| Подход | Ответов успешно / план | С ошибкой | Нет ответа | Средняя задержка, мс | Токены вход / выход |",
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
@@ -136,10 +136,10 @@ def report(output: Path) -> list[dict]:
     lines.extend(
         [
             "",
-            f"Remaining/failed metric pairs: {pending}.",
+            f"Неоценённых или упавших пар ответ × метрика: {pending}.",
             "",
-            "Latency covers translation, retrieval and generation. Token totals cover successful answers only, not judge calls or failed attempts.",
-            "A skipped metric has no numeric value; inspect details.csv for the reason.",
+            "Задержка включает перевод вопроса, retrieval и генерацию. Токены считаются только по успешным ответам, без вызовов судьи и неудачных попыток.",
+            "У пропущенной метрики нет числового значения; причина указана в details.csv.",
         ]
     )
     lines.extend(comparison_reports(output, manifest, answers, details))

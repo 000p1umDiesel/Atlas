@@ -34,7 +34,7 @@ class Credentials:
         """Содержимое файла; отсутствующий файл — пустой словарь. Ссылка, нечитаемый или
         неверный по форме файл — `typer.BadParameter`."""
         if self.path.is_symlink():
-            raise typer.BadParameter("Credential file must not be a symlink")
+            raise typer.BadParameter("Файл учётных данных не должен быть символической ссылкой")
         if not self.path.exists():
             return {}
         try:
@@ -45,7 +45,7 @@ class Credentials:
                 raise ValueError
             return data
         except (OSError, ValueError) as exc:
-            raise typer.BadParameter("Cannot read credential file") from exc
+            raise typer.BadParameter("Не удалось прочитать файл учётных данных") from exc
 
     def _write(self, data: dict[str, str]) -> None:
         """Атомарно заменяет файл новым содержимым; временный файл удаляется при любом
@@ -99,17 +99,17 @@ class Client:
         if auth:
             token = self.credentials.token(self.url)
             if not token:
-                raise typer.BadParameter("Run client login first")
+                raise typer.BadParameter("Сначала выполните client login")
             headers["Authorization"] = f"Bearer {token}"
         try:
             with httpx.Client(base_url=self.url, timeout=300, follow_redirects=False) as client:
                 response = client.request(method, path, headers=headers, **kwargs)
         except httpx.HTTPError as exc:
-            typer.echo("API connection failed", err=True)
+            typer.echo("Не удалось подключиться к API", err=True)
             raise typer.Exit(2) from exc
         if response.status_code >= 300:
             # Тело ответа не печатаем: прокси или провайдер могут вернуть секреты или HTML.
-            detail = "Request failed"
+            detail = "Запрос не выполнен"
             try:
                 value = response.json().get("detail")
                 if isinstance(value, str):

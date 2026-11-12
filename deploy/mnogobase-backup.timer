@@ -1,3 +1,6 @@
+# Ежедневный запуск mnogobase-backup.service в 04:30 (время сервера).
+# Persistent=true — если сервер был выключен в это время, бэкап выполнится после включения;
+# RandomizedDelaySec — случайная задержка до 10 минут, чтобы не совпадать с другими задачами.
 [Unit]
 Description=Daily mnogobase backup
 

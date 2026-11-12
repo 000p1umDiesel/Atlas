@@ -126,7 +126,7 @@ def test_all_routes(api, tmp_path):
 
     async def wiki_page(page_id):
         if page_id != "p":
-            raise ServiceError(404, "Wiki page not found")
+            raise ServiceError(404, "Страница wiki не найдена")
         return {"id": "p", "content": "text"}
 
     async def graph_search(query, limit=20):

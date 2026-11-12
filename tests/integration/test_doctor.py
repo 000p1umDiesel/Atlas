@@ -58,7 +58,7 @@ def store_signature(tmp_path, signature: str) -> None:
 def test_index_check_compares_with_the_configured_embedder(tmp_path):
     settings = make_settings(tmp_path)
     [fresh] = run_checks(settings, only=["index"])
-    assert fresh.ok and fresh.detail == "no index yet"
+    assert fresh.ok and fresh.detail == "индекса пока нет"
     assert not target_exists(database_target(Settings()))  # проверка ничего не создаёт
 
     store_signature(tmp_path, embedder_signature(OpenAICompatEmbedder(settings.embedder)))
@@ -83,7 +83,9 @@ def test_index_check_fails_when_only_the_templates_changed(tmp_path):
     edited = make_settings(tmp_path, embedder=embedder)
     [changed] = run_checks(edited, only=["index"])
     assert not changed.ok
-    assert "templates changed" in changed.detail and "mnogobase reindex" in changed.detail
+    assert (
+        "изменились шаблоны эмбеддера" in changed.detail and "mnogobase reindex" in changed.detail
+    )
 
 
 def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path, monkeypatch):
@@ -117,14 +119,14 @@ def test_models_check_requires_the_reranker_only_when_enabled(tmp_path, monkeypa
     _served(monkeypatch, {url: [{"id": "/models/emb.gguf", "aliases": ["emb"]}]})
     embedder = EmbedderSettings(base_url=url + "/", model="emb")
     [plain] = run_checks(make_settings(tmp_path, embedder=embedder), only=["models"])
-    assert plain.ok and plain.detail == "embedder emb available"
+    assert plain.ok and plain.detail == "доступны: embedder emb"
 
     rerank = RerankSettings(enabled=True, base_url=url, model="rr")
     [missing] = run_checks(
         make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"]
     )
     assert not missing.ok
-    assert missing.detail == f"rr is not served by {url} (it serves /models/emb.gguf, emb)"
+    assert missing.detail == f"{url} не отдаёт модель rr (список моделей: /models/emb.gguf, emb)"
 
 
 def test_models_check_asks_each_server(tmp_path, monkeypatch):
@@ -135,7 +137,7 @@ def test_models_check_asks_each_server(tmp_path, monkeypatch):
     embedder = EmbedderSettings(base_url="http://a:8001/v1", model="emb")
     rerank = RerankSettings(enabled=True, base_url="http://b:8002/v1", model="rr")
     [ok] = run_checks(make_settings(tmp_path, embedder=embedder, rerank=rerank), only=["models"])
-    assert ok.ok and ok.detail == "embedder emb, reranker rr available"
+    assert ok.ok and ok.detail == "доступны: embedder emb, reranker rr"
     assert seen == ["http://a:8001/v1/models", "http://b:8002/v1/models"]
 
 
@@ -148,7 +150,7 @@ def test_models_check_includes_the_vlm_when_enabled(tmp_path, monkeypatch):
     )
     assert (
         not missing.ok
-        and missing.detail == "vl is not served by http://v:8003/v1 (it serves nothing)"
+        and missing.detail == "http://v:8003/v1 не отдаёт модель vl (список моделей: пуст)"
     )
 
 
@@ -169,7 +171,7 @@ def test_llm_without_models_endpoint_is_ok(tmp_path, monkeypatch, status):
     [check] = run_checks(make_settings(tmp_path), only=["llm"])
     assert seen == ["http://localhost:8000/v1/models"]
     assert check.ok, check.detail
-    assert "models endpoint not available" in check.detail
+    assert "эндпоинт /models недоступен" in check.detail
 
 
 @pytest.mark.parametrize("status", [401, 403, 500])
@@ -217,11 +219,14 @@ def test_qdrant_dimension_mismatch_fails_unless_the_command_rebuilds_the_index(
 
     [strict] = run_checks(settings, only=["qdrant"])
     assert not strict.ok
-    assert "mb_chunks has dim 64, config 2560" in strict.detail and "reindex" in strict.detail
+    assert (
+        "у mb_chunks размерность 64, а в конфиге 2560" in strict.detail
+        and "reindex" in strict.detail
+    )
 
     [lenient] = run_checks(settings, only=["qdrant"], check_dim=False)  # то, что запускает reindex
     assert lenient.ok, lenient.detail
-    assert "dim 64" in lenient.detail and "2560" in lenient.detail
+    assert "размерность 64" in lenient.detail and "2560" in lenient.detail
 
 
 @pytest.mark.filterwarnings("ignore:Payload indexes have no effect in the local Qdrant:UserWarning")
@@ -243,20 +248,20 @@ def test_auto_dimension_is_compared_with_what_the_embedder_returns(tmp_path, mon
 
     mock_embedder(monkeypatch, vectors(64))
     qdrant, index = run_checks(settings, only=["qdrant", "index"])
-    assert qdrant.ok and "dim 64" in qdrant.detail
+    assert qdrant.ok and "размерность 64" in qdrant.detail
     assert index.ok and ":64:tpl-" in index.detail
     assert len(calls) == 1  # один пробный запрос на все проверки
 
     mock_embedder(monkeypatch, vectors(32))
     [smaller] = run_checks(settings, only=["qdrant"])
-    assert not smaller.ok and "mb_chunks has dim 64, embedder 32" in smaller.detail
+    assert not smaller.ok and "у mb_chunks размерность 64, а эмбеддер отдаёт 32" in smaller.detail
 
     def down(request):
         raise httpx.ConnectError("connection refused")
 
     mock_embedder(monkeypatch, down)
     qdrant, index = run_checks(settings, only=["qdrant", "index"])
-    assert qdrant.ok and "not reachable" in qdrant.detail  # о самом сервере сообщает models
+    assert qdrant.ok and "эмбеддер недоступен" in qdrant.detail  # о самом сервере сообщает models
     assert not index.ok and "ConnectError" in index.detail
 
 

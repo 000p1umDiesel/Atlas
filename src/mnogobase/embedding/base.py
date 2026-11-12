@@ -61,7 +61,7 @@ def format_document(item: EmbedInput, template: str) -> str:
     Без заголовка подставляется `none`. Пока поддерживается только текст: другая
     модальность или пустой `text` — `NotImplementedError`."""
     if item.modality != "text" or item.text is None:
-        raise NotImplementedError(f"modality {item.modality!r} is not supported yet")
+        raise NotImplementedError(f"модальность {item.modality!r} пока не поддерживается")
     return template.format(title=item.title or "none", text=item.text)
 
 
@@ -76,11 +76,11 @@ def truncate_normalize(vec: Sequence[float], dim: int) -> list[float]:
     `ValueError`, если сервер вернул меньше `dim` значений или вектор нулевой / содержит
     NaN или бесконечность (такой вектор испортил бы поиск по косинусу)."""
     if len(vec) < dim:
-        raise ValueError(f"model returned {len(vec)} dims, config expects {dim}")
+        raise ValueError(f"модель вернула вектор размерности {len(vec)}, а в конфиге {dim}")
     head = list(vec[:dim])
     norm = math.sqrt(sum(x * x for x in head))
     if not norm or not math.isfinite(norm):
-        raise ValueError("embedding is zero or nonfinite")
+        raise ValueError("эмбеддинг нулевой или содержит нечисловые значения")
     return [x / norm for x in head]
 
 
@@ -102,7 +102,7 @@ def signature_mismatch(stored: str | None, embedder: Embedder) -> str | None:
     current = embedder_signature(embedder)
     if stored in (None, current):
         return None
-    reason = f"index was built with {stored}, config now uses {current}"
+    reason = f"индекс построен с {stored}, а в конфиге сейчас {current}"
     if stored.startswith(f"{embedder.model_id}:{embedder.dim}:tpl-"):
-        reason += " (embedder templates changed: doc_template / query_template)"
+        reason += " (изменились шаблоны эмбеддера: doc_template / query_template)"
     return reason

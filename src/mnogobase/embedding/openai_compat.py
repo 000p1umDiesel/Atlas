@@ -74,7 +74,7 @@ class OpenAICompatEmbedder:
         )
         data = sorted(response.json()["data"], key=lambda d: d["index"])
         if [item["index"] for item in data] != list(range(len(inputs))):
-            raise ValueError("embedding API returned missing/duplicate indexes")
+            raise ValueError("API эмбеддингов вернул пропущенные или повторяющиеся индексы")
         self._log.debug(
             "embed_batch",
             model=self._s.model,

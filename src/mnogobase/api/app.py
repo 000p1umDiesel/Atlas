@@ -136,12 +136,12 @@ class _BodyTooLarge(HTTPException):
     исключение превратил бы в 400 «error parsing the body»."""
 
     def __init__(self):
-        super().__init__(413, "Request body too large")
+        super().__init__(413, "Тело запроса слишком большое")
 
 
 async def _too_large(send: Send) -> None:
     """Отправляет ответ 413 напрямую через ASGI `send`, минуя приложение."""
-    response = JSONResponse({"detail": "Request body too large"}, status_code=413)
+    response = JSONResponse({"detail": "Тело запроса слишком большое"}, status_code=413)
     await send({"type": "http.response.start", "status": 413, "headers": response.raw_headers})
     await send({"type": "http.response.body", "body": response.body})
 
@@ -155,10 +155,10 @@ def bearer(authorization: Annotated[str | None, Header()] = None) -> str:
     """Токен из заголовка `Authorization: Bearer <токен>`; 401, если заголовка нет, схема
     другая или токен пустой либо содержит пробельные символы. Сессию не проверяет."""
     if not authorization or not authorization.startswith("Bearer "):
-        raise ServiceError(401, "Authentication required")
+        raise ServiceError(401, "Требуется вход")
     token = authorization[7:]
     if not token or any(c.isspace() for c in token):
-        raise ServiceError(401, "Authentication required")
+        raise ServiceError(401, "Требуется вход")
     return token
 
 
@@ -223,7 +223,7 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     async def unavailable(request: Request, exc: Exception):
         """Любое непойманное исключение → 503 без подробностей (текст может содержать
         секреты); Starlette при этом пишет трассировку в лог сервера."""
-        return JSONResponse({"detail": "Service temporarily unavailable"}, status_code=503)
+        return JSONResponse({"detail": "Сервис временно недоступен"}, status_code=503)
 
     @app.get("/health")
     def health():
@@ -278,11 +278,11 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
             try:
                 length_value = int(length)
             except ValueError as exc:
-                raise ServiceError(422, "Invalid content length") from exc
+                raise ServiceError(422, "Неверная длина содержимого") from exc
             if length_value < 0:
-                raise ServiceError(422, "Invalid content length")
+                raise ServiceError(422, "Неверная длина содержимого")
             if length_value > maximum:
-                raise ServiceError(413, "Upload too large")
+                raise ServiceError(413, "Загрузка слишком большая")
         # Поток сразу во временный файл с подсчётом sha256: тело не копится в памяти, а
         # запись на диск идёт в пуле потоков, чтобы не блокировать цикл сервера.
         handle, name = tempfile.mkstemp(dir=kb.staging_dir(), prefix=".upload-")
@@ -293,7 +293,7 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > maximum:
-                        raise ServiceError(413, "Upload too large")
+                        raise ServiceError(413, "Загрузка слишком большая")
                     digest.update(chunk)
                     await run_in_threadpool(out.write, chunk)
             return await run_in_threadpool(kb.upload_file, filename, staged, digest.hexdigest())

@@ -28,7 +28,7 @@ from mnogobase.core.config import ChunkingSettings, EmbedderSettings
 from mnogobase.core.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry, server_root
 
 AUTO = "auto"
-_HF_HINT = "set chunking.tokenizer to the model's Hugging Face repo"
+_HF_HINT = "укажите в chunking.tokenizer репозиторий модели на Hugging Face"
 # Предел кэша ServerTokenizer: при переполнении кэш просто очищается целиком, этого хватает,
 # потому что повторные подсчёты идут в пределах одного документа.
 _CACHE_SIZE = 50_000
@@ -114,7 +114,7 @@ def load_tokenizer(
         tokenizer.count_tokens("tokenizer probe")
     except httpx.HTTPStatusError as exc:
         raise TokenizerError(
-            f"the server of {embedder.model} has no /tokenize "
+            f"у сервера {embedder.model} нет /tokenize "
             f"(HTTP {exc.response.status_code}): {_HF_HINT}"
         ) from exc
     return tokenizer
@@ -139,4 +139,4 @@ def _from_hf(repo: str, max_tokens: int) -> HuggingFaceTokenizer:
             tokenizer=AutoTokenizer.from_pretrained(repo), max_tokens=max_tokens
         )
     except OSError as exc:  # нет такого репозитория, нет доступа или сети
-        raise TokenizerError(f"cannot load the tokenizer {repo!r}: {exc}") from exc
+        raise TokenizerError(f"не удалось загрузить токенизатор {repo!r}: {exc}") from exc

@@ -43,7 +43,7 @@ def render_messages(name: str, /, **values: object) -> list[Message]:
     template = (files("mnogobase.llm") / "prompts" / f"{name}.md").read_text(encoding="utf-8")
     rules, boundary, data = template.partition(_DATA_BOUNDARY)
     if not boundary:
-        raise ValueError(f"Prompt {name!r} has no untrusted-data boundary")
+        raise ValueError(f"в промпте {name!r} нет границы untrusted-data")
     substitutions = {k: str(v) for k, v in values.items()}
     return [
         {

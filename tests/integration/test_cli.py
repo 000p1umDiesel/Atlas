@@ -73,7 +73,7 @@ def test_remove_preview_and_decline_do_not_connect_to_services(tmp_path, monkeyp
 def test_remove_refuses_outside_project(tmp_path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, args)
-    assert result.exit_code == 2 and "No mnogobase project" in result.output
+    assert result.exit_code == 2 and "Здесь нет проекта mnogobase" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
@@ -84,7 +84,7 @@ def test_remove_requires_targets_and_unknown_target_is_noop(tmp_path, monkeypatc
     result = runner.invoke(cli.app, ["remove", "--yes"])
     assert result.exit_code == 2 and "--missing" in result.output
     result = runner.invoke(cli.app, ["remove", "unknown.md", "--yes"])
-    assert result.exit_code == 0 and "No matching" in result.output
+    assert result.exit_code == 0 and "Подходящих зарегистрированных источников нет" in result.output
 
 
 @pytest.mark.parametrize("missing", [False, True])
@@ -112,7 +112,7 @@ def test_remove_runs_cascade_and_prints_wiki_summary(tmp_path, monkeypatch, miss
     args = ["remove", "--missing", "--yes"] if missing else ["remove", str(source), "--yes"]
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 0, result.output
-    assert "removed 1" in result.output and "updated 1" in result.output
+    assert "удалено путей источников: 1" in result.output and "обновлено 1" in result.output
     assert calls[0][0] == ([] if missing else [source])
     assert calls[0][1]["missing"] == missing
     assert calls[0][1]["run_id"] and closed == [True]
@@ -136,7 +136,7 @@ def test_remove_returns_failure_when_wiki_needs_retry(tmp_path, monkeypatch):
         ),
     )
     result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
-    assert result.exit_code == 1 and "failed 1" in result.output
+    assert result.exit_code == 1 and "с ошибкой 1" in result.output
     assert "wiki build" in result.output
 
 
@@ -148,7 +148,7 @@ def test_remove_obeys_writer_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("remote app created"))
     with ingest_lock(database_target(Settings())):
         result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
-    assert result.exit_code == 2 and "in progress" in result.output
+    assert result.exit_code == 2 and "Уже идёт" in result.output
 
 
 @pytest.fixture(autouse=True)
@@ -181,14 +181,14 @@ def test_status_on_empty_project(tmp_path, monkeypatch):
     make_project(tmp_path)
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "files: 0" in result.output
+    assert "файлов: 0" in result.output
 
 
 def test_status_outside_a_project_creates_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "No mnogobase project here" in result.output and "PostgreSQL" in result.output
+    assert "Здесь нет проекта mnogobase" in result.output and "PostgreSQL" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
@@ -198,7 +198,7 @@ def test_wiki_build_and_reindex_refuse_outside_a_project(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
-    assert "No mnogobase project here" in result.output
+    assert "Здесь нет проекта mnogobase" in result.output
     assert not (tmp_path / ".mnogobase").exists() and not (tmp_path / "logs").exists()
 
 
@@ -220,7 +220,7 @@ def test_model_failure_while_answering_is_a_clean_error(tmp_path, monkeypatch, a
     monkeypatch.setattr(cli.query, "do_compare", down)
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
-    assert "Model call failed: ConnectError" in result.output
+    assert "Вызов модели не удался: ConnectError" in result.output
     assert "Traceback" not in result.output and "pw@" not in result.output
 
 
@@ -230,7 +230,7 @@ def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
     monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
-    assert "No mnogobase project here" in result.output and "PostgreSQL" in result.output
+    assert "Здесь нет проекта mnogobase" in result.output and "PostgreSQL" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
@@ -290,7 +290,7 @@ def test_reset_refuses_outside_a_project(tmp_path, monkeypatch, args):
     monkeypatch.setattr(cli.project, "do_reset", lambda application: pytest.fail("reset ran"))
     result = runner.invoke(cli.app, args, input="y\n")
     assert result.exit_code == 2, result.output
-    assert "No mnogobase project" in result.output and "PostgreSQL" in result.output
+    assert "Здесь нет проекта mnogobase" in result.output and "PostgreSQL" in result.output
     assert not (tmp_path / ".mnogobase").exists()
 
 
@@ -324,7 +324,7 @@ def test_invalid_config_is_a_clear_error(tmp_path, monkeypatch, content):
     (tmp_path / "config.yaml").write_text(content, encoding="utf-8")
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 2, result.output
-    assert "Invalid configuration" in result.output
+    assert "Неверная конфигурация" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
 
 
@@ -334,14 +334,14 @@ def test_ingest_without_paths_is_a_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "--retry-failed"])
     assert result.exit_code == 0
-    assert "Nothing to ingest" in result.output
+    assert "Нечего загружать" in result.output
 
 
 def test_missing_config_file_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["--config", "nope.yaml", "status"])
     assert result.exit_code == 2
-    assert "Config file not found" in result.output
+    assert "Файл конфига не найден" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
 
 
@@ -415,7 +415,7 @@ def test_wiki_build_finishes_pending_removals_first(tmp_path, monkeypatch):
     result = runner.invoke(cli.app, ["wiki", "build"])
     assert result.exit_code == 0, result.output
     assert calls == ["finish", "build deleted=['Softmax']"]
-    assert "deleted 1" in result.output
+    assert "удалено 1" in result.output
 
 
 def test_ingest_summary_reports_wiki_failures(tmp_path, monkeypatch):
@@ -431,8 +431,8 @@ def test_ingest_summary_reports_wiki_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 1, result.output
-    assert "processed 1" in result.output
-    assert "failed 1" in result.output and "Bad" in result.output
+    assert "обработано 1" in result.output
+    assert "с ошибкой 1" in result.output and "Bad" in result.output
 
 
 def test_print_answer_shows_source_ref(monkeypatch):
@@ -522,7 +522,7 @@ def test_status_shows_pending_removals(tmp_path, monkeypatch):
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "pending document removals: 1" in result.output
+    assert "незавершённых удалений документов: 1" in result.output
     assert "abcd1234abcd1234" in result.output
 
 
@@ -549,7 +549,7 @@ def test_status_warns_when_the_entity_types_changed(tmp_path, monkeypatch):
     _extracted_project(tmp_path, "0123456789ab")
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "entity types changed" in result.output
+    assert "типы сущностей в конфиге изменились" in result.output
     assert "mnogobase reset" in result.output and "mnogobase ingest" in result.output
 
 
@@ -561,7 +561,7 @@ def test_status_is_quiet_when_the_entity_types_match(tmp_path, monkeypatch):
     _extracted_project(tmp_path, entity_types_signature(DEFAULT_ENTITY_TYPES))
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "entity types changed" not in result.output
+    assert "типы сущностей в конфиге изменились" not in result.output
 
 
 def test_ingest_prints_the_entity_types_warning(tmp_path, monkeypatch):
@@ -654,8 +654,8 @@ def test_ingest_reports_progress_and_prints_only_the_summary_off_a_terminal(tmp_
     assert len(seen) == 1
     # CliRunner — не терминал: без кадров прогресса, только итоговая сводка, как раньше
     lines = result.output.splitlines()
-    assert len(lines) == 1 and lines[0].startswith("run ")
-    assert lines[0].endswith("processed 1, skipped 0, failed 0")
+    assert len(lines) == 1 and lines[0].startswith("запуск ")
+    assert lines[0].endswith("обработано 1, пропущено 0, с ошибкой 0")
 
 
 def test_progress_shows_files_the_current_file_its_stage_and_failures(monkeypatch):
@@ -674,9 +674,9 @@ def test_progress_shows_files_the_current_file_its_stage_and_failures(monkeypatc
         progress.step("wiki draft", 5)
         progress.advance()
         screen.print(progress.bars)
-    first, second = screen.export_text().split("files", 2)[1:]
+    first, second = screen.export_text().split("файлы", 2)[1:]
     assert "0/12" in first
-    assert "statya.pdf · extract" in first and "42/96" in first and "1 failed" in first
+    assert "statya.pdf · extract" in first and "42/96" in first and "ошибок: 1" in first
     assert "1/12" in second and "1 processed" in second
     assert "wiki draft" in second and "1/5" in second and "statya.pdf" not in second
 
@@ -704,7 +704,7 @@ def test_wiki_build_and_reindex_report_progress(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["wiki", "build"]).exit_code == 0
     result = runner.invoke(cli.app, ["reindex"])
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "reindexed: 1 chunks, 2 entities, 3 wiki sections"
+    assert result.output.strip() == "переиндексировано: чанков 1, сущностей 2, разделов wiki 3"
     assert seen == ["wiki RichProgress", "reindex RichProgress"]
 
 
@@ -761,8 +761,8 @@ def test_models_up_reports_waiting_and_ready_servers(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     assert sum("embedder: loading the model" in line for line in lines) == 1
-    assert any(line.endswith("embedder: ready") for line in lines)
-    assert "All model servers are ready." in lines[-1]
+    assert any(line.endswith("embedder: готов") for line in lines)
+    assert "Все серверы моделей готовы." in lines[-1]
 
 
 def test_models_status_shows_where_each_role_runs(tmp_path, monkeypatch):

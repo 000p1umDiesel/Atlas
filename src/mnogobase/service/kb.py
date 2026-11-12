@@ -114,13 +114,13 @@ class CoreLoop:
 def _mode(mode: str) -> None:
     """422, если `mode` — не известный режим поиска (`rag` / `wiki` / `graph` / `all`)."""
     if mode not in {m.value for m in Mode}:
-        raise ServiceError(422, "Unknown retrieval mode")
+        raise ServiceError(422, "Неизвестный режим поиска")
 
 
 def _question(question: str) -> str:
     """Вопрос без пробелов по краям; 422, если он пустой или длиннее `MAX_QUESTION_CHARS`."""
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
-        raise ServiceError(422, f"Question must contain 1–{MAX_QUESTION_CHARS} characters")
+        raise ServiceError(422, f"Вопрос должен содержать от 1 до {MAX_QUESTION_CHARS} символов")
     return question.strip()
 
 
@@ -220,7 +220,7 @@ class KnowledgeBase:
             except ServiceError:
                 raise
             except EmbedderMismatchError:
-                raise ServiceError(409, "Index needs `mnogobase reindex`") from None
+                raise ServiceError(409, "Индекс требует `mnogobase reindex`") from None
             except _CONNECTION_ERRORS as exc:
                 self._log.warning("core_connection_lost", error_type=type(exc).__name__)
                 await self._drop_app()
@@ -249,7 +249,7 @@ class KnowledgeBase:
             sum(counts.get(s, 0) for s in ("pending", "running"))
             >= self.settings.service.max_pending_jobs
         ):
-            raise ServiceError(429, "Processing queue is full")
+            raise ServiceError(429, "Очередь обработки заполнена")
 
     def check_budget(self, now: float | None = None) -> None:
         """429, если за текущие сутки (UTC) израсходован `service.daily_token_limit`:
@@ -259,7 +259,7 @@ class KnowledgeBase:
         if limit is None:
             return
         if self.usage.tokens_since(_day_start(time.time() if now is None else now)) >= limit:
-            raise ServiceError(429, "Daily LLM token limit reached")
+            raise ServiceError(429, "Достигнут дневной лимит токенов LLM")
 
     # ---- документы и задачи (только очередь; в корпус пишет worker) ----
     def upload_suffix(self, filename: str) -> str:
@@ -274,12 +274,12 @@ class KnowledgeBase:
             or any(c in filename for c in "/\\\x00")
             or len(filename) > 255
         ):
-            raise ServiceError(422, "Invalid filename")
+            raise ServiceError(422, "Недопустимое имя файла")
         suffix = Path(filename).suffix.lower()
         if suffix.lstrip(".") not in {
             x.lower().lstrip(".") for x in self.settings.parsing.extensions
         }:
-            raise ServiceError(422, "Unsupported document type")
+            raise ServiceError(422, "Неподдерживаемый тип документа")
         return suffix
 
     def staging_dir(self) -> Path:
@@ -308,9 +308,9 @@ class KnowledgeBase:
         self.check_budget()
         size = staged.stat().st_size
         if not size:
-            raise ServiceError(422, "Empty document")
+            raise ServiceError(422, "Документ пуст")
         if size > self.settings.service.max_upload_mb * 1024 * 1024:
-            raise ServiceError(413, "Document is too large")
+            raise ServiceError(413, "Документ слишком большой")
         _check_signature(staged, suffix)
         doc_id = sha256[:16]
         previous = self.uploads.get(doc_id)
@@ -318,7 +318,7 @@ class KnowledgeBase:
         try:
             self.uploads.contained(path, must_exist=False)
         except FileNotFoundError:
-            raise ServiceError(409, "Upload storage is inconsistent") from None
+            raise ServiceError(409, "Хранилище загрузок в несогласованном состоянии") from None
         # Метаданные до постановки в очередь: если процесс прервётся после enqueue, имя уже
         # записано; повторная загрузка допишет его, если прервалось раньше.
         self.uploads.add(doc_id, filename, path)
@@ -343,14 +343,14 @@ class KnowledgeBase:
         404 при любой проблеме (неверный формат id, нет записи, нет файла, путь вне каталога
         или ссылка) — одинаковый ответ не раскрывает, что именно не так."""
         if not _DOC_ID.fullmatch(doc_id):
-            raise ServiceError(404, "Source unavailable")
+            raise ServiceError(404, "Источник недоступен")
         row = self.uploads.get(doc_id)
         if row is None:
-            raise ServiceError(404, "Source unavailable")
+            raise ServiceError(404, "Источник недоступен")
         try:
             return self.uploads.contained(Path(row["path"]))
         except FileNotFoundError:
-            raise ServiceError(404, "Source unavailable") from None
+            raise ServiceError(404, "Источник недоступен") from None
 
     def read_source(self, doc_id: str) -> tuple[bytes, str]:
         """Содержимое загруженного файла и его исходное имя.
@@ -363,7 +363,7 @@ class KnowledgeBase:
         with path.open("rb") as stream:
             data = stream.read(limit + 1)
         if len(data) > limit:
-            raise ServiceError(413, "Document is too large")
+            raise ServiceError(413, "Документ слишком большой")
         return data, self.uploads.get(doc_id)["name"]
 
     async def documents(self, limit: int = 50, offset: int = 0) -> list[dict]:
@@ -391,7 +391,7 @@ class KnowledgeBase:
                 )
             return out
 
-        return await self._with_app(run, "Document list unavailable")
+        return await self._with_app(run, "Список документов недоступен")
 
     def jobs(self, limit: int = 50, offset: int = 0) -> list[dict]:
         """Страница задач очереди, новые первыми; 422 — неверная пагинация."""
@@ -404,7 +404,7 @@ class KnowledgeBase:
         текущее состояние; 404 — нет задачи."""
         with self._queue() as queue:
             if queue.get(job_id) is None:
-                raise ServiceError(404, "Job not found")
+                raise ServiceError(404, "Задача не найдена")
             queue.retry(job_id)
             return _job(queue.get(job_id))
 
@@ -417,17 +417,17 @@ class KnowledgeBase:
         `force=True`; возвращается последняя. 404 — неверный id или документ неизвестен,
         429 — очередь переполнена, 503 — ядро недоступно."""
         if not _DOC_ID.fullmatch(doc_id):
-            raise ServiceError(404, "Document not found")
+            raise ServiceError(404, "Документ не найден")
 
         async def paths(app: App) -> list[str]:
             return app.registry.paths_for_doc(doc_id)
 
-        known = await self._with_app(paths, "Document removal unavailable")
+        known = await self._with_app(paths, "Удаление документов недоступно")
         upload = self.uploads.get(doc_id)
         if upload is not None and upload["path"] not in known:
             known.append(upload["path"])
         if not known:
-            raise ServiceError(404, "Document not found")
+            raise ServiceError(404, "Документ не найден")
         with self._queue() as queue:
             self._queue_has_room(queue)
             job_ids = [
@@ -492,7 +492,7 @@ class KnowledgeBase:
         question = _question(question)
         _mode(mode)
         if not 1 <= k <= 100:
-            raise ServiceError(422, "Invalid search limit")
+            raise ServiceError(422, "Неверный лимит поиска")
         await asyncio.to_thread(self.check_budget)
 
         async def run(app: App) -> list[dict]:
@@ -504,7 +504,7 @@ class KnowledgeBase:
             return self._items([x.model_dump() for x in items])
 
         async with self._asks:
-            return await self._with_app(run, "Search service unavailable")
+            return await self._with_app(run, "Поиск недоступен")
 
     async def _answer(
         self, app: App, question: str, mode: str, history: list[dict] | None = None
@@ -554,7 +554,7 @@ class KnowledgeBase:
         async with self._asks:
             return await self._with_app(
                 lambda app: self._answer(app, question, mode),
-                "Model or knowledge service unavailable",
+                "Модель или база знаний недоступны",
             )
 
     async def send_message(
@@ -587,7 +587,7 @@ class KnowledgeBase:
             async with self._asks:
                 answer = await self._with_app(
                     lambda app: self._answer(app, question, mode, history),
-                    "Model or knowledge service unavailable",
+                    "Модель или база знаний недоступны",
                 )
         except ServiceError:
             # Не сохраняем текст исключения провайдера: он может содержать секреты.
@@ -646,7 +646,7 @@ class KnowledgeBase:
                 for row in app.graph.wiki_pages()[offset : offset + limit]
             ]
 
-        return await self._with_app(run, "Wiki unavailable")
+        return await self._with_app(run, "Wiki недоступна")
 
     async def wiki_page(self, page_id: str) -> dict:
         """Markdown страницы wiki с заголовком и slug. 404 — страницы нет, она устарела или
@@ -655,11 +655,11 @@ class KnowledgeBase:
         async def run(app: App) -> dict:
             page = app.graph.wiki_page(page_id)
             if page is None or page.stale:
-                raise ServiceError(404, "Wiki page not found")
+                raise ServiceError(404, "Страница wiki не найдена")
             root = self.settings.wiki.dir.resolve()
             path = (self.settings.wiki.dir / page.path).resolve()
             if not path.is_relative_to(root) or not path.is_file():
-                raise ServiceError(404, "Wiki page unavailable")
+                raise ServiceError(404, "Страница wiki недоступна")
             return {
                 "id": page.page_id,
                 "title": page.title,
@@ -667,7 +667,7 @@ class KnowledgeBase:
                 "content": path.read_text(encoding="utf-8"),
             }
 
-        return await self._with_app(run, "Wiki unavailable")
+        return await self._with_app(run, "Wiki недоступна")
 
     async def graph_search(self, query: str, limit: int = 20) -> list[dict]:
         """Сущности графа по полнотекстовому поиску в Neo4j, лучшие первыми.
@@ -681,26 +681,26 @@ class KnowledgeBase:
             # сущность могла исчезнуть между двумя запросами (параллельное удаление документа)
             return [entity.model_dump() for entity in found if entity is not None]
 
-        return await self._with_app(run, "Graph unavailable")
+        return await self._with_app(run, "Граф недоступен")
 
     async def graph_neighbors(self, entity_id: str, depth: int = 1, limit: int = 50) -> dict:
         """Окрестность сущности глубиной `depth` (1–3): до `limit` связей и все их концы.
         404 — нет сущности, 422 — неверные `depth` / `limit`, 503 — ядро недоступно."""
         check_pagination(limit, 0)
         if not 1 <= depth <= 3:
-            raise ServiceError(422, "Graph depth must be between 1 and 3")
+            raise ServiceError(422, "Глубина графа должна быть от 1 до 3")
 
         async def run(app: App) -> dict:
             entity = app.graph.get_entity(entity_id)
             if entity is None:
-                raise ServiceError(404, "Entity not found")
+                raise ServiceError(404, "Сущность не найдена")
             relations = app.graph.neighborhood([entity_id], depth, limit)
             ids = {entity_id} | {r.src_id for r in relations} | {r.dst_id for r in relations}
             found = (app.graph.get_entity(eid) for eid in sorted(ids))
             nodes = [node.model_dump() for node in found if node is not None]
             return {"nodes": nodes, "relations": [r.model_dump() for r in relations]}
 
-        return await self._with_app(run, "Graph unavailable")
+        return await self._with_app(run, "Граф недоступен")
 
     # ---- состояние ----
     def status(self, now: float | None = None) -> dict:
@@ -766,4 +766,4 @@ def _check_signature(path: Path, suffix: str) -> None:
     else:
         valid = head.startswith(_SIGNATURES.get(suffix, (b"",)))
     if not valid:
-        raise ServiceError(422, "File content does not match its type")
+        raise ServiceError(422, "Содержимое файла не соответствует его типу")

@@ -86,7 +86,7 @@ def test_changed_corpus_blocks_resume(tmp_path):
     dataset = tmp_path / "questions.jsonl"
     dataset.write_text('{"id":"q","question":"Q?"}\n')
     prepare_run(dataset, tmp_path / "run", Settings(), corpus={"fingerprint": "a"})
-    with pytest.raises(ValueError, match="configuration changed"):
+    with pytest.raises(ValueError, match="конфигурация эксперимента изменилась"):
         prepare_run(dataset, tmp_path / "run", Settings(), corpus={"fingerprint": "b"})
 
 

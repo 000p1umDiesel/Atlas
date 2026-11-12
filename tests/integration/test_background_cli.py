@@ -91,7 +91,7 @@ def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
     result = runner.invoke(cli.app, ["worker", "run", "--once"])
     assert result.exit_code == 0, result.output
     assert calls == [project] and closed == [1]
-    assert snapshots == ["parse 0/1; failed 0", "parse 1/1; failed 0"]
+    assert snapshots == ["parse 0/1; ошибок 0", "parse 1/1; ошибок 0"]
     result = runner.invoke(cli.app, ["jobs", "list"])
     assert "done" in result.output
 
@@ -169,7 +169,7 @@ def test_worker_handles_cancellation_and_restores_sigterm(project, monkeypatch):
     )
     runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
     result = runner.invoke(cli.app, ["worker", "run", "--once"])
-    assert "Worker stopped" in result.output
+    assert "Worker остановлен" in result.output
     assert observed == [signal.default_int_handler]
     assert signal.getsignal(signal.SIGTERM) == previous
     assert "running" in runner.invoke(cli.app, ["jobs", "list"]).output
@@ -211,7 +211,7 @@ def test_empty_queue_commands_do_not_create_a_database(project, monkeypatch, arg
     result = runner.invoke(cli.app, ["jobs", *arguments])
 
     assert result.exit_code == 0, result.output
-    assert "Queue is empty" in result.output
+    assert "Очередь пуста" in result.output
     assert not (project.parent / ".mnogobase/jobs.db").exists()
 
 
@@ -222,7 +222,7 @@ def test_enqueue_rejects_unsupported_sources_without_creating_queue(project):
     result = runner.invoke(cli.app, ["jobs", "enqueue", str(unsupported)])
 
     assert result.exit_code == 2, result.output
-    assert "No supported source files" in result.output
+    assert "Подходящих файлов не найдено" in result.output
     assert not (project.parent / ".mnogobase/jobs.db").exists()
 
 
@@ -248,9 +248,9 @@ def test_enqueue_closes_queue_if_discovered_source_disappears(project, monkeypat
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [
-        (["--once", "--watch", "."], "--watch is continuous"),
-        (["--watch", "missing"], "existing directory"),
-        (["--watch", "a.md"], "existing directory"),
+        (["--once", "--watch", "."], "--watch работает непрерывно"),
+        (["--watch", "missing"], "существующим каталогом"),
+        (["--watch", "a.md"], "существующим каталогом"),
         (["--interval", "0"], "0.1"),
         (["--settle", "-1"], "0"),
         (["--max-attempts", "0"], "1"),
@@ -283,23 +283,23 @@ def test_job_progress_persists_steps_and_counts_and_updates_display(tmp_path):
         progress.file_started("/documents/a.md")
 
         progress.step("embed", 4)
-        assert observer.jobs()[0].progress == "embed 0/4; failed 0"
+        assert observer.jobs()[0].progress == "embed 0/4; ошибок 0"
         progress.advance()
-        assert observer.jobs()[0].progress == "embed 1/4; failed 0"
+        assert observer.jobs()[0].progress == "embed 1/4; ошибок 0"
         progress.advance(2, failed=True)
-        assert observer.jobs()[0].progress == "embed 3/4; failed 2"
+        assert observer.jobs()[0].progress == "embed 3/4; ошибок 2"
         assert bars.tasks[1].description == "a.md · embed"
         assert (bars.tasks[1].total, bars.tasks[1].completed) == (4, 3)
-        assert "2 failed" in bars.tasks[1].fields["note"]
+        assert "ошибок: 2" in bars.tasks[1].fields["note"]
 
         progress.file_done("processed")
         assert len(bars.tasks) == 1
         assert (bars.tasks[0].total, bars.tasks[0].completed) == (2, 1)
         assert bars.tasks[0].fields["note"] == "1 processed"
         progress.step("wiki")
-        assert observer.jobs()[0].progress == "wiki; failed 0"
+        assert observer.jobs()[0].progress == "wiki; ошибок 0"
         progress.advance(failed=True)
-        assert observer.jobs()[0].progress == "wiki; failed 1"
+        assert observer.jobs()[0].progress == "wiki; ошибок 1"
         assert bars.tasks[1].description == "wiki"
         assert bars.tasks[1].total is None
     finally:
@@ -395,7 +395,7 @@ def test_worker_exits_on_watcher_database_failure_and_releases_resources(
     )
 
     assert result.exit_code == 2, result.output
-    assert "Watcher stopped: InternalError" in result.output
+    assert "Watcher остановился: InternalError" in result.output
     assert {q.owner for q in tracked_queues} == {"MainThread", "mnogobase-watch"}
     assert all(q.closed for q in tracked_queues)
     assert signal.getsignal(signal.SIGTERM) == previous_term
@@ -486,7 +486,7 @@ def test_worker_watch_joins_watcher_before_closing_app(project, monkeypatch, tra
     assert not command.is_alive()
     assert len(results) == 1
     assert results[0].exit_code == 0, results[0].output
-    assert "Worker stopped" in results[0].output
+    assert "Worker остановлен" in results[0].output
     assert ingested == [project]
     assert app_closed == [True]
     assert len(tracked_queues) == 2 and all(q.closed for q in tracked_queues)
@@ -516,6 +516,6 @@ def test_worker_missing_source_fails_job_before_constructing_models(project, mon
     try:
         job = q.jobs()[0]
         assert (job.status, job.attempts, job.error) == ("failed", 1, "FileNotFoundError")
-        assert job.progress == "failed attempt"
+        assert job.progress == "попытка не удалась"
     finally:
         q.close()

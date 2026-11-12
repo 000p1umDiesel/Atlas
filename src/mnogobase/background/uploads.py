@@ -48,7 +48,7 @@ class Uploads:
             or not resolved.is_relative_to(self.root)
             or (must_exist and not resolved.is_file())
         ):
-            raise FileNotFoundError("Source unavailable")
+            raise FileNotFoundError("Источник недоступен")
         return resolved
 
     def get(self, doc_id: str) -> dict | None:

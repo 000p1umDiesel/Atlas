@@ -38,7 +38,7 @@ def select_removals(
     обычного файла; без `paths` — среди всех строк. Только чтение registry и `stat`
     источников. Ни путей, ни `missing` — `ValueError`."""
     if not paths and not missing:
-        raise ValueError("Provide source paths or --missing")
+        raise ValueError("укажите пути к источникам или --missing")
     targets = [Path(p).resolve() for p in paths]
     selected = []
     for row in registry.files():

@@ -67,7 +67,7 @@ def test_auto_on_api_llama_cpp_counts_with_its_tokenize_and_caches():
 
 
 def test_auto_without_tokenize_points_to_the_config():
-    with pytest.raises(TokenizerError, match="no /tokenize .*chunking.tokenizer"):
+    with pytest.raises(TokenizerError, match="нет /tokenize .*chunking.tokenizer"):
         load_tokenizer(AUTO, EMBEDDER, client=_server(tokenize_status=404))
 
 
@@ -78,5 +78,5 @@ def test_unknown_repo_is_a_tokenizer_error(monkeypatch):
         raise OSError(f"{repo} is not a valid model identifier")
 
     monkeypatch.setattr(AutoTokenizer, "from_pretrained", missing)
-    with pytest.raises(TokenizerError, match="cannot load the tokenizer 'nope/nope'"):
+    with pytest.raises(TokenizerError, match="не удалось загрузить токенизатор 'nope/nope'"):
         load_tokenizer(ChunkingSettings(tokenizer="nope/nope"), EMBEDDER)

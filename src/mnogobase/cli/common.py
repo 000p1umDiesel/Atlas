@@ -84,20 +84,27 @@ class DatabaseSafeGroup(TyperGroup):
         except DatabaseError as exc:
             fail(exc)
         except DBAPIError:
-            fail(DatabaseError("Database operation failed; check PostgreSQL and schema version"))
+            fail(
+                DatabaseError(
+                    "Операция с базой данных не удалась. Проверьте PostgreSQL и версию схемы."
+                )
+            )
 
 
 app = typer.Typer(
     cls=DatabaseSafeGroup,
+    # markdown: абзацы docstring-справки переформатируются по ширине терминала, а не рвутся
+    # там, где перенесена строка в исходнике; режим наследуют все подгруппы
+    rich_markup_mode="markdown",
     no_args_is_help=True,
-    help="mnogobase — LLM Wiki core: ingest, wiki, retrieval.",
+    help="mnogobase — ядро LLM Wiki: загрузка документов, wiki и поиск с ответами по источникам.",
 )
 
 
 @app.callback()
 def main(
     config: Annotated[
-        Path | None, typer.Option("--config", "-c", help="Path to config.yaml.")
+        Path | None, typer.Option("--config", "-c", help="Путь к config.yaml")
     ] = None,
 ) -> None:
     """Корневой callback: запоминает глобальный `--config` до запуска подкоманды.
@@ -121,7 +128,7 @@ def get_settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2) from None
     except (yaml.YAMLError, ValueError) as exc:  # битый YAML или ValidationError от pydantic
-        console.print(f"[red]Invalid configuration:[/red] {escape(str(exc))}")
+        console.print(f"[red]Неверная конфигурация:[/red] {escape(str(exc))}")
         raise typer.Exit(2) from None
     if project:
         require_project(settings, missing_exit)
@@ -142,7 +149,7 @@ def preflight(
     if failed:
         for check in failed:
             console.print(f"[red]✗ {check.name}[/red]: {escape(check.detail)}")
-        console.print("Run `mnogobase doctor` for a full report.")
+        console.print("Полный отчёт: `mnogobase doctor`.")
         raise typer.Exit(2)
 
 
@@ -154,8 +161,8 @@ def require_project(settings: Settings, code: int = 2) -> None:
     `files` в схеме проекта (`project_exists`)."""
     if not project_exists(settings):
         console.print(
-            f"No mnogobase project here (no {escape(str(database_target(settings)))}). "
-            "Run `mnogobase ingest` first, or pass the project's --config.",
+            f"Здесь нет проекта mnogobase ({escape(str(database_target(settings)))}). "
+            "Сначала запустите `mnogobase ingest` или укажите --config проекта.",
             soft_wrap=True,
         )
         raise typer.Exit(code)
@@ -173,8 +180,8 @@ def corpus_lock(settings: Settings) -> PgLock:
         lock.acquire()
     except LockBusyError:
         console.print(
-            "[red]Another ingest / remove / wiki / reindex / reset run or worker is in progress."
-            "[/red]"
+            "[red]Уже идёт другой запуск ingest / remove / wiki / reindex / reset или работает "
+            "worker. Дождитесь его завершения.[/red]"
         )
         raise typer.Exit(2) from None
     return lock
@@ -200,7 +207,7 @@ def graph_writer(settings: Settings) -> Iterator[None]:
             finally:
                 lock.release()
     except LockBusyError:
-        fail(AnalysisError("Another graph analysis is in progress"))
+        fail(AnalysisError("Уже идёт другой анализ графа. Дождитесь его завершения."))
 
 
 def answer_setup(
@@ -238,4 +245,4 @@ def model_errors() -> Iterator[None]:
         yield
     except (openai.OpenAIError, httpx.HTTPError, StructuredOutputError) as exc:
         get_logger(__name__).error("answer_failed", error=safe_error(exc))
-        fail(RuntimeError(f"Model call failed: {safe_error(exc)}"))
+        fail(RuntimeError(f"Вызов модели не удался: {safe_error(exc)}"))

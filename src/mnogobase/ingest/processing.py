@@ -212,7 +212,7 @@ async def measured_ingest(
     исключение вне `Exception` (`KeyboardInterrupt`, отмена задачи `asyncio`), строка при
     этом всё равно пишется. Возвращает `IngestReport`; исключения пробрасываются."""
     if phase is not None and phase not in ("build", "update"):
-        raise ValueError("phase must be build or update")
+        raise ValueError("phase должен быть build или update")
     settings = settings or application.settings
     output = output or settings.data_dir / "processing.jsonl"
     before = corpus_snapshot(settings) if snapshot else None
@@ -235,16 +235,20 @@ async def measured_ingest(
                 source = Path(source).resolve()
                 signatures[str(source)] = _source_signature(source)
                 if expected and expected.get(str(source)) != signatures[str(source)][-1]:
-                    raise SourceChangedError("Source changed after the job was claimed")
+                    raise SourceChangedError(
+                        "источник изменился после того, как задание взяли в работу"
+                    )
         report = await application.pipeline.ingest(paths, progress=measurement, **options)
         row["status"] = "error" if report.failed or (report.wiki and report.wiki.failed) else "ok"
         if verify_sources and row["status"] == "ok":
             acknowledged = {str(Path(p).resolve()) for p in [*report.processed, *report.skipped]}
             for path, signature in signatures.items():
                 if path not in acknowledged:
-                    raise SourceChangedError("Source was not processed or skipped by the pipeline")
+                    raise SourceChangedError("конвейер не обработал и не пропустил источник")
                 if _source_signature(Path(path)) != signature:
-                    raise SourceChangedError("Source changed during processing; retry required")
+                    raise SourceChangedError(
+                        "источник изменился во время обработки; нужен повторный запуск"
+                    )
         return report
     except Exception as exc:
         row.update(status="error", error=type(exc).__name__)
@@ -280,5 +284,5 @@ def _source_signature(path: Path):
         after.st_mtime_ns,
         after.st_ino,
     ):
-        raise SourceChangedError("Source changed while hashing")
+        raise SourceChangedError("источник изменился, пока считался его хеш")
     return after.st_size, after.st_mtime_ns, after.st_ino, digest

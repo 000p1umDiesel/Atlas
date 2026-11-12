@@ -494,7 +494,7 @@ async def test_embedder_template_change_is_refused(make_app, docs):
     app = make_app()
     await app.pipeline.ingest([docs], build_wiki=False)
     app.embedder.templates = ("passage: {text}", app.embedder.templates[1])
-    with pytest.raises(EmbedderMismatchError, match="templates changed.*reindex"):
+    with pytest.raises(EmbedderMismatchError, match="изменились шаблоны эмбеддера.*reindex"):
         await app.pipeline.ingest([docs], build_wiki=False)
 
 
