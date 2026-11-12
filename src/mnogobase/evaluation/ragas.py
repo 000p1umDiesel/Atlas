@@ -1,4 +1,19 @@
-"""Ragas adapter; importing this module does not construct clients or load Ragas."""
+"""Адаптер к Ragas: настройки судьи, выбор применимых метрик и оценка одного ответа.
+
+Импорт модуля не создаёт клиентов и не загружает Ragas: тяжёлые импорты — внутри
+`RagasJudge.metrics`, который вызывается, только когда есть что оценивать. Судья — любая
+OpenAI-совместимая модель; без отдельных настроек `evaluation.*` используются LLM и
+эмбеддер самого проекта.
+
+Метрики (все из `ragas.metrics.collections`):
+- `faithfulness` — опирается ли ответ на найденный контекст;
+- `answer_relevancy` — отвечает ли ответ на вопрос (нужны ещё эмбеддинги);
+- `context_precision_with_reference` и `context_recall` — насколько найденный контекст
+  точен и полон относительно эталонного ответа;
+- `factual_correctness` — совпадение утверждений ответа и эталона (F1).
+Метрике, которой не хватает входных данных (нет эталона, пустой контекст, нет ответа),
+ставится статус `skipped` с причиной, а не ноль.
+"""
 
 from __future__ import annotations
 
@@ -14,11 +29,18 @@ METRIC_NAMES = (
     "context_recall",
     "factual_correctness",
 )
+# метрики, которым нужен эталонный ответ (`reference`) из набора вопросов
 REFERENCE_METRICS = {"context_precision_with_reference", "context_recall", "factual_correctness"}
+# метрики, которым нужны тексты найденного контекста
 CONTEXT_METRICS = {"faithfulness", "context_precision_with_reference", "context_recall"}
 
 
 def judge_config(settings: Settings) -> dict:
+    """Настройки судьи: значения `evaluation.*`, а незаданные — от LLM (модель задачи
+    `answer`) и эмбеддера проекта.
+
+    Ключи API хранятся именами переменных окружения, а не значениями: этот словарь
+    записывается в `judge.json`, и секреты туда попасть не должны."""
     s = settings.evaluation
     return {
         "base_url": s.base_url or settings.llm.url,
@@ -38,12 +60,18 @@ def judge_config(settings: Settings) -> dict:
 
 
 def api_key(env_name: str | None) -> str:
+    """Ключ API из переменной окружения `env_name`; без имени — заглушка `local` для
+    локальных серверов без авторизации. Имя задано, а переменная пуста — `ValueError`."""
     if env_name and not os.environ.get(env_name):
         raise ValueError(f"Set {env_name} for the evaluation endpoint")
     return os.environ[env_name] if env_name else "local"
 
 
 def skip_reason(row: dict, name: str) -> str | None:
+    """Почему метрику `name` нельзя посчитать для ответа `row`, или `None`, если можно.
+
+    Причины: ответа нет или он с ошибкой, у вопроса нет эталона для метрики, которой он
+    нужен, либо retriever не нашёл контекста для контекстной метрики."""
     if row.get("status") != "ok":
         return "inference_failed_or_missing"
     if name in REFERENCE_METRICS and not (row.get("reference") or "").strip():
@@ -54,6 +82,11 @@ def skip_reason(row: dict, name: str) -> str | None:
 
 
 def authentication_error(exc: Exception) -> bool:
+    """Есть ли среди причин `exc` ответ HTTP 401 или 403.
+
+    Ragas и openai заворачивают исходную ошибку в свои, а повторы (tenacity) хранят
+    попытки в `failed_attempts`, поэтому обходятся `__cause__`, `__context__` и попытки;
+    `seen` защищает от циклов в цепочке."""
     pending, seen = [exc], set()
     while pending:
         current = pending.pop()
@@ -68,6 +101,13 @@ def authentication_error(exc: Exception) -> bool:
 
 
 async def evaluate_one(row: dict, name: str, metric) -> dict:
+    """Оценивает один ответ одной метрикой и возвращает запись для `scores.jsonl`.
+
+    Результат — словарь со `status`: `ok` (с `value`), `skipped` (с `reason`),
+    `undefined` (метрика вернула NaN или бесконечность) или `error` (с типом исключения
+    и `reason`: `authentication_error` или `metric_failed`). Ragas-метрики принимают
+    разные наборы аргументов, поэтому они собираются по имени метрики. Делает сетевые
+    вызовы судьи."""
     if name not in METRIC_NAMES:
         raise ValueError(f"Unknown metric: {name}")
     reason = skip_reason(row, name)
@@ -88,7 +128,7 @@ async def evaluate_one(row: dict, name: str, metric) -> dict:
             return {"status": "undefined", "reason": "nonfinite_metric", "value": None}
         return {"status": "ok", "value": value}
     except Exception as exc:
-        # Do not persist API exception messages: they can contain request headers/secrets.
+        # текст исключений API не сохраняется: в нём бывают заголовки запроса и секреты
         return {
             "status": "error",
             "error": type(exc).__name__,
@@ -98,11 +138,18 @@ async def evaluate_one(row: dict, name: str, metric) -> dict:
 
 
 class RagasJudge:
+    """Метрики Ragas с клиентами судьи; клиенты закрываются через `close()`."""
+
     def __init__(self, config: dict):
         self.config = config
         self.clients = []
 
     def metrics(self, names) -> dict:
+        """Создаёт метрики `names` и возвращает `{имя: метрика}`.
+
+        Здесь же лениво импортируются Ragas и openai. Создаётся асинхронный клиент LLM
+        судьи и, только если нужна `answer_relevancy`, отдельный клиент эмбеддингов (у
+        них могут быть разные адреса и ключи). Нет ключа в окружении — `ValueError`."""
         from openai import AsyncOpenAI
         from ragas.embeddings.base import embedding_factory
         from ragas.llms import llm_factory
@@ -147,5 +194,6 @@ class RagasJudge:
         return result
 
     async def close(self):
+        """Закрывает все созданные HTTP-клиенты судьи."""
         for client in self.clients:
             await client.close()

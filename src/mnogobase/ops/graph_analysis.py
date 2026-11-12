@@ -1,4 +1,16 @@
-"""Bounded offline GDS analysis. Caller holds global analysis and corpus writer locks."""
+"""Офлайн-анализ графа в GDS: `mnogobase graph analyze`.
+
+Проецирует сущности (`Entity`) и связи `RELATED` (неориентированно, с весом `weight`) в
+память GDS, считает взвешенный PageRank и сообщества Leiden и атомарно публикует снимок в
+граф (`GraphStore.publish_analysis`). Модели не вызываются. `ask` GDS никогда не запускает:
+он только читает опубликованный снимок (`graph.use_gds`, `graph.community`).
+
+Вызывает CLI (`cli/graph.py`), держа advisory-locks `graph-analysis` и корпуса
+(`graph_writer`), так что граф во время анализа никто не пишет; ревизия `AnalysisState`
+всё равно сверяется при публикации. Размер графа и память ограничены
+`graph.analysis` (`max_nodes`, `max_relationships`, `memory_mb`, `timeout_s`); всё, что
+выходит за пределы, — `AnalysisError` до тяжёлой работы.
+"""
 
 from __future__ import annotations
 
@@ -16,10 +28,13 @@ from mnogobase.stores.graph_store import PROJECTION_PREFIX, GraphStore
 
 
 class AnalysisError(RuntimeError):
-    pass
+    """Анализ невозможен или его результат нельзя публиковать (нет GDS, граф больше
+    лимитов, не хватает памяти, граф изменился по ходу); сообщение безопасно показывать."""
 
 
 def check_memory(projection: int, workspace: int, *, budget_mb: int) -> None:
+    """Бросает `AnalysisError`, если проекция плюс рабочая память алгоритма (байты)
+    превышают бюджет `budget_mb` МиБ."""
     if projection + workspace > budget_mb * 1024 * 1024:
         raise AnalysisError(
             f"GDS memory estimate {projection + workspace} bytes exceeds {budget_mb} MiB budget"
@@ -27,6 +42,12 @@ def check_memory(projection: int, workspace: int, *, budget_mb: int) -> None:
 
 
 def community_keys(rows: list[dict]) -> dict[str, str]:
+    """Стабильные ключи сообществ: `entity_id` → `community:<sha256 состава>[:24]`.
+
+    Номера сообществ GDS произвольны и меняются от запуска к запуску; ключ из
+    отсортированного списка участников одинаков для одинакового состава, так что повторный
+    анализ неизменного графа даёт те же ключи. `rows` — строки
+    `{entity_id, community_id}`."""
     groups: dict[int | str, list[str]] = defaultdict(list)
     for row in rows:
         groups[row["community_id"]].append(row["entity_id"])
@@ -44,6 +65,23 @@ def analyze(
     *,
     estimate_only: bool = False,
 ) -> dict:
+    """Проверяет граф, считает PageRank + Leiden и публикует снимок; возвращает отчёт.
+
+    Шаги:
+    1. Нужны процедуры GDS, схема графа (ревизия `AnalysisState`), размер в пределах
+       `max_nodes` / `max_relationships` и положительные конечные веса `RELATED`.
+    2. Оценка памяти проекции против `memory_mb`. С `estimate_only` здесь возврат, ничего
+       не создаётся и не пишется.
+    3. Пустой граф публикует пустой снимок.
+    4. Проекция с уникальным именем (`PROJECTION_PREFIX` + uuid), оценка памяти алгоритмов,
+       PageRank, Leiden (для графа без рёбер каждая сущность — своё сообщество),
+       проверка, что оба алгоритма вернули одно множество сущностей.
+    5. `publish_analysis` пишет снимок, только если ревизия не изменилась.
+    6. Проекция удаляется всегда (`finally`); ошибка удаления логируется, а
+       пробрасывается, только если сам анализ прошёл успешно, чтобы не скрыть исходную.
+
+    Отчёт: счётчики графа, ревизия, версии плагинов, настройки, `projection_version`,
+    число сообществ и оценки памяти. Исключения: `AnalysisError`, ошибки Neo4j."""
     plugins = graph.plugin_status()
     missing = [name for name in plugins["missing"] if name.startswith("gds.")]
     if not plugins["gds"] or missing:
@@ -85,7 +123,8 @@ def analyze(
     name = f"{PROJECTION_PREFIX}{uuid.uuid4().hex}"
     try:
         graph.gds_project(name, settings.timeout_s)
-        # The algorithms run sequentially; only the larger workspace overlaps the projection.
+        # Алгоритмы идут по очереди: с проекцией одновременно живёт только большая из их
+        # рабочих памятей.
         report["algorithm_bytes"] = max(
             graph.gds_algorithm_estimate(name, algorithm, settings.timeout_s)
             for algorithm in ("pageRank", "leiden")
@@ -97,7 +136,7 @@ def analyze(
         if counts["relationships"]:
             communities = community_keys(graph.gds_leiden(name, settings.timeout_s))
         else:
-            # GDS 2.13 Leiden throws for an edgeless graph. Each isolated node is its own group.
+            # Leiden в GDS 2.13 падает на графе без рёбер: каждый узел — своё сообщество.
             communities = community_keys(
                 [{"entity_id": row["entity_id"], "community_id": row["entity_id"]} for row in ranks]
             )
@@ -109,6 +148,7 @@ def analyze(
             raise AnalysisError("Graph changed during analysis; rerun graph analyze")
         return report
     finally:
+        # летит ли уже исключение: тогда ошибка очистки его не заменяет
         failed = sys.exc_info()[0] is not None
         try:
             graph.drop_projection(name)

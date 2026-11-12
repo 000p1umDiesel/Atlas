@@ -1,3 +1,41 @@
+"""Registry: учёт состояния ingest в PostgreSQL-схеме проекта.
+
+Registry — бухгалтерия корпуса, а не сами знания: что загружено, на какой стадии каждый
+документ, кэш LLM-извлечений, какие wiki-страницы перестроить и какие удаления не довершены.
+Знания живут в Qdrant, Neo4j и файлах wiki. Пишет в registry только `ingest.Pipeline` и
+команды обслуживания (`ops.maintenance`) под advisory-lock `ingest` (`ingest_lock`);
+`doctor`, `status`, API и снимок корпуса только читают.
+
+Таблицы (схема `<schema_prefix>_project_<database.project>`, общая с очередью задач и
+сервисом):
+
+- `files` — путь файла → `doc_id` (sha256 содержимого), размер, mtime, статус файла
+  (`processing` / `done` / `failed` / `pending`) и время изменения. Одно содержимое может
+  лежать по нескольким путям (копии), поэтому есть индекс по `doc_id`.
+- `stages` — статус каждой стадии (`STAGES`) документа: `pending` / `running` / `done` /
+  `failed`, число запусков `attempts`, безопасный текст последней ошибки. Отсутствие строки
+  означает `pending`.
+- `extraction_cache` — JSON результата LLM-извлечения по ключу (`chunk_id`, версия промпта,
+  модель). `seq` растёт при каждой записи, по нему находится последнее извлечение чанка
+  при любой модели и промпте; префикс `chunk_id` (`<doc_id>:`) позволяет удалить кэш
+  документа одним `LIKE`.
+- `dirty_entities` — очередь сущностей, чьи wiki-страницы нужно перегенерировать;
+  `wiki build` обрабатывает и очищает её.
+- `meta` — ключ → значение: сигнатура embedder (`embedder`, или маркер прерванного
+  `reindex`), флаг прерванного `reset` (`reset`), имена удалённых сущностей, ещё не
+  попавшие в отчёт wiki, и прочие служебные значения.
+- `pending_removals` — журнал удалений документов: `doc_id` → JSON плана удаления. Запись
+  появляется до первого изменения хранилищ и исчезает последним шагом удаления; оставшаяся
+  запись доводится следующим запуском.
+- `doc_entities` — сущности, которые стадия `graph` документа уже записала в хранилища
+  (даже если MENTIONS до графа не дошли), чтобы удаление документа нашло и их.
+
+Схема создаётся `CREATE ... IF NOT EXISTS` под advisory-lock (`core.database.initialize`),
+затем применяются версионные миграции `_MIGRATIONS`. SQL пишется с `?`, их превращает в
+связанные параметры слой `core.database`. Каждый вызов — отдельная короткая операция
+(autocommit), кроме `wipe`, который идёт одной транзакцией.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -5,6 +43,7 @@ from dataclasses import dataclass
 
 from mnogobase.core.database import DatabaseTarget, PgLock, connect, initialize, utc_timestamp
 
+# порядок стадий ingest документа; каждая следующая читает результат предыдущей из кэша
 STAGES: tuple[str, ...] = ("parse", "chunk", "embed", "extract", "graph")
 
 _SCHEMA = """
@@ -30,15 +69,20 @@ CREATE TABLE IF NOT EXISTS pending_removals(doc_id TEXT PRIMARY KEY, plan_json T
 CREATE TABLE IF NOT EXISTS doc_entities(
     doc_id TEXT NOT NULL, entity_id TEXT NOT NULL, PRIMARY KEY(doc_id, entity_id));
 """
+# Версионные миграции по порядку (номер = позиция + 2, версия 1 — сама `_SCHEMA`).
+# Каждая должна быть безопасна и на свежей схеме, где `_SCHEMA` уже создала новый вид.
 # версия 2: файлы больше 2 ГиБ
 _MIGRATIONS = ("ALTER TABLE files ALTER COLUMN size TYPE BIGINT",)
-# Хранится, пока идёт `reset`: прерванный reset оставляет данные частично, и
-# `Pipeline.prepare` отказывается работать, пока `mnogobase reset` не завершится.
+# Значение meta-ключа `reset`, пока идёт `reset`: прерванный reset оставляет данные
+# частично, и `Pipeline.prepare` отказывается работать, пока `mnogobase reset` не завершится.
 RESET_IN_PROGRESS = "reset-in-progress"
 
 
 @dataclass(frozen=True)
 class FileRow:
+    """Строка таблицы `files`: путь источника, `doc_id` его содержимого на момент записи,
+    размер, mtime и статус файла (`processing` / `done` / `failed` / `pending`)."""
+
     path: str
     doc_id: str
     size: int
@@ -47,6 +91,12 @@ class FileRow:
 
 
 class Registry:
+    """Доступ к таблицам registry через одно соединение из пула.
+
+    Создание объекта подключается к PostgreSQL и применяет схему и миграции (под
+    advisory-lock, безопасно при параллельном старте); при ошибке соединение закрывается и
+    исключение пробрасывается. Закрывать — `close()`. Методы не потокобезопасны."""
+
     def __init__(self, target: DatabaseTarget):
         self.target = target
         self._db = connect(target)
@@ -57,16 +107,20 @@ class Registry:
             raise
 
     def close(self) -> None:
+        """Возвращает соединение в пул (незавершённая транзакция откатывается)."""
         self._db.close()
 
     # ---- файлы ----
     def get_file(self, path: str) -> FileRow | None:
+        """Строка `files` для пути или None, если путь не зарегистрирован."""
         row = self._db.execute(
             "SELECT path, doc_id, size, mtime, status FROM files WHERE path=?", (path,)
         ).fetchone()
         return FileRow(*row) if row else None
 
     def upsert_file(self, path: str, doc_id: str, size: int, mtime: float, status: str) -> None:
+        """Создаёт или полностью перезаписывает строку пути (новое содержимое = новый
+        `doc_id`)."""
         self._db.execute(
             "INSERT INTO files(path, doc_id, size, mtime, status, updated_at) VALUES(?,?,?,?,?,?) "
             "ON CONFLICT(path) DO UPDATE SET doc_id=excluded.doc_id, size=excluded.size, "
@@ -75,28 +129,36 @@ class Registry:
         )
 
     def set_file_status(self, path: str, status: str) -> None:
+        """Меняет статус существующей строки; несуществующий путь молча пропускается."""
         self._db.execute(
             "UPDATE files SET status=?, updated_at=? WHERE path=?", (status, utc_timestamp(), path)
         )
 
     def drop_file(self, path: str) -> None:
+        """Забывает путь. Данные содержимого (стадии, кэши, знания) не трогаются: их
+        удаляет `Pipeline` через журнал удаления."""
         self._db.execute("DELETE FROM files WHERE path=?", (path,))
 
     def files(self) -> list[FileRow]:
+        """Все зарегистрированные пути, отсортированные по пути."""
         rows = self._db.execute(
             "SELECT path, doc_id, size, mtime, status FROM files ORDER BY path"
         ).fetchall()
         return [FileRow(*r) for r in rows]
 
     def failed_paths(self) -> list[str]:
+        """Пути со статусом `failed` (для `status` и `ingest --retry-failed`)."""
         rows = self._db.execute("SELECT path FROM files WHERE status='failed' ORDER BY path")
         return [r[0] for r in rows]
 
     def paths_for_doc(self, doc_id: str) -> list[str]:
+        """Все пути, записанные с этим содержимым. Строки могут устареть (файл переименовали
+        или изменили), поэтому вызывающий код проверяет файлы сам."""
         rows = self._db.execute("SELECT path FROM files WHERE doc_id=? ORDER BY path", (doc_id,))
         return [r[0] for r in rows]
 
     def doc_ids(self) -> list[str]:
+        """Различные `doc_id` путей со статусом `done`, отсортированные."""
         rows = self._db.execute(
             "SELECT DISTINCT doc_id FROM files WHERE status='done' ORDER BY doc_id"
         )
@@ -104,12 +166,17 @@ class Registry:
 
     # ---- стадии ----
     def stage_status(self, doc_id: str, stage: str) -> str:
+        """Статус стадии документа; нет строки — `pending`."""
         row = self._db.execute(
             "SELECT status FROM stages WHERE doc_id=? AND stage=?", (doc_id, stage)
         ).fetchone()
         return row[0] if row else "pending"
 
     def set_stage(self, doc_id: str, stage: str, status: str, error: str | None = None) -> None:
+        """Записывает статус стадии и текст ошибки (None стирает прошлую ошибку).
+
+        `attempts` растёт только при переходе в `running`, то есть считает запуски стадии,
+        а не записи статуса."""
         started = 1 if status == "running" else 0
         self._db.execute(
             "INSERT INTO stages(doc_id, stage, status, attempts, error, updated_at) "
@@ -120,19 +187,26 @@ class Registry:
         )
 
     def pending_stages(self, doc_id: str) -> list[str]:
+        """Стадии документа, которые ещё не `done` (включая `failed`), в порядке `STAGES`."""
         return [s for s in STAGES if self.stage_status(doc_id, s) != "done"]
 
     def reset_running(self) -> int:
+        """Возвращает в `pending` стадии, оставшиеся `running` после сбоя процесса.
+
+        Безопасно только у единственного писателя (под lock `ingest`): иначе сбросились бы
+        стадии, которые сейчас выполняет другой процесс. Возвращает число строк."""
         cur = self._db.execute("UPDATE stages SET status='pending' WHERE status='running'")
         return cur.rowcount
 
     def stage_errors(self) -> list[tuple[str, str, str]]:
+        """Тройки (`doc_id`, стадия, ошибка) для всех стадий `failed`."""
         rows = self._db.execute(
             "SELECT doc_id, stage, error FROM stages WHERE status='failed' ORDER BY doc_id, stage"
         )
         return [tuple(r) for r in rows]
 
     def stage_summary(self) -> dict[str, dict[str, int]]:
+        """Сводка для `status`: стадия → {статус → число документов}."""
         out: dict[str, dict[str, int]] = {}
         rows = self._db.execute("SELECT stage, status, COUNT(*) FROM stages GROUP BY stage, status")
         for stage, status, n in rows:
@@ -144,12 +218,18 @@ class Registry:
         self._db.execute("DELETE FROM stages WHERE doc_id=?", (doc_id,))
 
     def clear_doc(self, doc_id: str) -> None:
+        """Забывает всё, что registry знает о содержимом: стадии, `doc_entities` и кэш
+        извлечений его чанков (`chunk_id` начинается с `<doc_id>:`). Строки `files` не
+        трогает. Три отдельных оператора; повтор после сбоя безопасен."""
         prefix = f"{doc_id}:%"
         self._db.execute("DELETE FROM stages WHERE doc_id=?", (doc_id,))
         self._db.execute("DELETE FROM doc_entities WHERE doc_id=?", (doc_id,))
         self._db.execute("DELETE FROM extraction_cache WHERE chunk_id LIKE ?", (prefix,))
 
     def get_extraction(self, chunk_id: str, prompt_version: str, model: str) -> str | None:
+        """JSON извлечения ровно для этих чанка, версии промпта и модели или None.
+
+        `prompt_version` — строка `PROMPT_VERSION:<хэш entity_types>` из `Extractor`."""
         row = self._db.execute(
             "SELECT result_json FROM extraction_cache "
             "WHERE chunk_id=? AND prompt_version=? AND model=?",
@@ -166,7 +246,10 @@ class Registry:
         return row[0] if row else None
 
     def latest_extraction_versions(self) -> set[str]:
-        """Версии промпта последнего записанного извлечения для каждого чанка."""
+        """Версии промпта последнего записанного извлечения для каждого чанка.
+
+        По ним `stale_entity_types` замечает, что часть корпуса извлечена с другим набором
+        `entity_types`."""
         rows = self._db.execute(
             "SELECT DISTINCT prompt_version FROM extraction_cache WHERE seq IN "
             "(SELECT MAX(seq) FROM extraction_cache GROUP BY chunk_id)"
@@ -176,6 +259,10 @@ class Registry:
     def put_extraction(
         self, chunk_id: str, prompt_version: str, model: str, result_json: str
     ) -> None:
+        """Сохраняет извлечение чанка (upsert по ключу кэша).
+
+        При перезаписи `seq` берёт новое значение identity (`excluded.seq`), так что запись
+        становится последней для чанка в `get_latest_extraction`."""
         query = (
             "INSERT INTO extraction_cache(chunk_id,prompt_version,model,result_json) VALUES(?,?,?,?) "
             "ON CONFLICT(chunk_id,prompt_version,model) DO UPDATE SET "
@@ -185,6 +272,10 @@ class Registry:
 
     # ---- dirty-сущности ----
     def mark_dirty(self, entity_ids: Iterable[str]) -> None:
+        """Ставит сущности в очередь пересборки wiki (повтор только обновляет `marked_at`).
+
+        Каждая строка пишется отдельным оператором, без общей транзакции; повтор после
+        сбоя безопасен."""
         now = utc_timestamp()
         self._db.executemany(
             "INSERT INTO dirty_entities(entity_id, marked_at) VALUES(?, ?) ON CONFLICT(entity_id) DO UPDATE SET marked_at=excluded.marked_at",
@@ -192,22 +283,29 @@ class Registry:
         )
 
     def dirty(self) -> list[str]:
+        """Сущности в очереди пересборки wiki, отсортированные по `entity_id`."""
         rows = self._db.execute("SELECT entity_id FROM dirty_entities ORDER BY entity_id")
         return [r[0] for r in rows]
 
     def clear_dirty(self, entity_ids: Iterable[str]) -> None:
+        """Убирает сущности из очереди (страница собрана или сущность удалена)."""
         self._db.executemany(
             "DELETE FROM dirty_entities WHERE entity_id=?", [(e,) for e in set(entity_ids)]
         )
 
     # ---- сущности, записанные стадией graph документа ----
     def add_doc_entity(self, doc_id: str, entity_id: str) -> None:
+        """Запоминает, что стадия `graph` документа записала сущность (идемпотентно).
+
+        Вызывается сразу после resolver, до записи MENTIONS, чтобы удаление документа нашло
+        сущность, даже если стадия упадёт посреди чанка."""
         self._db.execute(
             "INSERT INTO doc_entities(doc_id, entity_id) VALUES(?, ?) ON CONFLICT DO NOTHING",
             (doc_id, entity_id),
         )
 
     def doc_entities(self, doc_id: str) -> list[str]:
+        """Сущности, записанные стадией `graph` документа, отсортированные."""
         rows = self._db.execute(
             "SELECT entity_id FROM doc_entities WHERE doc_id=? ORDER BY entity_id", (doc_id,)
         )
@@ -215,30 +313,39 @@ class Registry:
 
     # ---- незавершённые удаления документов (журнал: доделываются после сбоя) ----
     def put_removal(self, doc_id: str, plan_json: str) -> None:
+        """Записывает (или заменяет) план удаления документа в журнал.
+
+        Вызывается до первого изменения хранилищ: с этого момента удаление будет доведено,
+        даже если процесс упадёт."""
         self._db.execute(
             "INSERT INTO pending_removals(doc_id, plan_json) VALUES(?, ?) ON CONFLICT(doc_id) DO UPDATE SET plan_json=excluded.plan_json",
             (doc_id, plan_json),
         )
 
     def get_removal(self, doc_id: str) -> str | None:
+        """JSON плана незавершённого удаления документа или None."""
         row = self._db.execute(
             "SELECT plan_json FROM pending_removals WHERE doc_id=?", (doc_id,)
         ).fetchone()
         return row[0] if row else None
 
     def pending_removals(self) -> list[tuple[str, str]]:
+        """Все незавершённые удаления: пары (`doc_id`, JSON плана), по `doc_id`."""
         rows = self._db.execute("SELECT doc_id, plan_json FROM pending_removals ORDER BY doc_id")
         return [(r[0], r[1]) for r in rows]
 
     def drop_removal(self, doc_id: str) -> None:
+        """Закрывает запись журнала; вызывается последним шагом удаления."""
         self._db.execute("DELETE FROM pending_removals WHERE doc_id=?", (doc_id,))
 
-    # ---- meta ----
+    # ---- служебные значения (meta) ----
     def get_meta(self, key: str) -> str | None:
+        """Значение meta-ключа или None."""
         row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row[0] if row else None
 
     def set_meta(self, key: str, value: str) -> None:
+        """Записывает meta-ключ безусловно (upsert)."""
         self._db.execute(
             "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
@@ -253,11 +360,17 @@ class Registry:
         return cursor.rowcount == 1
 
     def wipe(self) -> None:
-        """Удаляет все строки одной транзакцией (флаг reset в `meta` — вместе с ними)."""
+        """Удаляет все строки одной транзакцией (флаг reset в `meta` — вместе с ними).
+
+        Вызывается последним шагом `reset`, поэтому снятие флага и очистка данных
+        неразделимы: либо registry цела с флагом, либо пуста без него. Сами таблицы
+        остаются."""
         with self._db:
             self._wipe()
 
     def _wipe(self) -> None:
+        """Тело `wipe`; вызывается только внутри открытой транзакции. Список таблиц должен
+        совпадать с `_SCHEMA`."""
         for table in (
             "files",
             "stages",
@@ -271,5 +384,10 @@ class Registry:
 
 
 def ingest_lock(target: DatabaseTarget) -> PgLock:
-    """Единственный писатель корпуса: ingest / remove / wiki / reindex / reset / worker."""
+    """Advisory-lock `ingest` PostgreSQL: единственный писатель корпуса.
+
+    Его берут ingest / remove / wiki / reindex / reset / worker. Порядок захвата
+    advisory-locks: graph-analysis → worker → корпус (`ingest`); обратный порядок приведёт
+    к взаимной блокировке. Чтения (ask, API) lock не берут. Возвращает ещё не захваченный
+    `PgLock` (использовать как контекстный менеджер)."""
     return PgLock(target, "ingest")

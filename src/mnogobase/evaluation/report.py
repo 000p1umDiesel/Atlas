@@ -1,4 +1,10 @@
-"""Offline, completeness-aware CSV and Markdown reports."""
+"""Офлайн-отчёты эксперимента в CSV и Markdown, которые честно показывают полноту.
+
+Отчёт строится только из артефактов каталога (`run.json`, `answers.jsonl`, `judge.json`,
+`scores.jsonl`, `processing.jsonl`), без моделей и сервисов, и полностью переписывается при
+каждом вызове. Пропуски не превращаются в нули: среднее — только по успешным значениям, а
+рядом показано, сколько пар запланировано, оценено, пропущено, упало или ещё не оценено.
+"""
 
 from __future__ import annotations
 
@@ -14,11 +20,14 @@ from .comparison import comparison_reports
 from .core import planned_answers
 from .ragas import METRIC_NAMES
 
+# статусы оценки метрики: missing — оценки нет или она относится к другой версии ответа
 STATUSES = ("ok", "skipped", "error", "undefined", "missing")
+# названия подходов в отчёте для режимов retrieval
 LABELS = {"rag": "Hybrid RAG", "wiki": "WikiLLM", "graph": "GraphRAG", "all": "Combined"}
 
 
 def _csv(path: Path, rows: list[dict]) -> None:
+    """Пишет непустой список словарей в CSV; колонки — ключи первой строки."""
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -26,6 +35,13 @@ def _csv(path: Path, rows: list[dict]) -> None:
 
 
 def report(output: Path) -> list[dict]:
+    """Пересобирает отчёты каталога `output` и возвращает строки сводки.
+
+    Пишет `details.csv` (строка на каждую пару ответ × метрика), `summary.csv` (строка на
+    режим × метрика: среднее, счётчики статусов оценок и ответов, задержка и токены),
+    `report.md` и файлы `comparison.comparison_reports`. Оценка учитывается, только если её
+    `answer_fingerprint` совпадает с текущей записью ответа: оценка старой версии ответа
+    считается `missing`. Если `judge.json` не соответствует плану, `ValueError`."""
     manifest, answers = planned_answers(output)
     judge_path = output / "judge.json"
     if judge_path.exists():

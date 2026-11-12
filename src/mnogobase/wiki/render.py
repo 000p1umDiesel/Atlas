@@ -1,3 +1,21 @@
+"""Рендер и разбор Markdown-страниц wiki, индекса и журнала сборок.
+
+Формат страницы сущности (`entities/<slug>.md`):
+
+    ---
+    id / type / aliases / sources / updated / version   (YAML front matter)
+    ---
+    # Имя сущности
+    <тело от LLM с цитатами [^chunk_id] и ссылками [[slug|label]]>
+    ## Related        — связи из графа, генерирует код
+    ## Sources        — определения сносок [^chunk_id]: *файл*, p.N, генерирует код
+
+Тело пишет LLM; всё остальное — код, поэтому при следующем обновлении `parse_page` отдаёт
+LLM только тело. Для поиска страница режется на секции по `## ` (`split_sections`), без
+`Sources` и с вынесенными в `chunk_ids` цитатами. Заголовки `## Related` / `## Sources`
+— фиксированная часть формата: по ним `wiki.validate` вырезает сгенерированные разделы.
+"""
+
 from __future__ import annotations
 
 import re
@@ -14,12 +32,16 @@ from mnogobase.core.models import EntityRecord, PageIndexRow, RelationView
 from mnogobase.wiki.validate import strip_reserved_sections
 
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+# маркер цитаты `[^id]` вместе с одним пробелом перед ним (чтобы не оставлять двойных)
 _CITE_MARK = re.compile(r"[ \t]?\[\^([^\]\s]+)\]")
+# `[[slug|label]]` → label в тексте для эмбеддинга
 _LINK_LABEL = re.compile(r"\[\[[^\]|]+\|([^\]]+)\]\]")
 
 
 @dataclass
 class SourceRef:
+    """Источник цитаты для раздела Sources: чанк, путь его документа и страница."""
+
     chunk_id: str
     path: str | None
     page: int | None
@@ -35,6 +57,7 @@ class Section(NamedTuple):
 
 
 def _link(entity_id: str, name: str, linked: dict[str, str]) -> str:
+    """`[[slug|name]]`, если у сущности есть страница, иначе просто имя."""
     slug = linked.get(entity_id)
     return f"[[{slug}|{name}]]" if slug else name
 
@@ -48,7 +71,13 @@ def render_page(
     version: int,
     updated: date,
 ) -> str:
-    """Рендерит полную wiki-страницу; `linked` отображает entity_id -> slug существующих страниц."""
+    """Рендерит полную wiki-страницу; `linked` отображает entity_id -> slug существующих страниц.
+
+    `body` должен быть уже провалидирован (`wiki.validate`). В front matter `sources` —
+    число различных документов среди цитат. В Related исходящая связь показывается как
+    `предикат → цель`, входящая — `предикат ← источник`. Sources перечисляет определения
+    сносок в порядке первого цитирования. Пустые разделы не выводятся.
+    """
     front = {
         "id": entity.entity_id,
         "type": entity.type,
@@ -88,7 +117,11 @@ def render_page(
 
 
 def parse_page(text: str) -> tuple[dict, str]:
-    """Страница -> (front matter, написанное LLM тело без заголовка, Related, Sources)."""
+    """Страница → (front matter, тело от LLM).
+
+    Тело возвращается без заголовка `# ...`, без сгенерированных разделов Related / Sources и
+    без определений сносок — в том виде, в каком его снова можно отдать LLM на обновление.
+    Страница без front matter даёт пустой словарь."""
     meta: dict = {}
     match = _FRONTMATTER.match(text)
     if match:
@@ -98,7 +131,13 @@ def parse_page(text: str) -> tuple[dict, str]:
 
 
 def split_sections(text: str) -> list[Section]:
-    """Страница -> секции для эмбеддинга; Sources пропускается, пустые секции отбрасываются."""
+    """Страница -> секции для эмбеддинга; Sources пропускается, пустые секции отбрасываются.
+
+    Текст до первого `## ` становится секцией `Summary`. Первая строка `# ` — заголовок
+    страницы; он добавляется в начало каждой секции (`Заголовок — Секция`), чтобы секция была
+    понятна в поиске без страницы. Из текста убираются маркеры цитат (их id уходят в
+    `chunk_ids`) и разметка ссылок `[[slug|label]]` (остаётся label).
+    """
     match = _FRONTMATTER.match(text)
     body = text[match.end() :] if match else text
     title = ""
@@ -130,6 +169,8 @@ def split_sections(text: str) -> list[Section]:
 
 
 def render_index(rows: list[PageIndexRow]) -> str:
+    """`index.md`: число страниц и ссылки на них, сгруппированные по типу сущности и
+    отсортированные по заголовку без учёта регистра."""
     lines = ["# Wiki Index", "", f"_{len(rows)} pages, generated automatically._", ""]
     ordered = sorted(rows, key=lambda r: (r.entity_type, r.title.casefold()))
     for entity_type, group in groupby(ordered, key=lambda r: r.entity_type):
@@ -139,6 +180,7 @@ def render_index(rows: list[PageIndexRow]) -> str:
     return "\n".join(lines)
 
 
+# при превышении log.md переносится в log.1.md
 LOG_MAX_BYTES = 1024 * 1024
 
 
@@ -151,7 +193,12 @@ def append_log(
     deleted: list[str],
     now: datetime | None = None,
 ) -> None:
-    """Дописывает в wiki-лог одну запись о запуске (обработанные документы, изменения страниц)."""
+    """Дописывает в wiki-лог одну запись о запуске (обработанные документы, изменения страниц).
+
+    Запись — заголовок `## <UTC-время> · run <run_id>` и по строке на непустую категорию;
+    если менять нечего, пишется `- no changes`. `now` — для тестов. Файл создаётся при
+    необходимости.
+    """
     now = (now or datetime.now(UTC)).astimezone(UTC)
     path.parent.mkdir(parents=True, exist_ok=True)
     rotate_if_large(path, LOG_MAX_BYTES)  # прошлые записи — в log.1.md

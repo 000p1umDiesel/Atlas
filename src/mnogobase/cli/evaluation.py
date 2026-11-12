@@ -1,4 +1,21 @@
-"""Typer commands, wired into the existing CLI without constructing an App on import."""
+"""Команды оценки качества retrieval (`eval run | score | report | ingest | benchmark`).
+
+Сама логика — в пакете `mnogobase.evaluation` (план, ответы, судья, отчёты); здесь только
+команды, блокировки и прогресс. При импорте `App` не создаётся и Ragas не загружается.
+
+Каталог эксперимента (`--output`) защищён файловой блокировкой `.eval.lock`: в один каталог
+одновременно пишет только один процесс, второй сразу получает отказ (код 2). Кроме того:
+- `eval run` на всё время генерации ответов держит блокировку корпуса (`ingest`): корпус не
+  должен меняться посреди прогона, иначе ответы разных режимов относились бы к разным
+  данным;
+- `eval ingest` загружает документы под той же блокировкой и записывает замеры затрат в
+  `processing.jsonl` каталога эксперимента;
+- `eval score` и `eval report` работают только с сохранёнными артефактами и сервисов
+  retrieval не трогают.
+
+Все команды возобновляемы: повторный запуск с тем же каталогом доделывает только то, что
+ещё не выполнено успешно.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +52,10 @@ common.app.add_typer(app, name="eval")
 
 @contextmanager
 def _lock(output: Path):
+    """Неблокирующая файловая блокировка каталога эксперимента; создаёт каталог.
+
+    Занята — сразу `filelock.Timeout` (команды превращают его в код 2). Файловая, а не
+    PostgreSQL: каталог — локальные файлы, и `eval report` работает без базы."""
     output.mkdir(parents=True, exist_ok=True)
     with filelock.FileLock(output / ".eval.lock", timeout=0):
         yield
@@ -42,6 +63,11 @@ def _lock(output: Path):
 
 @contextmanager
 def _progress(console):
+    """Прогресс одной фазы оценки (ответы или судья); отдаёт колбэк `update(event, **fields)`.
+
+    События от `evaluation.core`: `start` (total, remaining — сколько всего и сколько
+    осталось после прошлых запусков), `item` (label текущей пары) и `done` (status, label,
+    detail). Неудачи (`error`, `undefined`) печатаются сразу, итог — после фазы."""
     bars = Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -76,6 +102,8 @@ def _progress(console):
 
 
 def _print_summary(output: Path, console):
+    """Пересобирает отчёты по сохранённым артефактам, печатает сводную таблицу и
+    возвращает её строки (список словарей из `summary.csv`)."""
     summary = report(output)
     table = Table("approach", "metric", "mean", "ok/planned", "skipped", "error/undefined/missing")
     for row in summary:
@@ -105,9 +133,15 @@ def run(
     limit: Annotated[int | None, typer.Option("--limit", min=1)] = None,
     k: Annotated[int | None, typer.Option("--k", min=1)] = None,
 ) -> None:
-    """Generate and save answers in each selected mode; resume successful records."""
+    """Сгенерировать и сохранить ответы на вопросы набора в выбранных режимах.
+
+    Первый запуск фиксирует план эксперимента в run.json (вопросы, режимы, k, настройки,
+    промпт и снимок корпуса); повторный запуск в тот же каталог доделывает только
+    неудачные и недостающие ответы, а при другом плане отказывается. Пока идут ответы,
+    корпус заблокирован для записи. Код выхода 1, если часть ответов не получилась; 2 при
+    неверном наборе, недоступном сервисе или занятом каталоге либо корпусе."""
     try:
-        load_questions(dataset)  # reject invalid input before any services/configuration
+        load_questions(dataset)  # битый набор отклоняется до загрузки конфига и сервисов
         settings = common.get_settings(project=True)
         with _lock(output), ingest_lock(database_target(settings)):
             common.preflight(settings)
@@ -147,7 +181,12 @@ def score(
         typer.Option("--metric", help="Repeat to select metrics; default: all five."),
     ] = None,
 ) -> None:
-    """Score saved answers using a judge, without retrieval services."""
+    """Оценить сохранённые ответы метриками Ragas с LLM-судьёй.
+
+    Сервисы retrieval не нужны, только судья (evaluation.* или, по умолчанию, llm и
+    embedder проекта). Уже посчитанные оценки тех же ответов не пересчитываются. После
+    оценки пересобираются отчёты. Код выхода 1, если остались неоценённые пары или
+    ответы с ошибками."""
     try:
         load_run(output)
         settings = common.get_settings()
@@ -165,7 +204,10 @@ def score(
 
 @app.command(name="report")
 def report_command(output: Annotated[Path, typer.Argument(help="Saved run directory.")]) -> None:
-    """Write reports from saved artifacts, without model calls or service checks."""
+    """Пересобрать отчёты по сохранённым ответам и оценкам.
+
+    Пишет report.md, summary.csv, details.csv и файлы сравнения; модели и сервисы не
+    вызываются."""
     try:
         load_run(output)
         with _lock(output):
@@ -175,6 +217,9 @@ def report_command(output: Annotated[Path, typer.Argument(help="Saved run direct
 
 
 class Phase(StrEnum):
+    """Метка замера в `eval ingest`: первичная сборка корпуса или его последующее
+    обновление. Отчёт считает затраты этих фаз отдельно."""
+
     BUILD = "build"
     UPDATE = "update"
 
@@ -187,7 +232,12 @@ def ingest_measured(
         Phase, typer.Option(help="Label initial construction or later changes.")
     ] = Phase.BUILD,
 ) -> None:
-    """Measure shared preprocessing, keeping failed attempts in processing.jsonl."""
+    """Загрузить документы с замером времени и токенов для отчёта о затратах.
+
+    Каждая попытка, включая неудачные, дописывается в processing.jsonl каталога
+    эксперимента. Замеры делаются до eval run: в каталог с уже готовым планом ответов
+    команда не пишет. Код выхода 1, если какой-то файл или страница wiki не
+    обработались."""
     settings = common.get_settings()
     try:
         with _lock(output), ExitStack() as locks:
@@ -232,7 +282,11 @@ def benchmark(
         bool, typer.Option(help="Save answers/report without calling a judge.")
     ] = False,
 ) -> None:
-    """Run answers, Ragas scoring and reports; rerun the same command to resume."""
+    """Полный прогон: ответы, оценка Ragas и отчёты.
+
+    Повторный запуск той же команды продолжает с места остановки. Неудавшиеся ответы не
+    останавливают оценку остальных. С --skip-score судья не вызывается, строятся только
+    отчёты. Код выхода 1, если прогон неполный."""
     # Неудавшиеся ответы не останавливают оценку остальных: их повторит следующий запуск,
     # а код выхода 1 сообщит о неполном прогоне.
     partial = False

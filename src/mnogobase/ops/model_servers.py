@@ -2,7 +2,14 @@
 
 Каждая роль (`embedder`, `rerank`, `vision`, `llm`) с `serve: llamacpp` получает нативный
 `llama-server` на порту роли (8001 / 8002 / 8003 / 8000). В развёртывании те же серверы —
-сервисы `compose.yaml` с явными командами, и этот модуль там не нужен."""
+сервисы `compose.yaml` с явными командами, и этот модуль там не нужен.
+
+Вызывает CLI `cli/models.py`. Процессы запускаются в фоне в отдельной сессии и переживают
+CLI; их pid и аргументы лежат в `<data_dir>/models/<роль>.json`, вывод — в
+`<logs_dir>/models-<роль>.log`. Повторный `models up` с теми же аргументами ничего не
+перезапускает, с другими — перезапускает сервер роли. Модели `llama-server` скачивает сам
+(`-hf`) в свой кэш Hugging Face; с `device: cpu` слои на GPU не выгружаются.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ import httpx
 from mnogobase.core.config import ServedModel, Settings
 from mnogobase.core.http import server_root
 
+# все роли, которые можно поднять локально; порядок — порядок запуска и остановки
 ROLES = ("embedder", "rerank", "vision", "llm")
 
 
@@ -38,10 +46,13 @@ class Served:
 
     @property
     def port(self) -> int:
+        """Фиксированный порт роли (8000–8003, `ServedModel.port`); `base_url` на него не
+        влияет, поэтому локальный сервер должен слушать именно его."""
         return self.settings.port
 
     @property
     def health_url(self) -> str:
+        """`/health` llama-server: в корне сервера, а не под `/v1`."""
         return f"{server_root(self.settings.url)}/health"
 
 
@@ -65,11 +76,18 @@ def served_roles(settings: Settings, roles: Sequence[str] = ()) -> list[Served]:
 
 
 def server_args(served: Served, port: int, *, gpu: bool = True) -> list[str]:
-    """Аргументы `llama-server` (без самой программы)."""
+    """Аргументы `llama-server` (без самой программы).
+
+    Веса — `weights` (`gguf` или `model`) через `-hf`, имя модели на сервере — `--alias
+    model`, контекст — `server.ctx`. `gpu=False` (`device: cpu`) не выгружает слои на GPU.
+    embedder и reranker получают свой режим и `--ubatch-size` = контексту (весь вход
+    обрабатывается одним микробатчем), в конец добавляются `server.args` из конфига. Должно
+    совпадать с командами сервисов в `compose.yaml`."""
     s, c = served.settings, served.settings.server
     # имя модели на сервере — `model`; у VLM -hf сам подключает проектор картинок (mmproj)
     args = ["-hf", s.weights, "--alias", s.model, "--port", str(port), "--ctx-size", str(c.ctx)]
-    args += ["--n-gpu-layers", "999" if gpu else "0"]  # Metal на Mac
+    # 999 = все слои на GPU (Metal на Mac), 0 = только CPU
+    args += ["--n-gpu-layers", "999" if gpu else "0"]
     if served.role == "embedder":
         args += ["--embedding", "--ubatch-size", str(c.ctx)]
     elif served.role == "rerank":
@@ -78,6 +96,7 @@ def server_args(served: Served, port: int, *, gpu: bool = True) -> list[str]:
 
 
 def is_ready(served: Served, client: httpx.Client | None = None) -> bool:
+    """Отвечает ли сервер роли 200 на `/health` (модель загружена)."""
     return health_state(served, client) == "ready"
 
 
@@ -96,7 +115,10 @@ def health_state(served: Served, client: httpx.Client | None = None) -> str:
 
 class NativeRunner:
     """llama-server как фоновые процессы: pid и аргументы в `<data_dir>/models/<роль>.json`,
-    вывод в `<logs_dir>/models-<роль>.log`."""
+    вывод в `<logs_dir>/models-<роль>.log`.
+
+    `which` и `popen` подменяются в тестах. Запись роли считается действующей, только если
+    процесс с её pid жив; иначе она игнорируется, как будто сервера нет."""
 
     def __init__(
         self,
@@ -114,12 +136,19 @@ class NativeRunner:
         self.gpu = gpu
 
     def _pidfile(self, role: str) -> Path:
+        """Файл состояния роли: JSON `{pid, args}`."""
         return self._state / f"{role}.json"
 
     def log_path(self, role: str) -> Path:
+        """Лог сервера роли (дописывается при каждом запуске)."""
         return self._logs / f"models-{role}.log"
 
     def _record(self, role: str) -> dict | None:
+        """Запись роли, если файл читается и процесс жив; иначе None.
+
+        pid может быть переиспользован ОС после смерти сервера; тогда запись ошибочно
+        считается живой, и `_kill` пошлёт SIGTERM чужому процессу (риск принят: только
+        разработка)."""
         try:
             record = json.loads(self._pidfile(role).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -127,6 +156,12 @@ class NativeRunner:
         return record if _pid_alive(record.get("pid")) else None
 
     def start(self, served: Sequence[Served]) -> None:
+        """Запускает серверы ролей, не дожидаясь готовности.
+
+        Сервер с теми же аргументами, который уже работает, не трогается; с другими
+        аргументами — останавливается и запускается заново. Процесс стартует в новой сессии
+        (не получает Ctrl+C терминала и переживает CLI). Нет `llama-server` в PATH —
+        `ServeError`."""
         binary = self._which("llama-server")
         if served and binary is None:
             raise ServeError("llama-server not found: brew install llama.cpp")
@@ -154,9 +189,11 @@ class NativeRunner:
                 self._kill(role)
 
     def alive(self, served: Served) -> bool:
+        """Жив ли процесс сервера роли (по pid из файла состояния)."""
         return self._record(served.role) is not None
 
     def _kill(self, role: str) -> None:
+        """Шлёт SIGTERM серверу роли (если жив) и удаляет файл состояния; не ждёт выхода."""
         record = self._record(role)
         if record:
             with contextlib.suppress(ProcessLookupError):
@@ -164,10 +201,13 @@ class NativeRunner:
         self._pidfile(role).unlink(missing_ok=True)
 
     def stop(self) -> None:
+        """Останавливает серверы всех ролей (`models down`)."""
         for role in ROLES:
             self._kill(role)
 
     def logs(self, served: Served, follow: bool) -> None:
+        """Показывает последние 200 строк лога роли через `tail` (с `follow` — `tail -f`).
+        Лога ещё нет — `ServeError`."""
         path = self.log_path(served.role)
         if not path.exists():
             raise ServeError(f"no log yet: {path}")
@@ -175,6 +215,7 @@ class NativeRunner:
 
 
 def _pid_alive(pid: object) -> bool:
+    """Есть ли процесс с таким pid (сигнал 0 ничего не делает, только проверяет)."""
     if not isinstance(pid, int):
         return False
     try:
@@ -187,6 +228,7 @@ def _pid_alive(pid: object) -> bool:
 
 
 def make_runner(settings: Settings) -> NativeRunner:
+    """`NativeRunner` с путями из настроек; GPU выключен при `device: cpu`."""
     return NativeRunner(
         settings.data_dir / "models", settings.logs_dir, gpu=settings.device != "cpu"
     )
@@ -202,7 +244,11 @@ def wait_ready(
     ready: Callable[[Served], bool] = is_ready,
 ) -> None:
     """Ждёт `/health` каждого сервера: первая загрузка модели с Hugging Face идёт минуты.
-    `on_wait` получает ещё не готовые серверы после каждой проверки."""
+    `on_wait` получает ещё не готовые серверы после каждой проверки.
+
+    Опрос раз в 5 секунд. Процесс сервера умер — `ServeError` сразу (смотреть лог роли);
+    не готов за `timeout` секунд — `ServeError`. `sleep`, `clock` и `ready` подменяются в
+    тестах."""
     start = clock()
     pending = list(served)
     while pending:
@@ -232,7 +278,12 @@ def bring_up(
     keep: Sequence[Served] | None = None,
     **wait_kwargs,
 ) -> None:
-    """Последовательный запуск; прочие роли из `keep` не останавливаются."""
+    """Поднимает серверы по одному: запуск, затем ожидание готовности, затем следующий.
+
+    Сначала останавливаются серверы ролей, которых нет в `keep` (по умолчанию — в
+    `served`): роль стала `serve: api` или отключена. Прочие роли из `keep` не
+    останавливаются, так что `models up embedder` не гасит работающий reranker. По одному —
+    чтобы несколько первых загрузок моделей не делили память и сеть одновременно."""
     runner.prune(served if keep is None else keep)
     for s in served:
         runner.start([s])

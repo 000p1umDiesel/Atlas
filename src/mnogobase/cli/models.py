@@ -2,6 +2,12 @@
 
 Касается только ролей с `serve: llamacpp`; роли `serve: api` работают на внешних серверах.
 В Docker те же серверы — сервисы compose, и эти команды там не нужны.
+
+Роли: embedder (порт 8001), rerank (8002), vision (8003) и llm (8000). Для каждой роли
+`NativeRunner` запускает отдельный процесс `llama-server` в фоне: модель берётся из
+`model`/`gguf` роли (GGUF скачивается при первом запуске), имя для API передаётся как
+`--alias`, с `device: cpu` добавляется `--n-gpu-layers 0`. Вывод каждого сервера пишется в
+`<logs_dir>/models-<роль>.log`, его показывает `models logs`.
 """
 
 from __future__ import annotations
@@ -43,7 +49,11 @@ RolesArg = Annotated[
 
 
 def _models(roles: list[str] | None) -> tuple[list[Served], list[Served], NativeRunner]:
-    """Роли из `roles` (все, если не заданы), все роли с локальным сервером и раннер."""
+    """Загружает настройки и возвращает `(выбранные, все, раннер)`.
+
+    Выбранные — роли из `roles` (все локальные, если не заданы); все — роли с
+    `serve: llamacpp`, которые раннер не должен останавливать при частичном запуске.
+    Неизвестная роль или ошибка конфигурации — выход с кодом 2."""
     settings = common.get_settings()
     try:
         everything = served_roles(settings)
@@ -60,7 +70,12 @@ def models_up(
         float, typer.Option(help="Seconds to wait for the servers (first start downloads models).")
     ] = 1800,
 ) -> None:
-    """Поднять llama-server для ролей с `serve: llamacpp` и дождаться их готовности."""
+    """Поднять llama-server для ролей с `serve: llamacpp` и дождаться их готовности.
+
+    Без аргументов поднимает все локальные роли, иначе только перечисленные; серверы
+    других ролей не трогаются. Первый запуск скачивает GGUF-модели, поэтому ожидание по
+    умолчанию до 30 минут; пока сервер не готов, раз в 15 секунд печатается его состояние.
+    Код выхода 2, если llama-server нет в PATH, сервер упал или не успел подняться."""
     console = common.console
     served, everything, model_runner = _models(roles)
     if not served:
@@ -77,10 +92,15 @@ def models_up(
     shown: dict[str, float] = {}  # роль -> когда о ней печаталась строка ожидания
 
     def stamp() -> str:
+        """Время с начала запуска в виде `[м:сс]` для строк о ходе ожидания."""
         minutes, seconds = divmod(int(time.monotonic() - start), 60)
         return f"[{minutes}:{seconds:02d}]"
 
     def waiting(pending: Sequence[Served], elapsed: float) -> None:
+        """Колбэк `bring_up`, вызывается в цикле ожидания со списком ещё не готовых ролей.
+
+        Печатает состояние каждой ожидающей роли не чаще раза в `WAIT_REPORT_EVERY` секунд,
+        чтобы долгая загрузка модели не заливала терминал одинаковыми строками."""
         # роли, пропавшие из списка ожидания, уже готовы — сообщаем об этом один раз
         names = {s.role for s in pending}
         for role in [r for r in shown if r not in names]:
@@ -107,7 +127,10 @@ def models_up(
 
 @app.command("down")
 def models_down() -> None:
-    """Остановить серверы моделей (скачанные модели остаются в кэше)."""
+    """Остановить локальные серверы моделей.
+
+    Останавливаются все серверы, запущенные models up; скачанные модели остаются в кэше,
+    и следующий запуск их не качает."""
     _, _, model_runner = _models(None)
     try:
         model_runner.stop()
@@ -118,7 +141,10 @@ def models_down() -> None:
 
 @app.command("status")
 def models_status() -> None:
-    """Где работает модель каждой роли и готов ли её сервер."""
+    """Показать, где работает модель каждой роли и готов ли её сервер.
+
+    Для локальных ролей проверяется готовность сервера (ready или down), роли с serve: api
+    и выключенные роли только отмечаются как api и disabled."""
     settings = common.get_settings()
     table = Table("role", "serve")
     for column in ("model", "url"):
@@ -148,7 +174,10 @@ def models_logs(
         bool, typer.Option("--follow", "-f", help="Keep printing new lines.")
     ] = False,
 ) -> None:
-    """Последние строки лога сервера роли."""
+    """Показать последние строки лога сервера роли.
+
+    С -f продолжает печатать новые строки, пока не нажат Ctrl+C. Код выхода 2, если роль
+    не обслуживается локально."""
     served, _, model_runner = _models([role])
     if not served:
         common.fail(ServeError(f"{role} is not served locally (serve: api or disabled)"))

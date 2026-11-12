@@ -1,4 +1,20 @@
-"""Пользователи, отзываемые сессии и личные диалоги (в схеме проекта)."""
+"""Пользователи, отзываемые сессии и личные диалоги (в схеме проекта).
+
+Таблицы:
+- `users` — учётные записи (`id` uuid, уникальное `username`, argon2-хеш пароля, флаг
+  `active`). Создаются и меняются только из CLI (`mnogobase user ...`); API их не меняет.
+- `sessions` — bearer-сессии: хранится только `sha256` токена и срок действия, поэтому
+  утечка таблицы не даёт рабочих токенов. Сессия отзывается удалением строки (`logout`,
+  смена пароля, отключение пользователя).
+- `conversations` / `messages` — диалоги владельца с историей вопросов и ответов. Каждый
+  запрос фильтрует по `user_id`, а составной внешний ключ `(conversation_id, user_id)` не
+  даёт сообщению оказаться в чужом диалоге. `seq` — порядок вставки для стабильной
+  сортировки при одинаковом `created_at`; наружу не отдаётся.
+
+argon2 намеренно дорогой (около 64 MiB памяти на хеш), поэтому одновременно считается не
+больше двух хешей на процесс; остальные ждут до `_ARGON2_WAIT_S` секунд и получают 429.
+Все ошибки, предназначенные клиенту, — `ServiceError`.
+"""
 
 from __future__ import annotations
 
@@ -59,28 +75,36 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_owner ON messages(user_id, conversation_id, created_at);
 """
 _MIGRATIONS = (
-    # v2: роли пользователей остались от командного режима; владелец у базы один
+    # v2: колонка role осталась от командного режима (удалён 2026-11-10); владелец у базы один
     "ALTER TABLE users DROP COLUMN IF EXISTS role",
 )
 
 
 def _record(row) -> dict:
+    """Строка как словарь без служебной колонки `seq`."""
     record = dict(row)
     record.pop("seq", None)
     return record
 
 
 def _token_hash(token: str) -> str:
+    """sha256 токена: в базе хранится только он. Соль не нужна — токен сам случайный
+    (256 бит из `secrets`)."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _check_password(password: str) -> None:
+    """400, если пароль короче `MIN_PASSWORD` символов."""
     if len(password) < MIN_PASSWORD:
         raise ServiceError(400, f"Password must have at least {MIN_PASSWORD} characters")
 
 
 class ServiceStore:
+    """Пользователи, сессии и диалоги. Каждый метод открывает своё короткое соединение из
+    пула, так что объект безопасно вызывать из разных потоков (обработчики FastAPI)."""
+
     def __init__(self, target: DatabaseTarget):
+        """Создаёт и мигрирует таблицы сервиса (`initialize`, запись в базу)."""
         self.target = target
         self._passwords = PasswordHasher()
         conn = connect(target)
@@ -91,6 +115,11 @@ class ServiceStore:
 
     @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[PgConnection]:
+        """Соединение с транзакцией на время блока: COMMIT при успехе, ROLLBACK при ошибке.
+
+        Конфликт блокировок в PostgreSQL — истёк `lock_timeout` (55P03), взаимоблокировка
+        (40P01) или ошибка сериализации (40001) — превращается в 409, чтобы клиент мог
+        повторить запрос; прочие ошибки базы пробрасываются."""
         conn = connect(self.target)
         try:
             if write:
@@ -110,6 +139,8 @@ class ServiceStore:
 
     @contextmanager
     def _argon2(self) -> Iterator[None]:
+        """Занимает один из двух слотов argon2 на время блока; если слот не освободился за
+        `_ARGON2_WAIT_S` секунд — 429."""
         if not _ARGON2_SLOTS.acquire(timeout=_ARGON2_WAIT_S):
             raise ServiceError(429, "Too many login attempts; retry later")
         try:
@@ -118,11 +149,16 @@ class ServiceStore:
             _ARGON2_SLOTS.release()
 
     def _hash(self, password: str) -> str:
+        """argon2-хеш пароля в пределах слота `_argon2`."""
         with self._argon2():
             return self._passwords.hash(password)
 
     # ---- пользователи (только из CLI) ----
     def create_user(self, username: str, password: str) -> dict:
+        """Создаёт активного пользователя и возвращает `{"id", "username"}`.
+
+        Имя обрезается от пробелов. 400 — пустое имя или короткий пароль, 409 — имя занято,
+        429 — заняты слоты argon2."""
         username = username.strip()
         if not username:
             raise ServiceError(400, "Username is required")
@@ -140,6 +176,8 @@ class ServiceStore:
         return user
 
     def _user_id(self, conn: PgConnection, username: str) -> str:
+        """id пользователя по имени с блокировкой строки (`FOR UPDATE`) до конца транзакции
+        `conn`; 404, если такого нет."""
         row = conn.execute(
             "SELECT id FROM users WHERE username=? FOR UPDATE", (username.strip(),)
         ).fetchone()
@@ -148,7 +186,9 @@ class ServiceStore:
         return row["id"]
 
     def set_password(self, username: str, password: str) -> None:
-        """Новый пароль; все сессии пользователя отзываются."""
+        """Меняет пароль и отзывает все сессии пользователя (одна транзакция).
+
+        400 — короткий пароль, 404 — нет пользователя, 429 — заняты слоты argon2."""
         _check_password(password)
         password_hash = self._hash(password)
         with self._connection(write=True) as conn:
@@ -157,6 +197,8 @@ class ServiceStore:
             conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
     def set_active(self, username: str, active: bool) -> None:
+        """Включает или отключает пользователя; при отключении все его сессии отзываются.
+        404 — нет пользователя."""
         with self._connection(write=True) as conn:
             user_id = self._user_id(conn, username)
             conn.execute("UPDATE users SET active=? WHERE id=?", (int(active), user_id))
@@ -164,6 +206,7 @@ class ServiceStore:
                 conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
     def users(self) -> list[dict]:
+        """Все пользователи (`id`, `username`, `active`) по алфавиту, без хешей паролей."""
         with self._connection() as conn:
             rows = conn.execute(
                 "SELECT id, username, active FROM users ORDER BY username"
@@ -172,6 +215,16 @@ class ServiceStore:
 
     # ---- сессии ----
     def login(self, username: str, password: str, ttl_hours: int = 24) -> str:
+        """Проверяет пароль и создаёт сессию на `ttl_hours` часов; возвращает токен.
+
+        Токен возвращается только здесь, в базе остаётся его хеш. Для неизвестного или
+        отключённого имени тоже считается argon2-хеш, чтобы по времени ответа нельзя было
+        узнать, существует ли пользователь. Неудача пишет в лог `login_failed` с
+        укороченным хешем имени (для fail2ban). Попутно удаляются истёкшие сессии всех
+        пользователей.
+
+        400 — неверный `ttl_hours`, 401 — неверное имя/пароль или пользователя отключили
+        между проверкой пароля и созданием сессии, 429 — заняты слоты argon2."""
         if not isinstance(ttl_hours, (int, float)) or not 0 < ttl_hours <= 24 * 365:
             raise ServiceError(400, "Invalid session lifetime")
         with self._connection() as conn:
@@ -181,7 +234,7 @@ class ServiceStore:
         try:
             with self._argon2():
                 if user is None:
-                    # Match the verification cost for unknown users without creating a session.
+                    # Неизвестному имени — та же цена, что и проверке пароля, без сессии.
                     self._passwords.hash(password)
                     raise VerificationError
                 self._passwords.verify(user["password_hash"], password)
@@ -194,7 +247,7 @@ class ServiceStore:
             raise ServiceError(401, "Invalid username or password") from None
         token = secrets.token_urlsafe(32)
         with self._connection(write=True) as conn:
-            # A disable between verification and this write must also reject the login.
+            # Пользователя могли отключить, пока проверялся пароль: тогда тоже отказ.
             if not conn.execute(
                 "SELECT id FROM users WHERE id=? AND active=1 FOR UPDATE",
                 (user["id"],),
@@ -208,6 +261,8 @@ class ServiceStore:
         return token
 
     def authenticate(self, token: str) -> dict:
+        """Пользователь (`id`, `username`) по bearer-токену; 401, если сессии нет, она
+        истекла или пользователь отключён."""
         with self._connection() as conn:
             user = conn.execute(
                 "SELECT u.id, u.username FROM users u JOIN sessions s ON s.user_id=u.id "
@@ -219,11 +274,14 @@ class ServiceStore:
             return dict(user)
 
     def logout(self, token: str) -> None:
+        """Отзывает сессию этого токена (остальные сессии пользователя остаются)."""
         with self._connection(write=True) as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash=?", (_token_hash(token),))
 
     # ---- диалоги ----
     def _conversation(self, conn: PgConnection, user_id: str, conversation_id: str) -> Row:
+        """Диалог пользователя; 404, если его нет или он чужой (ответы не различаются, чтобы
+        не раскрывать чужие id)."""
         chat = conn.execute(
             "SELECT * FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)
         ).fetchone()
@@ -232,6 +290,7 @@ class ServiceStore:
         return chat
 
     def create_conversation(self, user_id: str, title: str = "") -> dict:
+        """Создаёт пустой диалог и возвращает его запись."""
         chat = {
             "id": uuid.uuid4().hex,
             "user_id": user_id,
@@ -247,6 +306,7 @@ class ServiceStore:
         return chat
 
     def conversations(self, user_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Страница диалогов пользователя, новые первыми; 422 при неверной пагинации."""
         check_pagination(limit, offset)
         with self._connection() as conn:
             return [
@@ -259,11 +319,13 @@ class ServiceStore:
             ]
 
     def conversation(self, user_id: str, conversation_id: str) -> dict:
+        """Запись диалога пользователя; 404, если его нет или он чужой."""
         with self._connection() as conn:
             return _record(self._conversation(conn, user_id, conversation_id))
 
     @staticmethod
     def _message(row: Row) -> dict:
+        """Сообщение как словарь, `sources` разобран из JSON."""
         message = _record(row)
         message["sources"] = json.loads(message["sources"])
         return message
@@ -271,6 +333,8 @@ class ServiceStore:
     def messages(
         self, user_id: str, conversation_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict]:
+        """Страница сообщений диалога в хронологическом порядке; 404 — нет диалога,
+        422 — неверная пагинация."""
         check_pagination(limit, offset)
         with self._connection() as conn:
             self._conversation(conn, user_id, conversation_id)
@@ -284,7 +348,8 @@ class ServiceStore:
             ]
 
     def recent_messages(self, user_id: str, conversation_id: str, limit: int = 12) -> list[dict]:
-        """Последние сообщения в хронологическом порядке, без загрузки всего чата."""
+        """Последние `limit` сообщений диалога в хронологическом порядке, без загрузки
+        всего чата (история для переформулировки вопроса). 404 — нет диалога."""
         check_pagination(limit, 0)
         with self._connection() as conn:
             self._conversation(conn, user_id, conversation_id)
@@ -307,6 +372,13 @@ class ServiceStore:
         status: str = "done",
         query: str | None = None,
     ) -> dict:
+        """Добавляет сообщение в диалог и возвращает его запись (с разобранным `sources`).
+
+        `role` — `user` / `assistant` / `system`; `sources` — список источников ответа (должен
+        сериализоваться в JSON); `status` — `done` или `error` (неудачный ответ, в историю для
+        переформулировки не попадает); `query` — запрос, которым реально искали (вопрос,
+        переписанный с учётом истории). Существование и владелец диалога проверяются в той
+        же транзакции. 400 — неверные `role` или `sources`, 404 — нет диалога."""
         if role not in {"user", "assistant", "system"}:
             raise ServiceError(400, "Invalid message role")
         if sources is not None and not isinstance(sources, list):

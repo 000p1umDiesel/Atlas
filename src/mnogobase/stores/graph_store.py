@@ -1,3 +1,60 @@
+"""Графовое хранилище mnogobase в Neo4j: весь Cypher проекта живёт здесь.
+
+Модель графа:
+
+- `(:Document {doc_id, path, title, mime, n_pages, ingested_at})` — исходный файл;
+  `doc_id = sha256(байты файла)[:16]`, то есть узел описывает содержимое, а `path` — текущий
+  путь к одной из его копий (меняется `set_document_path`).
+- `(:Chunk {chunk_id, doc_id, idx, text, headings, page_start, page_end, n_tokens, modality})`
+  — чанк документа; `chunk_id = "<doc_id>:<idx:05d>"`. `context_text` и путь в графе не
+  хранятся (путь берётся из Document).
+- `(:Entity {entity_id, name, type, aliases, aliases_text, description, descriptions,
+  mention_count})` — сущность; `entity_id` от типа и нормализованного имени. После
+  `graph analyze` у неё появляются `analytics_run_id`, `analytics_pagerank`,
+  `analytics_community`.
+- `(:WikiPage {page_id, slug, title, path, content_hash, version, stale, updated_at})` —
+  сгенерированная wiki-страница; `page_id == entity_id` сущности, которой она посвящена.
+- `(:AnalysisState {key: 'graph', revision, run_id, metadata, completed_at, publications})` —
+  единственный узел состояния офлайн-аналитики GDS.
+
+Связи:
+
+- `(Document)-[:HAS_CHUNK]->(Chunk)` и `(Chunk)-[:NEXT]->(Chunk)` — порядок чанков.
+- `(Chunk)-[:MENTIONS]->(Entity)` — чанк упоминает сущность; `Entity.mention_count` — число
+  таких чанков, пересчитывается при каждом изменении.
+- `(Entity)-[:RELATED {predicate, description, evidence, strengths, weight}]->(Entity)` —
+  извлечённая связь; одна на тройку (источник, предикат, цель). `evidence` — список
+  `chunk_id`, которые её подтверждают, `strengths` — параллельный список сил (1..10) от тех
+  же чанков, `weight` — их сумма (вес для обхода и GDS). Связь без подтверждений удаляется.
+- `(WikiPage)-[:ABOUT]->(Entity)`, `(WikiPage)-[:LINKS_TO]->(WikiPage)` (ссылки `[[...]]`),
+  `(WikiPage)-[:CITES]->(Chunk)` (сноски Sources).
+
+Схема (`_SCHEMA`) — уникальность `doc_id`, `chunk_id`, `entity_id`, `page_id` и
+`AnalysisState.key`, индексы `WikiPage.slug`, `Chunk.doc_id`, составной индекс сообществ
+сущностей и полнотекстовый индекс `entity_names` по имени и алиасам. Все команды
+`IF NOT EXISTS`; `ensure_schema` применяет их при каждом старте.
+
+Правила транзакций:
+
+- Все записи — идемпотентные `MERGE` по детерминированным id, повтор стадии безопасен.
+- Любое изменение исходных данных (документы, чанки, сущности, связи) в той же транзакции
+  меняет `AnalysisState.revision` и сбрасывает `run_id` (`_INVALIDATE_ANALYSIS`), так что
+  устаревшие оценки PageRank/Leiden не используются. Этот `MERGE` стоит первым и берёт
+  блокировку записи на узел состояния: публикация анализа (`publish_analysis`) берёт её же и
+  поэтому сериализуется с записями.
+- Многошаговые изменения (`add_chunk_facts`, `upsert_wiki_page`, удаление документа,
+  публикация анализа) — одна write-транзакция: сбой посередине не оставит граф в
+  промежуточном состоянии.
+- Чтения (поиск, обход, контекст сущности) блокировок не берут.
+
+Удаление документа (`_delete_document_tx`, одна транзакция): из `evidence`/`strengths` связей,
+которые подтверждал документ, убираются его чанки (описание такой связи очищается, так как
+его происхождение больше не известно; связь без подтверждений удаляется), затем удаляются чанки и Document, после чего
+у затронутых сущностей пересчитывается `mention_count`, и сущности без упоминаний удаляются
+вместе со своими wiki-страницами. `document_deletion_plan` заранее, только чтением, считает
+то же самое. Новые данные, привязанные к документу, нужно учитывать в обеих функциях.
+"""
+
 from __future__ import annotations
 
 import json
@@ -36,6 +93,7 @@ DRIVER_OPTIONS: dict[str, object] = {
     "notifications_disabled_classifications": [NotificationDisabledClassification.UNRECOGNIZED],
 }
 
+# Ограничения и индексы графа; применяются на каждом старте (`ensure_schema`).
 _SCHEMA = [
     "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.doc_id IS UNIQUE",
     "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE",
@@ -48,16 +106,21 @@ _SCHEMA = [
     "CREATE INDEX entity_community IF NOT EXISTS FOR (e:Entity) "
     "ON (e.analytics_run_id, e.analytics_community)",
 ]
+# Слово для полнотекстового запроса: буквы/цифры любого алфавита, без операторов Lucene.
 _WORD = re.compile(r"\w+", re.UNICODE)
 # Каждое слово запроса — клауза по двум полям индекса `entity_names`; без предела вопрос
 # в несколько сотен слов превысил бы лимит клауз Lucene (1024) и уронил бы поиск по графу.
 FULLTEXT_MAX_TOKENS = 64
+# Проекция узла WikiPage в `WikiPageRecord`; отсутствующий `stale` считается false.
 _PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version, stale: coalesce(p.stale, false)} AS page"
+# Проекция связи RELATED в `RelationView` (концы, предикат, описание, вес, подтверждения).
 _REL_MAP = (
     "{src_id: startNode(r).entity_id, src_name: startNode(r).name, predicate: r.predicate, "
     "dst_id: endNode(r).entity_id, dst_name: endNode(r).name, description: r.description, "
     "weight: r.weight, evidence: r.evidence}"
 )
+# Помечает аналитику устаревшей: новая ревизия графа, опубликованного запуска больше нет.
+# Выполняется первым в каждой транзакции, которая меняет исходные данные графа.
 _INVALIDATE_ANALYSIS = (
     "MERGE (s:AnalysisState {key: 'graph'}) SET s.revision = randomUUID(), s.run_id = null"
 )
@@ -69,6 +132,13 @@ PROJECTION_PREFIX = "mb_analysis_"
 
 @dataclass
 class DeleteResult:
+    """Итог (или план) удаления документа из графа.
+
+    `affected` — id всех затронутых сущностей (упомянутых документом и переданных
+    `extra_entity_ids`); `removed_entity_ids` / `removed_names` — те, что удаляются целиком,
+    потому что вне документа их больше никто не упоминает; `removed_pages` — пары
+    `(page_id, path)` wiki-страниц этих сущностей, файлы которых нужно удалить."""
+
     affected: list[str]
     removed_entity_ids: list[str]
     removed_names: list[str]
@@ -76,29 +146,46 @@ class DeleteResult:
 
 
 class GraphStore:
+    """Доступ к графу mnogobase в Neo4j через один `neo4j.Driver`.
+
+    Методы синхронные; каждый открывает свою сессию или транзакцию. Драйвер создаётся
+    снаружи (`from_settings` или тестовый контейнер), `close` его закрывает."""
+
     def __init__(self, driver: Driver):
         self._driver = driver
 
     @classmethod
     def from_settings(cls, settings: Neo4jSettings) -> GraphStore:
+        """Хранилище с драйвером из секции `neo4j` (URI, пользователь, пароль из `.env`).
+
+        Соединение открывается лениво, при первом запросе; проверить его — `verify`."""
         driver = GraphDatabase.driver(
             settings.uri, auth=(settings.user, settings.password()), **DRIVER_OPTIONS
         )
         return cls(driver)
 
     def close(self) -> None:
+        """Закрывает драйвер и его пул соединений."""
         self._driver.close()
 
     def verify(self) -> None:
+        """Проверяет доступность Neo4j (для `doctor` и preflight); бросает ошибку драйвера."""
         self._driver.verify_connectivity()
 
     def _run(self, query: str, *, _timeout: float | None = None, **params) -> list[dict]:
+        """Выполняет запрос в собственной автоматической транзакции и возвращает строки как
+        словари. `_timeout` (секунды) — серверный таймаут транзакции; при превышении Neo4j
+        бросает ошибку с кодом `...TransactionTimedOut`. Аналитику сам не сбрасывает:
+        исходные данные графа пишутся через `_write`."""
         statement = Query(query, timeout=_timeout) if _timeout is not None else query
         records, _, _ = self._driver.execute_query(statement, parameters_=params)
         return [r.data() for r in records]
 
     def _write(self, query: str, **params) -> None:
-        """Invalidate derived scores atomically with a source mutation; lock state first."""
+        """Выполняет запрос записи исходных данных в одной транзакции с
+        `_INVALIDATE_ANALYSIS`: оценки GDS устаревают атомарно с изменением графа. Узел
+        состояния блокируется первым, чтобы порядок блокировок совпадал с
+        `publish_analysis`."""
 
         def write(tx):
             tx.run(_INVALIDATE_ANALYSIS, **params).consume()
@@ -109,6 +196,9 @@ class GraphStore:
 
     # ---- схема / обслуживание ----
     def ensure_schema(self) -> None:
+        """Применяет `_SCHEMA`, создаёт узел `AnalysisState` (если его нет) и ждёт до 60 с,
+        пока индексы станут ONLINE: полнотекстовый поиск по свежему индексу иначе ничего не
+        нашёл бы."""
         for statement in _SCHEMA:
             self._run(statement)
         self._run("MERGE (s:AnalysisState {key: 'graph'}) ON CREATE SET s.revision = randomUUID()")
@@ -116,7 +206,11 @@ class GraphStore:
 
     def wipe(self) -> None:
         """Удаляет узлы mnogobase пачками по своим транзакциям: одна транзакция на весь
-        большой граф не помещается в heap Neo4j."""
+        большой граф не помещается в heap Neo4j.
+
+        Удаляются только метки mnogobase (Document, Chunk, Entity, WikiPage,
+        AnalysisState) со всеми связями; схема остаётся. Для `reset`. Неатомарно: прерванный
+        wipe оставит часть узлов, повтор их доудалит."""
         with self._driver.session() as session:
             session.run(
                 "MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage "
@@ -125,6 +219,7 @@ class GraphStore:
             ).consume()
 
     def counts(self) -> dict[str, int]:
+        """Число узлов каждой метки и связей RELATED (для `status`)."""
         out = {
             label: self._run(f"MATCH (n:{label}) RETURN count(n) AS n")[0]["n"]
             for label in ("Document", "Chunk", "Entity", "WikiPage")
@@ -136,6 +231,7 @@ class GraphStore:
 
     # ---- документы / чанки ----
     def upsert_document(self, doc: DocumentRecord) -> None:
+        """Создаёт или обновляет узел Document; `ingested_at` — время этой записи."""
         self._write(
             "MERGE (d:Document {doc_id: $doc_id}) "
             "SET d.path = $path, d.title = $title, d.mime = $mime, d.n_pages = $n_pages, "
@@ -144,7 +240,14 @@ class GraphStore:
         )
 
     def upsert_chunks(self, chunks: list[ChunkRecord]) -> None:
+        """Записывает чанки документа и связи HAS_CHUNK и NEXT.
+
+        Document должен уже существовать: строки без него молча пропускаются (`MATCH`).
+        `chunks` — все чанки одного документа по порядку, NEXT связывает соседние. Две
+        отдельные транзакции: чанки, затем NEXT (повтор достраивает недостающее)."""
         rows = [c.model_dump(exclude={"context_text", "path"}) for c in chunks]
+        # для каждой строки: найти документ, MERGE чанк по chunk_id, переписать его свойства
+        # (`+=` с проекцией — только перечисленные поля), MERGE ребро HAS_CHUNK
         self._write(
             "UNWIND $rows AS row "
             "MATCH (d:Document {doc_id: row.doc_id}) "
@@ -168,10 +271,14 @@ class GraphStore:
         return rows[0]["path"] if rows else None
 
     def set_document_path(self, doc_id: str, path: str) -> None:
+        """Переносит Document на другой путь (переименование или удаление одной из копий)."""
         self._write("MATCH (d:Document {doc_id: $id}) SET d.path = $path", id=doc_id, path=path)
 
     def pages_citing_document(self, doc_id: str) -> list[str]:
-        """Wiki-страницы (page_id == entity_id), чьи Sources цитируют чанк этого документа."""
+        """Wiki-страницы (page_id == entity_id), чьи Sources цитируют чанк этого документа.
+
+        Находит и страницы, цитирующие чанки, у которых MENTIONS не записаны (упавшая стадия
+        graph), поэтому удаление документа пересобирает и их."""
         rows = self._run(
             "MATCH (p:WikiPage)-[:CITES]->(:Chunk {doc_id: $id}) RETURN DISTINCT p.page_id AS pid",
             id=doc_id,
@@ -179,6 +286,7 @@ class GraphStore:
         return sorted(r["pid"] for r in rows)
 
     def has_document(self, doc_id: str) -> bool:
+        """Есть ли в графе узел Document с этим id."""
         return bool(self._run("MATCH (d:Document {doc_id: $id}) RETURN 1 AS x LIMIT 1", id=doc_id))
 
     def document_deletion_plan(
@@ -188,6 +296,10 @@ class GraphStore:
         если документ неизвестен). Затронуты сущности, которые упоминают чанки документа, и
         `extra_entity_ids` (записанные стадией graph документа, даже без MENTIONS). Сущность
         удаляется, если её не упоминает ни один чанк вне этого документа."""
+        # 1) подзапрос собирает затронутые сущности: упомянутые чанками документа и `$extra`;
+        # 2) для каждой — её wiki-страницы (ABOUT) как пары [page_id, path];
+        # 3) `others` — сколько чанков ВНЕ документа её упоминают; 0 означает, что сущность
+        #    удаляется вместе со страницами
         rows = self._run(
             "CALL () { "
             "  MATCH (:Document {doc_id: $doc_id})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(e:Entity) "
@@ -214,6 +326,13 @@ class GraphStore:
         )
 
     def delete_document(self, doc_id: str, extra_entity_ids: Sequence[str] = ()) -> DeleteResult:
+        """Удаляет документ из графа и всё, что держалось только на нём (см. описание модуля
+        и `_delete_document_tx`).
+
+        `extra_entity_ids` — сущности, которые стадия graph записала для документа (реестр
+        `doc_entities`), даже если MENTIONS к ним не успели появиться. Идемпотентно: для уже
+        удалённого документа только пересчитывает `extra_entity_ids`. Возвращает
+        `DeleteResult` с фактически удалёнными сущностями и страницами."""
         # одна write-транзакция: падение посреди каскада не должно оставить Document удалённым,
         # а его сущности — с устаревшими счётчиками упоминаний / осиротевшими wiki-страницами
         # (повтор ничего бы не сделал)
@@ -221,6 +340,8 @@ class GraphStore:
             return session.execute_write(_delete_document_tx, doc_id, list(extra_entity_ids))
 
     def chunks_by_ids(self, chunk_ids: list[str]) -> list[ChunkView]:
+        """Чанки по id вместе с путём их документа (для цитат); несуществующие пропускаются.
+        Порядок результата не гарантирован."""
         rows = self._run(
             "UNWIND $ids AS cid "
             "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk {chunk_id: cid}) "
@@ -231,7 +352,11 @@ class GraphStore:
         return [ChunkView(**r) for r in rows]
 
     def chunks_mentioning(self, entity_id: str, chunk_ids: list[str]) -> list[ChunkView]:
-        """Те из `chunk_ids`, что ещё существуют и всё ещё упоминают сущность, в порядке входа."""
+        """Те из `chunk_ids`, что ещё существуют и всё ещё упоминают сущность, в порядке входа.
+
+        Нужен wiki builder: прежние доказательства страницы перепроверяются, и чанки
+        удалённых документов или потерявшие упоминание выпадают."""
+        # перебираем индексы списка, чтобы сохранить входной порядок через ORDER BY i
         rows = self._run(
             "UNWIND range(0, size($ids) - 1) AS i "
             "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk {chunk_id: $ids[i]})"
@@ -271,6 +396,8 @@ class GraphStore:
         return doc, chunks
 
     def chunk_entity_ids(self, doc_id: str) -> dict[str, list[str]]:
+        """`{chunk_id: [entity_id, ...]}` для всех чанков документа (у чанка без упоминаний —
+        пустой список). Используется, чтобы восстановить `entity_ids` в Qdrant при `reindex`."""
         rows = self._run(
             "MATCH (c:Chunk {doc_id: $doc_id}) "
             "OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity) "
@@ -281,10 +408,12 @@ class GraphStore:
 
     # ---- сущности / связи ----
     def get_entity(self, entity_id: str) -> EntityRecord | None:
+        """Сущность по id или None."""
         rows = self._run("MATCH (e:Entity {entity_id: $id}) RETURN e {.*} AS e", id=entity_id)
         return EntityRecord(**rows[0]["e"]) if rows else None
 
     def get_entities(self, entity_ids: list[str]) -> list[EntityRecord]:
+        """Существующие сущности из `entity_ids` (отсутствующие пропускаются)."""
         rows = self._run(
             "UNWIND $ids AS id MATCH (e:Entity {entity_id: id}) RETURN e {.*} AS e",
             ids=entity_ids,
@@ -292,9 +421,15 @@ class GraphStore:
         return [EntityRecord(**r["e"]) for r in rows]
 
     def upsert_entity(self, entity: EntityRecord) -> None:
+        """То же, что `upsert_entities([entity])`."""
         self.upsert_entities([entity])
 
     def upsert_entities(self, entities: list[EntityRecord]) -> None:
+        """Создаёт или обновляет узлы Entity.
+
+        Перезаписываются имя, тип, алиасы, описания; `mention_count` сохраняется (новой
+        сущности ставится 0). `aliases_text` — алиасы одной строкой через ` | ` для
+        полнотекстового индекса `entity_names` (он индексирует строки, а не списки)."""
         if not entities:
             return
         self._write(
@@ -317,6 +452,7 @@ class GraphStore:
         )
 
     def entities(self, min_mentions: int = 0) -> list[EntityRecord]:
+        """Все сущности с `mention_count >= min_mentions`, по имени."""
         rows = self._run(
             "MATCH (e:Entity) WHERE e.mention_count >= $m RETURN e {.*} AS e ORDER BY e.name",
             m=min_mentions,
@@ -327,7 +463,11 @@ class GraphStore:
         """Упоминания и связи одного чанка одной транзакцией (UNWIND вместо транзакции на
         каждое упоминание). `relations`: dict с src, dst, predicate, description, strength.
         Связь, уже подтверждённая этим чанком, не меняется, поэтому повтор идемпотентен;
-        повтор одной связи внутри чанка учитывается один раз (первый)."""
+        повтор одной связи внутри чанка учитывается один раз (первый).
+
+        Чанк и сущности должны уже существовать (иначе строки молча пропускаются `MATCH`).
+        Вызывается после `QdrantStore.set_chunk_entities` (порядок записи: Qdrant, затем
+        Neo4j)."""
         unique: dict[tuple[str, str, str], dict] = {}
         for rel in relations:
             unique.setdefault((rel["src"], rel["dst"], rel["predicate"]), rel)
@@ -337,6 +477,8 @@ class GraphStore:
         def write(tx):
             tx.run(_INVALIDATE_ANALYSIS).consume()
             if entity_ids:
+                # MERGE ребро MENTIONS к каждой сущности и пересчитать её mention_count по
+                # фактическому числу упоминающих чанков (а не +1: повтор не задвоит счёт)
                 tx.run(
                     "MATCH (c:Chunk {chunk_id: $chunk_id}) "
                     "UNWIND $eids AS eid "
@@ -348,6 +490,10 @@ class GraphStore:
                     eids=entity_ids,
                 ).consume()
             if unique:
+                # для каждой связи: MERGE ребро RELATED по (src, predicate, dst); у новой —
+                # пустые списки и вес 0. Если этот чанк уже есть в evidence, строка
+                # отсеивается (идемпотентность). Иначе chunk_id и сила дописываются в
+                # evidence/strengths, вес растёт на силу, а описание заменяется более длинным.
                 tx.run(
                     "UNWIND $rels AS rel "
                     "MATCH (a:Entity {entity_id: rel.src}), (b:Entity {entity_id: rel.dst}) "
@@ -367,6 +513,8 @@ class GraphStore:
             session.execute_write(write)
 
     def entity_context(self, entity_id: str, max_relations: int) -> EntityContext:
+        """Сущность и до `max_relations` её связей RELATED (в обе стороны), самые тяжёлые
+        первыми; для генерации wiki-страницы. Исключения: `KeyError`, если сущности нет."""
         rows = self._run(
             "MATCH (e:Entity {entity_id: $id}) "
             "OPTIONAL MATCH (e)-[r:RELATED]-(:Entity) "
@@ -384,6 +532,9 @@ class GraphStore:
         )
 
     def fulltext_entities(self, query: str, k: int) -> list[tuple[str, float]]:
+        """До `k` сущностей, чьё имя или алиасы совпадают со словами запроса, по индексу
+        `entity_names` (Lucene, слова объединяются через OR). Возвращает пары
+        `(entity_id, score)` в порядке убывания score. Начальные узлы режима `graph`."""
         # простые словесные токены в нижнем регистре: операторы Lucene и спецсимволы не проходят
         tokens = list(dict.fromkeys(t.casefold() for t in _WORD.findall(query)))
         tokens = tokens[:FULLTEXT_MAX_TOKENS]
@@ -398,7 +549,16 @@ class GraphStore:
         return [(r["id"], r["score"]) for r in rows]
 
     def neighborhood(self, seed_ids: list[str], hops: int, limit: int) -> list[RelationView]:
+        """Связи RELATED в пределах `hops` (1..3) шагов от начальных сущностей, на чистом
+        Cypher (без APOC).
+
+        Сортировка: по весу, затем по суммарной степени концов (хорошо связанные узлы
+        полезнее как контекст). Число путей ограничено 5000, чтобы узел-хаб не взорвал
+        перебор."""
         hops = max(1, min(int(hops), 3))  # границы переменной длины не могут быть параметрами
+        # 1) все пути длиной 1..hops по RELATED от начальных узлов (только через Entity),
+        #    не больше 5000; 2) связи этих путей без повторов; 3) степень каждого конца —
+        #    число его соседей с метками mnogobase; 4) сортировка и обрезка до $limit
         rows = self._run(
             "MATCH (s:Entity) WHERE s.entity_id IN $seeds "
             f"MATCH p = (s)-[:RELATED*1..{hops}]-(:Entity) "
@@ -428,6 +588,13 @@ class GraphStore:
         max_nodes: int = 20_000,
         timeout: float = 5.0,
     ) -> list[RelationView]:
+        """То же, что `neighborhood`, но обход — ограниченный BFS APOC (`graph.traversal`).
+
+        Откаты на `neighborhood`: сущностей больше `max_nodes` (список разрешённых узлов
+        передаётся целиком и был бы слишком большим) или APOC не установлен; при таймауте
+        `timeout` секунд — `neighborhood` в один шаг. Остальные ошибки Neo4j
+        пробрасываются. В отличие от `neighborhood`, возвращает все связи между
+        достигнутыми узлами, а не только рёбра найденных путей."""
         if not seed_ids or limit <= 0:
             return []
         count = self._run("MATCH (e:Entity) RETURN count(e) AS n")[0]["n"]
@@ -435,6 +602,11 @@ class GraphStore:
             get_logger(__name__).info("apoc_fallback", reason="node_budget", nodes=count)
             return self.neighborhood(seed_ids, hops, limit)
         try:
+            # 1) allowed — все узлы Entity (обход не выйдет на Chunk/WikiPage);
+            # 2) от каждого начального узла BFS по RELATED до $hops шагов, каждый узел
+            #    посещается один раз (NODE_GLOBAL), не больше 5000 путей;
+            # 3) reached — концы найденных путей (с minLevel 0 — и сами начальные узлы);
+            # 4) все связи RELATED между достигнутыми узлами, по весу и затем стабильно по id
             rows = self._run(
                 "MATCH (n:Entity) WITH collect(n) AS allowed "
                 "UNWIND $seeds AS sid MATCH (s:Entity {entity_id: sid}) "
@@ -471,6 +643,8 @@ class GraphStore:
     # ---- производная аналитика (не меняет IDs и evidence) ----
 
     def analysis_status(self) -> dict:
+        """Состояние аналитики: `revision`, `run_id` (None — нет актуального запуска),
+        `ready`, `completed_at` и `metadata` (отчёт `graph analyze`, из JSON)."""
         rows = self._run(
             "MATCH (s:AnalysisState {key: 'graph'}) "
             "RETURN s.revision AS revision, s.run_id AS run_id, s.metadata AS metadata, "
@@ -481,6 +655,10 @@ class GraphStore:
         return {**state, "ready": bool(state["run_id"]), "metadata": metadata}
 
     def analysis_scores(self, entity_ids: list[str]) -> dict[str, float]:
+        """PageRank сущностей из актуального запуска аналитики (`graph.use_gds`).
+
+        Сущности без оценки этого запуска (или все, если запуск устарел) отсутствуют в
+        словаре: устаревшие значения в узлах игнорируются по `analytics_run_id`."""
         rows = self._run(
             "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
             "MATCH (e:Entity) WHERE e.entity_id IN $ids AND e.analytics_run_id = s.run_id "
@@ -490,6 +668,8 @@ class GraphStore:
         return {r["id"]: r["score"] for r in rows}
 
     def analysis_details(self, limit: int = 20) -> list[dict]:
+        """Топ сущностей актуального запуска по PageRank с их сообществом (`graph status`);
+        `limit` зажимается в 1..100."""
         return self._run(
             "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
             "MATCH (e:Entity) WHERE e.analytics_run_id = s.run_id "
@@ -509,10 +689,25 @@ class GraphStore:
         exclude_chunk_ids: Sequence[str] = (),
         timeout: float = 5.0,
     ) -> list[ChunkView]:
-        """Original evidence from current seed communities, bounded before MENTIONS expansion."""
+        """Исходные чанки из сообществ Leiden, к которым относятся начальные сущности
+        (`graph.community`).
+
+        Объём ограничен до раскрытия MENTIONS: берутся не больше `max_communities` (≤ 20)
+        сообществ в порядке первых начальных узлов и в каждом не больше `max_entities` (≤ 500)
+        сущностей с наибольшим PageRank. Чанки из `exclude_chunk_ids` (уже найденные)
+        пропускаются; результат — до `limit` (≤ 100) чанков. Работает только при актуальном
+        запуске аналитики. При таймауте `timeout` возвращает пустой список (ответ не должен
+        падать из-за дополнительного контекста), прочие ошибки пробрасываются."""
         if not seed_ids or limit <= 0 or max_communities <= 0 or max_entities <= 0:
             return []
         try:
+            # 1) только при актуальном запуске (run_id не null);
+            # 2) сообщества начальных узлов этого запуска, priority — позиция первого узла
+            #    сообщества в $seeds; берём первые $groups сообществ;
+            # 3) в каждом — $members сущностей с наибольшим PageRank;
+            # 4) чанки, упоминающие этих сущностей (кроме $excluded), по каждому чанку —
+            #    лучший приоритет, сколько сущностей упоминает и наибольший PageRank;
+            # 5) сортировка: приоритет сообщества, затем чанки с большим числом упоминаний
             rows = self._run(
                 "MATCH (s:AnalysisState {key:'graph'}) WHERE s.run_id IS NOT NULL "
                 "UNWIND range(0, size($seeds)-1) AS priority "
@@ -548,6 +743,8 @@ class GraphStore:
         return [ChunkView(**row) for row in rows]
 
     def plugin_status(self) -> dict:
+        """Версии APOC и GDS (None, если плагина нет) и список недостающих процедур и
+        функций, которые использует mnogobase (для `doctor` и `graph analyze`)."""
         procedures = {
             "apoc.path.expandConfig",
             "gds.graph.project",
@@ -584,6 +781,9 @@ class GraphStore:
         }
 
     def analysis_counts(self) -> dict:
+        """Размер графа для GDS: `nodes`, `relationships` и `invalid_weights` — связи с весом
+        не в (0, max float], на которых взвешенные алгоритмы GDS дали бы неверный результат.
+        Сравнение с максимальным double отсеивает и NaN, и бесконечность."""
         nodes = self._run("MATCH (e:Entity) RETURN count(e) AS n")[0]["n"]
         relationships = self._run(
             "MATCH (:Entity)-[r:RELATED]->(:Entity) "
@@ -593,6 +793,7 @@ class GraphStore:
         return {"nodes": nodes, **relationships}
 
     def gds_project_estimate(self, timeout: float) -> int:
+        """Оценка памяти (байты, верхняя граница) для проекции Entity + RELATED в GDS."""
         return int(
             self._run(
                 "CALL gds.graph.project.estimate('Entity', "
@@ -604,6 +805,8 @@ class GraphStore:
         )
 
     def gds_project(self, name: str, timeout: float) -> None:
+        """Создаёт в GDS проекцию `name`: узлы Entity, связи RELATED как неориентированные с
+        весом `weight`. Проекция живёт в памяти Neo4j до `drop_projection`."""
         self._run(
             "CALL gds.graph.project($name, 'Entity', "
             "{RELATED:{orientation:'UNDIRECTED', properties:'weight'}}, "
@@ -613,6 +816,10 @@ class GraphStore:
         )
 
     def gds_algorithm_estimate(self, name: str, algorithm: str, timeout: float) -> int:
+        """Оценка памяти (байты) для `pageRank` или `leiden` на проекции `name`.
+
+        Имя алгоритма подставляется в текст запроса, поэтому разрешены только два значения;
+        иначе `ValueError`."""
         if algorithm not in {"pageRank", "leiden"}:
             raise ValueError("Unsupported graph algorithm")
         return int(
@@ -626,6 +833,8 @@ class GraphStore:
         )
 
     def gds_pagerank(self, name: str, timeout: float) -> list[dict]:
+        """Взвешенный PageRank по проекции (20 итераций, затухание 0.85, один поток ради
+        воспроизводимости): строки `{entity_id, pagerank}`. Ничего не пишет в граф."""
         return self._run(
             "CALL gds.pageRank.stream($name, {relationshipWeightProperty:'weight', "
             "concurrency:1, maxIterations:20, dampingFactor:0.85}) "
@@ -636,6 +845,8 @@ class GraphStore:
         )
 
     def gds_leiden(self, name: str, timeout: float) -> list[dict]:
+        """Сообщества Leiden по проекции (фиксированный seed и один поток — повторяемый
+        результат): строки `{entity_id, community_id}`. Ничего не пишет в граф."""
         return self._run(
             "CALL gds.leiden.stream($name, {relationshipWeightProperty:'weight', "
             "concurrency:1, randomSeed:42}) YIELD nodeId, communityId "
@@ -645,6 +856,8 @@ class GraphStore:
         )
 
     def owned_projections(self) -> list[str]:
+        """Имена GDS-проекций mnogobase (с префиксом `PROJECTION_PREFIX`), например
+        оставшихся после прерванного `graph analyze`."""
         return [
             r["name"]
             for r in self._run(
@@ -655,11 +868,19 @@ class GraphStore:
         ]
 
     def drop_projection(self, name: str) -> None:
+        """Удаляет проекцию mnogobase из памяти GDS; отсутствующая проекция — не ошибка.
+
+        Исключения: `ValueError` для имени без `PROJECTION_PREFIX` (чужие проекции не
+        трогаем)."""
         if not name.startswith(PROJECTION_PREFIX):
             raise ValueError("Cannot drop a projection mnogobase did not create")
         self._run("CALL gds.graph.drop($name, false) YIELD graphName RETURN graphName", name=name)
 
     def clear_analysis(self) -> None:
+        """Удаляет результаты аналитики (`graph clear`): сбрасывает запуск в
+        `AnalysisState` и стирает свойства `analytics_*` у всех сущностей. Ревизия не
+        меняется. Два отдельных запроса: после первого оценки уже не используются, так что
+        прерывание между ними безопасно."""
         self._run(
             "MATCH (s:AnalysisState {key: 'graph'}) SET s.run_id = null, s.metadata = null, "
             "s.completed_at = null"
@@ -669,6 +890,16 @@ class GraphStore:
         )
 
     def publish_analysis(self, revision: str, rows: list[dict], metadata: dict) -> bool:
+        """Атомарно записывает результат `graph analyze`, если граф не менялся с его начала.
+
+        `revision` — ревизия `AnalysisState`, прочитанная до проекции; `rows` — по строке
+        `{entity_id, pagerank, community}` на каждую сущность; `metadata` — отчёт запуска.
+        Возвращает False, если ревизия уже другая (граф изменился во время анализа, нужен
+        повтор). Исключения: `ValueError`, если строки неполные, с повторами или с
+        нечисловыми/отрицательными оценками, либо не покрывают ровно все сущности графа.
+
+        Каждой сущности пишутся оценки с новым `run_id`, а затем `run_id` публикуется в
+        `AnalysisState`; до коммита читатели видят прежний запуск."""
         if len({r["entity_id"] for r in rows}) != len(rows) or any(
             not math.isfinite(r["pagerank"]) or r["pagerank"] < 0 or not r["community"]
             for r in rows
@@ -678,7 +909,8 @@ class GraphStore:
 
         def publish(tx):
             run = tx.run
-            # Taking a write lock before reading the revision serializes with source writes.
+            # Блокировка записи на узел состояния берётся до чтения ревизии: так публикация
+            # сериализуется с записями исходных данных (они блокируют тот же узел первым).
             state = run(
                 "MATCH (s:AnalysisState {key: 'graph'}) "
                 "SET s.publications = coalesce(s.publications, 0) + 1 RETURN s.revision AS revision"
@@ -713,7 +945,12 @@ class GraphStore:
         self, page: WikiPageRecord, entity_id: str, links_to: list[str], cites: list[str]
     ) -> None:
         """Узел страницы и её рёбра одной транзакцией: сбой посередине не оставит страницу
-        без CITES (иначе устаревшие цитаты пережили бы удаление документа)."""
+        без CITES (иначе устаревшие цитаты пережили бы удаление документа).
+
+        Шаги: MERGE узла со снятием флага `stale` и ребром ABOUT к сущности; удаление всех
+        прежних LINKS_TO и CITES; создание новых к существующим страницам `links_to` и
+        чанкам `cites` (отсутствующие цели молча пропускаются). Аналитику не сбрасывает:
+        wiki-страницы не входят в проекцию GDS."""
         params = page.model_dump(exclude={"stale"})
 
         def write(tx):
@@ -767,6 +1004,7 @@ class GraphStore:
         return [r["id"] for r in rows]
 
     def wiki_page(self, page_id: str) -> WikiPageRecord | None:
+        """Страница по id (в том числе устаревшая, с `stale=True`) или None."""
         rows = self._run(f"MATCH (p:WikiPage {{page_id: $id}}) RETURN {_PAGE_FIELDS}", id=page_id)
         return WikiPageRecord(**rows[0]["page"]) if rows else None
 
@@ -787,6 +1025,13 @@ class GraphStore:
 def _delete_document_tx(
     tx: ManagedTransaction, doc_id: str, extra_entity_ids: list[str]
 ) -> DeleteResult:
+    """Тело транзакции `GraphStore.delete_document`.
+
+    Шаги: сбросить аналитику; найти чанки документа и упомянутые ими сущности (плюс
+    `extra_entity_ids`); убрать чанки документа из подтверждений связей; удалить чанки и
+    Document; пересчитать `mention_count` затронутых сущностей и удалить те, что остались без
+    упоминаний, вместе с их wiki-страницами. Повтор после коммита ничего не находит и только
+    пересчитывает `extra_entity_ids`."""
     run = tx.run
 
     run(_INVALIDATE_ANALYSIS).consume()
@@ -802,9 +1047,13 @@ def _delete_document_tx(
     # больше ничто не упоминает): их оставила упавшая посреди чанка стадия graph
     eids = sorted(set(found[0]["eids"] if found else []) | set(extra_entity_ids))
     if cids:
-        # убираем подтверждения из удалённых чанков; рёбра, оставшиеся без подтверждений, исчезают
-        # связь подтверждает чанк, который упоминает оба её конца, поэтому искать её
-        # достаточно среди исходящих связей сущностей документа, а не по всему графу
+        # убираем подтверждения из удалённых чанков; рёбра, оставшиеся без подтверждений, исчезают.
+        # Связь подтверждает чанк, который упоминает оба её конца, поэтому искать её
+        # достаточно среди исходящих связей сущностей документа, а не по всему графу.
+        # По шагам: keep — индексы evidence, не принадлежащие документу; evidence и
+        # strengths фильтруются по ним синхронно; описание очищается (оно могло прийти из
+        # удалённого чанка, а откуда — не записано); вес пересчитывается как сумма
+        # оставшихся сил; связь с пустым evidence удаляется.
         run(
             "MATCH (a:Entity)-[r:RELATED]->(:Entity) "
             "WHERE a.entity_id IN $eids AND any(x IN r.evidence WHERE x IN $cids) "
@@ -816,6 +1065,7 @@ def _delete_document_tx(
             cids=cids,
             eids=eids,
         ).consume()
+    # чанки и сам документ со всеми их связями (HAS_CHUNK, NEXT, MENTIONS, CITES)
     run(
         "MATCH (d:Document {doc_id: $doc_id}) "
         "OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk) "
@@ -824,6 +1074,8 @@ def _delete_document_tx(
         "DETACH DELETE d",
         doc_id=doc_id,
     ).consume()
+    # для каждой затронутой сущности: пересчитать mention_count; если 0 — собрать её
+    # wiki-страницы (id и путь для удаления файлов), удалить страницы и саму сущность
     removed = run(
         "UNWIND $eids AS eid "
         "MATCH (e:Entity {entity_id: eid}) "

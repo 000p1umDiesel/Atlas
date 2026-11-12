@@ -1,4 +1,53 @@
-"""Atomic PostgreSQL queue with advisory path locks and concurrent claims."""
+"""Надёжная очередь фоновых задач в PostgreSQL (схема проекта).
+
+Место в потоке данных: всё, что меняет корпус в фоне, проходит через эту очередь. CLI
+(`jobs enqueue`), watcher (`worker run --watch`) и HTTP API (загрузка и удаление документов)
+только ставят задачи; выполняет их единственный писатель — `worker run`
+(`background/worker.py:process_one` под `ingest_lock`). Очередь переживает рестарт процесса
+и базы: состояние целиком в таблицах, в памяти ничего не держится.
+
+Таблицы:
+- `jobs` — одна строка на пару `(path, fingerprint)`: операция `kind` (`ingest` или
+  `remove`) над абсолютным путём источника в конкретной версии. `fingerprint` у `ingest` —
+  `doc_id` файла (`sha256(байты)[:16]`), у `remove` — `remove:<doc_id>`. Повторная постановка
+  той же пары не создаёт новую строку, а переиспользует старую. `payload_json` — данные
+  операции (для `remove` — `{"doc_id": ...}`), `progress` — короткий текст для статуса,
+  `available_at` — раньше этого момента задачу не берут (задержка повтора).
+- `desired` — для каждого пути последняя запрошенная версия (`fingerprint`). Задача
+  «актуальна» (`is_current`), только пока её версия совпадает с `desired`; так очередь знает,
+  что более старая задача того же пути уже никому не нужна.
+- `worker_heartbeat` — одна строка `worker` с моментом последней активности worker'а
+  (для `/api/status`).
+
+Статусы задачи и переходы:
+- `pending` → `running`: `claim` атомарно берёт самую старую готовую задачу
+  (`FOR UPDATE SKIP LOCKED`) и сразу увеличивает `attempts`, поэтому попыткой считается и
+  запуск, во время которого процесс упал.
+- `running` → `done`: `finish`. Если завершённая задача актуальна, остальные задачи того же
+  пути (`pending` / `running` / `failed`) становятся `superseded`: их работа уже не нужна.
+- `running` → `pending` или `failed`: `fail` — ошибка документа. Следующая попытка через
+  `delay * 2^(attempts-1)` секунд (не больше часа); после `max_attempts` попыток — `failed`.
+- `running` → `pending`: `release` — сбой инфраструктуры (база, сервер моделей), попытка
+  не засчитывается, задержка постоянная.
+- `running` → `superseded`: `supersede` — worker увидел, что файл успел измениться, и
+  поставил новую версию.
+- `done` / `failed` / `superseded` → `pending`: `enqueue` с `force` или с новой версией
+  пути, а также `retry` (только `failed`).
+- `running` после краха процесса: `recover` при старте worker'а возвращает такие задачи в
+  `pending`, а исчерпавшие попытки помечает `failed` (`InterruptedTooOften`).
+
+Конкурентность. Операции, которые смотрят на `desired` и меняют задачи пути, выполняются в
+транзакции под advisory-блокировкой `queue-path:<путь>` (`transaction_lock`, снимается
+вместе с транзакцией). Её же берут API при укладке загруженного файла (`on_locked`) и worker
+перед удалением файла загрузки (`locked_path`), поэтому «загрузить заново» и «удалить» один
+путь не перемешиваются.
+
+Соглашение `remove:<версия>`. API ставит удаление как задачу `kind='remove'` с
+`fingerprint = "remove:<doc_id>"`, и `desired` пути становится `remove:<doc_id>`. Пока это
+так, `enqueue` той же версии без `force` не создаёт задачу `ingest`, а возвращает id задачи
+удаления: watcher после рестарта не загрузит обратно источник, который владелец забыл.
+Загрузка через API ставит с `force=True` и потому может вернуть документ.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +62,14 @@ from mnogobase.core.database import DatabaseTarget, connect, initialize, transac
 
 @dataclass(frozen=True)
 class Job:
+    """Снимок строки `jobs`.
+
+    `path` — абсолютный путь источника, `fingerprint` — версия (`doc_id` или
+    `remove:<doc_id>`), `status` — `pending` / `running` / `done` / `failed` / `superseded`,
+    `attempts` — сколько раз задачу брали в работу, `available_at` — unix-время, раньше
+    которого её не берут, `error` — только имя типа исключения (текст может содержать
+    секреты), `progress` — короткое описание текущего шага. Метки времени — unix-секунды."""
+
     id: int
     path: str
     fingerprint: str
@@ -36,6 +93,7 @@ def _job(row) -> Job:
     return Job(**{name: row[name] for name in _JOB_FIELDS})
 
 
+# Время сервера в unix-секундах. clock_timestamp(), а не now(): now() — начало транзакции.
 _NOW = "EXTRACT(EPOCH FROM clock_timestamp())"
 _SCHEMA = f"""
     CREATE TABLE IF NOT EXISTS jobs(
@@ -64,7 +122,15 @@ _MIGRATIONS = (
 
 
 class JobQueue:
+    """Очередь задач одного проекта поверх одного долгоживущего соединения.
+
+    Объект не потокобезопасен: у каждого потока (worker, watcher, запрос API) свой экземпляр.
+    Соединение переживает рестарт PostgreSQL (`PgConnection`), но транзакция, прерванная
+    обрывом, не повторяется — вызывающий получает `DatabaseError`."""
+
     def __init__(self, target: DatabaseTarget, *, clock=time.time):
+        """Открывает соединение и создаёт/мигрирует таблицы очереди (`initialize`, под
+        DDL-блокировкой). `clock` подменяется в тестах. При ошибке соединение закрывается."""
         self.target = target
         self._clock = clock
         self._db = connect(target)
@@ -75,6 +141,7 @@ class JobQueue:
             raise
 
     def close(self) -> None:
+        """Закрывает соединение; незафиксированная транзакция откатывается."""
         self._db.close()
 
     def enqueue(
@@ -89,11 +156,21 @@ class JobQueue:
     ) -> int:
         """Ставит в очередь операцию над `path` с версией `fingerprint` и возвращает id задачи.
 
-        Повтор той же версии не создаёт новую задачу; уже выполненная задача запускается
-        снова только с `force` или если версия источника сменилась. Источник, который забыли
-        (`desired` = `remove:<та же версия>`), без `force` не возвращается: так watcher после
-        рестарта не загрузит обратно файл, удалённый через API. `on_locked` выполняется под
-        блокировкой пути, до записи (API кладёт туда файл загрузки)."""
+        Всё выполняется в одной транзакции под блокировкой `queue-path:<путь>`; путь
+        приводится к абсолютному (`resolve`), чтобы один файл не давал разных задач.
+
+        Повтор той же версии не создаёт новую задачу. Уже завершённая (`done` / `failed` /
+        `superseded`) задача снова становится `pending` (попытки обнуляются) только с `force`
+        или если до этого в `desired` была другая версия пути; `pending` и `running` задачи не
+        трогаются. В конце `desired` пути = `fingerprint`.
+
+        Источник, который забыли (`desired` = `remove:<та же версия>`), без `force` не
+        возвращается: метод сразу отдаёт id задачи удаления. Так watcher после рестарта не
+        загрузит обратно файл, удалённый через API.
+
+        `on_locked` выполняется под блокировкой пути, до записи в таблицы: API переносит туда
+        файл загрузки на место, чтобы идущая задача удаления не стёрла его следом. Если
+        `on_locked` или запрос падает, транзакция откатывается и исключение пробрасывается."""
         path = str(path.resolve())
         self._db.execute("BEGIN")
         try:
@@ -133,6 +210,12 @@ class JobQueue:
             raise
 
     def claim(self, max_attempts: int | None = None) -> Job | None:
+        """Атомарно берёт самую старую готовую `pending`-задачу (`available_at` наступил) и
+        переводит её в `running`, увеличив `attempts`. Возвращает `None`, если брать нечего.
+
+        `FOR UPDATE SKIP LOCKED` позволяет нескольким потребителям не мешать друг другу и не
+        брать одну задачу дважды. С `max_attempts` задачи, уже исчерпавшие попытки, не берутся
+        (их судьбу решает `fail` / `recover`)."""
         limit, args = ("", ()) if max_attempts is None else (" AND attempts<?", (max_attempts,))
         self._db.execute("BEGIN")
         try:
@@ -150,6 +233,12 @@ class JobQueue:
             raise
 
     def finish(self, job_id: int) -> None:
+        """Отмечает `running`-задачу выполненной (`done`).
+
+        Под блокировкой пути: если задача по-прежнему актуальна (её версия в `desired`), все
+        прочие незавершённые и упавшие задачи того же пути становятся `superseded` — источник
+        уже в нужном состоянии. Если задача уже не `running` (например, worker сам пометил её
+        `superseded`), ничего не меняется."""
         self._db.execute("BEGIN")
         try:
             source = self._db.execute("SELECT path FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -178,7 +267,12 @@ class JobQueue:
 
     @contextmanager
     def locked_path(self, path: str) -> Iterator[None]:
-        """Транзакция с блокировкой пути: внутри неё ни enqueue, ни API не меняют этот путь."""
+        """Транзакция с блокировкой `queue-path:<path>`: пока блок выполняется, ни `enqueue`,
+        ни `finish`, ни загрузка через API не меняют этот путь.
+
+        `path` должен быть уже абсолютным (как `Job.path`). Worker использует блок, чтобы
+        проверить `is_current` и удалить файл загрузки атомарно относительно повторной
+        загрузки. Исключение внутри блока откатывает транзакцию и пробрасывается."""
         self._db.execute("BEGIN")
         try:
             transaction_lock(self._db, f"queue-path:{path}")
@@ -189,13 +283,19 @@ class JobQueue:
             raise
 
     def clear(self) -> None:
-        """Забывает всю историю очереди (для `reset`): после него те же файлы снова
-        загружаются, а не считаются уже выполненными."""
+        """Забывает всю историю очереди (`jobs` и `desired`) для `reset`: после него те же
+        файлы снова загружаются, а не считаются уже выполненными или удалёнными.
+        `worker_heartbeat` не трогается. Блокировки путей не берутся: вызывающий держит
+        `ingest_lock`, поэтому worker в это время задачи не выполняет."""
         with self._db:
             self._db.execute("DELETE FROM jobs")
             self._db.execute("DELETE FROM desired")
 
     def is_current(self, job: Job) -> bool:
+        """`True`, если версия задачи — последняя запрошенная для её пути (`desired`).
+
+        Без блокировки ответ может устареть сразу после возврата; когда это важно, вызывать
+        внутри `locked_path`."""
         return (
             self._db.execute(
                 "SELECT 1 FROM desired WHERE path=? AND fingerprint=?",
@@ -205,6 +305,8 @@ class JobQueue:
         )
 
     def supersede(self, job_id: int) -> None:
+        """Переводит `running`-задачу в `superseded`: worker обнаружил, что файл изменился, и
+        уже поставил задачу на новую версию."""
         self._db.execute(
             "UPDATE jobs SET status='superseded',progress='new content queued',updated_at=? "
             "WHERE id=? AND status='running'",
@@ -212,12 +314,21 @@ class JobQueue:
         )
 
     def defer(self, job_id: int, delay: float) -> None:
+        """Откладывает `pending`-задачу на `delay` секунд от текущего момента (например, чтобы
+        дать файлу «успокоиться» после записи). Другие статусы не меняются."""
         self._db.execute(
             "UPDATE jobs SET available_at=? WHERE id=? AND status='pending'",
             (self._clock() + delay, job_id),
         )
 
     def fail(self, job_id: int, error: str, *, max_attempts: int, delay: float) -> None:
+        """Засчитывает неудачную попытку `running`-задачи (ошибка самого документа).
+
+        Если попыток уже `max_attempts` или больше — статус `failed`, иначе `pending` с
+        экспоненциальной задержкой `delay * 2^(attempts-1)` секунд, не больше часа (показатель
+        степени ограничен 16, чтобы не переполнить float). `error` хранится как есть, поэтому
+        сюда передают только имя типа исключения. Задача, которая уже не `running`, не
+        меняется."""
         job = self._db.execute("SELECT attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
         attempts = job[0]
         self._db.execute(
@@ -233,7 +344,10 @@ class JobQueue:
         )
 
     def release(self, job_id: int, delay: float) -> None:
-        """Возвращает задачу в очередь, не засчитывая попытку (сбой инфраструктуры, а не файла)."""
+        """Возвращает `running`-задачу в `pending`, не засчитывая попытку: сбой
+        инфраструктуры (база, Neo4j, сервер моделей), а не файла. `attempts`, увеличенный в
+        `claim`, уменьшается обратно; повтор не раньше чем через `delay` секунд, без
+        удвоения — инфраструктура может лежать долго, и задача не должна стать `failed`."""
         self._db.execute(
             "UPDATE jobs SET status='pending',attempts=GREATEST(attempts-1,0),available_at=?,"
             "progress='waiting for services',updated_at=?,started_at=NULL WHERE id=? AND status='running'",
@@ -241,10 +355,16 @@ class JobQueue:
         )
 
     def recover(self, max_attempts: int | None = None) -> int:
-        """Возвращает прерванные задачи в очередь. Задача, которая уже исчерпала попытки
-        (например, файл роняет процесс), становится failed, а не берётся снова бесконечно.
+        """Возвращает в очередь задачи, оставшиеся `running` после краха или остановки
+        worker'а, и возвращает их число.
 
-        Only while holding the worker lock: never steal another worker's active jobs."""
+        Задача, которая уже исчерпала `max_attempts` попыток (например, файл роняет процесс),
+        становится `failed` с ошибкой `InterruptedTooOften`, а не берётся снова бесконечно.
+        Остальные становятся `pending` и готовы сразу; `attempts` не уменьшается — прерванный
+        запуск тоже считается попыткой.
+
+        Вызывать только под блокировкой `worker` (`database_lock(settings, "worker")`):
+        иначе можно отобрать задачи у другого, ещё работающего worker'а."""
         if max_attempts is not None:
             self._db.execute(
                 "UPDATE jobs SET status='failed',error='InterruptedTooOften',"
@@ -259,6 +379,11 @@ class JobQueue:
         ).rowcount
 
     def retry(self, job_id: int | None = None) -> int:
+        """Перезапускает `failed`-задачи (одну по `job_id` или все) и возвращает их число.
+
+        Задача становится `pending` с нулевыми попытками, а её версия снова записывается в
+        `desired` — владелец явно попросил повторить именно её. Блокировки путей берутся в
+        отсортированном порядке, чтобы два параллельных `retry` не взаимоблокировались."""
         clause, args = (" AND id=?", (job_id,)) if job_id is not None else ("", ())
         self._db.execute("BEGIN")
         try:
@@ -271,8 +396,8 @@ class JobQueue:
             for path in sorted({row[1] for row in selected}):
                 transaction_lock(self._db, f"queue-path:{path}")
             count = 0
-            # Only retry captured IDs. A new failure after the selection belongs
-            # to the next retry, so its intent cannot be reset accidentally.
+            # Повторяем только выбранные выше id: задача, упавшая уже после выборки,
+            # относится к следующему retry, и её состояние не сбрасывается случайно.
             for selected_id, _, _ in selected:
                 row = self._db.execute(
                     "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',updated_at=?,started_at=NULL "
@@ -292,13 +417,16 @@ class JobQueue:
             raise
 
     def set_progress(self, job_id: int, progress: str) -> None:
+        """Записывает короткий текст прогресса задачи (для `jobs list` и `/api/jobs`)."""
         self._db.execute("UPDATE jobs SET progress=? WHERE id=?", (progress, job_id))
 
     def get(self, job_id: int) -> Job | None:
+        """Задача по id или `None`."""
         row = self._db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return _job(row) if row else None
 
     def jobs(self, limit: int = 100, offset: int = 0) -> list[Job]:
+        """Страница задач, новые первыми (`ORDER BY id DESC`)."""
         return [
             _job(r)
             for r in self._db.execute(
@@ -307,10 +435,13 @@ class JobQueue:
         ]
 
     def counts(self) -> dict[str, int]:
+        """Число задач по статусам: `{"pending": 3, "done": 10, ...}`; нулевых нет."""
         return dict(self._db.execute("SELECT status,COUNT(*) FROM jobs GROUP BY status"))
 
     def heartbeat(self) -> None:
-        """Отметка живого worker'а для `/api/status`."""
+        """Записывает «worker жив сейчас» в `worker_heartbeat`. Worker вызывает это в цикле
+        и при каждом шаге прогресса; `/api/status` считает worker мёртвым, если отметки нет
+        дольше `HEARTBEAT_STALE_S`."""
         self._db.execute(
             "INSERT INTO worker_heartbeat VALUES('worker',?) "
             "ON CONFLICT(name) DO UPDATE SET last_seen=excluded.last_seen",
@@ -318,6 +449,7 @@ class JobQueue:
         )
 
     def last_heartbeat(self) -> float | None:
+        """Unix-время последней отметки worker'а или `None`, если worker ни разу не запускался."""
         row = self._db.execute(
             "SELECT last_seen FROM worker_heartbeat WHERE name='worker'"
         ).fetchone()

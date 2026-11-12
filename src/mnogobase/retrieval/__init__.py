@@ -1,3 +1,26 @@
+"""Поиск контекста для ответа: четыре режима retrieval и их сборка.
+
+Место в потоке данных: вопрос → (необязательный английский перевод из `translate.py`) →
+`Retriever.retrieve` выбранного режима → список `ContextItem` → `answer.Answerer` нумерует
+элементы, обрезает по бюджету токенов и просит LLM ответить со ссылками `[n]`.
+
+Режимы (`Mode`):
+
+- `rag` (`RagRetriever`) — классический RAG: гибридный поиск (dense + BM25, слияние RRF) по
+  исходным чанкам документов в Qdrant, опционально с переранжированием cross-encoder'ом и
+  расширением попаданий соседними чанками той же секции.
+- `wiki` (`WikiRetriever`) — гибридный поиск по секциям сгенерированных wiki-страниц; за
+  каждой секцией идут исходные чанки, которые она цитирует, чтобы ответ ссылался на документы,
+  а не только на пересказ.
+- `graph` (`GraphRetriever`) — Graph-RAG: находит сущности-«семена» (вектор + полнотекстовый
+  индекс Neo4j), обходит их окрестность в графе и возвращает описания сущностей, триплеты
+  связей и чанки-подтверждения (плюс, при `graph.use_gds`, чанки из сообществ Leiden).
+- `all` (`CombinedRetriever`) — объединение трёх режимов: каждый получает свою долю
+  `retrieval.budget` от `retrieval.context_tokens`, одинаковые элементы дедуплицируются.
+
+Все retriever'ы синхронны и ничего не пишут; блокировок не берут.
+"""
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -15,6 +38,8 @@ from mnogobase.stores.qdrant_store import QdrantStore
 
 
 class Mode(StrEnum):
+    """Режим поиска; значение — то, что принимают `ask -m`, API и ключи `build_retrievers`."""
+
     RAG = "rag"
     WIKI = "wiki"
     GRAPH = "graph"
@@ -29,8 +54,13 @@ def build_retrievers(
     settings: Settings,
     reranker: Reranker | None = None,
 ) -> dict[str, Retriever]:
-    """По одному retriever на каждый `Mode`; ключ — значение режима (`rag`, `wiki`, `graph`,
-    `all`)."""
+    """Создаёт по одному retriever на каждый `Mode`; ключ — значение режима (`rag`, `wiki`,
+    `graph`, `all`).
+
+    `all` переиспользует те же экземпляры `rag` / `wiki` / `graph`, поэтому настройки
+    (соседи, reranker, параметры графа) у него совпадают с одиночными режимами. `reranker`
+    передаётся только в `rag`; `None` — без переранжирования.
+    """
     rag = RagRetriever(
         vectors,
         embedder,

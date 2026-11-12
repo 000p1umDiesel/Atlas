@@ -1,1 +1,6 @@
-"""Durable local background ingest; no model clients are created on import."""
+"""Фоновая обработка корпуса: надёжная очередь задач, watcher папок и цикл worker'а.
+
+`queue.JobQueue` хранит задачи `ingest` / `remove` в PostgreSQL, `watch.Watcher` ставит в
+неё новые и изменённые файлы, `worker.process_one` выполняет по одной задаче под
+`ingest_lock`, `uploads.Uploads` связывает загруженные через API файлы с их `doc_id`.
+Импорт пакета не создаёт клиентов моделей и не подключается к базам."""

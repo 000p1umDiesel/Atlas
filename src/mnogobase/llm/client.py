@@ -1,3 +1,34 @@
+"""Клиент генеративной LLM: протокол `LLMClient` и реализация `OpenAICompatLLM`.
+
+Через этот модуль идут все обращения к `/chat/completions`: извлечение сущностей
+(`extract`), проверка слияний (`resolve`), страницы wiki (`wiki`), ответы (`answer`) и
+перевод/переписывание вопросов (`query`).
+
+Выбор модели по задаче. Каждый вызов передаёт `task` из `LLM_TASKS`; `model_for(task)`
+возвращает `llm.overrides[task]`, если он задан, иначе `llm.model`. Так отдельную задачу
+можно отдать другой модели того же сервера, не трогая остальные.
+
+Повторы. Сам SDK OpenAI не повторяет (`max_retries=0`), повторами управляет tenacity:
+повторяются только сетевые ошибки и таймауты, 429 и 5xx (`_RETRYABLE`); не больше 5 попыток
+и не дольше `llm.retry_deadline_s` суммарно. Пауза — экспоненциальная (до 30 с), но не
+меньше `Retry-After` из ответа сервера (не больше `_MAX_RETRY_AFTER_S`). Семафор
+`llm.concurrency` ограничивает число одновременных запросов и занят только на время самого
+запроса, не на паузу между попытками.
+
+Структурированный ответ с исправлением. `structured` просит JSON по strict-схеме, которую
+строит из pydantic-модели (`strict_json_schema`); схема ответа задаётся в коде, а не в
+промпте. Ответ очищается от `<think>…</think>` и markdown-ограды и валидируется моделью;
+при ошибке модели показывают начало её ответа и текст ошибки и просят исправить — до
+`max_repairs` раз, после чего бросается `StructuredOutputError`.
+
+Учёт токенов. Каждый успешный вызов передаёт токены в `count_usage`: они добавляются к
+общему счётчику клиента `client.usage` и ко всем открытым `usage_scope` текущей
+asyncio-задачи (ContextVar), так что параллельные вопросы на одном клиенте считают только
+свои токены. Отдельно каждая попытка (без текста промптов) отправляется в `usage_recorder`
+(`telemetry.CallEvent` → `llm_usage` в PostgreSQL); сбой записи учёта никогда не ломает сам
+вызов.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,8 +58,10 @@ from mnogobase.core.log import get_logger
 from mnogobase.llm.telemetry import CallEvent, new_call, record_call
 
 T = TypeVar("T", bound=BaseModel)
+# сообщение чата в формате OpenAI: {"role": "system" | "user" | "assistant", "content": ...}
 Message = dict[str, str]
 
+# рассуждения reasoning-моделей (Qwen3 и т. п.), которые не должны попасть в ответ или JSON
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
 _RETRYABLE = (
@@ -37,11 +70,15 @@ _RETRYABLE = (
     openai.InternalServerError,
 )
 _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=1, max=30)
+# верхняя граница подсказки сервера: слишком большой Retry-After не должен подвесить вызов
 _MAX_RETRY_AFTER_S = 120.0
 
 
 def _retry_after(exc: BaseException | None) -> float | None:
-    """Секунды из заголовка `Retry-After` ответа 429/503 (только число секунд)."""
+    """Секунды из заголовка `Retry-After` ответа 429/503 (только число секунд).
+
+    Форма с HTTP-датой не поддерживается и даёт `None`, как и отсутствие ответа или
+    заголовка. Значение ограничивается диапазоном [0, `_MAX_RETRY_AFTER_S`]."""
     response = getattr(exc, "response", None)
     value = response.headers.get("retry-after") if response is not None else None
     try:
@@ -73,7 +110,9 @@ def usage_scope() -> Iterator[Usage]:
     """Счётчик токенов всех вызовов LLM внутри блока `with` в текущей задаче.
 
     Разница общего `client.usage` до и после вызова тут не годится: пока задача ждёт ответа,
-    тот же клиент успевает обслужить вызовы других задач."""
+    тот же клиент успевает обслужить вызовы других задач. Области вложенные: вызов
+    учитывается во всех открытых областях сразу. Задачи, созданные внутри блока
+    (`asyncio.gather` и т. п.), получают копию контекста и тоже пишут в эту область."""
     scope = Usage()
     token = _USAGE_SCOPES.set((*_USAGE_SCOPES.get(), scope))
     try:
@@ -91,28 +130,53 @@ def count_usage(total: Usage, tokens_in: int, tokens_out: int) -> None:
 
 
 class LLMClient(Protocol):
+    """Интерфейс генеративной LLM; тесты подставляют `FakeLLM` из `tests/fakes.py`.
+
+    `task` — одно из `LLM_TASKS` (extract / resolve / wiki / answer / query); по нему
+    реализация выбирает модель. `usage` — накопленный счётчик токенов клиента; реализация
+    обязана вызывать `count_usage` на каждый вызов, чтобы работали `usage_scope`.
+    """
+
     usage: Usage
 
-    def model_for(self, task: str) -> str: ...
+    def model_for(self, task: str) -> str:
+        """Имя модели, которой уйдёт задача `task`."""
+        ...
 
-    async def complete(self, messages: list[Message], *, task: str) -> str: ...
+    async def complete(self, messages: list[Message], *, task: str) -> str:
+        """Текстовый ответ на `messages` без блоков `<think>`."""
+        ...
 
     async def structured(
         self, messages: list[Message], schema: type[T], *, task: str, max_repairs: int = 2
-    ) -> T: ...
+    ) -> T:
+        """Ответ, провалидированный как `schema`; после `max_repairs` неудачных попыток
+        исправления — `StructuredOutputError`."""
+        ...
 
 
 def strip_think(text: str) -> str:
+    """Убирает блоки `<think>…</think>` и пробелы по краям."""
     return _THINK.sub("", text).strip()
 
 
 def clean_json(text: str) -> str:
+    """Достаёт JSON-объект из ответа модели: без `<think>`, без markdown-ограды ```json и
+    без текста вокруг (от первой `{` до последней `}`). Если скобок нет, возвращает текст
+    как есть — ошибку тогда покажет валидация."""
     text = _FENCE.sub("", strip_think(text)).strip()
     start, end = text.find("{"), text.rfind("}")
     return text[start : end + 1] if start != -1 and end > start else text
 
 
 def _strictify(node: Any) -> Any:
+    """Рекурсивно приводит JSON Schema к требованиям strict structured output OpenAI.
+
+    Убирает `default` и `title`, а каждому объекту с `properties` ставит
+    `additionalProperties: false` и делает обязательными все поля (strict-режим не допускает
+    необязательных ключей). Ключи внутри `properties` / `$defs` — имена полей и моделей, а не
+    ключевые слова схемы, поэтому они не фильтруются (поле может называться `title`).
+    """
     if isinstance(node, list):
         return [_strictify(x) for x in node]
     if not isinstance(node, dict):
@@ -137,7 +201,11 @@ def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
 
 
 class OpenAICompatLLM:
-    """Работает с любым OpenAI-совместимым endpoint: OpenAI, llama.cpp server, LM Studio, прокси."""
+    """Работает с любым OpenAI-совместимым endpoint: OpenAI, llama.cpp server, LM Studio, прокси.
+
+    Привязан к event loop, в котором создан (асинхронный клиент и семафор); в API поэтому
+    живёт в отдельном потоке `CoreLoop`. Закрывать через `aclose()`.
+    """
 
     def __init__(
         self,
@@ -147,6 +215,9 @@ class OpenAICompatLLM:
         *,
         usage_recorder: Callable[[CallEvent], None] | None = None,
     ):
+        """`http_client` — свой httpx-клиент (тесты, прокси); `retry_wait` — стратегия паузы
+        tenacity между повторами; `usage_recorder` — синхронная функция записи
+        `CallEvent` (в `build_app` — `UsageStore.record`), вызывается в отдельном потоке."""
         self._usage_recorder = usage_recorder
         self._settings = settings
         self._client = AsyncOpenAI(
@@ -162,14 +233,22 @@ class OpenAICompatLLM:
         self._log = get_logger(__name__)
 
     def model_for(self, task: str) -> str:
+        """`llm.overrides[task]`, если задан, иначе `llm.model`."""
         return self._settings.model_for(task)
 
     async def aclose(self) -> None:
+        """Закрывает HTTP-клиент OpenAI SDK."""
         await self._client.close()
 
     async def _chat(
         self, messages: list[Message], *, task: str, response_format: dict | None = None
     ) -> str:
+        """Один логический вызов `/chat/completions` с повторами; возвращает сырой текст.
+
+        Каждая попытка — отдельный `CallEvent`: сначала `started`, затем `response` с токенами
+        или `error`. После успеха токены идут в `count_usage`, в лог пишется `llm_call`.
+        Неповторяемые ошибки и последняя ошибка после исчерпания попыток пробрасываются.
+        """
         model = self.model_for(task)
         kwargs: dict[str, Any] = {
             "model": model,
@@ -182,6 +261,7 @@ class OpenAICompatLLM:
         attempts = 0
 
         def wait(state: RetryCallState) -> float:
+            # экспоненциальная пауза, но не короче, чем просит сервер в Retry-After
             backoff = self._retry_wait(state)
             hint = _retry_after(state.outcome.exception() if state.outcome else None)
             return max(backoff, hint) if hint is not None else backoff
@@ -196,11 +276,15 @@ class OpenAICompatLLM:
                 # Слот конкурентности занят только на время запроса, не на паузу между попытками.
                 async with self._sem:
                     attempts += 1
+                    # external: модель за API (`serve: api`), а не локальный llama-server;
+                    # только к таким вызовам применяются тарифы `service.llm_rates`
                     event = new_call(model, task, external=self._settings.serve == "api")
                     await self._record(event)
                     try:
                         response = await self._client.chat.completions.create(**kwargs)
                     except BaseException:
+                        # BaseException: отмена задачи (например, по таймауту) тоже
+                        # закрывает попытку статусом error, а не оставляет её started
                         if event is not None:
                             await self._record(replace(event, status="error"))
                         raise
@@ -231,6 +315,7 @@ class OpenAICompatLLM:
         return response.choices[0].message.content or ""
 
     async def _record(self, event: CallEvent | None) -> None:
+        """Передаёт событие попытки в `usage_recorder`, проглатывая его ошибки."""
         # Учёт расхода не должен ломать сам вызов LLM и подменять его исключение.
         try:
             await record_call(event, self._usage_recorder)
@@ -238,11 +323,22 @@ class OpenAICompatLLM:
             self._log.warning("llm_usage_record_failed", error_type=type(exc).__name__)
 
     async def complete(self, messages: list[Message], *, task: str) -> str:
+        """Текстовый ответ модели для задачи `task` без блоков `<think>`."""
         return strip_think(await self._chat(messages, task=task))
 
     async def structured(
         self, messages: list[Message], schema: type[T], *, task: str, max_repairs: int = 2
     ) -> T:
+        """Ответ модели как экземпляр `schema` (strict JSON Schema + цикл исправления).
+
+        Алгоритм: запрос с `response_format=json_schema` → `clean_json` → валидация. При
+        `ValidationError` (в том числе для невалидного JSON) пишется warning `llm_invalid_json`,
+        и следующий запрос — исходные `messages` + начало неудачного ответа (assistant) +
+        текст ошибки с просьбой исправить (user). Каждая попытка исправления строится от
+        исходных сообщений, а не накапливает историю. Всего не больше `max_repairs + 1`
+        запросов; затем — `StructuredOutputError`. Ошибки транспорта пробрасываются из
+        `_chat` без исправлений.
+        """
         response_format = {
             "type": "json_schema",
             "json_schema": {
@@ -262,8 +358,8 @@ class OpenAICompatLLM:
                 self._log.warning("llm_invalid_json", task=task, error=last_error[:300])
                 history = [
                     *messages,
-                    # A truncated/looping reply can fill the model's whole
-                    # context. Keep only its beginning and the latest error.
+                    # Обрезанный или зациклившийся ответ может занять весь контекст модели.
+                    # Оставляем только его начало и последнюю ошибку.
                     {"role": "assistant", "content": content[:2000]},
                     {
                         "role": "user",

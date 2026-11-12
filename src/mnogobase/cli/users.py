@@ -2,6 +2,12 @@
 (`api serve`).
 
 Пользователей создаёт только владелец из командной строки: через HTTP это сделать нельзя.
+Учётные записи хранятся в схеме проекта PostgreSQL (`ServiceStore`), пароли — хешами argon2.
+Смена пароля и отключение пользователя сразу отзывают все его сессии. Ошибки базы и сервиса
+печатаются в stderr коротким безопасным сообщением, код выхода 2.
+
+`api serve` запускает FastAPI-приложение через uvicorn. API только читает базу и ставит
+задачи в очередь; записывает корпус отдельный процесс `mnogobase worker run`.
 """
 
 from __future__ import annotations
@@ -24,15 +30,22 @@ common.app.add_typer(api_app, name="api")
 
 
 def _store() -> ServiceStore:
+    """Хранилище пользователей в схеме текущего проекта (по настройкам из `--config`)."""
     return ServiceStore(database_target(common.get_settings()))
 
 
 def _print(value) -> None:
+    """Печатает значение как JSON с отступами; кириллица не экранируется."""
     typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
 
 
 def _call(operation):
-    """Выполняет операцию хранилища; ошибки БД и сервиса — сообщение в stderr и код 2."""
+    """Выполняет операцию хранилища и возвращает её результат; ошибки БД и сервиса —
+    сообщение в stderr и код 2.
+
+    Для `DatabaseError` печатается общий текст: исходное сообщение может содержать адрес
+    базы. `ServiceError.detail` уже безопасен для показа (например, «пользователь не
+    найден»)."""
     try:
         return operation()
     except DatabaseError:
@@ -50,31 +63,43 @@ def _password_option():
 
 @user_app.command("create")
 def create_user(username: str, password: str = _password_option()):
+    """Создать учётную запись API.
+
+    Пароль (не короче 12 символов) вводится скрыто и дважды. Печатает id и имя нового
+    пользователя в JSON. Код выхода 2, если имя занято, пароль не подходит или PostgreSQL
+    недоступен."""
     user = _call(lambda: _store().create_user(username, password))
     _print({key: user[key] for key in ("id", "username")})
 
 
 @user_app.command("passwd")
 def change_password(username: str, password: str = _password_option()):
-    """Set a new password; existing sessions of the user are revoked."""
+    """Сменить пароль пользователя; все его сессии отзываются.
+
+    Новый пароль (не короче 12 символов) вводится скрыто и дважды."""
     _call(lambda: _store().set_password(username, password))
     typer.echo("Password changed; sessions revoked")
 
 
 @user_app.command("disable")
 def disable_user(username: str):
+    """Отключить пользователя; все его сессии отзываются.
+
+    Отключённый пользователь не может войти, пока его не включат снова (user enable)."""
     _call(lambda: _store().set_active(username, False))
     typer.echo("User disabled; sessions revoked")
 
 
 @user_app.command("enable")
 def enable_user(username: str):
+    """Снова включить отключённого пользователя."""
     _call(lambda: _store().set_active(username, True))
     typer.echo("User enabled")
 
 
 @user_app.command("list")
 def list_users():
+    """Показать всех пользователей (id, имя, активен ли) в JSON."""
     _print(_call(lambda: _store().users()))
 
 
@@ -83,6 +108,11 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8080, "--port", min=1, max=65535),
 ):
+    """Запустить HTTP API базы знаний.
+
+    По умолчанию слушает только 127.0.0.1:8080; снаружи API открывают через reverse
+    proxy с TLS (см. deploy/nginx.conf). API читает базу и ставит задачи в очередь, а
+    записывает корпус отдельный процесс mnogobase worker run. Работает до Ctrl+C."""
     import uvicorn  # только для этой команды: остальным CLI веб-сервер не нужен
 
     from mnogobase.api.app import create_api

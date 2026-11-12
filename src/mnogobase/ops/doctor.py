@@ -1,3 +1,18 @@
+"""Проверки окружения: `mnogobase doctor` и предварительные проверки команд.
+
+`run_checks` по очереди проверяет то, без чего mnogobase не работает: устройство,
+PostgreSQL, серверы моделей (embedder, reranker, VLM), токенизатор чанкера, LLM, Qdrant,
+Neo4j и его плагины, совместимость индекса с текущим embedder и смену типов сущностей.
+`mnogobase doctor` печатает все проверки; остальные команды через `cli.common.preflight`
+запускают только нужное им подмножество и завершаются с кодом 2, если что-то не так, —
+это дешевле, чем упасть посреди ingest с полузаписанными стадиями.
+
+Проверки только читают: каждая делает сетевой запрос к своему сервису, а таблицы
+registry открываются, лишь если проект уже существует (`target_exists`), так что doctor
+вне проекта ничего не создаёт. Исключение в проверке не роняет doctor: оно превращается в
+неуспешный `Check` с текстом ошибки.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Collection
@@ -22,6 +37,7 @@ from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore, connect_qdrant
 from mnogobase.stores.registry import Registry
 
+# все проверки в порядке выполнения; `run_checks(only=...)` выбирает подмножество
 CHECKS: tuple[str, ...] = (
     "device",
     "database",
@@ -38,6 +54,9 @@ CHECKS: tuple[str, ...] = (
 
 @dataclass
 class Check:
+    """Результат одной проверки: имя из `CHECKS`, успех, текст для человека и флаг
+    предупреждения."""
+
     name: str
     ok: bool
     detail: str
@@ -53,6 +72,7 @@ def _served_models(base_url: str, api_key_env: str | None, timeout: float) -> se
 
 
 def _guard(name: str, fn: Callable[[], Check]) -> Check:
+    """Выполняет проверку; любое исключение превращает в неуспешный `Check` с его текстом."""
     try:
         return fn()
     except Exception as exc:  # doctor должен сообщать, а не падать
@@ -70,14 +90,19 @@ def run_checks(
     он задан).
 
     `check_dim=False` допускает коллекции с размерностью, отличной от конфига: это нужно для
-    `reindex`, который удаляет и пересоздаёт их."""
-    # один эмбеддер на все проверки: при `dim: auto` размерность — один пробный запрос
+    `reindex`, который удаляет и пересоздаёт их. `timeout` (секунды) — на каждый сетевой
+    запрос. Возвращает список `Check` (не бросает: ошибки внутри проверок становятся
+    неуспешными `Check`). Размерность embedder запрашивается у сервера не больше одного
+    раза на вызов."""
+    # один embedder на все проверки: при `dim: auto` размерность — один пробный запрос;
+    # без повторов с ожиданием (`wait_none`), чтобы doctor не висел на недоступном сервере
     embed_client = httpx.Client(
         base_url=settings.embedder.url,
         timeout=timeout,
         headers=auth_headers(settings.embedder.api_key_env),
     )
     embedder = OpenAICompatEmbedder(settings.embedder, client=embed_client, retry_wait=wait_none())
+    # первая ошибка запроса размерности: дальше сервер не дёргаем, а `index` её показывает
     unreachable: list[str] = []
 
     def embedder_dim() -> int | None:
@@ -92,9 +117,11 @@ def run_checks(
             return None
 
     def device() -> Check:
+        """Устройство по настройке `device` (mps или cpu; `auto` выбирает само)."""
         return Check("device", True, detect_device(settings.device))
 
     def database() -> Check:
+        """PostgreSQL отвечает на `SELECT 1`; таблиц не создаёт."""
         target = database_target(settings)
         connection = connect(target)
         try:
@@ -104,6 +131,11 @@ def run_checks(
         return Check("database", True, str(target))
 
     def models() -> Check:
+        """Каждый сервер embedder / reranker / VLM отдаёт нужную модель в `/models`.
+
+        Роли группируются по (url, ключ), чтобы общий сервер опрашивался один раз.
+        Недоступный локальный сервер (`serve: llamacpp`) — понятный совет `models up`;
+        недоступный внешний (`serve: api`) — исключение, которое `_guard` покажет как есть."""
         # embedder, reranker и VLM могут работать на разных серверах
         roles: list[tuple[str, ServedModel]] = [("embedder", settings.embedder)]
         if settings.rerank.enabled:
@@ -134,12 +166,17 @@ def run_checks(
         return Check("models", True, ", ".join(f"{r} {s.model}" for r, s in roles) + " available")
 
     def tokenizer() -> Check:
+        """Токенизатор чанкера загружается и считает токены (при `auto` — `/tokenize`
+        сервера embedder)."""
         tok = load_tokenizer(settings.chunking, settings.embedder)
         tok.count_tokens("Hello, мир")
         prefix = "auto: " if settings.chunking.tokenizer == AUTO else ""
         return Check("tokenizer", True, prefix + tokenizer_source(tok))
 
     def llm() -> Check:
+        """LLM-сервер принимает ключ и (если отдаёт список моделей) обслуживает `llm.model`.
+
+        Пустой список моделей считается успехом: не все совместимые API его заполняют."""
         resp = httpx.get(
             f"{settings.llm.url}/models",
             timeout=timeout,
@@ -157,6 +194,10 @@ def run_checks(
         return Check("llm", False, f"{settings.llm.model} is not served by {settings.llm.url}")
 
     def qdrant() -> Check:
+        """Qdrant доступен, и размерность коллекции чанков совпадает с embedder.
+
+        Нет коллекции — успех ("no index yet"). При `check_dim=False` несовпадение только
+        упоминается, потому что `reindex` пересоздаст коллекции."""
         # проверка сообщает о доступности; warning клиента о проверке версии пропускаем
         client = connect_qdrant(settings.qdrant, timeout=int(timeout), check_compatibility=False)
         try:
@@ -179,6 +220,7 @@ def run_checks(
         return Check("qdrant", True, f"{settings.qdrant.url} (dim {dim})")
 
     def neo4j() -> Check:
+        """Neo4j принимает подключение с настроенными учётными данными."""
         graph = GraphStore.from_settings(settings.neo4j)
         try:
             graph.verify()
@@ -187,6 +229,8 @@ def run_checks(
         return Check("neo4j", True, settings.neo4j.uri)
 
     def graph_plugins() -> Check:
+        """Версии APOC и GDS и отсутствующие процедуры; отсутствие — только
+        предупреждение."""
         graph = GraphStore.from_settings(settings.neo4j)
         try:
             status = graph.plugin_status()
@@ -195,10 +239,14 @@ def run_checks(
         detail = f"APOC {status['apoc'] or 'unavailable'}, GDS {status['gds'] or 'unavailable'}"
         if status["missing"]:
             detail += "; missing: " + ", ".join(status["missing"])
-        # Plugins are optional for ordinary ingest/rag/wiki; graph analyze checks strictly.
+        # Плагины не нужны обычным ingest / rag / wiki; `graph analyze` проверяет их строго.
         return Check("graph_plugins", True, detail, warn=bool(status["missing"]))
 
     def index() -> Check:
+        """Сигнатура embedder в registry совпадает с текущей (иначе нужен `reindex`).
+
+        Вне проекта — успех; если размерность нельзя узнать (embedder недоступен) —
+        неуспех с причиной."""
         db = database_target(settings)
         if not target_exists(db):
             return Check("index", True, "no index yet")
@@ -216,6 +264,8 @@ def run_checks(
         return Check("index", True, f"embedder {expected}")
 
     def types() -> Check:
+        """Предупреждение, если часть корпуса извлечена с другим набором
+        `extract.entity_types`."""
         db = database_target(settings)
         if not target_exists(db):
             return Check("types", True, "no index yet")

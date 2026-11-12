@@ -1,3 +1,19 @@
+"""Токенизатор для чанкинга: считает токены так же, как их посчитает модель эмбеддера.
+
+`HybridChunker` (см. `chunking/hybrid.py`) решает, где резать документ, по числу токенов,
+поэтому токенизатор должен совпадать с токенизатором эмбеддера, иначе чанк может оказаться
+длиннее контекста модели. Источников два, выбор — `chunking.tokenizer`:
+
+- `auto` (по умолчанию) — `ServerTokenizer`: `POST /tokenize` того же llama.cpp server, что
+  отдаёт `/embeddings`. Токенизатор зашит в GGUF, так что он автоматически меняется вместе с
+  моделью и не требует HF-репозитория.
+- имя HF-репозитория — `HuggingFaceTokenizer` из transformers (`AutoTokenizer`); нужен для
+  сервера эмбеддера без `/tokenize`.
+
+Модуль ничего не делает при импорте: клиент и проверочный запрос создаются только в
+`load_tokenizer`.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -13,17 +29,20 @@ from mnogobase.core.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with
 
 AUTO = "auto"
 _HF_HINT = "set chunking.tokenizer to the model's Hugging Face repo"
+# Предел кэша ServerTokenizer: при переполнении кэш просто очищается целиком, этого хватает,
+# потому что повторные подсчёты идут в пределах одного документа.
 _CACHE_SIZE = 50_000
 
 
 class TokenizerError(RuntimeError):
-    """Токенизатор модели эмбеддера не удаётся получить с её сервера."""
+    """Токенизатор модели эмбеддера не удаётся получить: у сервера нет `/tokenize` или
+    HF-репозиторий из `chunking.tokenizer` не загружается."""
 
 
 class ServerTokenizer(BaseTokenizer):
     """Подсчёт токенов через `POST /tokenize` llama.cpp server: работает только токенизатор,
     модель не прогоняется. HybridChunker считает одни и те же тексты много раз, поэтому
-    ответы кэшируются."""
+    ответы кэшируются (в памяти процесса, по точному тексту)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -33,6 +52,11 @@ class ServerTokenizer(BaseTokenizer):
     _cache: dict[str, int] = PrivateAttr(default_factory=dict)
 
     def count_tokens(self, text: str) -> int:
+        """Число токенов `text` без специальных токенов (BOS/EOS), как их видит модель.
+
+        Побочные эффекты: HTTP-запрос к серверу при промахе кэша (до трёх попыток при
+        сетевых ошибках и 5xx). Исключения: `httpx.HTTPStatusError` при 4xx (например,
+        404 у сервера без `/tokenize`) или после исчерпания повторов."""
         if text not in self._cache:
             if len(self._cache) >= _CACHE_SIZE:
                 self._cache.clear()
@@ -47,9 +71,11 @@ class ServerTokenizer(BaseTokenizer):
         return self._cache[text]
 
     def get_max_tokens(self) -> int:
+        """Лимит токенов на чанк (`chunking.max_tokens`)."""
         return self.max_tokens
 
     def close(self) -> None:
+        """Закрывает HTTP-клиент сервера эмбеддера."""
         self.client.close()
 
     def get_tokenizer(self) -> Callable[[str], int]:
@@ -66,7 +92,15 @@ def load_tokenizer(
 
     `auto` — `/tokenize` сервера эмбеддера (llama.cpp, в том числе внешнего с `serve: api`):
     токенизатор зашит в GGUF, HF-репозиторий исходной модели не нужен. Сервер без `/tokenize`
-    требует явный `chunking.tokenizer`. `client` — клиент корня сервера эмбеддера (тесты)."""
+    требует явный `chunking.tokenizer`. `client` — клиент корня сервера эмбеддера (тесты).
+
+    Побочные эффекты: при `auto` создаёт HTTP-клиент и сразу делает пробный `/tokenize`, чтобы
+    отсутствие эндпоинта обнаружилось до чанкинга, а не посреди документа; для HF-репозитория
+    может скачать токенизатор с Hugging Face Hub.
+
+    Исключения: `TokenizerError`, если у сервера нет `/tokenize` (HTTP-ошибка статуса) или
+    HF-репозиторий не загружается. Сетевые ошибки (`httpx.TransportError`) пробрасываются
+    как есть."""
     if settings.tokenizer != AUTO:
         return _from_hf(settings.tokenizer, settings.max_tokens)
     if client is None:
@@ -87,13 +121,17 @@ def load_tokenizer(
 
 
 def tokenizer_source(tokenizer: BaseTokenizer) -> str:
-    """Откуда токенизатор, для `doctor`."""
+    """Откуда токенизатор, для `doctor`: URL `/tokenize` сервера или имя HF-репозитория."""
     if isinstance(tokenizer, ServerTokenizer):
         return str(tokenizer.client.base_url.join("/tokenize"))
     return tokenizer.get_tokenizer().name_or_path
 
 
 def _from_hf(repo: str, max_tokens: int) -> HuggingFaceTokenizer:
+    """Загружает токенизатор из HF-репозитория `repo` (из кэша или с Hub).
+
+    transformers импортируется здесь, а не в начале модуля: импорт тяжёлый и при
+    `tokenizer: auto` не нужен."""
     from transformers import AutoTokenizer
 
     try:

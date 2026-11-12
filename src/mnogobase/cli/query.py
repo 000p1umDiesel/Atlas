@@ -1,6 +1,10 @@
 """Вопросы к базе знаний: `ask` (один режим) и `compare` (все режимы рядом).
 
-Чтение не берёт блокировок: отвечать можно параллельно с ingest и фоновым worker.
+Чтение не берёт блокировок: отвечать можно параллельно с ingest и фоновым worker. Ответ
+строится в два шага: retriever выбранного режима собирает контекст в пределах бюджета токенов,
+затем `Answerer` просит LLM ответить по этому контексту со ссылками `[n]` на источники.
+Вопрос не на английском может быть сначала переведён (`retrieval.translate`), чтобы искать и
+по оригиналу, и по переводу.
 """
 
 from __future__ import annotations
@@ -26,7 +30,12 @@ def ask(
     mode: Annotated[Mode, typer.Option("--mode", "-m", help="rag | wiki | graph | all")] = Mode.ALL,
     k: Annotated[int | None, typer.Option("--k", min=1, help="Results per retriever.")] = None,
 ) -> None:
-    """Ответить на вопрос со ссылками на источники в одном режиме retrieval."""
+    """Ответить на вопрос со ссылками на источники в одном режиме retrieval.
+
+    Режимы: rag (поиск по чанкам документов), wiki (страницы wiki), graph (обход графа
+    знаний) и all (все вместе с общим бюджетом контекста). Только читает базу, поэтому
+    работает параллельно с ingest и worker. Код выхода 2, если недоступен сервис, индекс
+    построен другим эмбеддером или упал вызов модели."""
     settings = common.get_settings(project=True)
     common.preflight(settings)
     application = common.build_app(settings)
@@ -53,7 +62,11 @@ def compare(
     question: Annotated[str, typer.Argument(help="Question to answer in all four modes.")],
     k: Annotated[int | None, typer.Option("--k", min=1, help="Results per retriever.")] = None,
 ) -> None:
-    """Ответить в режимах rag / wiki / graph / all и записать сравнение в runs/compare.jsonl."""
+    """Ответить во всех режимах rag / wiki / graph / all и сравнить ответы.
+
+    Печатает таблицу: ответ, процитированные источники, задержка, токены и размер
+    контекста каждого режима. Каждый запуск дописывает запись в runs/compare.jsonl
+    (вместе с хешем конфигурации), чтобы сравнения можно было сопоставить позже."""
     settings = common.get_settings(project=True)
     common.preflight(settings)
     application = common.build_app(settings)

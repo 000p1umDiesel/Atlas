@@ -1,3 +1,17 @@
+"""Структурированные логи (structlog поверх stdlib logging) и маскировка секретов.
+
+`configure_logging` вызывается один раз при старте CLI, API или worker'а: все записи —
+свои и сторонних библиотек — уходят JSON-строками в `logs/mnogobase.jsonl` (локально) или
+в stdout (контейнеры, `MNOGOBASE_LOG_FORMAT=json`); в терминал локально идут только
+warning и выше, чтобы не мешать Rich progress. Модули получают логгер через `get_logger`
+и пишут события коротким snake_case-именем с полями (`stage_done`, `lock_release_failed`).
+
+Контекст запуска (`run_id`, документ, стадия) привязывается через contextvars
+(`new_run_id`, `bind_context`) и автоматически попадает во все записи. Тексты ошибок
+перед записью в БД и логи проходят через `safe_error`, который вырезает ключи и пароли;
+traceback пишутся без локальных переменных по той же причине.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -13,6 +27,7 @@ from pathlib import Path
 
 import structlog
 
+# процессоры для всех записей, включая записи сторонних библиотек через stdlib logging
 _SHARED = [
     structlog.contextvars.merge_contextvars,
     structlog.processors.add_log_level,
@@ -29,6 +44,8 @@ _NOISY = ("httpx", "httpcore", "neo4j", "urllib3", "docling", "docling_core", "f
 
 
 class _WarningsOnly(logging.Filter):
+    """Пропускает только записи уровня WARNING и выше."""
+
     def filter(self, record: logging.LogRecord) -> bool:
         return record.levelno >= logging.WARNING
 
@@ -62,6 +79,7 @@ def _quiet_third_party() -> None:
 
 
 def _json_formatter() -> logging.Formatter:
+    """Форматтер одной JSON-строки на запись: и для structlog, и для чужих stdlib-логгеров."""
     return structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -76,7 +94,12 @@ def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True)
     """JSON-журнал в `logs_dir/mnogobase.jsonl` с ротацией (локальный CLI).
 
     С `MNOGOBASE_LOG_FORMAT=json` (контейнеры) журнал идёт в stdout: его собирает и
-    ротирует `docker logs`, а несколько процессов не делят один файл."""
+    ротирует `docker logs`, а несколько процессов не делят один файл.
+
+    Локально файл ротируется по 10 МБ, хранится 5 старых копий. `console=True` добавляет
+    вывод warning и выше в stderr в читаемом виде. Прежние обработчики корневого логгера
+    снимаются, так что повторный вызов (тесты, вложенные команды) не дублирует записи.
+    Заодно глушит шумные сторонние логгеры (`_quiet_third_party`)."""
     structlog.configure(
         processors=[*_SHARED, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -115,15 +138,23 @@ def configure_logging(logs_dir: Path, level: str = "INFO", console: bool = True)
 
 
 def get_logger(name: str | None = None):
+    """structlog-логгер модуля; обычно `_log = get_logger(__name__)` на уровне модуля.
+
+    Конфигурация применяется при первом использовании, поэтому вызывать можно до
+    `configure_logging`."""
     return structlog.get_logger(name)
 
 
 def new_run_id() -> str:
+    """Создаёт id запуска (12 hex-символов) и привязывает его к контексту логов: все
+    последующие записи этого потока / задачи asyncio несут поле `run_id`."""
     run_id = uuid.uuid4().hex[:12]
     structlog.contextvars.bind_contextvars(run_id=run_id)
     return run_id
 
 
+# (шаблон, замена) для `safe_error`: Bearer-токены, ключи вида sk-..., пароль в URL
+# (`://user:pass@` -> `://***@`) и пары `key=value` / `"key": "value"` с секретными именами
 _SECRETS = (
     (re.compile(r"(?i)\bbearer\s+[^\s\"',;]+"), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "sk-***"),
@@ -149,15 +180,22 @@ def safe_error(exc: BaseException, limit: int = 500) -> str:
 
 
 def bind_context(**kv) -> None:
+    """Добавляет поля во все следующие записи текущего контекста (поток / задача asyncio)."""
     structlog.contextvars.bind_contextvars(**kv)
 
 
 def unbind_context(*keys: str) -> None:
+    """Убирает поля `keys` из контекста логов."""
     structlog.contextvars.unbind_contextvars(*keys)
 
 
 @contextmanager
 def log_stage(logger, stage: str, **fields) -> Iterator[None]:
+    """Контекстный менеджер стадии: пишет `stage_done` с длительностью в мс при успехе или
+    `stage_failed` с типом, безопасным текстом ошибки и traceback при исключении.
+
+    Исключение пробрасывается дальше без изменений; `fields` добавляются в обе записи.
+    `BaseException` вне `Exception` (отмена, Ctrl+C) не логируется."""
     start = time.perf_counter()
     try:
         yield

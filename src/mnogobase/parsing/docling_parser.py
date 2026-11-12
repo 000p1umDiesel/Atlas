@@ -1,3 +1,31 @@
+"""Стадия `parse` конвейера ingest: разбор исходного файла в DoclingDocument.
+
+Место в потоке данных: **parse** → `chunk` (`chunking/hybrid.py`) → `embed` → `extract` →
+`graph`. `DoclingParser.parse` превращает файл (PDF, DOCX, PPTX, картинки и прочие форматы
+Docling) в `DoclingDocument` и сохраняет его в кэш разбора `<cache_dir>/<doc_id>.json`;
+стадия `chunk` и `reindex` потом берут документ оттуда (`load`), не разбирая файл повторно.
+Картинки документа пишутся PNG в `<cache_dir>/<doc_id>/images/` вместе с манифестом
+`images.json`.
+
+Что делает Docling:
+- PDF и картинки идут одним конвейером (`PdfPipelineOptions`): разметка страницы, таблицы и
+  OCR. Движок OCR авто (RapidOCR); `parsing.ocr_lang` выбирает его модель, и первым должен
+  стоять язык с кириллицей, иначе RapidOCR берёт китайскую модель, которая кириллицу не
+  читает.
+- С `vision.enabled` каждая картинка внутри PDF, DOCX и PPTX отправляется на
+  `/chat/completions` VLM-сервера роли `vision` (`PictureDescriptionApiOptions`), а файл-
+  картинка целиком описывается отдельным запросом (`_describe_whole_image`). Описание
+  становится частью текста документа, поэтому его видят чанки, граф и цитаты.
+
+Инварианты:
+- Docling глотает ошибки API описания и оставляет пустое описание; `_check_descriptions`
+  превращает это в `VisionError`, чтобы стадия parse упала и её повторил `--retry-failed`, а
+  не прошла молча с потерянными картинками.
+- Лимиты `parsing.max_file_mb` и `parsing.max_pages` дают `ParseLimitError` до или вместо
+  тяжёлого разбора.
+- JSON кэша пишется атомарно (временный файл + `replace`), картинки в него не встраиваются.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -62,6 +90,11 @@ class ParseLimitError(ParseError):
 
 @dataclass
 class ParsedDocument:
+    """Разобранный документ и его метаданные для стадий chunk и graph.
+
+    `title` — первый элемент с меткой TITLE или имя файла без расширения; `mime` — тип из
+    Docling; `n_pages` — число страниц или None для форматов без страниц."""
+
     doc: DoclingDocument
     title: str
     mime: str
@@ -69,6 +102,13 @@ class ParsedDocument:
 
 
 class DoclingParser:
+    """Разбор файлов через Docling с кэшем результата на диске.
+
+    Аргументы: `settings` — секция `parsing`; `device` — устройство для моделей Docling
+    (`cpu`, `mps`...); `cache_dir` — каталог кэша разбора; `vision` — секция `vision` (None
+    или `enabled: false` — картинки не описываются). Конвертер Docling создаётся лениво:
+    загрузка его моделей тяжёлая и не нужна командам, которые не разбирают файлы."""
+
     def __init__(
         self,
         settings: ParsingSettings,
@@ -84,6 +124,9 @@ class DoclingParser:
         self._log = get_logger(__name__)
 
     def _get_converter(self) -> DocumentConverter:
+        """Создаёт (один раз) `DocumentConverter` с опциями PDF/картинок и, при включённом
+        vision, с описанием картинок для PDF, картинок, DOCX и PPTX. Прочие форматы
+        разбираются опциями Docling по умолчанию."""
         if self._converter is None:
             pdf_options = PdfPipelineOptions(
                 do_ocr=self._s.ocr,
@@ -107,9 +150,18 @@ class DoclingParser:
         return self._converter
 
     def cache_path(self, doc_id: str) -> Path:
+        """Путь к JSON кэша разбора документа."""
         return self._cache / f"{doc_id}.json"
 
     def parse(self, path: Path, doc_id: str) -> ParsedDocument:
+        """Разбирает файл `path` и кладёт результат в кэш под `doc_id`.
+
+        Побочные эффекты: запуск моделей Docling (разметка, OCR), при vision — HTTP-запросы
+        к VLM; запись `<doc_id>.json` и каталога `<doc_id>/images/` в кэш разбора.
+
+        Исключения: `ParseLimitError` — файл больше `max_file_mb` или страниц больше
+        `max_pages`; `ParseError` — Docling не разобрал файл; `VisionError` — VLM не описал
+        одну или несколько картинок."""
         size_mb = path.stat().st_size / (1024 * 1024)
         if size_mb > self._s.max_file_mb:
             raise ParseLimitError(
@@ -119,6 +171,8 @@ class DoclingParser:
             path, raises_on_error=False, max_num_pages=self._s.max_pages
         )
         if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
+            # превышение max_num_pages Docling отдаёт как неуспешную конвертацию; отличаем
+            # этот случай по числу страниц входного файла, чтобы сообщить о лимите
             pages = getattr(result.input, "page_count", 0) or 0
             if pages > self._s.max_pages:
                 raise ParseLimitError(
@@ -149,12 +203,17 @@ class DoclingParser:
         return parsed
 
     def load(self, doc_id: str, path: Path) -> ParsedDocument:
+        """Читает ранее разобранный документ из кэша без повторного разбора.
+
+        `path` нужен только для запасного заголовка (имя файла). Исключения:
+        `FileNotFoundError`, если кэша нет; ошибка валидации pydantic, если JSON повреждён."""
         doc = DoclingDocument.model_validate_json(
             self.cache_path(doc_id).read_text(encoding="utf-8")
         )
         return _wrap(doc, path)
 
     def drop_cache(self, doc_id: str) -> None:
+        """Удаляет JSON разбора и сохранённые картинки документа (при удалении документа)."""
         self.cache_path(doc_id).unlink(missing_ok=True)
         shutil.rmtree(self._cache / doc_id, ignore_errors=True)
 
@@ -162,6 +221,7 @@ class DoclingParser:
 def _describe_pictures(options: ConvertPipelineOptions, vision: VisionSettings) -> None:
     """Описание картинок VLM-сервером роли `vision` (OpenAI `/chat/completions`). Картинки
     меньше `min_area` страницы и классов из `skip` (логотипы, иконки...) не описываются."""
+    # меняет `options` на месте: тот же объект уже передан или будет передан FormatOption
     options.enable_remote_services = True  # иначе Docling запрещает вызовы API
     options.do_picture_description = True
     options.picture_description_options = PictureDescriptionApiOptions(
@@ -190,7 +250,10 @@ def _describe_whole_image(
 ) -> None:
     """Файл-картинка (скриншот) описывается целиком: разметка находит в нём текст и таблицы,
     а не картинку, и до описания картинок Docling он иначе не доходит. Описание встаёт в
-    начало документа, перед текстом OCR."""
+    начало документа, перед текстом OCR.
+
+    `client` и `retry_wait` подменяются в тестах. Исключения: `VisionError` при ошибке
+    запроса, неожиданной форме ответа или пустом описании."""
     with Image.open(path) as source:
         image = source.convert("RGB")
     # большой скриншот VLM всё равно ужмёт, а base64 огромного PNG — лишние мегабайты запроса
@@ -203,6 +266,7 @@ def _describe_whole_image(
         ) from exc
     if not text.strip():
         raise VisionError(f"{path.name}: the VLM at {vision.url} returned an empty description")
+    # рамка картинки — вся первая страница (у картинки она одна) или сам размер картинки
     page = doc.pages.get(1)
     width, height = (page.size.width, page.size.height) if page else image.size
     picture = doc.add_picture(
@@ -213,6 +277,7 @@ def _describe_whole_image(
         )
     )
     picture.meta = PictureMeta(description=DescriptionMetaField(text=text, created_by=vision.model))
+    # add_picture дописывает элемент в конец body; переносим его в начало
     doc.body.children.insert(0, doc.body.children.pop())
 
 
@@ -223,7 +288,10 @@ def _ask_vlm(
     retry_wait=DEFAULT_RETRY_WAIT,
 ) -> str:
     """Один запрос OpenAI `/chat/completions` с картинкой (PNG в data URL) и промптом
-    `vision.prompt`; сетевые ошибки и 5xx повторяются."""
+    `vision.prompt`; сетевые ошибки и 5xx повторяются.
+
+    Возвращает текст ответа (пустую строку, если `content` пуст). Если `client` не передан,
+    создаёт временный клиент к `vision.url` и закрывает его после запроса."""
     buffer = io.BytesIO()
     image.save(buffer, "PNG")
     data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -256,7 +324,10 @@ def _ask_vlm(
 
 def _check_descriptions(doc: DoclingDocument, vision: VisionSettings) -> None:
     """Docling не бросает ошибки API описания (сервер VLM недоступен, таймаут), а оставляет
-    описание пустым; такой разбор — ошибка стадии parse, её повторит `--retry-failed`."""
+    описание пустым; такой разбор — ошибка стадии parse, её повторит `--retry-failed`.
+
+    Картинки без описания вовсе (отсеянные по `min_area` или классам `skip`) ошибкой не
+    считаются: проверяется только описание, которое есть, но без текста."""
     empty = [
         p for p in doc.pictures if p.meta and p.meta.description and not p.meta.description.text
     ]
@@ -268,6 +339,7 @@ def _check_descriptions(doc: DoclingDocument, vision: VisionSettings) -> None:
 
 
 def _wrap(doc: DoclingDocument, path: Path) -> ParsedDocument:
+    """Собирает `ParsedDocument` из DoclingDocument: заголовок, MIME-тип, число страниц."""
     mime = doc.origin.mimetype if doc.origin else "application/octet-stream"
     return ParsedDocument(
         doc=doc, title=_title(doc, path), mime=mime, n_pages=len(doc.pages) or None
@@ -275,6 +347,7 @@ def _wrap(doc: DoclingDocument, path: Path) -> ParsedDocument:
 
 
 def _title(doc: DoclingDocument, path: Path) -> str:
+    """Текст первого непустого элемента с меткой TITLE, иначе имя файла без расширения."""
     for item, _level in doc.iterate_items():
         if getattr(item, "label", None) == DocItemLabel.TITLE and item.text.strip():
             return item.text.strip()
@@ -282,6 +355,11 @@ def _title(doc: DoclingDocument, path: Path) -> str:
 
 
 def _save_images(doc: DoclingDocument, out_dir: Path) -> int:
+    """Сохраняет картинки документа как `img_NNNN.png` в `out_dir` и пишет манифест
+    `images.json` (файл, подпись, страница).
+
+    Каталог создаётся только если есть хотя бы одна картинка с изображением; манифест
+    пишется атомарно. Возвращает число сохранённых картинок."""
     manifest = []
     for item, _level in doc.iterate_items():
         if not isinstance(item, PictureItem):

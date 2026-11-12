@@ -1,3 +1,11 @@
+"""Один вопрос — один режим (`run_mode`) и все режимы рядом (`compare`).
+
+`run_mode` — общий путь `ask`: перевод вопроса (если включён `retrieval.translate`) → поиск
+выбранным retriever'ом → ответ `Answerer`. `compare` прогоняет его по всем режимам и
+дописывает результаты в `runs/compare.jsonl` (по строке на режим) вместе с `config_hash`,
+чтобы ответы разных конфигураций можно было сравнивать между собой.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -13,10 +21,13 @@ from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.translate import QueryTranslator
 
+# при превышении compare.jsonl переносится в compare.1.jsonl
 COMPARE_MAX_BYTES = 20 * 1024 * 1024
 
 
 def config_hash(settings: Settings) -> str:
+    """Короткий (12 hex) хеш секций конфига, влияющих на ответ: `llm`, `embedder`,
+    `chunking`, `retrieval`, `graph`. Одинаковый хеш — сравнимые строки в compare.jsonl."""
     relevant = settings.model_dump_json(
         include={"llm", "embedder", "chunking", "retrieval", "graph"}
     )
@@ -33,7 +44,9 @@ async def run_mode(
 ) -> Answer:
     """Поиск и ответ в одном режиме; `latency_ms` включает перевод + поиск + генерацию.
 
-    С `translator` неанглийский вопрос дополнительно ищется на английском."""
+    С `translator` неанглийский вопрос дополнительно ищется на английском; использованные
+    формулировки сохраняются в `answer.alt_queries`. Поиск синхронный и выполняется прямо в
+    event loop."""
     start = time.perf_counter()
     alt = await translator.alt_queries(question) if translator else []
     items = retriever.retrieve(question, k, alt)
@@ -44,6 +57,7 @@ async def run_mode(
 
 
 def _row(answer: Answer, ts: str, config_hash: str) -> dict:
+    """Строка compare.jsonl: ответ, источники, задержка и токены одного режима."""
     return {
         "ts": ts,
         "question": answer.question,
@@ -69,8 +83,15 @@ async def compare(
     translator: QueryTranslator | None = None,
 ) -> list[Answer]:
     """Отвечает на `question` во всех режимах и дописывает по строке на режим в
-    `runs_dir/compare.jsonl`."""
-    # последовательно намеренно: учёт токенов по ответам читает общий счётчик usage
+    `runs_dir/compare.jsonl`.
+
+    Все строки одного запуска получают общий `ts`. Файл пишется только после всех ответов:
+    если какой-то режим упал, исключение пробрасывается и в журнал ничего не попадает.
+    Возвращает ответы в порядке `retrievers`.
+    """
+    # Режимы идут последовательно намеренно: перевод мемоизируется в `translator` только
+    # после первого вызова, поэтому параллельный запуск перевёл бы вопрос по разу на режим,
+    # а `latency_ms` каждого режима включал бы ожидание чужих вызовов LLM.
     answers = [
         await run_mode(question, mode, r, answerer, k, translator) for mode, r in retrievers.items()
     ]

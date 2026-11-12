@@ -1,4 +1,10 @@
-"""Paired comparisons, category breakdowns and honestly scoped preprocessing costs."""
+"""Парные сравнения режимов, разбивка по категориям вопросов и затраты предобработки.
+
+Дополняет `report.md` разделами и пишет `paired.csv`, `by_category.csv`, `processing.csv`
+и `processing_stages.csv`. Тексты отчёта прямо говорят, чего цифры не доказывают: интервалы
+разведочные, а затраты предобработки общие для всех режимов, а не стоимость каждой
+архитектуры отдельно.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from .ragas import METRIC_NAMES
 
 
 def _csv(path, rows, fields):
+    """Пишет строки в CSV с заданным порядком колонок (строк может не быть)."""
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
@@ -21,6 +28,10 @@ def _csv(path, rows, fields):
 
 
 def _interval(deltas):
+    """95% bootstrap-интервал среднего разностей: 1000 перевыборок, 2,5 и 97,5 перцентили.
+
+    Генератор с фиксированным зерном даёт одинаковый отчёт при повторной сборке. Меньше
+    двух пар — `(None, None)`."""
     if len(deltas) < 2:
         return None, None
     rng = random.Random(159)
@@ -29,10 +40,18 @@ def _interval(deltas):
 
 
 def _fmt(value):
+    """Число с четырьмя знаками для Markdown или прочерк для отсутствующего значения."""
     return "—" if value is None else f"{value:.4f}"
 
 
 def comparison_reports(output: Path, manifest: dict, answers: list, details: list) -> list[str]:
+    """Пишет CSV сравнений и возвращает строки Markdown для конца `report.md`.
+
+    Парное сравнение каждой пары режимов A и B по каждой метрике использует только
+    вопросы, успешно оценённые в обоих режимах: разность B − A, её среднее и
+    bootstrap-интервал. Разбивка по категориям группирует вопросы по полю `category`
+    набора (без него — `unclassified`). `details` — строки `details.csv` из
+    `report.report`; `answers` сейчас не используется."""
     modes = manifest["config"]["modes"]
     by_key = {(r["id"], r["mode"], r["metric"]): r for r in details}
     paired = []
@@ -121,6 +140,12 @@ def comparison_reports(output: Path, manifest: dict, answers: list, details: lis
 
 
 def _processing_report(output, manifest):
+    """Затраты предобработки из `processing.jsonl` (замеры `eval ingest`): CSV по запускам и
+    по стадиям и строки Markdown с итогами фаз build и update.
+
+    Если в плане есть снимок корпуса, замеры другого проекта отклоняются (`ValueError`), а
+    расхождение последнего снимка после замера с оценённым корпусом даёт предупреждение
+    в отчёте: тогда затраты описывают корпус не полностью."""
     rows = read_jsonl(output / "processing.jsonl", recover_tail=True)
     corpus = manifest["config"].get("corpus")
     if corpus and any(r["after"]["project"] != corpus["project"] for r in rows):

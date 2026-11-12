@@ -4,6 +4,17 @@
 Все модули команд обращаются к функциям этого модуля через объект модуля
 (`common.build_app(...)`, `common.console`), а не импортируют имена к себе. Так у тестов одна
 точка подмены: `monkeypatch.setattr(common, "build_app", fake)` действует на все команды сразу.
+
+Соглашение о кодах выхода для всех команд:
+- 0 — команда выполнена полностью;
+- 1 — команда отработала, но часть работы не удалась (упавшие файлы или страницы wiki,
+  неполный прогон оценки) либо пользователь отказался от подтверждения;
+- 2 — известная ошибка, которую исправляет пользователь: битый конфиг, вызов вне проекта,
+  недоступный сервис, несовместимый индекс, занятая блокировка, ошибка PostgreSQL.
+  Сообщение печатается без traceback (`fail`, `DatabaseSafeGroup`).
+
+Блокировки писателя — advisory-блокировки PostgreSQL (`PgLock`), а не файлы: они общие для
+CLI на хосте и контейнеров Docker, которые смотрят в одну базу.
 """
 
 from __future__ import annotations
@@ -63,6 +74,11 @@ class DatabaseSafeGroup(TyperGroup):
     код выхода 2 вместо traceback с DSN или SQL."""
 
     def invoke(self, ctx):
+        """Запускает выбранную команду и перехватывает ошибки PostgreSQL из любой из них.
+
+        `DatabaseError` уже несёт безопасный текст и печатается как есть. Сырой `DBAPIError`
+        от SQLAlchemy может содержать SQL, параметры и адрес сервера, поэтому его текст
+        заменяется общим сообщением."""
         try:
             return super().invoke(ctx)
         except DatabaseError as exc:
@@ -84,15 +100,21 @@ def main(
         Path | None, typer.Option("--config", "-c", help="Path to config.yaml.")
     ] = None,
 ) -> None:
+    """Корневой callback: запоминает глобальный `--config` до запуска подкоманды.
+
+    Настройки здесь не загружаются: их читает сама команда (`get_settings`), поэтому
+    `--help` и команды, которым конфиг не нужен, работают без config.yaml."""
     state["config"] = config
 
 
 def get_settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
-    """Загружает настройки и включает логирование в файл.
+    """Загружает настройки (config.yaml, `.env`, переменные `MNOGOBASE_*`) и включает
+    логирование в файл.
 
     `project=True` сначала требует существующий проект (иначе выход с кодом
     `missing_exit`), чтобы команда, запущенная не в том каталоге, не создала ни таблиц
-    проекта в PostgreSQL, ни каталога logs/."""
+    проекта в PostgreSQL, ни каталога logs/. Отсутствующий или невалидный конфиг — выход
+    с кодом 2 и коротким сообщением."""
     try:
         settings = load_settings(state["config"])
     except FileNotFoundError as exc:
@@ -111,7 +133,11 @@ def preflight(
     settings: Settings, checks: tuple[str, ...] = PREFLIGHT_CHECKS, *, check_dim: bool = True
 ) -> None:
     """Завершает команду заранее (код 2), если недоступен нужный ей сервис или, при
-    `check_dim`, размерность коллекций Qdrant не совпадает с эмбеддером."""
+    `check_dim`, размерность коллекций Qdrant не совпадает с эмбеддером.
+
+    `checks` — имена проверок `doctor` (см. `PREFLIGHT_CHECKS` и соседние наборы). Проверка
+    до начала работы дешевле, чем упасть посреди ingest с полузаписанными стадиями. Каждая
+    проверка делает сетевой запрос к своему сервису."""
     failed = [c for c in run_checks(settings, only=checks, check_dim=check_dim) if not c.ok]
     if failed:
         for check in failed:
@@ -122,7 +148,10 @@ def preflight(
 
 def require_project(settings: Settings, code: int = 2) -> None:
     """Выход с `code` вне проекта: команды, которые только читают, не должны создавать
-    SQL-таблицы проекта."""
+    SQL-таблицы проекта.
+
+    Проект существует, если есть маркер `.mnogobase/postgresql-project.json` и таблица
+    `files` в схеме проекта (`project_exists`)."""
     if not project_exists(settings):
         console.print(
             f"No mnogobase project here (no {escape(str(database_target(settings)))}). "
@@ -135,7 +164,10 @@ def require_project(settings: Settings, code: int = 2) -> None:
 def corpus_lock(settings: Settings) -> PgLock:
     """Берёт блокировку писателя корпуса (`ingest`). Второй писатель (ещё один ingest,
     remove, wiki build, reindex, reset или worker) получает понятный отказ и код 2.
-    Вызывающий обязан освободить блокировку (`lock.release()` в `finally`)."""
+    Вызывающий обязан освободить блокировку (`lock.release()` в `finally`).
+
+    Блокировка не ждёт: занята — сразу отказ. Держит её отдельное соединение PostgreSQL,
+    поэтому она снимается и при аварийном завершении процесса."""
     lock = ingest_lock(database_target(settings))
     try:
         lock.acquire()
@@ -175,7 +207,12 @@ def answer_setup(
     application: App,
 ) -> tuple[dict[str, Retriever], Answerer, QueryTranslator | None]:
     """Готовит всё для ответа на вопрос: проверяет индекс (подпись эмбеддера и размерность),
-    строит retriever'ы всех режимов, генератор ответа и, если включён, переводчик вопроса."""
+    строит retriever'ы всех режимов, генератор ответа и, если включён, переводчик вопроса.
+
+    Возвращает `(retrievers, answerer, translator)`: `retrievers` — словарь
+    `{режим: Retriever}`, `translator` — `None` при `retrieval.translate: false`. Если индекс
+    построен другим эмбеддером, команда завершается с кодом 2 и советом сделать reindex.
+    Блокировок не берёт: ответ только читает базу."""
     try:
         application.pipeline.prepare(resume=False)
     except (EmbedderMismatchError, DimensionMismatchError) as exc:

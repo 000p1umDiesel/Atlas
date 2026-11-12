@@ -1,3 +1,16 @@
+"""Обслуживание индекса целиком: `mnogobase reindex` и `mnogobase reset`.
+
+Обе операции вызываются CLI (`cli/project.py`) под advisory-lock `ingest` с уже собранным
+`App` и меняют все слои знаний сразу, поэтому защищены маркерами в registry `meta`:
+пока маркер стоит, `Pipeline.prepare` отказывается работать с индексом.
+
+- `reindex` пересчитывает все векторы Qdrant текущим embedder из сохранённых данных (кэш
+  чанков или граф, сущности графа, файлы wiki); граф и wiki не меняются, LLM не вызывается.
+  Нужен после смены модели, размерности или шаблонов embedder.
+- `reset` удаляет всё: коллекции Qdrant, граф, историю очереди задач, кэши и
+  сгенерированные файлы wiki, затем строки registry.
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -11,19 +24,28 @@ from mnogobase.embedding.base import embedder_signature
 from mnogobase.extraction.resolver import entity_embed_input
 from mnogobase.stores.registry import RESET_IN_PROGRESS
 
-ENTITY_BATCH = 64
+ENTITY_BATCH = 64  # сущностей на один запрос эмбеддера при reindex
+# файлы в корне wiki, которые пишет mnogobase (log.1.md — ротированный log.md)
 WIKI_FILES = ("index.md", "log.md", "log.1.md")
-# Хранится, пока идёт reindex: прерванный reindex оставляет неполный индекс, и
-# `Pipeline.prepare` отказывается с ним работать, пока `mnogobase reindex` не завершится.
+# Стоит вместо сигнатуры в meta-ключе `embedder`, пока идёт reindex: прерванный reindex
+# оставляет неполный индекс, а маркер не совпадает ни с одной сигнатурой, поэтому
+# `Pipeline.prepare` отказывается работать, пока `mnogobase reindex` не завершится.
 REINDEX_IN_PROGRESS = "reindex-in-progress"
 
 
 class ReindexError(RuntimeError):
-    """`reindex` отказался запускаться; существующий индекс не тронут."""
+    """`reindex` не может выполниться.
+
+    Если сообщение говорит "nothing was changed", ошибка найдена до удаления коллекций и
+    старый индекс цел; иначе (страница wiki пропала по ходу) индекс неполон, в meta стоит
+    маркер, и `reindex` нужно запустить снова."""
 
 
 def _check_embedder(app: App) -> None:
-    """Проверяет, что embedder выдаёт `dim` значений, до удаления старого индекса."""
+    """Проверяет, что embedder выдаёт `dim` значений, до удаления старого индекса.
+
+    Один пробный запрос к серверу эмбеддингов; несовпадение размерности или ошибка
+    нормализации — `ReindexError` (сетевые ошибки пробрасываются как есть)."""
     expected = app.embedder.dim
     try:
         got = len(app.embedder.embed_query("dimension check"))
@@ -37,7 +59,10 @@ def _check_embedder(app: App) -> None:
 
 
 def _document_input(app: App, doc_id: str):
-    """Recover unusable chunk caches from graph data before touching the index."""
+    """Документ и его чанки для reindex: из кэша чанков, а если он непригоден — из графа.
+
+    Используется дважды: на проверке до удаления индекса (чтобы отказаться заранее) и при
+    самой индексации. Если нет ни кэша, ни данных в графе — `ReindexError`."""
     try:
         return app.pipeline.load_chunks(doc_id)
     except (OSError, ValueError, KeyError, TypeError):
@@ -53,10 +78,25 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     """Пересчитывает все векторы текущим embedder; граф и файлы wiki не трогаются.
 
     Коллекции удаляются и создаются заново с размерностью embedder, так что это же переводит
-    индекс на другую размерность."""
+    индекс на другую размерность.
+
+    Шаги:
+    1. Проверки без изменений: размерность embedder; каждый документ с завершённой стадией
+       `embed` (кроме тех, чьё удаление в журнале) читается; каждая видимая страница wiki
+       читается с диска. Любая проблема — `ReindexError`, индекс не тронут.
+    2. В meta-ключ `embedder` пишется `REINDEX_IN_PROGRESS`, коллекции Qdrant
+       пересоздаются.
+    3. Чанки каждого документа эмбеддятся заново, связи чанк → сущности переносятся из
+       графа в payload Qdrant.
+    4. Векторы всех сущностей графа пачками по `ENTITY_BATCH`.
+    5. Секции всех видимых (не stale) страниц wiki.
+    6. В meta пишется сигнатура текущего embedder: с этого момента индекс снова годен.
+
+    Возвращает счётчики `chunks`, `entities`, `wiki_sections`. Сеть: embedder, Qdrant,
+    Neo4j; вызывающий держит lock `ingest`."""
     log = get_logger(__name__)
     _check_embedder(app)
-    # Refuse unrecoverable inputs before dropping the usable index.
+    # Непригодные входные данные отвергаются до удаления рабочего индекса.
     doc_ids = sorted({f.doc_id for f in app.registry.files()})
     # документ, удаление которого начато, но не закончено, не возвращается в индекс
     removing = {doc_id for doc_id, _ in app.registry.pending_removals()}
@@ -76,13 +116,15 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
             raise ReindexError(
                 f"missing or unreadable wiki page {row.path}; restore it before reindex; nothing was changed"
             ) from exc
+    # маркер ставится до удаления коллекций: прерванный reindex не оставит годную на вид
+    # сигнатуру рядом с неполным индексом
     app.registry.set_meta("embedder", REINDEX_IN_PROGRESS)
     app.vectors.drop_collections()
     app.vectors.ensure_collections()
     app.graph.ensure_schema()
     stats = {"chunks": 0, "entities": 0, "wiki_sections": 0}
 
-    # каждый документ, чанки которого хоть раз были заэмбеддены, что бы ни было на поздних стадиях
+    # каждый документ с завершённой стадией embed, что бы ни было на поздних стадиях
     progress.step("reindex chunks", len(doc_ids))
     for doc_id in doc_ids:
         doc, chunks = _document_input(app, doc_id)
@@ -114,6 +156,7 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
         stats["wiki_sections"] += app.wiki.index_page(row.page_id, row.page_id, row.path, text)
         progress.advance()
 
+    # последним: сигнатура снимает маркер только после того, как записаны все векторы
     app.registry.set_meta("embedder", embedder_signature(app.embedder))
     log.info("reindex_done", **stats)
     return stats
@@ -122,12 +165,14 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
 def reset(app: App) -> None:
     """Удаляет все векторы, узлы графа, строки registry, файлы кэша и страницы wiki.
 
-    Удаляются только файлы wiki, которые пишет mnogobase (`entities/`, `index.md`, `log.md`);
-    сам каталог wiki удаляется, только если в нём больше ничего не осталось.
+    Удаляются только файлы wiki, которые пишет mnogobase (`entities/` и `WIKI_FILES`);
+    сам каталог wiki удаляется, только если в нём больше ничего не осталось. Исходные
+    документы не трогаются. Также очищается история очереди задач (`JobQueue.clear`).
 
     Сначала ставится флаг в registry, последней очищается сама registry (вместе с флагом):
     прерванный reset не оставит registry, которая считает удалённые документы загруженными,
-    а `Pipeline.prepare` до повторного reset откажется работать с полуудалёнными данными."""
+    а `Pipeline.prepare` до повторного reset откажется работать с полуудалёнными данными.
+    Каждый шаг идемпотентен, поэтому повторный reset просто доводит работу."""
     app.registry.set_meta("reset", RESET_IN_PROGRESS)
     app.vectors.drop_collections()
     app.graph.wipe()

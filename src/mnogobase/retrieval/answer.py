@@ -1,3 +1,14 @@
+"""Генерация ответа по найденному контексту с нумерованными ссылками на источники.
+
+Последний шаг `ask`: элементы `ContextItem` от retriever'а превращаются в блоки
+`[n] (метка)\\nтекст`, обрезаются по бюджету `retrieval.context_tokens`, подставляются в
+промпт `answer.md` (вопрос и контекст — в `user`-сообщении как недоверенные данные), и LLM с
+`task="answer"` пишет ответ, ссылаясь на блоки как `[n]`. Номера, которые встретились в тексте
+ответа, помечают соответствующие `Source.cited`.
+
+Если контекст пуст, LLM не вызывается: возвращается фиксированный `NO_SOURCES`.
+"""
+
 from __future__ import annotations
 
 import re
@@ -11,10 +22,13 @@ from mnogobase.llm.templates import render_messages
 from mnogobase.retrieval.base import estimate_tokens
 
 NO_SOURCES = "The knowledge base has no relevant sources for this question."
+# ссылка на источник в тексте ответа: `[3]`
 _CITED = re.compile(r"\[(\d+)\]")
 
 
 def _label(item: ContextItem) -> str:
+    """Короткая метка блока для LLM: имя файла и страница для чанка, путь для wiki, вид для
+    элементов графа (`graph entity` / `graph relation`)."""
     if item.kind == "chunk":
         where = Path(item.path).name if item.path else item.ref
         return f"document {where}" + (f", p.{item.page}" if item.page is not None else "")
@@ -28,8 +42,12 @@ def _context_blocks(
 ) -> tuple[list[str], list[Source], int]:
     """Нумерует элементы блоками `[n] (label)\\ntext`, пока не исчерпан бюджет токенов.
 
-    Первый элемент сохраняется всегда, даже сверх бюджета, чтобы непустой поиск никогда
-    не давал пустой контекст.
+    Элементы берутся по порядку; на первом, который не помещается, перебор останавливается
+    (в отличие от `CombinedRetriever`, здесь меньшие элементы после него не добираются —
+    порядок от retriever'а важнее). Первый элемент сохраняется всегда, даже сверх бюджета,
+    чтобы непустой поиск никогда не давал пустой контекст.
+
+    Возвращает (блоки, источники с теми же номерами `n`, оценку израсходованных токенов).
     """
     blocks: list[str] = []
     sources: list[Source] = []
@@ -55,8 +73,12 @@ def _context_blocks(
 
 
 class Answerer:
+    """Отвечает на вопрос по готовому контексту; один экземпляр обслуживает все режимы."""
+
     def __init__(self, llm: LLMClient, max_context_tokens: int, language: str = "auto"):
-        """`language`: код вроде `ru` / `en` (или название языка); `auto` — язык вопроса."""
+        """`max_context_tokens` — бюджет контекста (`retrieval.context_tokens`);
+        `language` — код вроде `ru` / `en` (или название языка), на котором писать ответ;
+        `auto` — на языке вопроса."""
         self._llm = llm
         self._max = max_context_tokens
         self._language = (
@@ -66,6 +88,13 @@ class Answerer:
         )
 
     async def answer(self, question: str, mode: str, items: list[ContextItem]) -> Answer:
+        """Строит контекст из `items`, вызывает LLM и возвращает `Answer`.
+
+        В `Answer` попадают текст, источники с флагом `cited`, сами блоки контекста (`contexts`,
+        нужны для оценки Ragas), токены этого вызова и `latency_ms` только генерации (поиск и
+        перевод сюда не входят; полное время считает `compare.run_mode`). Ошибки LLM
+        пробрасываются как есть.
+        """
         start = time.perf_counter()
         blocks, sources, context_tokens = _context_blocks(items, self._max)
         context = "\n\n".join(blocks)
@@ -79,7 +108,9 @@ class Answerer:
         messages = render_messages(
             "answer", question=question, context=context, language=self._language
         )
-        with usage_scope() as used:  # только этот вызов, а не параллельные вопросы
+        # usage_scope считает токены только этого вызова, а не параллельных вопросов
+        # на том же клиенте
+        with usage_scope() as used:
             text = await self._llm.complete(messages, task="answer")
         cited = {int(n) for n in _CITED.findall(text)}
         for source in sources:

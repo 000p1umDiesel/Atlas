@@ -1,7 +1,18 @@
-"""Безопасные внешние ошибки прикладного сервиса."""
+"""Безопасные внешние ошибки прикладного сервиса.
+
+Всё, что сервисный слой отдаёт наружу (HTTP API, CLI `user`), — это `ServiceError` с
+HTTP-кодом и коротким текстом без DSN, SQL, путей и сообщений провайдеров. Внутренние
+исключения переводятся в `ServiceError` там, где их ловят (`KnowledgeBase._with_app`,
+`ServiceStore`); `api/app.py` превращает его в JSON-ответ `{"detail": ...}`.
+"""
 
 
 class ServiceError(Exception):
+    """Ошибка, которую можно показать клиенту: `status` — HTTP-код, `detail` — текст.
+
+    `detail` попадает в ответ API как есть, поэтому туда пишут только заранее известные
+    безопасные строки, а не `str(exc)` чужого исключения."""
+
     def __init__(self, status: int, detail: str):
         self.status = status
         self.detail = detail

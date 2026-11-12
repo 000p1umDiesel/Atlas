@@ -1,4 +1,43 @@
-"""Local worker and queue commands; starting a worker is an explicit user action."""
+"""Очередь фонового ingest (`jobs enqueue | list | retry`) и локальный worker (`worker run`).
+
+Очередь — таблица `jobs` в схеме проекта PostgreSQL (`background.queue.JobQueue`). Задачи
+ставят `jobs enqueue`, watcher worker'а и HTTP API (загрузка и удаление документов); сам
+worker запускается только явной командой, при импорте ничего не стартует.
+
+Как устроен `worker run`:
+
+1. **Один worker на проект.** Сначала берётся блокировка `worker` (advisory-блокировка
+   PostgreSQL); второй worker получает отказ с кодом 2. Под ней `JobQueue.recover`
+   возвращает в очередь задачи, оставшиеся `running` после аварийной остановки, а задачи,
+   исчерпавшие попытки, помечает failed (`InterruptedTooOften`), чтобы файл, который роняет
+   процесс, не брался бесконечно.
+2. **Watcher.** С `--watch` в отдельном потоке-демоне `_watch_loop` раз в `--interval`
+   секунд опрашивает каталоги и ставит в очередь новые и изменённые файлы, дождавшись, пока
+   файл перестанет меняться (`--settle`). Поток работает со своим соединением к очереди.
+   Если он упал, основной цикл видит это через список `health` и останавливает worker:
+   молча перестать следить за каталогами хуже, чем упасть.
+3. **Цикл `dispatch`.** На каждом шаге worker отмечает heartbeat (его показывает
+   `/api/status`) и вызывает `process_one`: тот берёт блокировку корпуса (`ingest`) и
+   только под ней забирает одну готовую задачу (`claim`). Поэтому worker и CLI-писатели
+   (ingest, remove, wiki build, reindex, reset) никогда не пишут корпус одновременно: если
+   блокировка занята, worker просто ждёт `--interval` и пробует снова. Время одной задачи
+   ограничено `jobs.timeout_s`.
+4. **Задача.** `handle` выполняет ingest или remove. Перед ingest сверяется хеш файла:
+   если файл изменился после постановки в очередь, ставится новая задача на новую версию
+   (с задержкой, чтобы файл успел «осесть»), а текущая помечается superseded. Ход работы
+   (`JobProgress`) пишется в строку задачи и одновременно рисуется в терминале.
+5. **Ошибки.** Ошибка документа расходует попытку, задача повторяется с удваивающейся
+   задержкой и после `max_attempts` становится failed. Недоступный сервис моделей или базы
+   (`ServicesUnavailable`, ошибки PostgreSQL) — не вина документа: задача откладывается без
+   расхода попытки (`release`). После ошибки базы соединения `App` могли умереть (рестарт
+   PostgreSQL), поэтому `App` помечается устаревшим и пересоздаётся перед следующей задачей.
+   Перед каждой задачей сервисы проверяются заново (`services`), и `App` создаётся лениво.
+6. **Остановка.** SIGTERM (`docker stop`, systemd) переназначен на обработчик SIGINT, так что
+   и он, и Ctrl+C превращаются в `KeyboardInterrupt` и штатно завершают worker. Прерванная
+   задача остаётся `running` и продолжается при следующем запуске (через `recover`). В
+   `finally` останавливается watcher, закрываются `App` и очередь, восстанавливается прежний
+   обработчик SIGTERM и отпускается блокировка worker.
+"""
 
 from __future__ import annotations
 
@@ -39,6 +78,8 @@ common.app.add_typer(worker_app, name="worker")
 
 
 def _excluded(settings):
+    """Каталоги, которые нельзя ставить в очередь: данные, wiki, логи и прогоны самого
+    проекта. Иначе watcher, следящий за корнем проекта, загружал бы сгенерированную wiki."""
     return [settings.data_dir, settings.wiki.dir, settings.logs_dir, settings.runs_dir]
 
 
@@ -49,6 +90,12 @@ def enqueue(
         bool, typer.Option(help="Requeue previously completed/failed content.")
     ] = False,
 ) -> None:
+    """Поставить файлы в очередь фонового ingest.
+
+    Каталоги обходятся рекурсивно; берутся только расширения из parsing.extensions,
+    скрытые файлы и служебные каталоги проекта пропускаются. Уже выполненная версия файла
+    без --force повторно не ставится. Очередь обрабатывает mnogobase worker run. Код
+    выхода 2, если подходящих файлов не нашлось."""
     settings = common.get_settings()
     files = discover(paths, settings.parsing.extensions, _excluded(settings))
     if not files:
@@ -66,6 +113,10 @@ def enqueue(
 
 @jobs_app.command("list")
 def list_jobs(limit: Annotated[int, typer.Option(min=1)] = 100) -> None:
+    """Показать задачи очереди: статус, попытки, прогресс и ошибки.
+
+    Сначала печатаются счётчики по статусам, затем последние задачи (не больше --limit) и
+    их полные пути. Для отложенной задачи с ошибкой видно время следующей попытки."""
     settings = common.get_settings()
     target = database_target(settings)
     if not target_exists(target, "jobs"):
@@ -94,6 +145,10 @@ def list_jobs(limit: Annotated[int, typer.Option(min=1)] = 100) -> None:
 
 @jobs_app.command()
 def retry(job_id: Annotated[int | None, typer.Option("--id", min=1)] = None) -> None:
+    """Вернуть упавшие задачи в очередь: все или одну по --id.
+
+    Счётчик попыток и ошибка сбрасываются; печатается число возвращённых задач. Выполнит
+    их запущенный worker."""
     settings = common.get_settings()
     target = database_target(settings)
     if not target_exists(target, "jobs"):
@@ -107,37 +162,57 @@ def retry(job_id: Annotated[int | None, typer.Option("--id", min=1)] = None) -> 
 
 
 class JobProgress(NullProgress):
+    """`ProgressSink` задачи очереди: передаёт события пайплайна в терминальный прогресс
+    (`delegate`) и сохраняет сводку текущего шага в строке задачи.
+
+    Сводка вида `embed 12/40; failed 0` видна в `jobs list` и в API. Каждое сохранение
+    заодно обновляет heartbeat worker'а: долгая задача не выглядит как зависший worker."""
+
     def __init__(self, queue, job_id, delegate):
         self.queue, self.job_id, self.delegate = queue, job_id, delegate
         self.stage, self.total, self.completed, self.failed = "starting", None, 0, 0
 
     def files_found(self, total):
+        """Передаёт число файлов в терминальный прогресс."""
         self.delegate.files_found(total)
 
     def file_started(self, path):
+        """Передаёт начало обработки файла в терминальный прогресс."""
         self.delegate.file_started(path)
 
     def file_done(self, status):
+        """Передаёт итог файла в терминальный прогресс."""
         self.delegate.file_done(status)
 
     def step(self, name, total=None):
+        """Начинает новый шаг: счётчики обнуляются, сводка сохраняется в задачу."""
         self.stage, self.total, self.completed, self.failed = name, total, 0, 0
         self.delegate.step(name, total)
         self._save()
 
     def advance(self, n=1, *, failed=False):
+        """Учитывает `n` выполненных (или упавших) единиц шага и сохраняет сводку."""
         self.completed += n
         self.failed += n if failed else 0
         self.delegate.advance(n, failed=failed)
         self._save()
 
     def _save(self):
+        """Пишет сводку шага в строку задачи и обновляет heartbeat (два UPDATE в
+        PostgreSQL на каждое событие)."""
         count = f" {self.completed}/{self.total}" if self.total is not None else ""
         self.queue.set_progress(self.job_id, f"{self.stage}{count}; failed {self.failed}")
         self.queue.heartbeat()
 
 
 def _watch_loop(db, settings, roots, stop, interval, settle, health):
+    """Тело потока watcher: опрашивает каталоги `roots`, пока не выставлен `stop`.
+
+    Использует собственное соединение с очередью (`db` — цель базы проекта): соединения не
+    делятся между потоками. Опрос раз в `interval` секунд вместо событий файловой системы
+    переживает пропущенные события и не зависит от платформы. Любая ошибка записывается
+    в `health` (только имя типа, без текста) и завершает поток; основной цикл worker'а
+    увидит её и остановится."""
     q = None
     try:
         q = JobQueue(db)
@@ -170,6 +245,16 @@ def run_worker(
         float | None, typer.Option(min=0.1, help="Default: jobs.retry_delay_s.")
     ] = None,
 ) -> None:
+    """Запустить фоновый worker, который выполняет задачи очереди.
+
+    Worker — единственный писатель корпуса: задачи ingest и remove выполняются по одной
+    под блокировкой корпуса, поэтому CLI-команды записи и worker не мешают друг другу. С
+    --watch он ещё и следит за каталогами, ставя в очередь новые и изменённые файлы. Если
+    недоступен сервер моделей или база, задача откладывается без расхода попытки. Ctrl+C
+    или SIGTERM останавливают worker, прерванная задача продолжится при следующем запуске.
+    С --once worker выполняет готовые задачи и завершается с кодом 1, если в очереди
+    остались незавершённые или упавшие. Код выхода 2, если worker уже запущен или упал
+    watcher."""
     settings = common.get_settings()
     if once and watch:
         common.fail(ValueError("Use jobs enqueue before worker run --once; --watch is continuous"))
@@ -186,6 +271,8 @@ def run_worker(
     stop, health, thread = threading.Event(), [], None
     try:
         if threading.current_thread() is threading.main_thread():
+            # SIGTERM ведёт себя как Ctrl+C: KeyboardInterrupt штатно завершает цикл ниже.
+            # signal.signal работает только в главном потоке; вне его SIGTERM не трогаем.
             previous_term = signal.signal(signal.SIGTERM, signal.default_int_handler)
         max_attempts = max_attempts or settings.jobs.max_attempts
         retry_delay = retry_delay or settings.jobs.retry_delay_s
@@ -210,9 +297,15 @@ def run_worker(
             thread.start()
 
         uploads = Uploads(settings)
+        # True после ошибки базы: соединения App могли умереть, его надо создать заново
         stale = False
 
         async def services():
+            """Проверяет сервисы и возвращает рабочий `App`, создавая его при необходимости.
+
+            Проверка идёт перед каждой задачей: если что-то недоступно,
+            `ServicesUnavailable` откладывает задачу без расхода попытки. Устаревший после
+            ошибки базы `App` закрывается и строится заново."""
             nonlocal application, stale
             failed = [c for c in common.run_checks(settings, only=common.INGEST_CHECKS) if not c.ok]
             if failed:
@@ -226,7 +319,11 @@ def run_worker(
             return application
 
         async def remove(job):
-            # Забыть документ; загруженный через API файл удаляется, остальные остаются.
+            """Выполняет задачу remove: забывает документ по пути задачи и пересобирает wiki.
+
+            Файл, загруженный через API (лежит в `service.uploads_dir`), после этого
+            удаляется вместе с записью о загрузке; любые другие файлы остаются на диске.
+            Неудачная пересборка wiki считается ошибкой задачи (будет повтор)."""
             doc_id = json.loads(job.payload_json or "{}").get("doc_id")
             path = Path(job.path)
             app = await services()
@@ -252,6 +349,15 @@ def run_worker(
                     uploads.delete(doc_id)
 
         async def handle(job):
+            """Обработчик одной задачи для `process_one`: remove или ingest.
+
+            Для ingest файл должен существовать и совпадать по хешу с версией в задаче.
+            Изменившийся файл не обрабатывается: на новую версию ставится новая задача,
+            отложенная на время «оседания» файла, а текущая помечается superseded.
+            `verify_sources` и `expected` заставляют ingest ещё раз сверить файл во время
+            обработки. Неполный результат (упал файл или страница wiki) — исключение,
+            чтобы `process_one` засчитал попытку. `job_scope` помечает вызовы LLM номером
+            задачи для учёта расхода."""
             q.heartbeat()
             if job.kind == "remove":
                 with job_scope(job.id):
@@ -285,14 +391,21 @@ def run_worker(
                 raise RuntimeError("Ingest or wiki failed; see project status/logs")
 
         def reconnect(exc):
-            # Соединения App могли оборваться (рестарт PostgreSQL): следующая задача
-            # создаст App заново.
+            """Колбэк `process_one` на временную ошибку: задача уже отложена, здесь только
+            сообщение и, для ошибки базы, отметка о пересоздании `App`.
+
+            Соединения App могли оборваться (рестарт PostgreSQL): следующая задача
+            создаст App заново."""
             nonlocal stale
             common.console.print(f"Services unavailable ({type(exc).__name__}); job deferred.")
             if isinstance(exc, DatabaseError | DBAPIError):
                 stale = True
 
         async def dispatch():
+            """Основной цикл: heartbeat, проверка watcher'а, одна задача за итерацию.
+
+            Если задачи не нашлось (очередь пуста или корпус занят CLI-писателем), worker
+            спит `interval` секунд, а с `--once` выходит из цикла."""
             while True:
                 q.heartbeat()
                 if health:

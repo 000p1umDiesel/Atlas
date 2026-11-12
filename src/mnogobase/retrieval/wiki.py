@@ -1,3 +1,12 @@
+"""Режим `wiki`: поиск по секциям сгенерированных wiki-страниц.
+
+Страницы строит `wiki.builder.WikiBuilder`; при записи каждая страница режется на секции
+(`wiki.render.split_sections`), и в Qdrant попадает текст секции без маркеров цитат, а id
+процитированных чанков — в payload `chunk_ids`. Здесь гибридный поиск находит секции, а
+их исходные чанки подтягиваются из Neo4j, чтобы ответ ссылался на документы. У устаревших
+(stale) страниц векторы удаляются ещё при инвалидации, поэтому здесь они не находятся.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -26,6 +35,11 @@ class WikiRetriever:
         self._graph = graph
 
     def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
+        """До `k` секций (`wiki`) вперемешку с их чанками (`chunk`), по убыванию релевантности.
+
+        Чанк, уже выданный после более сильной секции, повторно не выдаётся. Чанки, которых
+        больше нет в графе (документ удалён), молча пропускаются.
+        """
         hits = self._vectors.search_wiki(
             self._embedder.embed_query(query),
             self._sparse.encode_query(query),

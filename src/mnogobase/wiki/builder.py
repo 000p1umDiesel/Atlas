@@ -1,3 +1,42 @@
+"""Инкрементальная сборка Markdown-wiki: по странице на значимую сущность графа.
+
+Место в потоке данных: после стадии `graph` ingest помечает затронутые сущности в очереди
+`dirty_entities` реестра PostgreSQL; `wiki build` (вызывается в конце ingest, командой
+`mnogobase wiki build` или после удаления документов) пересобирает только их. С
+`rebuild_all` (`wiki build --all`) пересобираются все подходящие сущности.
+
+Шаги `WikiBuilder.build`:
+
+1. Отбор. Страница положена сущности с не меньше чем `wiki.min_mentions` упоминаниями.
+   Dirty-сущности, которые больше не подходят (удалены или стали редкими), теряют страницу
+   (файл, секции в Qdrant, узел `WikiPage`), а страницы, ссылавшиеся на них, ставятся в
+   очередь, чтобы из них исчезла мёртвая ссылка.
+2. Подтверждения. Для каждого кандидата векторный поиск по чанкам Qdrant, упоминающим
+   сущность (`wiki.evidence_k` штук). Без подтверждений страница не пишется (`skipped`);
+   устаревшая (`stale`) страница такой сущности удаляется.
+3. Черновик. Параллельно (в пределах `llm.concurrency`) LLM с `task="wiki"` по промпту
+   `wiki_page.md` получает описание, связи, подтверждения и текущий текст страницы и
+   возвращает обновлённое тело. Цитаты существующей страницы, выпавшие из свежего top-k,
+   добавляются к подтверждениям, чтобы обновление их не теряло.
+4. Валидация и рендер (`_write`). Из ответа LLM вырезаются заголовок, разделы Related /
+   Sources и определения сносок (их генерирует код); цитаты `[^chunk_id]` на чанки вне
+   подтверждений удаляются; `[[ссылки]]` переписываются в slug существующих страниц или
+   становятся простым текстом. Код дописывает front matter, `## Related` (связи из графа) и
+   `## Sources` (определения сносок), атомарно пишет файл и индексирует секции в Qdrant.
+5. Ссылки. Если запись новой страницы не удалась, остальные страницы этого запуска
+   перерисовываются из тех же черновиков без ссылок на неё (без новых вызовов LLM).
+6. Граф. Узлы `WikiPage` с рёбрами `ABOUT` / `CITES` / `LINKS_TO` пишутся в два прохода,
+   чтобы `LINKS_TO` мог указывать на страницы, созданные в этом же запуске. Запись снимает
+   флаг `stale`.
+7. Итог. Успешные сущности убираются из очереди, упавшие остаются для следующего build;
+   переписываются `index.md`, `.obsidian/graph.json` (при `wiki.obsidian`) и дописывается
+   `log.md`.
+
+Ошибка одной сущности не роняет весь build: она попадает в `WikiReport.failed` и в лог.
+Устаревшие (`stale`) страницы — те, у которых удаление документа уже убрало файл и
+векторы; их узел держит slug и входящие ссылки до пересборки.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -49,6 +88,11 @@ _TITLE = re.compile(r"^# (.+)$", re.MULTILINE)
 
 @dataclass
 class WikiReport:
+    """Итог `build`: списки имён сущностей (для удалённых — заголовков страниц).
+
+    `skipped` — кандидаты без подтверждений, `failed` — сущности, на которых упал какой-либо
+    шаг (они остаются в очереди dirty)."""
+
     created: list[str] = field(default_factory=list)
     updated: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
@@ -58,17 +102,22 @@ class WikiReport:
 
 @dataclass
 class _Draft:
+    """Всё, что нужно для записи страницы после ответа LLM; переиспользуется при
+    перерисовке ссылок без нового вызова модели."""
+
     entity: EntityRecord
-    hits: list[SearchHit]
+    hits: list[SearchHit]  # подтверждения, включая перенесённые со старой версии
     rel_path: str
     slug: str
     relations: list[RelationView]
-    previous: WikiPageRecord | None
+    previous: WikiPageRecord | None  # узел страницы до сборки (может быть stale) или None
     body: str  # сырой ответ LLM
 
 
 @dataclass
 class _Built:
+    """Записанная на диск и в Qdrant страница, чей узел в графе ещё предстоит обновить."""
+
     entity: EntityRecord
     record: WikiPageRecord
     links_to: list[str]
@@ -77,6 +126,8 @@ class _Built:
 
 
 def _evidence_line(hit: SearchHit) -> str:
+    """Блок подтверждения для промпта: `[chunk_id] (файл, p.N)` и текст чанка. LLM цитирует
+    его как `[^chunk_id]`."""
     where = Path(hit.payload.get("path") or "unknown").name
     if hit.payload.get("page"):
         where += f", p.{hit.payload['page']}"
@@ -84,6 +135,11 @@ def _evidence_line(hit: SearchHit) -> str:
 
 
 class WikiBuilder:
+    """Собирает и обновляет страницы wiki в `wiki.dir` (алгоритм — в docstring модуля).
+
+    Пишет корпус (файлы wiki, Qdrant, Neo4j, очередь dirty), поэтому вызывается только
+    писателем, держащим блокировку `ingest`."""
+
     def __init__(
         self,
         settings: WikiSettings,
@@ -95,6 +151,8 @@ class WikiBuilder:
         registry: Registry,
         entity_types: Sequence[str] = (),
     ):
+        """`entity_types` — типы из `extract.entity_types`; нужны только для цветовых групп
+        Obsidian."""
         self._s = settings
         self._entity_types = list(entity_types)
         self._graph = graph
@@ -114,10 +172,19 @@ class WikiBuilder:
         documents: list[str] | None = None,
         progress: ProgressSink = NULL_PROGRESS,
     ) -> WikiReport:
+        """Пересобирает страницы dirty-сущностей (или всех при `rebuild_all`).
+
+        `deleted` — заголовки страниц, уже удалённых вызывающим (попадают в отчёт и лог);
+        `documents` — обработанные в этом запуске документы для `log.md`; `run_id` — метка
+        запуска в логе. Ошибки отдельных сущностей собираются в `WikiReport.failed`; ошибки
+        общих шагов (чтение очереди, список сущностей, индекс) пробрасываются, очередь при
+        этом сохраняется.
+        """
         dirty = set(self._registry.dirty())
         eligible = self._graph.entities(min_mentions=self._s.min_mentions)
         eligible_ids = {e.entity_id for e in eligible}
         report = WikiReport(deleted=list(deleted or []))
+        # dirty-сущности, которым страница больше не положена (удалены или мало упоминаний)
         dropped = [
             page
             for page in (self._graph.wiki_page(eid) for eid in sorted(dirty - eligible_ids))
@@ -132,7 +199,8 @@ class WikiBuilder:
             dirty |= linking
             report.deleted += self._delete_pages(dropped)
         candidates = [e for e in eligible if rebuild_all or e.entity_id in dirty]
-        # Full rebuilds also need durable retry state if any later write fails.
+        # При полной пересборке кандидаты тоже ставятся в очередь: если запись какой-то
+        # страницы упадёт, следующий build её повторит.
         dirty.update(e.entity_id for e in candidates)
         self._registry.mark_dirty(dirty)
 
@@ -149,6 +217,7 @@ class WikiBuilder:
             else:
                 progress.advance()
         writable = [e for e in candidates if evidence.get(e.entity_id)]
+        # `== []`, а не `not`: упавшие на поиске (нет ключа, None) уже учтены как failed
         report.skipped = [e.name for e in candidates if evidence.get(e.entity_id) == []]
         # устаревшая страница без подтверждений не пересоберётся: удаляем её узел, а
         # ссылающиеся страницы помечаем dirty, чтобы следующий build убрал ссылки на неё
@@ -167,6 +236,7 @@ class WikiBuilder:
         slugs = self._assign_slugs(writable)
 
         async def draft_safely(entity: EntityRecord) -> _Draft | None:
+            """Черновик одной сущности; при ошибке — запись в отчёт и `None`."""
             try:
                 draft = await self._draft(
                     entity, evidence[entity.entity_id], slugs[entity.entity_id]
@@ -179,6 +249,7 @@ class WikiBuilder:
             return draft
 
         progress.step("wiki draft", len(writable))
+        # параллелизм вызовов LLM ограничивает семафор клиента (`llm.concurrency`)
         drafts = [d for d in await asyncio.gather(*map(draft_safely, writable)) if d is not None]
         # ссылки могут вести только на существующие страницы или записываемые в этом запуске
         built: list[_Built] = []
@@ -194,14 +265,16 @@ class WikiBuilder:
                     surviving.append(draft)
                 except Exception as exc:  # одна плохая сущность не должна ронять весь build
                     self._record_failure(report, failed_ids, draft.entity, exc)
+                    # на страницу, которая уже есть в графе (не stale), ссылаться можно и
+                    # дальше; пропала цель, только если страницы ещё нет или она stale
                     lost_target |= draft.previous is None or draft.previous.stale
                     progress.advance(failed=True)
                 else:
                     progress.advance()
             if not lost_target:
                 break
-            # A new target failed to persist. Render survivors again without links
-            # to it, using the same LLM drafts; no additional generation calls.
+            # Не удалось сохранить новую цель ссылок. Перерисовываем уцелевшие страницы
+            # без ссылок на неё из тех же черновиков LLM, без новых вызовов генерации.
             drafts = surviving
             progress.step("wiki repair links", len(drafts))
         # два прохода, чтобы LINKS_TO мог указывать на страницы, созданные в этом же запуске
@@ -236,7 +309,11 @@ class WikiBuilder:
         return report
 
     def index_page(self, page_id: str, entity_id: str, rel_path: str, text: str) -> int:
-        """Эмбеддит отрендеренную страницу в Qdrant по секциям; возвращает число секций."""
+        """Эмбеддит отрендеренную страницу в Qdrant по секциям; возвращает число секций.
+
+        Заголовок `# ...` страницы передаётся эмбеддеру как `title` каждой секции. Страница
+        без непустых секций удаляется из индекса. Используется также `reindex`.
+        """
         sections = split_sections(text)
         if not sections:
             self._vectors.delete_wiki_page(page_id)
@@ -257,6 +334,8 @@ class WikiBuilder:
     def _record_failure(
         self, report: WikiReport, failed_ids: set[str], entity: EntityRecord, exc: Exception
     ) -> None:
+        """Отмечает сущность упавшей (останется в очереди dirty) и пишет warning без текста
+        документов."""
         failed_ids.add(entity.entity_id)
         report.failed.append(entity.name)
         self._log.warning(
@@ -275,6 +354,8 @@ class WikiBuilder:
         return [page.title for page in pages]
 
     def _evidence(self, entity: EntityRecord) -> list[SearchHit]:
+        """До `wiki.evidence_k` чанков, упоминающих сущность, ближайших по смыслу к
+        «имя: описание» (только dense-поиск с фильтром по `entity_ids`)."""
         query = self._embedder.embed_query(f"{entity.name}: {entity.description}")
         return self._vectors.search_chunks_for_entity(query, entity.entity_id, self._s.evidence_k)
 
@@ -299,6 +380,13 @@ class WikiBuilder:
         ]
 
     def _assign_slugs(self, candidates: list[EntityRecord]) -> dict[str, str]:
+        """entity_id → slug файла страницы.
+
+        Существующая страница (в том числе stale) сохраняет свой slug, чтобы путь и ссылки на
+        неё не менялись. Новой сущности достаётся первый свободный вариант: `имя`,
+        `имя-тип`, `имя-<6 символов entity_id>`. Занятость проверяется по всем страницам
+        графа и уже выданным в этом вызове slug.
+        """
         taken = {row.slug: row.page_id for row in self._graph.wiki_pages(include_stale=True)}
         slugs: dict[str, str] = {}
         for entity in candidates:
@@ -316,6 +404,13 @@ class WikiBuilder:
         return slugs
 
     def _page_lookup(self, candidates: list[EntityRecord], slugs: dict[str, str]) -> PageLookup:
+        """Словарь для `resolve_links`: нормализованное имя или алиас → (entity_id, slug,
+        заголовок).
+
+        Сначала живые (не stale) страницы графа, затем `candidates` этого запуска. При
+        совпадении ключей побеждает первая запись (`setdefault`), так что существующая
+        страница не перехватывается новой сущностью с тем же алиасом.
+        """
         lookup: PageLookup = {}
         for row in self._graph.wiki_pages():
             for name in (row.title, *row.aliases):
@@ -328,7 +423,13 @@ class WikiBuilder:
         return lookup
 
     async def _draft(self, entity: EntityRecord, hits: list[SearchHit], slug: str) -> _Draft:
-        """Собирает входные данные страницы и запрашивает у LLM её тело."""
+        """Собирает входные данные страницы и запрашивает у LLM её тело.
+
+        В промпт идут: язык `wiki.language`, имя, тип, описание и алиасы сущности, до 30
+        самых весомых связей, подтверждения (свежие + перенесённые со старой версии) и
+        текущее тело страницы, чтобы LLM обновляла текст, а не писала заново. Всё, кроме
+        языка, — недоверенные данные ниже маркера промпта. Ничего не пишет.
+        """
         context = self._graph.entity_context(entity.entity_id, max_relations=30)
         rel_path = f"entities/{slug}.md"
         file = self._s.dir / rel_path
@@ -355,7 +456,14 @@ class WikiBuilder:
         return _Draft(entity, hits, rel_path, slug, context.relations, previous, body)
 
     def _write(self, draft: _Draft, lookup: PageLookup) -> _Built:
-        """Валидирует и рендерит тело от LLM, записывает файл страницы и индексирует её."""
+        """Валидирует и рендерит тело от LLM, записывает файл страницы и индексирует её.
+
+        Шаги: вырезать зарезервированные разделы → оставить только цитаты на подтверждения →
+        переписать `[[ссылки]]` по `lookup` → отрендерить страницу с `## Related` (соседи
+        по связям, у которых есть страница, становятся ссылками) и `## Sources` →
+        `write_atomic` → секции в Qdrant. Узел в графе не трогает: это делает `build` после
+        записи всех страниц. Версия страницы на 1 больше, чем у узла до сборки.
+        """
         entity, hits = draft.entity, draft.hits
         body = strip_reserved_sections(draft.body)
         body, cited = validate_citations(body, {h.key for h in hits})
@@ -383,5 +491,6 @@ class WikiBuilder:
             content_hash=hashlib.sha1(text.encode("utf-8")).hexdigest(),
             version=version,
         )
+        # LINKS_TO — и ссылки из текста, и соседи из раздела Related
         links_to = sorted((set(linked_ids) | set(linked)) - {entity.entity_id})
         return _Built(entity, record, links_to, cited, created=draft.previous is None)

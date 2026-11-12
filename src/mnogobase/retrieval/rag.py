@@ -1,3 +1,19 @@
+"""Режим `rag`: гибридный поиск по исходным чанкам документов.
+
+Шаги `RagRetriever.retrieve`:
+
+1. Гибридный поиск в коллекции чанков Qdrant: dense-вектор эмбеддера + разреженный BM25,
+   слитые RRF; `alt_queries` (например, английский перевод) ищутся вместе с вопросом.
+2. Если есть `reranker`, берётся больше кандидатов (`rerank.candidates`), cross-encoder
+   переоценивает их по исходному вопросу, остаются top k. Сбой reranker'а не ломает ответ:
+   остаётся гибридный порядок.
+3. При `retrieval.neighbors > 0` каждое попадание расширяется соседними чанками того же
+   документа, пока у них тот же путь заголовков (та же секция), и склеивается в один элемент.
+
+Соседи опираются на детерминированный `chunk_id = f"{doc_id}:{idx:05d}"`: id соседа
+вычисляется из индекса, без дополнительного поиска.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -41,6 +57,11 @@ class RagRetriever:
         self._log = get_logger(__name__)
 
     def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
+        """До `k` элементов `chunk` по убыванию релевантности (см. docstring модуля).
+
+        Каждый элемент цитируется как `chunk_id` исходного попадания, даже если в него
+        вклеены соседи. Ошибки эмбеддера и Qdrant пробрасываются; ошибки reranker'а — нет.
+        """
         hits = self._vectors.search_chunks(
             self._embedder.embed_query(query),
             self._sparse.encode_query(query),
@@ -53,6 +74,8 @@ class RagRetriever:
             return [_item(h.key, [h.payload], h.score) for h in hits]
 
         n = self._neighbors
+        # одним запросом достаём все чанки из окон ±n вокруг попаданий; несуществующие id
+        # (за концом документа) Qdrant просто не вернёт
         wanted = []
         for h in hits:
             doc_id, idx = _split(h.key)
@@ -60,6 +83,9 @@ class RagRetriever:
         known = self._vectors.get_chunks(list(dict.fromkeys(wanted)))
         known.update({h.key: h.payload for h in hits})
 
+        # Попадания обходятся от сильного к слабому. Окно растёт от попадания влево и вправо,
+        # пока сосед существует, ещё не занят другим окном и лежит в той же секции.
+        # Попадание, уже вошедшее в окно более сильного, отдельным элементом не выдаётся.
         covered: set[str] = set()
         items: list[ContextItem] = []
         for h in hits:
@@ -80,6 +106,10 @@ class RagRetriever:
         return items
 
     def _rerank(self, query: str, hits: list[SearchHit]) -> list[SearchHit]:
+        """Переупорядочивает `hits` по оценке reranker'а и подменяет их `score` на неё.
+
+        Reranker видит тот же текст, что и LLM (с путём заголовков). При любой ошибке
+        возвращает `hits` без изменений и пишет warning `rerank_failed`."""
         texts = [_item(h.key, [h.payload], h.score).text for h in hits]
         try:
             scores = self._reranker.score(query, texts)
@@ -92,12 +122,17 @@ class RagRetriever:
 
 
 def _split(key: str) -> tuple[str, int]:
+    """`"<doc_id>:<idx>"` → (`doc_id`, `idx`); обратная операция к `ids.chunk_id`."""
     doc_id, idx = key.rsplit(":", 1)
     return doc_id, int(idx)
 
 
 def _item(ref: str, payloads: list[dict[str, Any]], score: float) -> ContextItem:
-    """Один элемент контекста из подряд идущих чанков секции; цитируется как `ref` попадания."""
+    """Один элемент контекста из подряд идущих чанков секции; цитируется как `ref` попадания.
+
+    Текст — путь заголовков первого чанка (`A > B > C`), затем тексты чанков по порядку;
+    `path` берётся у первого чанка, `page` — минимальная известная страница блока.
+    """
     first = payloads[0]
     headings = first.get("headings") or []
     texts = [p["text"] for p in payloads]

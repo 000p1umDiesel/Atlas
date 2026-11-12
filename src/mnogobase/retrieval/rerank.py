@@ -1,3 +1,11 @@
+"""Переранжирование попаданий режима `rag` cross-encoder'ом.
+
+`Reranker` — протокол (тесты подставляют свои реализации); `ApiReranker` — реализация через
+`/rerank` OpenAI-совместимого сервера (в конфиге секция `rerank`, по умолчанию llama.cpp с
+Qwen3-Reranker GGUF на порту 8002). Reranker необязателен: без него `RagRetriever`
+использует гибридный порядок Qdrant.
+"""
+
 from __future__ import annotations
 
 import time
@@ -12,6 +20,8 @@ from mnogobase.core.log import get_logger
 
 
 class Reranker(Protocol):
+    """Оценивает релевантность документов запросу (cross-encoder)."""
+
     def score(self, query: str, documents: Sequence[str]) -> list[float]:
         """Релевантность каждого документа к `query` в [0, 1], в порядке входа."""
         ...
@@ -32,6 +42,9 @@ class ApiReranker:
         client: httpx.Client | None = None,
         retry_wait=DEFAULT_RETRY_WAIT,
     ):
+        """`client` — готовый httpx-клиент (тесты); иначе создаётся свой с `settings.url`,
+        таймаутом и ключом из `api_key_env`. `retry_wait` — стратегия ожидания tenacity между
+        повторами."""
         self._s = settings
         self._client = client or httpx.Client(
             base_url=settings.url,
@@ -42,9 +55,17 @@ class ApiReranker:
         self._log = get_logger(__name__)
 
     def close(self) -> None:
+        """Закрывает HTTP-клиент (в том числе переданный снаружи)."""
         self._client.close()
 
     def score(self, query: str, documents: Sequence[str]) -> list[float]:
+        """Оценки `documents` относительно `query` в порядке входа.
+
+        Каждый документ обрезается до `rerank.max_chars` символов, чтобы не превысить контекст
+        сервера. Сетевые ошибки и 5xx повторяются (`post_json_with_retry`), остальные ошибки
+        HTTP пробрасываются сразу как `httpx.HTTPStatusError`. Документ, которого нет в ответе
+        сервера, получает 0.0.
+        """
         if not documents:
             return []
         start = time.perf_counter()

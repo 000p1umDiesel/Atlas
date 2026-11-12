@@ -18,16 +18,27 @@ from typing import Protocol
 
 
 class ProgressSink(Protocol):
-    def files_found(self, total: int) -> None: ...
+    """Получатель событий прогресса; в CLI это `RichProgress` (`cli/render.py`) и
+    `JobProgress` worker'а, в тестах — `RecordingProgress`."""
 
-    def file_started(self, path: str) -> None: ...
+    def files_found(self, total: int) -> None:
+        """Сколько файлов будет обработано в этом запуске; вызывается один раз в начале."""
+        ...
+
+    def file_started(self, path: str) -> None:
+        """Начата обработка файла `path`."""
+        ...
 
     def file_done(self, status: str) -> None:
-        """`status`: processed | skipped | failed."""
+        """Обработка файла закончилась; `status` — processed, skipped или failed."""
 
-    def step(self, name: str, total: int | None = None) -> None: ...
+    def step(self, name: str, total: int | None = None) -> None:
+        """Начат шаг `name` из `total` единиц (`None` — число пока неизвестно)."""
+        ...
 
-    def advance(self, n: int = 1, *, failed: bool = False) -> None: ...
+    def advance(self, n: int = 1, *, failed: bool = False) -> None:
+        """Завершены ещё `n` единиц текущего шага; `failed=True` — они завершились ошибкой."""
+        ...
 
 
 class NullProgress:
@@ -49,4 +60,5 @@ class NullProgress:
         pass
 
 
+# общий экземпляр-заглушка: состояния у NullProgress нет, создавать новые незачем
 NULL_PROGRESS = NullProgress()

@@ -3,6 +3,11 @@
 Все три пишут в Qdrant, Neo4j и registry, поэтому держат блокировку писателя корпуса
 (`common.corpus_lock`) на всё время работы: параллельно с ними не идут ни другой CLI-писатель,
 ни фоновый worker.
+
+Порядок подготовки у всех одинаковый: настройки → проверка сервисов (`preflight`) →
+блокировка → `App`. `App` закрывается во внутреннем `finally`, блокировка отпускается во
+внешнем, так что ни соединения, ни блокировка не остаются висеть после ошибки. Удаления,
+прерванные сбоем, записаны в журнал `pending_removals` и доделываются первыми.
 """
 
 from __future__ import annotations
@@ -36,8 +41,13 @@ def ingest(
         bool, typer.Option("--retry-failed", help="Re-run failed stages.")
     ] = False,
 ) -> None:
-    """Распарсить, разбить на чанки, заэмбеддить и извлечь документы в Qdrant + Neo4j,
-    затем обновить wiki."""
+    """Загрузить документы в базу знаний и обновить wiki.
+
+    Каждый файл проходит стадии parse, chunk, embed, extract и graph; неизменённые файлы
+    пропускаются, упавшие стадии повторяются только с --retry-failed (без путей это
+    повторяет все файлы с упавшими стадиями). Код выхода 1, если не обработался какой-то
+    файл или страница wiki; 2, если недоступен сервис, индекс построен другим эмбеддером
+    или уже работает другой писатель (ingest, remove, worker и т. п.)."""
     console = common.console
     settings = common.get_settings()
     common.preflight(settings, common.INGEST_CHECKS)
@@ -100,7 +110,13 @@ def remove(
     ] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
 ) -> None:
-    """Удалить знания об источниках, обновить индексы, граф и wiki; сохранить исходные файлы."""
+    """Забыть источники: удалить их знания из индексов, графа и wiki.
+
+    Сами файлы на диске не трогаются. Команда показывает выбранные источники и просит
+    подтверждения (--yes его пропускает, --dry-run только показывает список). Заодно
+    доделываются прерванные удаления и отложенные обновления wiki. Код выхода 1 при отказе
+    от подтверждения или если часть страниц wiki не пересобралась; 2 при ошибке пути,
+    недоступном сервисе или занятой блокировке."""
     console = common.console
     settings = common.get_settings(project=True)
     lock = common.corpus_lock(settings)
@@ -161,7 +177,11 @@ def remove(
 def wiki_build(
     rebuild_all: Annotated[bool, typer.Option("--all", help="Regenerate every page.")] = False,
 ) -> None:
-    """Перегенерировать страницы wiki для сущностей с новыми упоминаниями (или все с --all)."""
+    """Пересобрать страницы wiki для сущностей с новыми упоминаниями.
+
+    С --all перегенерируются все страницы. Перед сборкой доделываются прерванные удаления
+    документов. Код выхода 1, если часть страниц не собралась (их повторит следующая
+    сборка); 2, если недоступен сервис или уже работает другой писатель."""
     settings = common.get_settings(project=True)
     common.preflight(settings)
     lock = common.corpus_lock(settings)
@@ -172,7 +192,8 @@ def wiki_build(
                 application.pipeline.prepare(resume=False)
             except (EmbedderMismatchError, DimensionMismatchError) as exc:
                 common.fail(exc)
-            # прерванный ingest мог оставить удаление документа недоделанным (страницы-сироты)
+            # прерванный ingest мог оставить удаление документа недоделанным (страницы-сироты);
+            # `deleted` — имена удалённых при этом сущностей, они попадут в отчёт wiki и log.md
             try:
                 deleted = application.pipeline.finish_pending_removals()
             except PendingRemovalError as exc:

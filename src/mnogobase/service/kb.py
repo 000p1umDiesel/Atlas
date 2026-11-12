@@ -1,11 +1,42 @@
 """Личная база знаний: операции HTTP API поверх одного долгоживущего `App`.
 
-Писатель корпуса один — worker. API только ставит задачи в `JobQueue` (загрузка,
-удаление) и читает без блокировок, как CLI `ask`.
+`KnowledgeBase` — фасад, который `api/app.py` вызывает из обработчиков; на процесс API
+одна база (один проект, одна схема PostgreSQL). Ошибки наружу — только `ServiceError`.
 
-Async-клиенты `App` (LLM, семафор конкурентности) привязаны к одному event loop,
-поэтому всё, что касается `App`, выполняется в выделенном потоке `CoreLoop`, а не
-в цикле веб-сервера и не в новом цикле на каждый запрос.
+Один писатель. Корпус (Qdrant, Neo4j, wiki, registry) меняет только worker (или
+CLI-команда под `ingest_lock`). API только ставит задачи в `JobQueue` (загрузка, удаление)
+и читает без блокировок, как CLI `ask`.
+
+Поток ядра `CoreLoop`. Async-клиенты `App` (LLM-клиент и его семафор конкурентности)
+привязаны к event loop, в котором созданы, поэтому всё, что касается `App`, выполняется в
+одном выделенном потоке со своим циклом, а не в цикле веб-сервера и не в новом цикле на
+каждый запрос. Обработчик ждёт результат через `asyncio.wrap_future`.
+
+Ленивый `App`. `App` создаётся при первом обращении (`_ensure_app`), а не при старте:
+API поднимается, даже если модели или базы ещё не готовы. При создании проверяется
+сигнатура индекса (`pipeline.prepare`). После обрыва соединения с базой `App` закрывается
+и при следующем запросе создаётся заново.
+
+`_with_app` — единственный вход в ядро и отображение ошибок: `ServiceError` проходит как
+есть, `EmbedderMismatchError` → 409 (нужен `mnogobase reindex`), обрыв соединения
+(PostgreSQL, Neo4j) → 503 с пересозданием `App`, любая другая ошибка → 503. В лог пишется
+только тип исключения: текст ошибки провайдера может содержать ключи.
+
+Ограничения нагрузки: `asyncio.Semaphore(service.max_concurrent_asks)` ограничивает
+одновременные `ask` / `search` / сообщения чата (лишние ждут в очереди), суточный лимит
+токенов `service.daily_token_limit` — 429, переполненная очередь задач
+(`service.max_pending_jobs`) — 429.
+
+Загрузка. Обработчик API потоково пишет тело во временный файл в каталоге загрузок,
+считая sha256, и вызывает `upload_file`: проверка имени, расширения, размера и сигнатуры
+формата, запись `uploads` (имя ↔ `doc_id`), затем `JobQueue.enqueue(force=True)`, который
+под блокировкой пути переносит файл на место `<doc_id><расширение>` и ставит задачу
+`ingest`. Повторная загрузка того же содержимого возвращает уже существующую задачу,
+если та не упала и не заменена.
+
+Удаление. `remove_document` находит все пути документа (в registry и в `uploads`) и ставит
+на каждый задачу `remove` с версией `remove:<doc_id>`. Worker забывает источник в корпусе
+и удаляет файл, только если он из каталога загрузок; файлы владельца остаются на месте.
 """
 
 from __future__ import annotations
@@ -42,15 +73,22 @@ from mnogobase.service.observability import UsageStore
 from mnogobase.service.store import ServiceStore
 
 _DOC_ID = re.compile(r"[0-9a-f]{16}")
-# Обрыв соединения с базой: App пересоздаётся при следующем обращении.
+# Обрыв соединения с PostgreSQL или Neo4j: App пересоздаётся при следующем обращении.
 _CONNECTION_ERRORS = (DatabaseError, DBAPIError, ServiceUnavailable, SessionExpired)
+# Worker считается живым, если отмечался в очереди не позже этого числа секунд назад.
 HEARTBEAT_STALE_S = 120.0
 
 
 class CoreLoop:
-    """Поток с собственным event loop, в котором живёт `App`."""
+    """Поток-демон `mnogobase-core` с собственным event loop, в котором живёт `App`.
+
+    Все корутины, работающие с `App`, запускаются здесь через `run`, поэтому async-клиенты
+    `App` всегда видят один и тот же цикл. Синхронные вызовы внутри корутин (Qdrant, Neo4j,
+    PostgreSQL) блокируют этот цикл: параллельно идут только ожидания async-клиентов (LLM),
+    остальная работа ядра выполняется по очереди."""
 
     def __init__(self) -> None:
+        """Создаёт цикл и сразу запускает поток."""
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._loop.run_forever, name="mnogobase-core", daemon=True
@@ -58,10 +96,15 @@ class CoreLoop:
         self._thread.start()
 
     async def run[T](self, coro: Awaitable[T]) -> T:
-        # Отмена запроса не прерывает операцию ядра: она дорабатывает в своём цикле.
+        """Выполняет корутину в цикле ядра и ждёт её результат из текущего цикла.
+
+        Отмена ожидающего (клиент закрыл соединение) не прерывает операцию ядра: она
+        дорабатывает в своём цикле, и `App` не остаётся в промежуточном состоянии."""
         return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
 
     def close(self) -> None:
+        """Останавливает цикл и ждёт поток до 10 с; цикл закрывается, только если поток
+        действительно завершился (иначе закрытие работающего цикла упало бы)."""
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=10)
         if not self._thread.is_alive():
@@ -69,17 +112,20 @@ class CoreLoop:
 
 
 def _mode(mode: str) -> None:
+    """422, если `mode` — не известный режим поиска (`rag` / `wiki` / `graph` / `all`)."""
     if mode not in {m.value for m in Mode}:
         raise ServiceError(422, "Unknown retrieval mode")
 
 
 def _question(question: str) -> str:
+    """Вопрос без пробелов по краям; 422, если он пустой или длиннее 20000 символов."""
     if not question.strip() or len(question) > 20000:
         raise ServiceError(422, "Question must contain 1–20000 characters")
     return question.strip()
 
 
 def _job(job) -> dict:
+    """Задача очереди в виде ответа API, без внутренних полей."""
     data = asdict(job)
     # Пути, fingerprints и JSON внутренних операций не являются публичным контрактом.
     for field in ("path", "fingerprint", "payload_json"):
@@ -88,10 +134,17 @@ def _job(job) -> dict:
 
 
 def _source_url(doc_id: str) -> str:
+    """URL API для скачивания загруженного исходника."""
     return f"/api/documents/{doc_id}/content"
 
 
 class KnowledgeBase:
+    """Операции HTTP API над одной базой знаний (см. описание модуля).
+
+    Синхронные методы (`jobs`, `status`, `upload_file`, ...) FastAPI вызывает в пуле потоков;
+    асинхронные работают с `App` через `CoreLoop`. Очередь открывается заново на каждый
+    вызов (`_queue`): `JobQueue` держит одно соединение и не потокобезопасен."""
+
     def __init__(
         self,
         settings: Settings,
@@ -100,6 +153,9 @@ class KnowledgeBase:
         store: ServiceStore | None = None,
         usage: UsageStore | None = None,
     ):
+        """Создаёт таблицы сервиса, учёта LLM, загрузок и очереди (запись в базу) и
+        запускает поток ядра. `App` здесь не создаётся. `app_factory`, `store` и `usage`
+        подменяются в тестах. Недоступная база — `DatabaseError`."""
         self.settings = settings
         target = database_target(settings)
         self.store = store or ServiceStore(target)
@@ -114,6 +170,7 @@ class KnowledgeBase:
         self._log = get_logger(__name__)
 
     async def close(self) -> None:
+        """Закрывает `App` (в потоке ядра) и останавливает поток ядра; при остановке API."""
         if self._app is not None:
             app, self._app = self._app, None
             await self._core.run(app.aclose())
@@ -121,8 +178,13 @@ class KnowledgeBase:
 
     # ---- App в потоке ядра ----
     async def _ensure_app(self) -> App:
-        """App, созданный лениво в потоке ядра; при неудачной проверке индекса закрывается
-        целиком (`aclose` закрывает и HTTP-клиенты моделей и Qdrant, а не только базы)."""
+        """App, созданный лениво в потоке ядра; вызывается только из цикла ядра.
+
+        `prepare(resume=False)` проверяет сигнатуру индекса и ничего не дописывает в корпус
+        (`EmbedderMismatchError`, если нужен `reindex`). При неудачной проверке App
+        закрывается целиком (`aclose` закрывает и HTTP-клиенты моделей и Qdrant, а не только
+        базы). Между проверкой `self._app is None` и присваиванием нет `await` на успешном
+        пути, поэтому параллельные операции в цикле ядра не создадут два App."""
         if self._app is None:
             app = self._factory(self.settings)
             try:
@@ -134,6 +196,8 @@ class KnowledgeBase:
         return self._app
 
     async def _drop_app(self) -> None:
+        """Закрывает и забывает App после обрыва соединения; ошибка закрытия только
+        логируется, чтобы не заслонить исходную."""
         if self._app is not None:
             app, self._app = self._app, None
             try:
@@ -142,6 +206,14 @@ class KnowledgeBase:
                 self._log.warning("app_close_failed", error_type=type(exc).__name__)
 
     async def _with_app[T](self, operation: Callable[[App], Awaitable[T]], failure: str) -> T:
+        """Выполняет `operation(app)` в потоке ядра и переводит ошибки в `ServiceError`.
+
+        `failure` — текст для 503. `ServiceError` из операции проходит как есть;
+        `EmbedderMismatchError` → 409; обрыв соединения (`_CONNECTION_ERRORS`) → 503 и App
+        закрывается, чтобы следующий запрос создал его с новыми соединениями; прочие
+        исключения → 503. Исходное исключение не прикрепляется (`from None`), в лог — только
+        его тип."""
+
         async def run() -> T:
             try:
                 return await operation(await self._ensure_app())
@@ -162,6 +234,7 @@ class KnowledgeBase:
 
     @contextmanager
     def _queue(self):
+        """Очередь на время блока: своё соединение на каждый вызов, закрывается в конце."""
         queue = JobQueue(database_target(self.settings))
         try:
             yield queue
@@ -169,6 +242,8 @@ class KnowledgeBase:
             queue.close()
 
     def _queue_has_room(self, queue: JobQueue) -> None:
+        """429, если `pending` + `running` задач уже `service.max_pending_jobs` или больше.
+        Проверка без блокировки: параллельные запросы могут немного превысить предел."""
         counts = queue.counts()
         if (
             sum(counts.get(s, 0) for s in ("pending", "running"))
@@ -177,8 +252,9 @@ class KnowledgeBase:
             raise ServiceError(429, "Processing queue is full")
 
     def check_budget(self, now: float | None = None) -> None:
-        """429, если за сутки (UTC) израсходован `service.daily_token_limit`: защита от
-        случайного цикла или украденной сессии."""
+        """429, если за текущие сутки (UTC) израсходован `service.daily_token_limit`:
+        защита от случайного цикла или украденной сессии. Учитываются все вызовы LLM,
+        включая ingest worker'а. `None` в настройке отключает проверку; `now` — для тестов."""
         limit = self.settings.service.daily_token_limit
         if limit is None:
             return
@@ -187,7 +263,11 @@ class KnowledgeBase:
 
     # ---- документы и задачи (только очередь; в корпус пишет worker) ----
     def upload_suffix(self, filename: str) -> str:
-        """Проверяет имя и тип загружаемого файла (до чтения тела запроса); вернёт суффикс."""
+        """Проверяет имя и тип загружаемого файла до чтения тела запроса и возвращает
+        расширение в нижнем регистре (с точкой).
+
+        422 — пустое или служебное имя, разделители путей или NUL, длина больше 255,
+        расширение не из `parsing.extensions`."""
         if (
             not filename
             or filename in (".", "..")
@@ -203,14 +283,27 @@ class KnowledgeBase:
         return suffix
 
     def staging_dir(self) -> Path:
-        """Каталог для временных файлов загрузки: рядом с итоговыми, чтобы перенос был
-        атомарным `rename`."""
+        """Каталог для временных файлов загрузки (создаётся при необходимости): тот же, что
+        у итоговых, чтобы перенос был атомарным `rename` в пределах одной файловой системы."""
         self.uploads.root.mkdir(parents=True, exist_ok=True)
         return self.uploads.root
 
     def upload_file(self, filename: str, staged: Path, sha256: str) -> dict:
-        """Ставит в очередь уже записанный во временный файл `staged` документ. Файл
-        переносится на место загрузки; если он не нужен (дубликат), его удаляет вызывающий."""
+        """Ставит в очередь уже записанный во временный файл `staged` документ и возвращает
+        задачу `ingest` (как в `/api/jobs`).
+
+        `sha256` — хеш содержимого, посчитанный при приёме; `doc_id = sha256[:16]`, как в
+        `ids.file_doc_id`. Порядок: проверки (имя, суточный лимит, пустой файл, размер,
+        сигнатура формата), запись `uploads`, поиск уже идущей или выполненной задачи того же
+        содержимого (тогда она и возвращается, файл не трогается), проверка места в очереди и
+        `enqueue(force=True)`. `force` нужен, чтобы вернуть документ, удалённый раньше
+        (`desired` = `remove:<doc_id>`). Файл переносится на место загрузки под блокировкой
+        пути внутри `enqueue`; если он не понадобился (дубликат или ошибка), его удаляет
+        вызывающий.
+
+        422 — неверное имя/тип, пустой файл или содержимое не того формата; 413 — больше
+        `service.max_upload_mb`; 429 — суточный лимит или переполненная очередь; 409 — запись
+        `uploads` указывает за пределы каталога загрузок."""
         suffix = self.upload_suffix(filename)
         self.check_budget()
         size = staged.stat().st_size
@@ -226,7 +319,8 @@ class KnowledgeBase:
             self.uploads.contained(path, must_exist=False)
         except FileNotFoundError:
             raise ServiceError(409, "Upload storage is inconsistent") from None
-        # Метаданные до постановки в очередь: повтор после прерывания их восстановит.
+        # Метаданные до постановки в очередь: если процесс прервётся после enqueue, имя уже
+        # записано; повторная загрузка допишет его, если прервалось раньше.
         self.uploads.add(doc_id, filename, path)
         with self._queue() as queue:
             resolved = str(path.resolve())
@@ -244,11 +338,15 @@ class KnowledgeBase:
                 return _job(existing)
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
-            # файл кладётся под блокировкой пути: идущая remove-задача не удалит его следом
+            # Файл кладётся под блокировкой пути: идущая remove-задача не удалит его следом.
             job_id = queue.enqueue(path, doc_id, force=True, on_locked=lambda: staged.replace(path))
             return _job(queue.get(job_id))
 
     def _upload_path(self, doc_id: str) -> Path:
+        """Путь существующего файла загрузки `doc_id` внутри каталога загрузок.
+
+        404 при любой проблеме (неверный формат id, нет записи, нет файла, путь вне каталога
+        или ссылка) — одинаковый ответ не раскрывает, что именно не так."""
         if not _DOC_ID.fullmatch(doc_id):
             raise ServiceError(404, "Source unavailable")
         row = self.uploads.get(doc_id)
@@ -260,7 +358,11 @@ class KnowledgeBase:
             raise ServiceError(404, "Source unavailable") from None
 
     def read_source(self, doc_id: str) -> tuple[bytes, str]:
-        """Согласованный снимок исходника; удаление не прерывает передачу ответа."""
+        """Содержимое загруженного файла и его исходное имя.
+
+        Файл читается в память целиком (не больше `service.max_upload_mb`), поэтому
+        одновременное удаление не обрывает уже начатый ответ. 404 — нет загрузки с таким
+        id; 413 — файл больше предела (например, предел уменьшили после загрузки)."""
         path = self._upload_path(doc_id)
         limit = self.settings.service.max_upload_mb * 1024 * 1024
         with path.open("rb") as stream:
@@ -270,7 +372,12 @@ class KnowledgeBase:
         return data, self.uploads.get(doc_id)["name"]
 
     async def documents(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        """Все документы корпуса: загруженные через API и добавленные из CLI или папки."""
+        """Страница документов корпуса из registry: загруженные через API и добавленные из
+        CLI или папки.
+
+        У загруженных — исходное имя и `url` для скачивания; у прочих — только имя файла (полный
+        путь на сервере не раскрывается) и `url = None`. 422 — неверная пагинация, 503 —
+        ядро недоступно."""
         check_pagination(limit, offset)
 
         async def run(app: App) -> list[dict]:
@@ -292,11 +399,14 @@ class KnowledgeBase:
         return await self._with_app(run, "Document list unavailable")
 
     def jobs(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Страница задач очереди, новые первыми; 422 — неверная пагинация."""
         check_pagination(limit, offset)
         with self._queue() as queue:
             return [_job(j) for j in queue.jobs(limit, offset)]
 
     def retry_job(self, job_id: int) -> dict:
+        """Перезапускает задачу, если она `failed` (иначе ничего не меняет), и возвращает её
+        текущее состояние; 404 — нет задачи."""
         with self._queue() as queue:
             if queue.get(job_id) is None:
                 raise ServiceError(404, "Job not found")
@@ -304,6 +414,13 @@ class KnowledgeBase:
             return _job(queue.get(job_id))
 
     async def remove_document(self, doc_id: str) -> dict:
+        """Ставит удаление документа из корпуса и возвращает задачу `remove`.
+
+        Пути документа берутся из registry (у одного содержимого может быть несколько копий)
+        плюс файл загрузки, если его ещё нет в registry (документ загружен, но ещё не
+        обработан). На каждый путь ставится задача `remove` с версией `remove:<doc_id>` и
+        `force=True`; возвращается последняя. 404 — неверный id или документ неизвестен,
+        429 — очередь переполнена, 503 — ядро недоступно."""
         if not _DOC_ID.fullmatch(doc_id):
             raise ServiceError(404, "Document not found")
 
@@ -333,6 +450,9 @@ class KnowledgeBase:
     # ---- чтение корпуса ----
     @staticmethod
     def _item(source: dict) -> dict:
+        """Источник ответа для API: вместо полного пути — только имя файла; у фрагментов
+        документа — `doc_id` и `url` исходника (из `ref` = `chunk_id`), у страниц wiki —
+        `url` страницы."""
         out = dict(source)
         if out.get("path"):
             out["path"] = Path(out["path"]).name
@@ -345,8 +465,9 @@ class KnowledgeBase:
         return out
 
     def _items(self, sources: list[dict]) -> list[dict]:
-        """Источники для ответа API. Загруженный файл лежит на диске как `<doc_id>.md`:
-        вместо этого имени — то, под которым его загрузили."""
+        """Источники для ответа API. Загруженный файл лежит на диске как
+        `<doc_id><расширение>`: вместо этого имени показывается то, под которым его
+        загрузили."""
         items = [self._item(source) for source in sources]
         names: dict[str, str | None] = {}
         for item in items:
@@ -361,11 +482,18 @@ class KnowledgeBase:
         return items
 
     def _retrievers(self, app: App):
+        """Ретриверы всех режимов `{mode: Retriever}` поверх клиентов `App`."""
         return build_retrievers(
             app.vectors, app.graph, app.embedder, app.sparse, self.settings, app.reranker
         )
 
     async def search(self, question: str, mode: str = "rag", k: int = 8) -> list[dict]:
+        """Поиск без генерации ответа: до `k` фрагментов режима `mode`.
+
+        При `retrieval.translate` вопрос дополнительно переводится на английский (вызов
+        LLM). Пустой корпус — пустой список. 422 — неверный вопрос, режим или `k`; 429 —
+        суточный лимит; 409 — нужен `reindex`; 503 — ядро недоступно. Ждёт свободный слот
+        семафора `service.max_concurrent_asks`."""
         question = _question(question)
         _mode(mode)
         if not 1 <= k <= 100:
@@ -386,6 +514,14 @@ class KnowledgeBase:
     async def _answer(
         self, app: App, question: str, mode: str, history: list[dict] | None = None
     ) -> dict:
+        """Ответ с источниками; выполняется в потоке ядра.
+
+        С `history` (последние сообщения диалога) вопрос сначала переписывается LLM
+        (`chat_query.md`, задача `query`) в самостоятельный запрос: «а что про него?»
+        становится полным вопросом. История — недоверенные данные: каждое сообщение
+        обрезается до 4000 символов, а из ответа LLM берётся только первая строка, и лишь
+        если он не длиннее 4000 символов. В ответе `question` — исходный вопрос, `query` —
+        тот, по которому искали. Пустой корпус — `NO_SOURCES` без вызова LLM."""
         if not app.registry.doc_ids():
             return Answer(question=question, mode=mode, text=NO_SOURCES).model_dump(
                 exclude={"contexts"}
@@ -416,6 +552,7 @@ class KnowledgeBase:
         return out
 
     async def ask(self, question: str, mode: str = "rag") -> dict:
+        """Ответ на отдельный вопрос без истории. Коды ошибок как у `search`."""
         question = _question(question)
         _mode(mode)
         await asyncio.to_thread(self.check_budget)
@@ -428,6 +565,14 @@ class KnowledgeBase:
     async def send_message(
         self, user_id: str, conversation_id: str, question: str, mode: str = "rag"
     ) -> dict:
+        """Вопрос в диалоге: сохраняет вопрос, отвечает с учётом истории, сохраняет ответ и
+        возвращает сообщение ассистента.
+
+        История — сообщения со статусом `done` из `service.history_messages` последних
+        (0 — без истории). Если ответить не удалось, в диалог пишется сообщение со статусом
+        `error` и нейтральным текстом, а `ServiceError` пробрасывается. 404 — нет диалога
+        или он чужой; остальные коды как у `ask`. Синхронные обращения к базе сервиса идут
+        через `asyncio.to_thread`, чтобы не блокировать цикл веб-сервера."""
         question = _question(question)
         _mode(mode)
         await asyncio.to_thread(self.check_budget)
@@ -475,6 +620,9 @@ class KnowledgeBase:
     def history(
         self, user_id: str, conversation_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict]:
+        """Страница сообщений диалога; у каждого источника добавляется `available` — есть ли
+        ещё загруженный файл или страница wiki (документ могли удалить после ответа).
+        404 — нет диалога, 422 — неверная пагинация."""
         check_pagination(limit, offset)
         messages = self.store.messages(user_id, conversation_id, limit=limit, offset=offset)
         wiki_root = self.settings.wiki.dir.resolve()
@@ -493,6 +641,8 @@ class KnowledgeBase:
         return messages
 
     async def wiki_pages(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Страница списка актуальных страниц wiki (устаревшие `stale` скрыты), без путей на
+        диске. 422 — неверная пагинация, 503 — ядро недоступно."""
         check_pagination(limit, offset)
 
         async def run(app: App) -> list[dict]:
@@ -504,6 +654,9 @@ class KnowledgeBase:
         return await self._with_app(run, "Wiki unavailable")
 
     async def wiki_page(self, page_id: str) -> dict:
+        """Markdown страницы wiki с заголовком и slug. 404 — страницы нет, она устарела или
+        её файл отсутствует либо лежит вне `wiki.dir`; 503 — ядро недоступно."""
+
         async def run(app: App) -> dict:
             page = app.graph.wiki_page(page_id)
             if page is None or page.stale:
@@ -522,6 +675,8 @@ class KnowledgeBase:
         return await self._with_app(run, "Wiki unavailable")
 
     async def graph_search(self, query: str, limit: int = 20) -> list[dict]:
+        """Сущности графа по полнотекстовому поиску в Neo4j, лучшие первыми.
+        422 — неверный `limit`, 503 — ядро недоступно."""
         check_pagination(limit, 0)
 
         async def run(app: App) -> list[dict]:
@@ -533,6 +688,8 @@ class KnowledgeBase:
         return await self._with_app(run, "Graph unavailable")
 
     async def graph_neighbors(self, entity_id: str, depth: int = 1, limit: int = 50) -> dict:
+        """Окрестность сущности глубиной `depth` (1–3): до `limit` связей и все их концы.
+        404 — нет сущности, 422 — неверные `depth` / `limit`, 503 — ядро недоступно."""
         check_pagination(limit, 0)
         if not 1 <= depth <= 3:
             raise ServiceError(422, "Graph depth must be between 1 and 3")
@@ -550,6 +707,9 @@ class KnowledgeBase:
 
     # ---- состояние ----
     def status(self, now: float | None = None) -> dict:
+        """Состояние сервиса для `/api/status`: число задач по статусам, выполняемые задачи,
+        жив ли worker (отметка свежее `HEARTBEAT_STALE_S`) и расход LLM за сутки и календарный
+        месяц (UTC). Работает без `App`, поэтому отвечает, даже когда модели недоступны."""
         now = time.time() if now is None else now
         with self._queue() as queue:
             counts = queue.counts()
@@ -572,6 +732,7 @@ class KnowledgeBase:
 
 
 def _day_start(now: float) -> float:
+    """Начало суток (UTC) для unix-времени `now`."""
     return (
         datetime.fromtimestamp(now, UTC)
         .replace(hour=0, minute=0, second=0, microsecond=0)
@@ -597,6 +758,10 @@ _SIGNATURES: dict[str, tuple[bytes, ...]] = {
 
 
 def _check_signature(path: Path, suffix: str) -> None:
+    """422, если первые байты файла не соответствуют двоичному формату его расширения.
+
+    WebP проверяется отдельно (`RIFF....WEBP`, сигнатура не в начале подряд); расширения без
+    записи в `_SIGNATURES` проходят без проверки."""
     with path.open("rb") as stream:
         head = stream.read(16)
     if suffix == ".webp":

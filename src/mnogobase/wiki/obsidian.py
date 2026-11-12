@@ -1,3 +1,11 @@
+"""Настройки графа Obsidian для папки wiki (`wiki.obsidian`).
+
+Папку `wiki/` можно открыть в Obsidian как хранилище. `write_graph_settings` дописывает в
+`.obsidian/graph.json` фильтр, скрывающий служебные `index.md` и `log.md` (иначе они —
+центр графа, связанный со всеми страницами), и цветовые группы по полю `type` из front
+matter страниц. Ручные настройки пользователя сохраняются.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +16,7 @@ from mnogobase.core.files import write_atomic
 
 # `path:` ищет подстроку, поэтому якоря: `-file:log` скрыл бы и `entities/logistic-regression.md`
 GRAPH_FILTER = r"-path:/^(index|log)\.md$/"
+# цвет запасного типа `Other` — серый, чтобы не спорить с осмысленными типами
 OTHER_COLOR = 0xBAB0AC
 # хорошо различимые цвета (Tableau 20 без серых); типы берут их по порядку из entity_types
 _PALETTE = (
@@ -34,6 +43,7 @@ _PALETTE = (
 
 
 def _type_query(entity_type: str) -> str:
+    """Поисковый запрос Obsidian по свойству `type`; значение с пробелами — в кавычках."""
     if any(c.isspace() for c in entity_type):
         return f'[type:"{entity_type}"]'
     return f"[type:{entity_type}]"
@@ -44,6 +54,10 @@ def write_graph_settings(wiki_dir: Path, entity_types: Sequence[str]) -> bool:
 
     Добавляется только недостающее: свой фильтр, свои группы и перекрашенные типы пользователя
     остаются. Нечитаемый файл не трогается. Возвращает, был ли файл записан.
+
+    Новый тип получает первый цвет палитры, ещё не занятый группами в файле; когда свободные
+    цвета кончаются — цвет по номеру типа (по кругу). Файл перезаписывается атомарно и только
+    если содержимое изменилось.
     """
     path = wiki_dir / ".obsidian" / "graph.json"
     try:
@@ -57,6 +71,7 @@ def write_graph_settings(wiki_dir: Path, entity_types: Sequence[str]) -> bool:
     if GRAPH_FILTER not in search:
         graph["search"] = f"{GRAPH_FILTER} {search}".strip()
     groups = graph.get("colorGroups")
+    # чужие или повреждённые элементы (не словари) отбрасываются
     groups = [g for g in groups if isinstance(g, dict)] if isinstance(groups, list) else []
     queries = {g.get("query") for g in groups}
     used = {g["color"].get("rgb") for g in groups if isinstance(g.get("color"), dict)}

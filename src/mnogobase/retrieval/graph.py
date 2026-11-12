@@ -1,3 +1,24 @@
+"""Режим `graph` (Graph-RAG): ответ по графу знаний Neo4j.
+
+Шаги `GraphRetriever.retrieve`:
+
+1. Семена. Сущности, похожие на вопрос: векторный поиск по коллекции сущностей Qdrant (порог
+   `graph.seed_threshold`) и полнотекстовый индекс имён в Neo4j, для исходного вопроса и
+   каждой `alt_queries`. Векторные семена идут первыми (по убыванию score), затем
+   полнотекстовые; дубли убираются, остаётся не больше `2 * graph.seeds`.
+2. Сущности. Для первых `graph.seeds` семян — элемент `entity` с типом и описанием.
+3. Обход. Связи `RELATED` в пределах `graph.hops` шагов от всех семян, не больше
+   `graph.max_relations`: обычным Cypher или ограниченным APOC BFS (`graph.traversal`).
+   При `graph.use_gds` связи с равным весом дополнительно упорядочиваются по сумме PageRank
+   концов из сохранённого снимка `graph analyze` (сам GDS здесь не запускается).
+4. Подтверждения. Чанки, на которых держатся найденные связи (`evidence`), — до `k` штук в
+   порядке связей; при включённых сообществах (`graph.community`) часть квоты отдаётся чанкам
+   из Leiden-сообществ семян.
+
+Результат — элементы `entity`, `relation` и `chunk`; порядок задаёт приоритет при обрезке по
+бюджету токенов.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -23,6 +44,11 @@ class GraphRetriever:
         self._s = settings
 
     def retrieve(self, query: str, k: int, alt_queries: Sequence[str] = ()) -> list[ContextItem]:
+        """Ищет семена, обходит граф и собирает контекст (алгоритм — в docstring модуля).
+
+        `k` ограничивает число чанков-подтверждений; при `k <= 0` или без семян возвращает
+        пустой список. Ошибки Neo4j / Qdrant пробрасываются.
+        """
         if k <= 0:
             return []
         queries = [query, *alt_queries]
@@ -39,6 +65,8 @@ class GraphRetriever:
         text_seeds = [
             eid for q in queries for eid, _ in self._graph.fulltext_entities(q, self._s.seeds)
         ]
+        # для обхода берём вдвое больше семян, чем показываем сущностей: лишние семена
+        # дают связи, но не тратят бюджет на собственные описания
         seeds = list(dict.fromkeys(vector_seeds + text_seeds))[: self._s.seeds * 2]
         if not seeds:
             return []
@@ -66,8 +94,12 @@ class GraphRetriever:
         if self._s.use_gds and relations:
             entity_ids = list(dict.fromkeys(eid for r in relations for eid in (r.src_id, r.dst_id)))
             scores = self._graph.analysis_scores(entity_ids)
+            # Оценки используются, только если текущий снимок покрывает все концы связей;
+            # частичный или устаревший снимок (сущности добавлены после `graph analyze`)
+            # оставляет порядок обхода как есть.
             if len(scores) == len(entity_ids):
-                # Stable ties retain the traversal's previous order. Scores never add candidates.
+                # Сортировка стабильна: при равенстве сохраняется прежний порядок обхода.
+                # PageRank только переупорядочивает связи и никогда не добавляет новых.
                 relations.sort(key=lambda r: (-r.weight, -(scores[r.src_id] + scores[r.dst_id])))
         for r in relations:
             text = f"{r.src_name} —{r.predicate}→ {r.dst_name}"
@@ -83,10 +115,13 @@ class GraphRetriever:
             )
         evidence = list(dict.fromkeys(cid for r in relations for cid in r.evidence))
         local = self._graph.chunks_by_ids(evidence[:k]) if evidence else []
+        # chunks_by_ids не гарантирует порядок и пропускает удалённые чанки:
+        # восстанавливаем порядок связей
         by_id = {c.chunk_id: c for c in local}
         local = [by_id[cid] for cid in evidence[:k] if cid in by_id]
         community = self._s.community
         extra = []
+        # при наличии собственных подтверждений сообществам достаётся не больше половины k
         quota = min(community.max_chunks, k // 2 if local else k)
         if self._s.use_gds and community.enabled and quota:
             extra = self._graph.community_chunks(
@@ -102,5 +137,6 @@ class GraphRetriever:
             ContextItem(kind="chunk", ref=c.chunk_id, text=c.text, path=c.path, page=c.page)
             for c in [*local[: k - len(extra)], *extra]
         ]
-        # Give original evidence priority over summaries within the answer/context budget.
+        # С чанками сообществ исходные тексты идут раньше описаний сущностей и связей, чтобы
+        # бюджет ответа/контекста отдавал приоритет подтверждениям, а не пересказу.
         return chunks + items if extra else items + chunks

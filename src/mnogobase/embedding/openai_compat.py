@@ -1,3 +1,10 @@
+"""Dense-эмбеддер через `/embeddings` OpenAI-совместимого сервера.
+
+По умолчанию это llama.cpp server с Qwen3-Embedding GGUF на порту 8001 (секция
+`embedder`). Используется при ingest (чанки, wiki-секции, сущности) и при каждом поиске
+(вектор запроса). Клиент синхронный (httpx), повторы — `post_json_with_retry`.
+"""
+
 from __future__ import annotations
 
 import time
@@ -25,6 +32,8 @@ class OpenAICompatEmbedder:
         client: httpx.Client | None = None,
         retry_wait=DEFAULT_RETRY_WAIT,
     ):
+        """`client` — готовый httpx-клиент (тесты); иначе создаётся свой. Сеть при создании
+        не трогается: при `dim: auto` размерность узнаётся лениво."""
         self._s = settings
         self._client = client or httpx.Client(
             base_url=settings.url,
@@ -46,9 +55,16 @@ class OpenAICompatEmbedder:
         return self._dim
 
     def close(self) -> None:
+        """Закрывает HTTP-клиент."""
         self._client.close()
 
     def _embed(self, inputs: list[str]) -> list[list[float]]:
+        """Один запрос `/embeddings` на весь список; векторы в порядке `inputs`.
+
+        Ответ сортируется по `index` и проверяется, что пришёл ровно один вектор на каждый
+        вход (иначе `ValueError`). Векторы усекаются до `dim` и нормируются; при `dim: auto`
+        первый ответ фиксирует размерность. Ошибки HTTP после повторов пробрасываются.
+        """
         start = time.perf_counter()
         response = post_json_with_retry(
             self._client,
@@ -67,10 +83,12 @@ class OpenAICompatEmbedder:
         )
         dim = self._dim if self._dim is not None else len(data[0]["embedding"])
         vectors = [truncate_normalize(item["embedding"], dim) for item in data]
+        # размерность фиксируется только после того, как все векторы прошли проверку
         self._dim = dim
         return vectors
 
     def embed_documents(self, items: Sequence[EmbedInput]) -> list[list[float]]:
+        """Векторы документов пачками по `embedder.batch_size` (шаблон `doc_template`)."""
         texts = [format_document(item, self._s.doc_template) for item in items]
         out: list[list[float]] = []
         for start in range(0, len(texts), self._s.batch_size):
@@ -78,4 +96,5 @@ class OpenAICompatEmbedder:
         return out
 
     def embed_query(self, query: str) -> list[float]:
+        """Вектор поискового запроса (шаблон `query_template`)."""
         return self._embed([format_query(query, self._s.query_template)])[0]

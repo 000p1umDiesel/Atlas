@@ -1,4 +1,9 @@
-"""Команды состояния проекта: `doctor`, `status`, `reindex`, `reset`."""
+"""Команды состояния проекта: `doctor`, `status`, `reindex`, `reset`.
+
+`doctor` и `status` только читают и блокировок не берут. `reindex` и `reset` переписывают
+корпус целиком и поэтому держат блокировку писателя корпуса (`common.corpus_lock`): пока они
+работают, ни ingest, ни worker не запустятся.
+"""
 
 from __future__ import annotations
 
@@ -23,8 +28,11 @@ app = common.app
 
 @app.command()
 def doctor() -> None:
-    """Проверить device, серверы моделей, токенизатор, LLM endpoint, Qdrant, Neo4j, индекс и типы
-    сущностей."""
+    """Проверить окружение проекта: модели, LLM, базы данных и индекс.
+
+    Проверяются device, серверы моделей, токенизатор, LLM endpoint, Qdrant, Neo4j,
+    совместимость индекса с текущим эмбеддером и типы сущностей. Статус warn — предупреждение,
+    а не ошибка. Код выхода 1, если хотя бы одна проверка не прошла."""
     checks = common.run_checks(common.get_settings())
     table = Table("check", "status", "detail")
     for c in checks:
@@ -36,7 +44,11 @@ def doctor() -> None:
 
 @app.command()
 def status() -> None:
-    """Сводка по загруженным файлам, статусам стадий, ожидающим обновлениям wiki и ошибкам."""
+    """Показать состояние проекта: файлы, стадии, очередь wiki и ошибки.
+
+    Печатает число файлов по статусам, таблицу стадий конвейера, сущности, ждущие
+    обновления wiki, незавершённые удаления документов и последние ошибки стадий. Вне
+    проекта сообщает об этом и завершается с кодом 0, ничего не создавая."""
     console = common.console
     # status только читает: вне проекта он сообщает об этом и завершается успешно
     settings = common.get_settings(project=True, missing_exit=0)
@@ -78,7 +90,11 @@ def status() -> None:
 
 @app.command()
 def reindex() -> None:
-    """Пересчитать все векторы после смены embedder (граф и wiki сохраняются)."""
+    """Пересчитать все векторы после смены эмбеддера (граф и wiki сохраняются).
+
+    Нужна, когда меняются модель, размерность, шаблоны, backend или квантование
+    эмбеддера: до этого ingest и ask отказываются работать с индексом. Коллекции Qdrant
+    пересоздаются для чанков, сущностей и разделов wiki; LLM не вызывается."""
     settings = common.get_settings(project=True)
     # reindex пересоздаёт коллекции: смена размерности — ровно то, для чего он нужен
     common.preflight(settings, common.REINDEX_CHECKS, check_dim=False)
@@ -102,7 +118,8 @@ def reindex() -> None:
 
 
 def _reset_targets(settings: Settings) -> list[str]:
-    """Что именно удалит `reset`: показывается пользователю перед подтверждением."""
+    """Что именно удалит `reset`: список строк, который показывается пользователю перед
+    подтверждением. Пути разрешаются в абсолютные, чтобы было видно, какой проект стирается."""
     wiki_dir = settings.wiki.dir.resolve()
     return [
         f"Neo4j {settings.neo4j.uri}: all nodes in the default database",
@@ -116,7 +133,13 @@ def _reset_targets(settings: Settings) -> list[str]:
 def reset(
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask for confirmation.")] = False,
 ) -> None:
-    """Удалить ВСЕ векторы, данные графа, состояние registry, кэши и страницы wiki."""
+    """Удалить ВСЕ векторы, данные графа, состояние registry, кэши и страницы wiki.
+
+    Стираются все узлы базы Neo4j, коллекции Qdrant с префиксом проекта, registry и история
+    очереди в PostgreSQL, кэши в каталоге данных и сгенерированные страницы wiki; исходные
+    документы остаются. Перед удалением печатается список и запрашивается подтверждение
+    (--yes его пропускает). Вне существующего проекта команда отказывается даже с --yes.
+    Код выхода 1 при отказе от подтверждения, 2 вне проекта или при занятой блокировке."""
     console = common.console
     settings = common.get_settings()
     if not project_exists(settings):
