@@ -77,7 +77,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 | Пользователь | `sudo docker compose exec api mnogobase user passwd owner` / `user disable NAME` |
 | Баны за подбор пароля | `sudo fail2ban-client status mnogobase-login`, снять: `sudo fail2ban-client set mnogobase-login unbanip IP` |
 
-Схема базы создаётся при старте (`CREATE ... IF NOT EXISTS`). Разрушающих миграций нет. Если они понадобятся, бэкап уже входит в команду обновления.
+Схема базы создаётся при старте (`CREATE ... IF NOT EXISTS`), затем применяются версионные миграции (`schema_migrations`). Они удаляют только то, что код больше не читает (например, колонку `users.role` и таблицу очереди `write_state`), но бэкап на этот случай уже входит в команду обновления. Если в `config.yaml` на сервере остался ключ `database.backend`, удалите его: с ним конфиг не проходит проверку и контейнеры не стартуют.
 
 Никогда не используйте `docker compose down -v` и `docker volume prune`: данные лежат в bind-каталогах `data/`, но привычка опасна.
 
