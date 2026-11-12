@@ -220,6 +220,9 @@ class ParsingSettings(Section):
     # языки OCR (BCP-47 с префиксом iso:); без них Docling берёт китайскую модель RapidOCR
     ocr_lang: list[str] = Field(default_factory=lambda: ["iso:ru", "iso:en"])
     extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_EXTENSIONS))
+    # больше — стадия parse падает сразу, а не держит worker часами (Docling на CPU)
+    max_pages: int = Field(default=1000, ge=1)
+    max_file_mb: int = Field(default=200, ge=1)
 
 
 class ChunkingSettings(Section):
@@ -488,6 +491,9 @@ class ServiceSettings(Section):
     max_pending_jobs: int = Field(default=100, ge=1)
     history_messages: int = Field(default=12, ge=0, le=100)
     max_concurrent_asks: int = Field(default=4, ge=1, le=64)
+    # токены LLM (вход + выход, все вызовы, включая ingest) за сутки UTC; после него API
+    # отвечает 429 на вопросы, поиск и загрузки. null — без лимита
+    daily_token_limit: int | None = Field(default=None, ge=1)
 
 
 class Settings(BaseSettings):

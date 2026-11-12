@@ -214,8 +214,8 @@ def image_parser(tmp_path, monkeypatch):
     result = ConversionResult(input=input_doc, document=doc, status=ConversionStatus.SUCCESS)
     parser = DoclingParser(ParsingSettings(ocr=False), "cpu", tmp_path / "cache", VISION)
 
-    def convert(path, *, raises_on_error):
-        assert path == source and raises_on_error is True
+    def convert(path, *, raises_on_error, max_num_pages):
+        assert path == source and max_num_pages == 1000
         return result
 
     monkeypatch.setattr(parser._get_converter(), "convert", convert)
@@ -362,6 +362,35 @@ def test_an_image_file_is_described_whole_before_its_ocr_text(tmp_path):
     # описание попадает в текст чанков, перед текстом OCR
     text = ChunkingDocSerializer(doc=doc).serialize().text
     assert text.index("подшипник 6205") < text.index("OCR text")
+
+
+def test_a_large_image_is_shrunk_before_the_vlm(tmp_path):
+    shot = tmp_path / "huge.png"
+    Image.new("RGB", (4096, 1024), "white").save(shot)
+    sizes: list = []
+
+    def respond(request):
+        url = json.loads(request.content)["messages"][0]["content"][0]["image_url"]["url"]
+        with Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))) as sent:
+            sizes.append(sent.size)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "wide chart"}}]})
+
+    docling_parser._describe_whole_image(DoclingDocument(name="huge"), shot, VISION, _vlm(respond))
+    assert sizes == [(2048, 512)]
+
+
+def test_files_over_the_parsing_limits_fail_before_docling(tmp_path):
+    big = tmp_path / "big.md"
+    big.write_bytes(b"x" * (1024 * 1024 + 1))
+    with pytest.raises(docling_parser.ParseLimitError, match="max_file_mb"):
+        DoclingParser(ParsingSettings(max_file_mb=1), "cpu", tmp_path / "c").parse(big, DOC)
+    pdf = tmp_path / "pages.pdf"
+    pages = [Image.new("RGB", (100, 100), "white") for _ in range(3)]
+    pages[0].save(pdf, save_all=True, append_images=pages[1:])
+    parser = DoclingParser(ParsingSettings(max_pages=2, ocr=False), "cpu", tmp_path / "c")
+    with pytest.raises(docling_parser.ParseLimitError, match="3 pages"):
+        parser.parse(pdf, DOC)
+    assert not parser.cache_path(DOC).exists()
 
 
 def test_a_failed_description_fails_the_parse(tmp_path):

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 # FastAPI evaluates these dependency declarations while registering routes.
 # ruff: noqa: B008
+import hashlib
+import os
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
@@ -185,6 +189,7 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         user: User,
         filename: Annotated[str, Query(min_length=1, max_length=255)],
     ):
+        kb.upload_suffix(filename)  # имя и тип — до чтения тела
         maximum = settings.service.max_upload_mb * 1024 * 1024
         length = request.headers.get("content-length")
         if length is not None:
@@ -196,12 +201,21 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
                 raise ServiceError(422, "Invalid content length")
             if length_value > maximum:
                 raise ServiceError(413, "Upload too large")
-        data = bytearray()
-        async for chunk in request.stream():
-            if len(data) + len(chunk) > maximum:
-                raise ServiceError(413, "Upload too large")
-            data.extend(chunk)
-        return await run_in_threadpool(kb.upload, filename, bytes(data))
+        # поток сразу во временный файл с подсчётом sha256: тело не копится в памяти
+        handle, name = tempfile.mkstemp(dir=kb.staging_dir(), prefix=".upload-")
+        staged = FilePath(name)
+        try:
+            digest, size = hashlib.sha256(), 0
+            with os.fdopen(handle, "wb") as out:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > maximum:
+                        raise ServiceError(413, "Upload too large")
+                    digest.update(chunk)
+                    await run_in_threadpool(out.write, chunk)
+            return await run_in_threadpool(kb.upload_file, filename, staged, digest.hexdigest())
+        finally:
+            staged.unlink(missing_ok=True)
 
     @app.get("/api/documents/{doc_id}/content")
     def source(doc_id: str, kb: KB, user: User):

@@ -188,8 +188,18 @@ class KnowledgeBase:
         ):
             raise ServiceError(429, "Processing queue is full")
 
+    def check_budget(self, now: float | None = None) -> None:
+        """429, если за сутки (UTC) израсходован `service.daily_token_limit`: защита от
+        случайного цикла или украденной сессии."""
+        limit = self.settings.service.daily_token_limit
+        if limit is None:
+            return
+        if self.usage.tokens_since(_day_start(time.time() if now is None else now)) >= limit:
+            raise ServiceError(429, "Daily LLM token limit reached")
+
     # ---- документы и задачи (только очередь; в корпус пишет worker) ----
-    def upload(self, filename: str, content: bytes) -> dict:
+    def upload_suffix(self, filename: str) -> str:
+        """Проверяет имя и тип загружаемого файла (до чтения тела запроса); вернёт суффикс."""
         if (
             not filename
             or filename in (".", "..")
@@ -202,11 +212,39 @@ class KnowledgeBase:
             x.lower().lstrip(".") for x in self.settings.parsing.extensions
         }:
             raise ServiceError(422, "Unsupported document type")
-        if not content:
+        return suffix
+
+    def staging_dir(self) -> Path:
+        """Каталог для временных файлов загрузки: рядом с итоговыми, чтобы перенос был
+        атомарным `rename`."""
+        self.uploads.root.mkdir(parents=True, exist_ok=True)
+        return self.uploads.root
+
+    def upload(self, filename: str, content: bytes) -> dict:
+        """Загрузка из памяти (тесты, локальные вызовы); API пишет поток сразу в файл."""
+        self.upload_suffix(filename)
+        with tempfile.NamedTemporaryFile(
+            dir=self.staging_dir(), prefix=".upload-", delete=False
+        ) as stream:
+            staged = Path(stream.name)
+            stream.write(content)
+        try:
+            return self.upload_file(filename, staged, hashlib.sha256(content).hexdigest())
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def upload_file(self, filename: str, staged: Path, sha256: str) -> dict:
+        """Ставит в очередь уже записанный во временный файл `staged` документ. Файл
+        переносится на место загрузки; если он не нужен (дубликат), его удаляет вызывающий."""
+        suffix = self.upload_suffix(filename)
+        self.check_budget()
+        size = staged.stat().st_size
+        if not size:
             raise ServiceError(422, "Empty document")
-        if len(content) > self.settings.service.max_upload_mb * 1024 * 1024:
+        if size > self.settings.service.max_upload_mb * 1024 * 1024:
             raise ServiceError(413, "Document is too large")
-        doc_id = hashlib.sha256(content).hexdigest()[:16]
+        _check_signature(staged, suffix)
+        doc_id = sha256[:16]
         previous = self.uploads.get(doc_id)
         path = Path(previous["path"]) if previous else self.uploads.root / (doc_id + suffix)
         try:
@@ -231,15 +269,7 @@ class KnowledgeBase:
                 return _job(existing)
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                dir=path.parent, prefix=".upload-", delete=False
-            ) as stream:
-                temporary = Path(stream.name)
-                stream.write(content)
-            try:
-                temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            staged.replace(path)
             job_id = queue.enqueue(path, doc_id, force=True)
             return _job(queue.get(job_id))
 
@@ -365,6 +395,7 @@ class KnowledgeBase:
         _mode(mode)
         if not 1 <= k <= 100:
             raise ServiceError(422, "Invalid search limit")
+        await asyncio.to_thread(self.check_budget)
 
         async def run(app: App) -> list[dict]:
             if not app.registry.doc_ids():
@@ -412,6 +443,7 @@ class KnowledgeBase:
     async def ask(self, question: str, mode: str = "rag") -> dict:
         question = _question(question)
         _mode(mode)
+        await asyncio.to_thread(self.check_budget)
         async with self._asks:
             return await self._with_app(
                 lambda app: self._answer(app, question, mode),
@@ -423,6 +455,7 @@ class KnowledgeBase:
     ) -> dict:
         question = _question(question)
         _mode(mode)
+        await asyncio.to_thread(self.check_budget)
         store = self.store
         await asyncio.to_thread(store.conversation, user_id, conversation_id)
         count = self.settings.service.history_messages
@@ -547,8 +580,8 @@ class KnowledgeBase:
             counts = queue.counts()
             heartbeat = queue.last_heartbeat()
             running = [_job(j) for j in queue.jobs(1000) if j.status == "running"]
-        start = datetime.fromtimestamp(now, UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        day, month = start.timestamp(), start.replace(day=1).timestamp()
+        day = _day_start(now)
+        month = datetime.fromtimestamp(day, UTC).replace(day=1).timestamp()
         return {
             "queue": counts,
             "running": running,
@@ -561,3 +594,39 @@ class KnowledgeBase:
                 "month": self.usage.summary(since=month),
             },
         }
+
+
+def _day_start(now: float) -> float:
+    return (
+        datetime.fromtimestamp(now, UTC)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .timestamp()
+    )
+
+
+# Первые байты файлов с двоичным форматом: загрузка с чужим содержимым под знакомым
+# расширением отклоняется до парсера. Текстовые форматы (md, txt, html, csv...) не проверяются.
+_ZIP = (b"PK\x03\x04",)
+_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    ".pdf": (b"%PDF-",),
+    ".docx": _ZIP,
+    ".pptx": _ZIP,
+    ".xlsx": _ZIP,
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".tif": (b"II*\x00", b"MM\x00*"),
+    ".tiff": (b"II*\x00", b"MM\x00*"),
+    ".bmp": (b"BM",),
+}
+
+
+def _check_signature(path: Path, suffix: str) -> None:
+    with path.open("rb") as stream:
+        head = stream.read(16)
+    if suffix == ".webp":
+        valid = head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    else:
+        valid = head.startswith(_SIGNATURES.get(suffix, (b"",)))
+    if not valid:
+        raise ServiceError(422, "File content does not match its type")

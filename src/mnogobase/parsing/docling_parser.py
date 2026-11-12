@@ -6,10 +6,11 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
-from docling.datamodel.base_models import InputFormat
+from docling.datamodel.base_models import ConversionStatus, InputFormat
 from docling.datamodel.pipeline_options import (
     ConvertPipelineOptions,
     OcrAutoOptions,
@@ -30,6 +31,7 @@ from docling_core.types.doc import (
     DescriptionMetaField,
     DocItemLabel,
     DoclingDocument,
+    ImageRefMode,
     PictureItem,
     PictureMeta,
     ProvenanceItem,
@@ -44,10 +46,19 @@ from mnogobase.log import get_logger
 _CUDA_BATCH_SIZE = 16
 _BATCH_SIZE_ATTRS = ("layout_batch_size", "ocr_batch_size", "table_batch_size")
 _SKIP_CONFIDENCE = 0.5  # картинка не описывается, если класс из vision.skip вероятнее этого
+MAX_VLM_SIDE = 2048  # пикселей по длинной стороне картинки, которую описывает VLM
 
 
 class VisionError(RuntimeError):
     """VLM не описал картинку: документ не должен считаться разобранным без описаний."""
+
+
+class ParseError(RuntimeError):
+    """Docling не разобрал файл."""
+
+
+class ParseLimitError(ParseError):
+    """Файл больше `parsing.max_pages` / `parsing.max_file_mb`."""
 
 
 @dataclass
@@ -104,15 +115,38 @@ class DoclingParser:
         return self._cache / f"{doc_id}.json"
 
     def parse(self, path: Path, doc_id: str) -> ParsedDocument:
-        result = self._get_converter().convert(path, raises_on_error=True)
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if size_mb > self._s.max_file_mb:
+            raise ParseLimitError(
+                f"{path.name}: {size_mb:.0f} MB is over parsing.max_file_mb={self._s.max_file_mb}"
+            )
+        result = self._get_converter().convert(
+            path, raises_on_error=False, max_num_pages=self._s.max_pages
+        )
+        if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
+            pages = getattr(result.input, "page_count", 0) or 0
+            if pages > self._s.max_pages:
+                raise ParseLimitError(
+                    f"{path.name}: {pages} pages is over parsing.max_pages={self._s.max_pages}"
+                )
+            details = "; ".join(e.error_message for e in result.errors)[:500]
+            raise ParseError(f"{path.name}: Docling failed ({result.status.value}) {details}")
         doc = result.document
         if self._vision is not None and self._vision.enabled:
             if result.input.format == InputFormat.IMAGE:
                 _describe_whole_image(doc, path, self._vision)
             _check_descriptions(doc, self._vision)
         self._cache.mkdir(parents=True, exist_ok=True)
-        self.cache_path(doc_id).write_text(doc.model_dump_json(), encoding="utf-8")
         n_images = _save_images(doc, self._cache / doc_id / "images")
+        # картинки уже лежат PNG в images/, в JSON разбора они не дублируются base64
+        temporary = self._cache / f".{doc_id}.{uuid4().hex}.tmp"
+        try:
+            doc.save_as_json(
+                temporary, image_mode=ImageRefMode.PLACEHOLDER, indent=None, ensure_ascii=False
+            )
+            temporary.replace(self.cache_path(doc_id))
+        finally:
+            temporary.unlink(missing_ok=True)
         parsed = _wrap(doc, path)
         self._log.info(
             "parsed", doc_id=doc_id, title=parsed.title, n_pages=parsed.n_pages, n_images=n_images
@@ -164,6 +198,8 @@ def _describe_whole_image(
     начало документа, перед текстом OCR."""
     with Image.open(path) as source:
         image = source.convert("RGB")
+    # большой скриншот VLM всё равно ужмёт, а base64 огромного PNG — лишние мегабайты запроса
+    image.thumbnail((MAX_VLM_SIDE, MAX_VLM_SIDE))
     try:
         text = _ask_vlm(image, vision, client, retry_wait)
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:

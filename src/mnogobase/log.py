@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -123,6 +124,30 @@ def new_run_id() -> str:
     return run_id
 
 
+_SECRETS = (
+    (re.compile(r"(?i)\bbearer\s+[^\s\"',;]+"), "Bearer ***"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "sk-***"),
+    (re.compile(r"(://)[^/\s:@]+:[^/\s@]+@"), r"\1***@"),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|access[_-]?token|token|password|passwd|secret|key)"
+            r"(\"?\s*[:=]\s*\"?)[^\s\"'&,;}]+"
+        ),
+        r"\1\2***",
+    ),
+)
+
+
+def safe_error(exc: BaseException, limit: int = 500) -> str:
+    """`Тип: сообщение` для БД и логов: ошибки провайдера и HTTP-клиентов могут содержать
+    ключи (Bearer, sk-..., пароль в URL, api_key=...); они заменяются на ***, а длина
+    ограничена."""
+    text = f"{type(exc).__name__}: {exc}"
+    for pattern, replacement in _SECRETS:
+        text = pattern.sub(replacement, text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def bind_context(**kv) -> None:
     structlog.contextvars.bind_contextvars(**kv)
 
@@ -142,7 +167,7 @@ def log_stage(logger, stage: str, **fields) -> Iterator[None]:
             stage=stage,
             duration_ms=int((time.perf_counter() - start) * 1000),
             error_type=type(exc).__name__,
-            error=str(exc),
+            error=safe_error(exc),
             exc_info=True,
             **fields,
         )

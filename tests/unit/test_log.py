@@ -96,3 +96,17 @@ def test_third_party_noise_is_quieted_but_warnings_pass(tmp_path):
     assert passes(logging.WARNING) and passes(logging.ERROR)
     assert are_progress_bars_disabled()  # загрузки Hugging Face
     assert not hf_logging.is_progress_bar_enabled()  # "Loading weights" из transformers
+
+
+def test_safe_error_hides_credentials_and_limits_length():
+    from mnogobase.log import safe_error
+
+    exc = RuntimeError(
+        "401 for https://user:hunter2@llm.example/v1 with Authorization: Bearer abc.def "
+        'api_key=sk-1234567890abcdef {"token": "t0ps3cret"} password=pw1'
+    )
+    text = safe_error(exc)
+    assert text.startswith("RuntimeError: 401 for https://***@llm.example/v1")
+    for secret in ("hunter2", "abc.def", "sk-1234567890abcdef", "t0ps3cret", "pw1"):
+        assert secret not in text
+    assert len(safe_error(ValueError("x" * 2000))) == 500

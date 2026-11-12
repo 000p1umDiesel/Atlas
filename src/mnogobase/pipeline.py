@@ -19,7 +19,7 @@ from mnogobase.extraction.extractor import TYPES_CHANGED, Extractor, stale_entit
 from mnogobase.extraction.resolver import EntityResolver, entity_embed_input
 from mnogobase.files import write_atomic
 from mnogobase.ids import file_doc_id, normalize_name
-from mnogobase.log import bind_context, get_logger, log_stage, unbind_context
+from mnogobase.log import bind_context, get_logger, log_stage, safe_error, unbind_context
 from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput
 from mnogobase.parsing.docling_parser import DoclingParser
 from mnogobase.progress import NULL_PROGRESS, ProgressSink
@@ -194,12 +194,12 @@ class Pipeline:
                 report.failed[key] = str(exc)
                 status = "failed"
             except Exception as exc:
-                report.failed[key] = f"{type(exc).__name__}: {exc}"
+                report.failed[key] = safe_error(exc)
                 self._log.error(
                     "ingest_file_failed",
                     path=key,
                     error_type=type(exc).__name__,
-                    error=str(exc),
+                    error=safe_error(exc),
                     exc_info=True,
                 )
                 status = "failed"
@@ -322,9 +322,7 @@ class Pipeline:
                     with log_stage(self._log, stage, path=key):
                         await self._run_stage(stage, path, doc_id, progress)
                 except Exception as exc:
-                    self._registry.set_stage(
-                        doc_id, stage, "failed", error=f"{type(exc).__name__}: {exc}"
-                    )
+                    self._registry.set_stage(doc_id, stage, "failed", error=safe_error(exc))
                     self._registry.set_file_status(key, "failed")
                     raise
                 self._registry.set_stage(doc_id, stage, "done")

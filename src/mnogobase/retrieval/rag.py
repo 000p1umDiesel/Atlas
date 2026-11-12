@@ -5,7 +5,7 @@ from typing import Any
 
 from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.ids import chunk_id
-from mnogobase.log import get_logger
+from mnogobase.log import get_logger, safe_error
 from mnogobase.models import ContextItem, SearchHit
 from mnogobase.retrieval.base import query_vectors
 from mnogobase.retrieval.rerank import Reranker
@@ -84,7 +84,7 @@ class RagRetriever:
         try:
             scores = self._reranker.score(query, texts)
         except Exception as exc:  # ответ всё равно работает на гибридном порядке
-            self._log.warning("rerank_failed", error_type=type(exc).__name__, error=str(exc))
+            self._log.warning("rerank_failed", error_type=type(exc).__name__, error=safe_error(exc))
             return hits
         # стабильная сортировка: при равных score сохраняется гибридный порядок
         order = sorted(range(len(hits)), key=lambda i: -scores[i])

@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from mnogobase import cli
 from mnogobase.app import build_app
 from mnogobase.config import load_settings
 from mnogobase.kb import KnowledgeBase
+from mnogobase.llm.telemetry import CallEvent
 from mnogobase.service.errors import ServiceError
 from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
@@ -151,6 +153,38 @@ async def test_documents_include_files_ingested_outside_the_api(env):
         await kb.close()
 
 
+async def test_daily_token_limit_stops_questions_and_uploads(env):
+    settings, factory, _ = env
+    limited = settings.model_copy(
+        update={"service": settings.service.model_copy(update={"daily_token_limit": 1000})}
+    )
+    kb = KnowledgeBase(limited, app_factory=factory)
+    try:
+        kb.check_budget()
+        yesterday = time.time() - 2 * 86400
+        for created, tokens in ((yesterday, 5000), (time.time(), 600), (time.time(), 500)):
+            event = CallEvent(
+                id=f"call-{created}-{tokens}",
+                model="m",
+                operation="answer",
+                created_at=created,
+                status="ok",
+                tokens_in=tokens,
+                tokens_out=0,
+            )
+            kb.usage.record(event)
+        for call in (kb.ask("question"), kb.search("question")):
+            with pytest.raises(ServiceError) as error:
+                await call
+            assert error.value.status == 429
+        with pytest.raises(ServiceError) as error:
+            kb.upload("a.md", b"text")
+        assert error.value.status == 429
+        kb.check_budget(now=time.time() + 86400)  # следующие сутки — снова можно
+    finally:
+        await kb.close()
+
+
 async def test_validation_and_queue_limits(env):
     settings, factory, _ = env
     limited = settings.model_copy(
@@ -162,6 +196,8 @@ async def test_validation_and_queue_limits(env):
             ("../x.md", b"x", 422),
             ("x.exe", b"x", 422),
             ("x.md", b"", 422),
+            ("x.pdf", b"<html>not a pdf</html>", 422),
+            ("x.png", b"GIF89a", 422),
         ]:
             with pytest.raises(ServiceError) as error:
                 kb.upload(name, body)
@@ -170,6 +206,7 @@ async def test_validation_and_queue_limits(env):
         with pytest.raises(ServiceError) as error:
             kb.upload("b.md", b"second")
         assert error.value.status == 429
+        assert not list(kb.staging_dir().glob(".upload-*"))
         with pytest.raises(ServiceError) as error:
             await kb.ask("   ")
         assert error.value.status == 422

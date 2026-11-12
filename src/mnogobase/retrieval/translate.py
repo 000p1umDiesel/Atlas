@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger
+from mnogobase.log import get_logger, safe_error
 
 # вопрос переводится, если доля не-ASCII (не латинских) букв в нём больше этого порога
 NON_LATIN_SHARE = 0.3
@@ -42,12 +42,13 @@ class QueryTranslator:
             text = await self._llm.complete(messages, task="query")
         except Exception as exc:  # поиск работает и без него
             self._log.warning(
-                "query_translation_failed", error_type=type(exc).__name__, error=str(exc)
+                "query_translation_failed", error_type=type(exc).__name__, error=safe_error(exc)
             )
             return []
         lines = [line for line in text.strip().splitlines() if line.strip()]
         text = lines[0].strip().strip("\"'«»“”").strip() if lines else ""
         if not text or text.casefold() == question.strip().casefold():
             return []
-        self._log.info("query_translated", question=question, translation=text)
+        # вопросы владельца — его данные: в журнал только на уровне DEBUG
+        self._log.debug("query_translated", question=question, translation=text)
         return [text]

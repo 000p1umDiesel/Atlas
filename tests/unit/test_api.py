@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,7 @@ from fastapi.testclient import TestClient
 from mnogobase.api.app import create_api
 from mnogobase.config import Settings
 from mnogobase.database import database_target
+from mnogobase.kb import KnowledgeBase
 from mnogobase.service.errors import ServiceError
 from mnogobase.service.store import ServiceStore
 
@@ -23,7 +26,11 @@ def api(tmp_path):
     store = ServiceStore(database_target(settings))
     owner = store.create_user("owner", PASSWORD)
     other = store.create_user("other", PASSWORD)
-    kb = SimpleNamespace(settings=settings, store=store)
+    kb = SimpleNamespace(
+        settings=settings, store=store, uploads=SimpleNamespace(root=tmp_path / "uploads")
+    )
+    kb.upload_suffix = partial(KnowledgeBase.upload_suffix, kb)
+    kb.staging_dir = partial(KnowledgeBase.staging_dir, kb)
     client = TestClient(create_api(settings, kb=kb), raise_server_exceptions=False)
     headers = {"Authorization": "Bearer " + store.login("owner", PASSWORD)}
     return SimpleNamespace(**locals())
@@ -67,15 +74,27 @@ def test_docs_and_server_details_are_hidden(api):
 
 def test_upload_limits_and_forwarding(api):
     seen = []
-    api.kb.upload = lambda name, data: seen.append((name, data)) or {"id": 1, "status": "pending"}
+
+    def upload_file(name, staged, sha256):
+        seen.append((name, staged.read_bytes(), sha256))
+        return {"id": 1, "status": "pending"}
+
+    api.kb.upload_file = upload_file
     response = api.client.post(
         "/api/documents?filename=a.md", content=b"hello", headers=api.headers
     )
-    assert response.status_code == 202 and seen == [("a.md", b"hello")]
+    assert response.status_code == 202
+    assert seen == [("a.md", b"hello", hashlib.sha256(b"hello").hexdigest())]
     too_big = api.client.post(
         "/api/documents?filename=a.md", content=b"x" * (1024 * 1024 + 1), headers=api.headers
     )
     assert too_big.status_code == 413
+    wrong_type = api.client.post(
+        "/api/documents?filename=a.exe", content=b"MZ", headers=api.headers
+    )
+    assert wrong_type.status_code == 422 and len(seen) == 1
+    # временные файлы загрузки не остаются ни после успеха, ни после отказа
+    assert not list(api.kb.staging_dir().glob(".upload-*"))
 
 
 def test_all_routes(api, tmp_path):

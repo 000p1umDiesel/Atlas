@@ -13,7 +13,7 @@ from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.ids import normalize_name, slugify
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger
+from mnogobase.log import get_logger, safe_error
 from mnogobase.models import (
     EmbedInput,
     EntityRecord,
@@ -265,7 +265,7 @@ class WikiBuilder:
             "wiki_page_failed",
             entity_id=entity.entity_id,
             error_type=type(exc).__name__,
-            error=str(exc),
+            error=safe_error(exc),
         )
 
     def _delete_pages(self, pages: list[WikiPageRecord]) -> list[str]:

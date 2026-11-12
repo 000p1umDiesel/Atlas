@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from mnogobase.ids import normalize_name
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger
+from mnogobase.log import get_logger, safe_error
 from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
 from mnogobase.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.registry import Registry
@@ -157,7 +157,7 @@ class Extractor:
                     "extract_failed",
                     chunk_id=chunk.chunk_id,
                     error_type=type(exc).__name__,
-                    error=str(exc),
+                    error=safe_error(exc),
                 )
                 progress.advance(failed=True)
                 return chunk.chunk_id, None

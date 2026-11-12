@@ -70,6 +70,16 @@ class UsageStore:
                     ),
                 )
 
+    def tokens_since(self, since: float) -> int:
+        """Токены (вход + выход) всех вызовов LLM начиная с `since`."""
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT COALESCE(SUM(COALESCE(tokens_in,0) + COALESCE(tokens_out,0)),0) "
+                "FROM llm_usage WHERE created_at>=?",
+                (since,),
+            ).fetchone()
+        return int(row[0])
+
     def summary(self, *, since: float | None = None, until: float | None = None) -> list[dict]:
         clauses, args = [], []
         for clause, value in (("created_at>=?", since), ("created_at<?", until)):
