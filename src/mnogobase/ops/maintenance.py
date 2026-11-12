@@ -58,7 +58,11 @@ def reindex(app: App, progress: ProgressSink = NULL_PROGRESS) -> dict[str, int]:
     _check_embedder(app)
     # Refuse unrecoverable inputs before dropping the usable index.
     doc_ids = sorted({f.doc_id for f in app.registry.files()})
-    doc_ids = [d for d in doc_ids if app.registry.stage_status(d, "embed") == "done"]
+    # документ, удаление которого начато, но не закончено, не возвращается в индекс
+    removing = {doc_id for doc_id, _ in app.registry.pending_removals()}
+    doc_ids = [
+        d for d in doc_ids if d not in removing and app.registry.stage_status(d, "embed") == "done"
+    ]
     for doc_id in doc_ids:
         try:
             _document_input(app, doc_id)
