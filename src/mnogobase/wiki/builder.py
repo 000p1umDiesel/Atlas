@@ -149,6 +149,19 @@ class WikiBuilder:
                 progress.advance()
         writable = [e for e in candidates if evidence.get(e.entity_id)]
         report.skipped = [e.name for e in candidates if evidence.get(e.entity_id) == []]
+        # устаревшая страница без подтверждений не пересоберётся: удаляем её узел, а
+        # ссылающиеся страницы помечаем dirty, чтобы следующий build убрал ссылки на неё
+        orphaned = [
+            page
+            for e in candidates
+            if evidence.get(e.entity_id) == []
+            and (page := self._graph.wiki_page(e.entity_id)) is not None
+            and page.stale
+        ]
+        if orphaned:
+            ids = [p.page_id for p in orphaned]
+            self._registry.mark_dirty(set(self._graph.pages_linking_to(ids)) & eligible_ids)
+            report.deleted += self._delete_pages(orphaned)
 
         slugs = self._assign_slugs(writable)
 
@@ -180,7 +193,7 @@ class WikiBuilder:
                     surviving.append(draft)
                 except Exception as exc:  # одна плохая сущность не должна ронять весь build
                     self._record_failure(report, failed_ids, draft.entity, exc)
-                    lost_target |= draft.previous is None
+                    lost_target |= draft.previous is None or draft.previous.stale
                     progress.advance(failed=True)
                 else:
                     progress.advance()
@@ -288,7 +301,7 @@ class WikiBuilder:
         ]
 
     def _assign_slugs(self, candidates: list[EntityRecord]) -> dict[str, str]:
-        taken = {row.slug: row.page_id for row in self._graph.wiki_pages()}
+        taken = {row.slug: row.page_id for row in self._graph.wiki_pages(include_stale=True)}
         slugs: dict[str, str] = {}
         for entity in candidates:
             page = self._graph.wiki_page(entity.entity_id)

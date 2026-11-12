@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from qdrant_client import QdrantClient
 from qdrant_client import models as qm
-from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from mnogobase.config import QdrantSettings
@@ -92,28 +92,46 @@ class QdrantStore:
         self._ensure(self.wiki, sparse=True, indexes=("page_id", "entity_id"))
 
     def _ensure(self, name: str, *, sparse: bool, indexes: tuple[str, ...]) -> None:
-        if self.client.collection_exists(name):
-            existing = self.collection_dim(name)
-            if existing != self.dim:
-                raise DimensionMismatchError(
-                    f"collection {name} has dim {existing}, the embedder produces {self.dim}; "
-                    "run `mnogobase reindex`"
+        """Создаёт коллекцию, если её нет, и всегда досоздаёт недостающие payload-индексы:
+        прерванное создание или параллельный процесс, успевший создать коллекцию первым,
+        не оставят её без индексов."""
+        if not self._call(self.client.collection_exists, name):
+            try:
+                self._call(
+                    self.client.create_collection,
+                    name,
+                    vectors_config={
+                        DENSE: qm.VectorParams(size=self.dim, distance=qm.Distance.COSINE)
+                    },
+                    sparse_vectors_config=(
+                        {SPARSE: qm.SparseVectorParams(modifier=qm.Modifier.IDF)}
+                        if sparse
+                        else None
+                    ),
                 )
-            return
-        self.client.create_collection(
-            name,
-            vectors_config={DENSE: qm.VectorParams(size=self.dim, distance=qm.Distance.COSINE)},
-            sparse_vectors_config=(
-                {SPARSE: qm.SparseVectorParams(modifier=qm.Modifier.IDF)} if sparse else None
-            ),
-        )
-        for field in indexes:
-            self.client.create_payload_index(name, field, field_schema=_KEYWORD)
+            except (UnexpectedResponse, ValueError):
+                # другой процесс создал её между проверкой и созданием
+                if not self._call(self.client.collection_exists, name):
+                    raise
+        existing = self.collection_dim(name)
+        if existing != self.dim:
+            raise DimensionMismatchError(
+                f"collection {name} has dim {existing}, the embedder produces {self.dim}; "
+                "run `mnogobase reindex`"
+            )
+        info = self._call(self.client.get_collection, name)
+        missing = [f for f in indexes if f not in (info.payload_schema or {})]
+        with warnings.catch_warnings():  # локальный Qdrant тестов индексы не поддерживает
+            warnings.filterwarnings("ignore", message="Payload indexes have no effect")
+            for field in missing:
+                self._call(
+                    self.client.create_payload_index, name, field, field_schema=_KEYWORD, wait=True
+                )
 
     def collection_dim(self, name: str) -> int | None:
-        if not self.client.collection_exists(name):
+        if not self._call(self.client.collection_exists, name):
             return None
-        vectors = self.client.get_collection(name).config.params.vectors
+        vectors = self._call(self.client.get_collection, name).config.params.vectors
         return vectors[DENSE].size
 
     def drop_collections(self) -> None:

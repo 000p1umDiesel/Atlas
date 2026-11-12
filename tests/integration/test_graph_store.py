@@ -72,6 +72,22 @@ def test_mentions_and_relations_are_idempotent(graph):
     assert graph.chunk_entity_ids("d" * 16)[chunks[0].chunk_id] in (["e1", "e2"], ["e2", "e1"])
 
 
+def test_chunk_facts_are_one_idempotent_write(graph):
+    chunks = make_doc(graph)
+    make_entity(graph, "e1", "Transformer")
+    make_entity(graph, "e2", "Softmax")
+    rel = {"src": "e1", "dst": "e2", "predicate": "uses", "description": "short", "strength": 5}
+    longer = {**rel, "description": "a longer description", "strength": 3}
+    # повтор связи внутри чанка учитывается один раз (первый), повтор записи чанка — no-op
+    graph.add_chunk_facts(chunks[0].chunk_id, ["e1", "e2"], [rel, longer])
+    graph.add_chunk_facts(chunks[0].chunk_id, ["e1", "e2"], [rel])
+    [relation] = graph.entity_context("e1", max_relations=10).relations
+    assert relation.weight == 5 and relation.evidence == [chunks[0].chunk_id]
+    assert relation.description == "short"
+    assert graph.get_entity("e2").mention_count == 1
+    graph.add_chunk_facts(chunks[1].chunk_id, [], [])  # пустой чанк ничего не пишет
+
+
 def test_delete_document_cascade(graph):
     a = make_doc(graph, "a" * 16, 2)
     b = make_doc(graph, "b" * 16, 1)
@@ -171,6 +187,47 @@ def test_wiki_page_links_are_replaced(graph):
     rows = graph.wiki_pages()
     assert {r.page_id for r in rows} == {"e1", "e2", "e3"}
     assert all(r.entity_type == "Method" for r in rows)
+
+
+def test_failed_wiki_page_write_keeps_the_previous_page(graph, monkeypatch):
+    from neo4j import ManagedTransaction
+
+    chunks = make_doc(graph)
+    for eid, name in (("e1", "One"), ("e2", "Two")):
+        make_entity(graph, eid, name)
+        page = WikiPageRecord(page_id=eid, slug=name.lower(), title=name, path=f"{name}.md")
+        graph.upsert_wiki_page(page, eid, [], [])
+    graph.upsert_wiki_page(graph.wiki_page("e1"), "e1", ["e2"], [chunks[0].chunk_id])
+    run = ManagedTransaction.run
+
+    def failing(self, query, *args, **kwargs):
+        if "MERGE (p)-[:CITES]" in query:
+            raise RuntimeError("connection lost")
+        return run(self, query, *args, **kwargs)
+
+    monkeypatch.setattr(ManagedTransaction, "run", failing)
+    newer = graph.wiki_page("e1").model_copy(update={"version": 2})
+    with pytest.raises(RuntimeError):
+        graph.upsert_wiki_page(newer, "e1", [], [chunks[1].chunk_id])
+    monkeypatch.undo()
+    cites = graph._run("MATCH (:WikiPage {page_id:'e1'})-[:CITES]->(c) RETURN c.chunk_id AS id")
+    assert [r["id"] for r in cites] == [chunks[0].chunk_id]
+    assert graph.wiki_page("e1").version == 1
+    assert graph.pages_linking_to(["e2"]) == ["e1"]
+
+
+def test_stale_wiki_page_is_hidden_until_rebuilt(graph):
+    make_doc(graph)
+    make_entity(graph, "e1", "One")
+    page = WikiPageRecord(page_id="e1", slug="one", title="One", path="entities/one.md")
+    graph.upsert_wiki_page(page, "e1", [], [])
+    graph.invalidate_wiki_page("e1")
+    assert graph.wiki_pages() == []
+    assert [r.slug for r in graph.wiki_pages(include_stale=True)] == ["one"]
+    assert graph.wiki_page("e1").stale
+    graph.upsert_wiki_page(page.model_copy(update={"version": 2}), "e1", [], [])
+    assert not graph.wiki_page("e1").stale
+    assert [r.page_id for r in graph.wiki_pages()] == ["e1"]
 
 
 def test_delete_wiki_page_keeps_entity(graph):

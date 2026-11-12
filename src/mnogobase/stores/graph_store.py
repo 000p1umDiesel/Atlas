@@ -49,7 +49,7 @@ _SCHEMA = [
     "ON (e.analytics_run_id, e.analytics_community)",
 ]
 _WORD = re.compile(r"\w+", re.UNICODE)
-_PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version} AS page"
+_PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version, stale: coalesce(p.stale, false)} AS page"
 _REL_MAP = (
     "{src_id: startNode(r).entity_id, src_name: startNode(r).name, predicate: r.predicate, "
     "dst_id: endNode(r).entity_id, dst_name: endNode(r).name, description: r.description, "
@@ -290,18 +290,7 @@ class GraphStore:
         return [EntityRecord(**r["e"]) for r in rows]
 
     def add_mentions(self, chunk_id: str, entity_ids: list[str]) -> None:
-        if not entity_ids:
-            return
-        self._write(
-            "MATCH (c:Chunk {chunk_id: $chunk_id}) "
-            "UNWIND $eids AS eid "
-            "MATCH (e:Entity {entity_id: eid}) "
-            "MERGE (c)-[:MENTIONS]->(e) "
-            "WITH DISTINCT e "
-            "SET e.mention_count = COUNT { (e)<-[:MENTIONS]-(:Chunk) }",
-            chunk_id=chunk_id,
-            eids=entity_ids,
-        )
+        self.add_chunk_facts(chunk_id, entity_ids, [])
 
     def merge_relation(
         self,
@@ -312,22 +301,62 @@ class GraphStore:
         strength: int,
         chunk_id: str,
     ) -> None:
-        self._write(
-            "MATCH (a:Entity {entity_id: $src}), (b:Entity {entity_id: $dst}) "
-            "MERGE (a)-[r:RELATED {predicate: $predicate}]->(b) "
-            "ON CREATE SET r.evidence = [], r.strengths = [], r.weight = 0.0, r.description = $description "
-            "WITH r WHERE NOT $chunk_id IN r.evidence "
-            "SET r.evidence = r.evidence + $chunk_id, r.strengths = r.strengths + $strength, "
-            "r.weight = r.weight + $strength, "
-            "r.description = CASE WHEN size($description) > size(coalesce(r.description, '')) "
-            "THEN $description ELSE r.description END",
-            src=src_id,
-            dst=dst_id,
-            predicate=predicate,
-            description=description,
-            strength=strength,
-            chunk_id=chunk_id,
+        self.add_chunk_facts(
+            chunk_id,
+            [],
+            [
+                {
+                    "src": src_id,
+                    "dst": dst_id,
+                    "predicate": predicate,
+                    "description": description,
+                    "strength": strength,
+                }
+            ],
         )
+
+    def add_chunk_facts(self, chunk_id: str, entity_ids: list[str], relations: list[dict]) -> None:
+        """Упоминания и связи одного чанка одной транзакцией (UNWIND вместо транзакции на
+        каждое упоминание). `relations`: dict с src, dst, predicate, description, strength.
+        Связь, уже подтверждённая этим чанком, не меняется, поэтому повтор идемпотентен;
+        повтор одной связи внутри чанка учитывается один раз (первый)."""
+        unique: dict[tuple[str, str, str], dict] = {}
+        for rel in relations:
+            unique.setdefault((rel["src"], rel["dst"], rel["predicate"]), rel)
+        if not entity_ids and not unique:
+            return
+
+        def write(tx):
+            tx.run(_INVALIDATE_ANALYSIS).consume()
+            if entity_ids:
+                tx.run(
+                    "MATCH (c:Chunk {chunk_id: $chunk_id}) "
+                    "UNWIND $eids AS eid "
+                    "MATCH (e:Entity {entity_id: eid}) "
+                    "MERGE (c)-[:MENTIONS]->(e) "
+                    "WITH DISTINCT e "
+                    "SET e.mention_count = COUNT { (e)<-[:MENTIONS]-(:Chunk) }",
+                    chunk_id=chunk_id,
+                    eids=entity_ids,
+                ).consume()
+            if unique:
+                tx.run(
+                    "UNWIND $rels AS rel "
+                    "MATCH (a:Entity {entity_id: rel.src}), (b:Entity {entity_id: rel.dst}) "
+                    "MERGE (a)-[r:RELATED {predicate: rel.predicate}]->(b) "
+                    "ON CREATE SET r.evidence = [], r.strengths = [], r.weight = 0.0, "
+                    "r.description = rel.description "
+                    "WITH r, rel WHERE NOT $chunk_id IN r.evidence "
+                    "SET r.evidence = r.evidence + $chunk_id, "
+                    "r.strengths = r.strengths + rel.strength, r.weight = r.weight + rel.strength, "
+                    "r.description = CASE WHEN size(rel.description) > "
+                    "size(coalesce(r.description, '')) THEN rel.description ELSE r.description END",
+                    chunk_id=chunk_id,
+                    rels=list(unique.values()),
+                ).consume()
+
+        with self._driver.session(database=self._db) as session:
+            session.execute_write(write)
 
     def entity_context(self, entity_id: str, max_relations: int) -> EntityContext:
         rows = self._run(
@@ -676,30 +705,45 @@ class GraphStore:
     def upsert_wiki_page(
         self, page: WikiPageRecord, entity_id: str, links_to: list[str], cites: list[str]
     ) -> None:
-        self._run(
-            "MERGE (p:WikiPage {page_id: $page_id}) "
-            "SET p.slug = $slug, p.title = $title, p.path = $path, p.content_hash = $content_hash, "
-            "p.version = $version, p.updated_at = datetime() "
-            "WITH p MATCH (e:Entity {entity_id: $entity_id}) MERGE (p)-[:ABOUT]->(e)",
-            entity_id=entity_id,
-            **page.model_dump(),
-        )
-        self._run(
-            "MATCH (p:WikiPage {page_id: $page_id})-[r:LINKS_TO|CITES]->() DELETE r",
-            page_id=page.page_id,
-        )
-        self._run(
-            "MATCH (p:WikiPage {page_id: $page_id}) "
-            "UNWIND $links AS target MATCH (q:WikiPage {page_id: target}) MERGE (p)-[:LINKS_TO]->(q)",
-            page_id=page.page_id,
-            links=links_to,
-        )
-        self._run(
-            "MATCH (p:WikiPage {page_id: $page_id}) "
-            "UNWIND $cites AS cid MATCH (c:Chunk {chunk_id: cid}) MERGE (p)-[:CITES]->(c)",
-            page_id=page.page_id,
-            cites=cites,
-        )
+        """Узел страницы и её рёбра одной транзакцией: сбой посередине не оставит страницу
+        без CITES (иначе устаревшие цитаты пережили бы удаление документа)."""
+        params = page.model_dump(exclude={"stale"})
+
+        def write(tx):
+            tx.run(
+                "MERGE (p:WikiPage {page_id: $page_id}) "
+                "SET p.slug = $slug, p.title = $title, p.path = $path, "
+                "p.content_hash = $content_hash, p.version = $version, p.stale = false, "
+                "p.updated_at = datetime() "
+                "WITH p MATCH (e:Entity {entity_id: $entity_id}) MERGE (p)-[:ABOUT]->(e)",
+                entity_id=entity_id,
+                **params,
+            ).consume()
+            tx.run(
+                "MATCH (p:WikiPage {page_id: $page_id})-[r:LINKS_TO|CITES]->() DELETE r",
+                page_id=page.page_id,
+            ).consume()
+            tx.run(
+                "MATCH (p:WikiPage {page_id: $page_id}) UNWIND $links AS target "
+                "MATCH (q:WikiPage {page_id: target}) MERGE (p)-[:LINKS_TO]->(q)",
+                page_id=page.page_id,
+                links=links_to,
+            ).consume()
+            tx.run(
+                "MATCH (p:WikiPage {page_id: $page_id}) UNWIND $cites AS cid "
+                "MATCH (c:Chunk {chunk_id: cid}) MERGE (p)-[:CITES]->(c)",
+                page_id=page.page_id,
+                cites=cites,
+            ).consume()
+
+        with self._driver.session(database=self._db) as session:
+            session.execute_write(write)
+
+    def invalidate_wiki_page(self, page_id: str) -> None:
+        """Страница устарела (её файл и векторы удалены до пересборки): узел, slug и входящие
+        ссылки остаются, но для индекса, reindex и API страницы нет, пока wiki build её не
+        пересоберёт."""
+        self._run("MATCH (p:WikiPage {page_id: $id}) SET p.stale = true", id=page_id)
 
     def delete_wiki_page(self, page_id: str) -> None:
         """Удаляет узел страницы и его рёбра; сущность, которой посвящена страница, остаётся."""
@@ -719,12 +763,16 @@ class GraphStore:
         rows = self._run(f"MATCH (p:WikiPage {{page_id: $id}}) RETURN {_PAGE_FIELDS}", id=page_id)
         return WikiPageRecord(**rows[0]["page"]) if rows else None
 
-    def wiki_pages(self) -> list[PageIndexRow]:
+    def wiki_pages(self, *, include_stale: bool = False) -> list[PageIndexRow]:
+        """Страницы wiki; устаревшие (без файла до пересборки) — только с `include_stale`:
+        они держат slug и путь, но в индекс, reindex и API не попадают."""
         rows = self._run(
             "MATCH (p:WikiPage)-[:ABOUT]->(e:Entity) "
+            "WHERE $include_stale OR NOT coalesce(p.stale, false) "
             "RETURN p.page_id AS page_id, p.slug AS slug, p.title AS title, p.path AS path, "
             "e.type AS entity_type, coalesce(e.aliases, []) AS aliases "
-            "ORDER BY entity_type, title"
+            "ORDER BY entity_type, title",
+            include_stale=include_stale,
         )
         return [PageIndexRow(**r) for r in rows]
 
@@ -745,15 +793,18 @@ def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
     eids = found[0]["eids"] if found else []
     if cids:
         # убираем подтверждения из удалённых чанков; рёбра, оставшиеся без подтверждений, исчезают
+        # связь подтверждает чанк, который упоминает оба её конца, поэтому искать её
+        # достаточно среди исходящих связей сущностей документа, а не по всему графу
         run(
-            "MATCH (:Entity)-[r:RELATED]->(:Entity) "
-            "WHERE any(x IN r.evidence WHERE x IN $cids) "
+            "MATCH (a:Entity)-[r:RELATED]->(:Entity) "
+            "WHERE a.entity_id IN $eids AND any(x IN r.evidence WHERE x IN $cids) "
             "WITH r, [i IN range(0, size(r.evidence) - 1) WHERE NOT r.evidence[i] IN $cids] AS keep "
             "SET r.description = '', r.evidence = [i IN keep | r.evidence[i]], "
             "    r.strengths = [i IN keep | r.strengths[i]] "
             "SET r.weight = reduce(s = 0.0, x IN r.strengths | s + x) "
             "WITH r WHERE size(r.evidence) = 0 DELETE r",
             cids=cids,
+            eids=eids,
         ).consume()
     run(
         "MATCH (d:Document {doc_id: $doc_id}) "

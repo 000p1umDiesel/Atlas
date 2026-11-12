@@ -11,7 +11,7 @@ from mnogobase.app import build_app
 from mnogobase.config import ChunkingSettings, ExtractSettings, WikiSettings, load_settings
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.ids import entity_id, file_doc_id
-from mnogobase.maintenance import reset
+from mnogobase.maintenance import reindex, reset
 from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import (
@@ -1101,3 +1101,52 @@ async def test_remove_recovers_detaching_one_copy_without_deleting_shared_docume
     assert chunk_paths(app, doc_id) == {str(copy)}
     page = (tmp_path / "wiki/entities/softmax.md").read_text()
     assert "*b.md*" in page and "*a.md*" not in page
+
+
+async def test_corrupt_chunk_cache_is_recovered_from_the_graph(make_app, tmp_path):
+    a = _softmax_folder(tmp_path)
+    app = make_app()
+    await app.pipeline.ingest([a.parent], build_wiki=False)
+    doc_id = file_doc_id(a)
+    cache = app.pipeline.chunks_path(doc_id)
+    cache.write_text(cache.read_text(encoding="utf-8")[:20], encoding="utf-8")
+
+    doc, chunks = app.pipeline.load_chunks(doc_id)
+    assert chunks and doc.path == str(a.resolve())
+    assert len(json.loads(cache.read_text(encoding="utf-8"))["chunks"]) == len(chunks)
+
+
+async def test_invalidated_wiki_page_is_hidden_until_rebuilt(make_app, tmp_path):
+    folder = tmp_path / "pair"
+    folder.mkdir()
+    a, b = folder / "a.md", folder / "b.md"
+    a.write_text("# A\n\nSoftmax turns scores into probabilities.\n", encoding="utf-8")
+    b.write_text("# B\n\nSoftmax normalizes the output layer.\n", encoding="utf-8")
+    wiki_up = {"value": True}
+
+    def handler(task: str, prompt: str) -> str:
+        if task == "wiki" and not wiki_up["value"]:
+            raise RuntimeError("LLM is down")
+        return scripted_llm_handler(task, prompt)
+
+    app = make_app(handler)
+    await app.pipeline.ingest([folder])
+    softmax = entity_id("Concept", "Softmax")
+    page = tmp_path / "wiki" / "entities" / "softmax.md"
+    assert page.exists()
+
+    # удаление старой версии a.md инвалидирует страницу, а пересборка падает
+    a.write_text("# A\n\nNothing to see here.\n", encoding="utf-8")
+    wiki_up["value"] = False
+    report = await app.pipeline.ingest([folder])
+    assert report.wiki.failed == ["Softmax"]
+    assert not page.exists() and app.graph.wiki_page(softmax).stale
+    assert app.graph.wiki_pages() == []
+    assert "[[softmax|" not in (tmp_path / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert reindex(app)["wiki_sections"] == 0  # не падает на странице без файла
+
+    wiki_up["value"] = True
+    again = await app.wiki.build()
+    assert again.updated == ["Softmax"] and page.exists()
+    assert not app.graph.wiki_page(softmax).stale
+    assert [r.page_id for r in app.graph.wiki_pages()] == [softmax]

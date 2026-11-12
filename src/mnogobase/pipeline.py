@@ -17,6 +17,7 @@ from mnogobase.embedding.base import (
 )
 from mnogobase.extraction.extractor import TYPES_CHANGED, Extractor, stale_entity_types
 from mnogobase.extraction.resolver import EntityResolver, entity_embed_input
+from mnogobase.files import write_atomic
 from mnogobase.ids import file_doc_id, normalize_name
 from mnogobase.log import bind_context, get_logger, log_stage, unbind_context
 from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput
@@ -150,14 +151,24 @@ class Pipeline:
         path = self.chunks_path(doc.doc_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"document": doc.model_dump(), "chunks": [c.model_dump() for c in chunks]}
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        write_atomic(path, json.dumps(payload, ensure_ascii=False))
 
     def load_chunks(self, doc_id: str) -> tuple[DocumentRecord, list[ChunkRecord]]:
-        payload = json.loads(self.chunks_path(doc_id).read_text(encoding="utf-8"))
-        return (
-            DocumentRecord(**payload["document"]),
-            [ChunkRecord(**c) for c in payload["chunks"]],
-        )
+        """Чанки из кэша; битый или пропавший кэш восстанавливается из графа, если чанки
+        туда уже записаны (стадия embed прошла)."""
+        try:
+            payload = json.loads(self.chunks_path(doc_id).read_text(encoding="utf-8"))
+            return (
+                DocumentRecord(**payload["document"]),
+                [ChunkRecord(**c) for c in payload["chunks"]],
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            stored = self._graph.doc_chunks(doc_id)
+            if stored is None:
+                raise
+            self._log.warning("chunk_cache_recovered", doc_id=doc_id, error_type=type(exc).__name__)
+            self._save_chunks(*stored)
+            return stored
 
     # ---- ingest ----
     async def ingest(
@@ -449,10 +460,16 @@ class Pipeline:
         for eid in sorted(set(plan.dirty) | revived):
             page = self._graph.wiki_page(eid)
             if page is not None:
+                # узел остаётся (slug, входящие ссылки), но индекс, reindex и API его не видят
+                self._graph.invalidate_wiki_page(page.page_id)
                 self._vectors.delete_wiki_page(page.page_id)
                 (self._s.wiki.dir / page.path).unlink(missing_ok=True)
         # освободившийся slug может уже принадлежать странице другой сущности, записанной позже
-        live_paths = {row.path for row in self._graph.wiki_pages()} if plan.removed_pages else set()
+        live_paths = (
+            {row.path for row in self._graph.wiki_pages(include_stale=True)}
+            if plan.removed_pages
+            else set()
+        )
         for page_id, rel_path in plan.removed_pages:
             if self._graph.wiki_page(page_id) is None:
                 self._vectors.delete_wiki_page(page_id)
@@ -483,7 +500,11 @@ class Pipeline:
         документе, — страницы, ссылающиеся на неё (page_id == entity_id). Рёбра исчезнут
         вместе с удалением."""
         mentioned = {e for ids in self._graph.chunk_entity_ids(doc_id).values() for e in ids}
-        paged = [row.page_id for row in self._graph.wiki_pages() if row.page_id in mentioned]
+        paged = [
+            row.page_id
+            for row in self._graph.wiki_pages(include_stale=True)
+            if row.page_id in mentioned
+        ]
         return {page_id: self._graph.pages_linking_to([page_id]) for page_id in paged}
 
     def _follow_moved_document(self, doc_id: str, path: str) -> None:
@@ -612,14 +633,22 @@ class Pipeline:
                 for alias in extracted.aliases:
                     ids_by_name.setdefault(normalize_name(alias), record.entity_id)
             entity_ids = sorted(set(ids_by_name.values()))
-            self._graph.add_mentions(chunk.chunk_id, entity_ids)
-            self._vectors.set_chunk_entities(chunk.chunk_id, entity_ids)
+            relations = []
             for rel in result.relations:
                 src = ids_by_name.get(normalize_name(rel.source))
                 dst = ids_by_name.get(normalize_name(rel.target))
                 if src and dst and src != dst:
-                    self._graph.merge_relation(
-                        src, dst, rel.predicate, rel.description, rel.strength, chunk.chunk_id
+                    relations.append(
+                        {
+                            "src": src,
+                            "dst": dst,
+                            "predicate": rel.predicate,
+                            "description": rel.description,
+                            "strength": rel.strength,
+                        }
                     )
+            # порядок записи: Qdrant, затем Neo4j (одна транзакция на чанк)
+            self._vectors.set_chunk_entities(chunk.chunk_id, entity_ids)
+            self._graph.add_chunk_facts(chunk.chunk_id, entity_ids, relations)
             touched.update(entity_ids)
         self._registry.mark_dirty(touched)

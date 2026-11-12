@@ -30,6 +30,14 @@ def test_server_has_payload_indexes(store: QdrantStore):
     assert store.collection_dim(store.chunks) == EMB.dim
 
 
+def test_ensure_restores_missing_payload_indexes(store: QdrantStore):
+    # создание коллекции прервалось до индексов: следующий запуск их досоздаёт
+    store.client.delete_payload_index(store.chunks, "doc_id", wait=True)
+    assert "doc_id" not in store.client.get_collection(store.chunks).payload_schema
+    store.ensure_collections()
+    assert "doc_id" in store.client.get_collection(store.chunks).payload_schema
+
+
 def test_hybrid_search_ranks_relevant_chunk_first(store: QdrantStore):
     index(
         store,

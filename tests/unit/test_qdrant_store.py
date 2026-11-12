@@ -54,6 +54,22 @@ def test_ensure_is_idempotent_and_checks_dimension():
         QdrantStore(client, "t_", 32).ensure_collections()
 
 
+def test_ensure_tolerates_a_concurrent_create(monkeypatch):
+    client = QdrantClient(":memory:")
+    make_store(client)  # другой процесс создал коллекции между проверкой и созданием
+    exists, seen = client.collection_exists, set()
+
+    def racing(name: str) -> bool:
+        if name not in seen:
+            seen.add(name)
+            return False
+        return exists(name)
+
+    monkeypatch.setattr(client, "collection_exists", racing)
+    QdrantStore(client, "t_", 64).ensure_collections()
+    assert len(seen) == 3
+
+
 def test_dimension_callable_is_resolved_only_for_collections():
     calls = []
 

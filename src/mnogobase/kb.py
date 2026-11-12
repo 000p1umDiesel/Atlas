@@ -498,7 +498,7 @@ class KnowledgeBase:
     async def wiki_page(self, page_id: str) -> dict:
         async def run(app: App) -> dict:
             page = app.graph.wiki_page(page_id)
-            if page is None:
+            if page is None or page.stale:
                 raise ServiceError(404, "Wiki page not found")
             root = self.settings.wiki.dir.resolve()
             path = (self.settings.wiki.dir / page.path).resolve()

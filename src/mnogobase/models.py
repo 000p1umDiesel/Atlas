@@ -114,6 +114,7 @@ class WikiPageRecord(BaseModel):
     path: str  # относительно каталога wiki, например "entities/transformer.md"
     content_hash: str = ""
     version: int = 1
+    stale: bool = False  # файл и векторы удалены до пересборки (GraphStore.invalidate_wiki_page)
 
 
 class PageIndexRow(BaseModel):
