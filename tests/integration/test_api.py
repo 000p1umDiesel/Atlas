@@ -60,6 +60,11 @@ def test_large_bodies_are_rejected_before_parsing_and_auth(api):
     big = {"question": "x" * 70_000}
     assert api.client.post("/api/ask", json=big).status_code == 413
     assert api.client.post("/api/auth/login", content=b"{" + b" " * 70_000).status_code == 413
+    # без Content-Length (chunked) предел срабатывает при чтении тела, код тот же
+    chunked = (part for part in [b"{", b" " * 70_000, b"}"])
+    headers = {"content-type": "application/json"}
+    response = api.client.post("/api/auth/login", content=chunked, headers=headers)
+    assert response.status_code == 413
     # загрузка документа — исключение: её предел проверяет сам обработчик
     assert api.client.post("/api/documents?filename=a.md", content=b"x" * 70_000).status_code == 401
 

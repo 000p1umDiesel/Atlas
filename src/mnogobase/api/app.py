@@ -11,7 +11,7 @@ from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, Path, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -81,8 +81,14 @@ class BodyLimit:
             await _too_large(send)
 
 
-class _BodyTooLarge(Exception):
-    pass
+class _BodyTooLarge(HTTPException):
+    """Тело без Content-Length (chunked) оказалось больше предела уже при чтении.
+
+    Это HTTPException: FastAPI пропускает его из разбора тела как есть, а любое другое
+    исключение превратил бы в 400 «error parsing the body»."""
+
+    def __init__(self):
+        super().__init__(413, "Request body too large")
 
 
 async def _too_large(send: Send) -> None:
