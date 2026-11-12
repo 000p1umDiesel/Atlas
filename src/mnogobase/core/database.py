@@ -169,28 +169,76 @@ def _engine(url: str, timeout: int, pooled: bool = True):
 
 
 class PgConnection:
+    """Соединение с PostgreSQL в схеме проекта, с API в духе sqlite3 (`execute`, `?`).
+
+    Транзакции открываются явным `BEGIN` (или блоком `with connection:`), иначе каждый
+    оператор фиксируется сразу (AUTOCOMMIT).
+
+    Долгоживущие владельцы (очередь worker'а, registry) переживают рестарт PostgreSQL:
+    оборванное соединение заменяется новым с теми же настройками схемы. Оператор вне
+    транзакции, упавший из-за обрыва, повторяется один раз на новом соединении; потерянная
+    транзакция не повторяется — её COMMIT завершается ошибкой, а ROLLBACK ничего не делает,
+    чтобы не скрыть исходное исключение."""
+
     def __init__(self, target: DatabaseTarget, *, pooled: bool = True):
         self.target = target
         self.in_transaction = False
+        self._pooled = pooled
+        self._open()
+
+    def _open(self) -> None:
+        """Берёт соединение и задаёт схему проекта; недоступный сервер — DatabaseError."""
+        self.raw = None
         try:
-            self.raw = _engine(target.url, target.timeout, pooled).connect()
+            self.raw = _engine(self.target.url, self.target.timeout, self._pooled).connect()
             # Соединение из пула не несёт настроек прежнего владельца.
-            self.execute("RESET ALL")
-            self.execute(f'SET search_path TO "{target.schema}"')
-            self.execute("SET lock_timeout TO '5s'")
+            self._execute("RESET ALL")
+            self._execute(f'SET search_path TO "{self.target.schema}"')
+            self._execute("SET lock_timeout TO '5s'")
         except DBAPIError:
-            if hasattr(self, "raw"):
-                self.raw.close()
+            if self.raw is not None:
+                with contextlib.suppress(SQLAlchemyError):
+                    self.raw.close()
             raise DatabaseError(
                 "PostgreSQL unavailable; check the database settings and server"
             ) from None
 
-    def execute(self, sql, params=()):
+    def _reconnect(self) -> None:
+        with contextlib.suppress(SQLAlchemyError):
+            self.raw.close()
+        self.in_transaction = False
+        self._open()
+
+    def _execute(self, sql, params=()) -> Cursor:
         query, bound = bind_sql(sql, params)
-        result = Cursor(self.raw.execute(text(query), bound))
-        if sql.strip() == "BEGIN":
+        return Cursor(self.raw.execute(text(query), bound))
+
+    def execute(self, sql, params=()):
+        statement = sql.strip()
+        if self.raw.invalidated:
+            # соединение оборвалось на одном из прошлых операторов
+            if self.in_transaction:
+                self.in_transaction = False
+                if statement == "ROLLBACK":
+                    return None  # откатывать нечего: сервер уже отменил транзакцию
+                raise DatabaseError(
+                    "PostgreSQL connection was lost during a transaction; nothing was committed"
+                )
+            self._reconnect()
+        try:
+            result = self._execute(sql, params)
+        except DBAPIError as exc:
+            if (
+                not exc.connection_invalidated
+                or self.in_transaction
+                or statement in {"COMMIT", "ROLLBACK"}
+            ):
+                raise
+            self._reconnect()  # обрыв вне транзакции: одна попытка на новом соединении
+            result = self._execute(sql, params)
+        if statement == "BEGIN":
             self.in_transaction = True
-        elif sql.strip() in {"COMMIT", "ROLLBACK"}:
+        elif statement in {"COMMIT", "ROLLBACK"}:
             self.in_transaction = False
         return result
 

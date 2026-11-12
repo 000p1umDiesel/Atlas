@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 
 import pytest
+from sqlalchemy.exc import DBAPIError
 
 from mnogobase.core.database import LockBusyError, database_lock, database_target
 
@@ -271,3 +272,38 @@ def test_concurrent_project_marker_creation_is_atomic(pg_settings, monkeypatch):
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(lambda _: mark_project(pg_settings), range(2)))
     assert project_exists(pg_settings)
+
+
+def _terminate(target, connection_):
+    """Обрывает серверную сессию соединения, как это делает рестарт PostgreSQL."""
+    from mnogobase.core.database import connection
+
+    pid = connection_.execute("SELECT pg_backend_pid()").fetchone()[0]
+    with connection(target) as admin:
+        admin.execute("SELECT pg_terminate_backend(?)", (pid,))
+
+
+def test_long_lived_connection_recovers_after_disconnect(pg_settings, tmp_path):
+    """Worker держит JobQueue весь срок жизни: после рестарта PostgreSQL очередь должна
+    работать дальше, а не падать на каждом вызове."""
+    from mnogobase.background.queue import JobQueue
+    from mnogobase.core.database import DatabaseError
+
+    target = database_target(pg_settings)
+    q = JobQueue(target)
+    try:
+        _terminate(target, q._db)
+        q.heartbeat()  # одиночный оператор вне транзакции: новое соединение и повтор
+        _terminate(target, q._db)
+        job_id = q.enqueue(tmp_path / "a.md", "v1")  # транзакция с BEGIN
+        assert q.get(job_id).status == "pending"
+
+        q._db.execute("BEGIN")
+        q._db.execute("UPDATE jobs SET progress='x' WHERE id=?", (job_id,))
+        _terminate(target, q._db)
+        with pytest.raises((DatabaseError, DBAPIError)):  # транзакция потеряна: молча не коммитим
+            q._db.execute("COMMIT")
+        q._db.execute("ROLLBACK")  # откат после обрыва не маскирует исходную ошибку
+        assert q.get(job_id).progress == ""
+    finally:
+        q.close()
