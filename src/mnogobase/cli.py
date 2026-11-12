@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
-import filelock
 import httpx
 import openai
 import typer
@@ -38,7 +37,7 @@ from mnogobase.background.cli import jobs_app, worker_app
 from mnogobase.config import Settings, load_settings
 from mnogobase.database import (
     DatabaseError,
-    DatabaseTarget,
+    LockBusyError,
     PgLock,
     database_lock,
     database_target,
@@ -132,7 +131,7 @@ def main(
 def _settings(*, project: bool = False, missing_exit: int = 2) -> Settings:
     """Загружает настройки и включает логирование в файл. `project=True` сначала требует
     существующий проект (иначе выход с `missing_exit`), чтобы команда, запущенная не в том
-    каталоге, не создала ни state.db, ни logs/."""
+    каталоге, не создала ни таблиц проекта в PostgreSQL, ни logs/."""
     try:
         settings = load_settings(_state["config"])
     except FileNotFoundError as exc:
@@ -160,16 +159,12 @@ def _preflight(
         raise typer.Exit(2)
 
 
-def _state_db(settings: Settings) -> DatabaseTarget:
-    return database_target(settings)
-
-
 def _require_project(settings: Settings, code: int = 2) -> None:
     """Выход с `code` вне проекта: команды, которые только читают, не должны создавать
     SQL-таблицы проекта."""
     if not project_exists(settings):
         console.print(
-            f"No mnogobase project here (no {escape(str(_state_db(settings)))}). "
+            f"No mnogobase project here (no {escape(str(database_target(settings)))}). "
             "Run `mnogobase ingest` first, or pass the project's --config.",
             soft_wrap=True,
         )
@@ -181,7 +176,7 @@ def _lock(settings: Settings) -> PgLock:
     lock = ingest_lock(database_target(settings))
     try:
         lock.acquire()
-    except filelock.Timeout:
+    except LockBusyError:
         console.print(
             "[red]Another ingest / remove / wiki / reindex / reset run or worker is in progress."
             "[/red]"
@@ -206,7 +201,7 @@ def _graph_writer(settings: Settings):
                 yield
             finally:
                 lock.release()
-    except filelock.Timeout:
+    except LockBusyError:
         _fail_cleanly(AnalysisError("Another graph analysis is in progress"))
 
 
@@ -402,7 +397,7 @@ def status() -> None:
     """Сводка по загруженным файлам, статусам стадий, ожидающим обновлениям wiki и ошибкам."""
     # status только читает: вне проекта он сообщает об этом и завершается успешно
     settings = _settings(project=True, missing_exit=0)
-    registry = Registry(_state_db(settings))
+    registry = Registry(database_target(settings))
     try:
         files = registry.files()
         counts = Counter(f.status for f in files)
@@ -512,7 +507,7 @@ def remove(
     settings = _settings(project=True)
     lock = _lock(settings)
     try:
-        registry = Registry(_state_db(settings))
+        registry = Registry(database_target(settings))
         try:
             selected = select_removals(registry, list(paths or []), missing=missing)
             recovery = bool(registry.pending_removals() or registry.dirty())
@@ -729,7 +724,7 @@ def _reset_targets(settings: Settings) -> list[str]:
     return [
         f"Neo4j {settings.neo4j.uri}: all nodes in the default database",
         f"Qdrant {settings.qdrant.url}: collections with prefix {settings.qdrant.prefix!r}",
-        f"registry in {_state_db(settings)}; file caches in {settings.data_dir.resolve()}",
+        f"registry in {database_target(settings)}; file caches in {settings.data_dir.resolve()}",
         f"wiki pages in {wiki_dir}: entities/, index.md, log.md",
     ]
 
@@ -740,11 +735,10 @@ def reset(
 ) -> None:
     """Удалить ВСЕ векторы, данные графа, состояние registry, кэши и страницы wiki."""
     settings = _settings()
-    state_db = _state_db(settings)
     if not project_exists(settings):
         # --yes это не обходит: неверный CWD или конфиг не должен стереть чужие данные
         console.print(
-            f"[red]No mnogobase project here: {escape(str(state_db))} does not exist.[/red] "
+            f"[red]No mnogobase project here: {escape(str(database_target(settings)))} does not exist.[/red] "
             "Run reset from the project directory or pass its --config.",
             soft_wrap=True,
         )

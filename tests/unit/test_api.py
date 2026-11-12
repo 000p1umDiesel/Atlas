@@ -46,7 +46,7 @@ def test_login_me_logout(api):
     ).json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
     me = api.client.get("/api/auth/me", headers=headers).json()
-    assert me == {"id": api.owner["id"], "username": "owner", "role": "owner"}
+    assert me == {"id": api.owner["id"], "username": "owner"}
     assert api.client.post("/api/auth/logout", headers=headers).status_code == 200
     assert api.client.get("/api/auth/me", headers=headers).status_code == 401
 

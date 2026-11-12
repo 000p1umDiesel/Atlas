@@ -1,7 +1,9 @@
 """KnowledgeBase + worker end to end on fake models: upload → ingest → answers → removal."""
 
 import asyncio
+import hashlib
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -27,6 +29,18 @@ pytestmark = [
 ]
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 runner = CliRunner()
+
+
+def upload(kb: KnowledgeBase, filename: str, content: bytes) -> dict:
+    """Загрузка из памяти так же, как её делает API: временный файл, затем `upload_file`."""
+    kb.upload_suffix(filename)
+    with tempfile.NamedTemporaryFile(dir=kb.staging_dir(), prefix=".upload-", delete=False) as f:
+        staged = Path(f.name)
+        f.write(content)
+    try:
+        return kb.upload_file(filename, staged, hashlib.sha256(content).hexdigest())
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def handler(task: str, prompt: str) -> str:
@@ -76,9 +90,9 @@ async def test_upload_ingest_answer_and_remove(env):
     user = kb.store.create_user("owner", "long-enough-password")
     try:
         content = (FIXTURES / "attention_en.md").read_bytes()
-        job = kb.upload("Attention paper.md", content)
+        job = upload(kb, "Attention paper.md", content)
         assert job["status"] == "pending" and "path" not in job
-        assert kb.upload("Attention paper.md", content)["id"] == job["id"]  # без дубликатов
+        assert upload(kb, "Attention paper.md", content)["id"] == job["id"]  # без дубликатов
         await work_once()
 
         [doc] = await kb.documents()
@@ -178,7 +192,7 @@ async def test_daily_token_limit_stops_questions_and_uploads(env):
                 await call
             assert error.value.status == 429
         with pytest.raises(ServiceError) as error:
-            kb.upload("a.md", b"text")
+            upload(kb, "a.md", b"text")
         assert error.value.status == 429
         kb.check_budget(now=time.time() + 86400)  # следующие сутки — снова можно
     finally:
@@ -200,11 +214,11 @@ async def test_validation_and_queue_limits(env):
             ("x.png", b"GIF89a", 422),
         ]:
             with pytest.raises(ServiceError) as error:
-                kb.upload(name, body)
+                upload(kb, name, body)
             assert error.value.status == status
-        kb.upload("a.md", b"first")
+        upload(kb, "a.md", b"first")
         with pytest.raises(ServiceError) as error:
-            kb.upload("b.md", b"second")
+            upload(kb, "b.md", b"second")
         assert error.value.status == 429
         assert not list(kb.staging_dir().glob(".upload-*"))
         with pytest.raises(ServiceError) as error:

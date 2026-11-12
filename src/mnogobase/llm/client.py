@@ -64,13 +64,6 @@ class LLMClient(Protocol):
 
     def model_for(self, task: str) -> str: ...
 
-    async def _record(self, event: CallEvent | None) -> None:
-        # Учёт расхода не должен ломать сам вызов LLM и подменять его исключение.
-        try:
-            await record_call(event, self._usage_recorder)
-        except Exception as exc:
-            self._log.warning("llm_usage_record_failed", error_type=type(exc).__name__)
-
     async def complete(self, messages: list[Message], *, task: str) -> str: ...
 
     async def structured(

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from mnogobase.config import Settings
 from mnogobase.database import connect, database_target, target_exists
-from mnogobase.evaluation.artifacts import append_jsonl, fingerprint
+from mnogobase.files import append_jsonl, fingerprint
 from mnogobase.ids import file_doc_id
 from mnogobase.progress import NULL_PROGRESS, NullProgress
 

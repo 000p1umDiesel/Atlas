@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from filelock import Timeout
 from sqlalchemy.exc import DBAPIError
 
-from mnogobase.database import DatabaseError
+from mnogobase.database import DatabaseError, LockBusyError
 from mnogobase.log import get_logger
 from mnogobase.registry import ingest_lock
 
@@ -40,7 +39,7 @@ async def process_one(
     lock = ingest_lock(queue.target)
     try:
         lock.acquire()
-    except Timeout:
+    except LockBusyError:
         return False
     try:
         job = queue.claim(max_attempts)

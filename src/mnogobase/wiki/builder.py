@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mnogobase.config import LANGUAGE_NAMES, WikiSettings
 from mnogobase.embedding.base import Embedder, SparseEncoder
+from mnogobase.files import write_atomic
 from mnogobase.ids import normalize_name, slugify
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
@@ -211,10 +212,7 @@ class WikiBuilder:
             (report.created if b.created else report.updated).append(b.entity.name)
         # упавшие сущности остаются dirty, чтобы следующий build их повторил
         self._registry.clear_dirty(dirty - failed_ids)
-        self._s.dir.mkdir(parents=True, exist_ok=True)
-        (self._s.dir / "index.md").write_text(
-            render_index(self._graph.wiki_pages()), encoding="utf-8"
-        )
+        write_atomic(self._s.dir / "index.md", render_index(self._graph.wiki_pages()))
         if self._s.obsidian:
             write_graph_settings(self._s.dir, self._entity_types)
         if report.created or report.updated or report.deleted or documents:
@@ -374,9 +372,7 @@ class WikiBuilder:
         sources = [SourceRef(c, payloads[c].get("path"), payloads[c].get("page")) for c in cited]
         version = draft.previous.version + 1 if draft.previous else 1
         text = render_page(entity, body, draft.relations, linked, sources, version, date.today())
-        file = self._s.dir / draft.rel_path
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(text, encoding="utf-8")
+        write_atomic(self._s.dir / draft.rel_path, text)
         self.index_page(entity.entity_id, entity.entity_id, draft.rel_path, text)
 
         record = WikiPageRecord(

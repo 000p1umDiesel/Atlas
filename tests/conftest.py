@@ -24,7 +24,6 @@ POSTGRES_IMAGE = "postgres:18.6"
 @pytest.fixture(autouse=True)
 def isolated_database(request, monkeypatch):
     prefix = "test_" + uuid.uuid4().hex[:10]
-    monkeypatch.setenv("MNOGOBASE_DATABASE__BACKEND", "postgresql")
     monkeypatch.setenv("MNOGOBASE_DATABASE__SCHEMA_PREFIX", prefix)
     monkeypatch.setenv("MNOGOBASE_DATABASE__PROJECT", "default")
     uses_database = any(request.node.get_closest_marker(m) for m in ("integration", "e2e"))
@@ -102,7 +101,7 @@ def pg_settings(tmp_path, monkeypatch, postgresql_url):
         data_dir=tmp_path / "state",
         service={"uploads_dir": tmp_path / "documents/uploads"},
         wiki={"dir": tmp_path / "wiki"},
-        database={"backend": "postgresql", "schema_prefix": prefix},
+        database={"schema_prefix": prefix},
     )
     yield settings
     connection = connect(database_target(settings))

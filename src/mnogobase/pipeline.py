@@ -127,13 +127,10 @@ class Pipeline:
             raise EmbedderMismatchError(f"{mismatch}; run `mnogobase reindex`")
         self._vectors.ensure_collections()
         self._graph.ensure_schema()
-        if stored != signature and not mismatch:
-            # новый индекс или старая сигнатура (без шаблонов) того же embedder;
-            # compare-and-set: ask / compare работают без lock и не должны затирать то, что
-            # тем временем записал параллельный reindex (напр. reindex-in-progress)
-            upgraded = self._registry.replace_meta("embedder", stored, signature)
-            if upgraded and stored is not None:
-                self._log.info("embedder_signature_upgraded", old=stored, new=signature)
+        if stored is None:
+            # новый индекс: compare-and-set, потому что ask / compare работают без lock и не
+            # должны затирать то, что тем временем записал параллельный reindex
+            self._registry.set_meta_if_absent("embedder", signature)
         if resume:
             resumed = self._registry.reset_running()
             if resumed:
@@ -159,7 +156,6 @@ class Pipeline:
 
     def _save_chunks(self, doc: DocumentRecord, chunks: list[ChunkRecord]) -> None:
         path = self.chunks_path(doc.doc_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"document": doc.model_dump(), "chunks": [c.model_dump() for c in chunks]}
         write_atomic(path, json.dumps(payload, ensure_ascii=False))
 

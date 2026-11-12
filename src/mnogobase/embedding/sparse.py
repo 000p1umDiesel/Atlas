@@ -12,17 +12,15 @@ def _to_qdrant(embedding) -> qm.SparseVector:
 class BM25Encoder:
     """Веса термов BM25 через fastembed; IDF применяет Qdrant (Modifier.IDF)."""
 
-    def __init__(self, model: str = "Qdrant/bm25", device: str = "cpu"):
+    def __init__(self, model: str = "Qdrant/bm25"):
         self._model_name = model
-        self._cuda = device == "cuda"
         self._model = None
 
     def _get(self):
         if self._model is None:
             from fastembed import SparseTextEmbedding
 
-            kwargs = {"cuda": True} if self._cuda else {}  # нужен onnxruntime-gpu
-            self._model = SparseTextEmbedding(self._model_name, **kwargs)
+            self._model = SparseTextEmbedding(self._model_name)
         return self._model
 
     def encode_documents(self, texts: Sequence[str]) -> list[qm.SparseVector]:

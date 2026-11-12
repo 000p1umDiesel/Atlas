@@ -60,6 +60,10 @@ _INVALIDATE_ANALYSIS = (
 )
 
 
+# Имена GDS-проекций, которые создаёт `graph analyze`; чужие проекции не трогаем.
+PROJECTION_PREFIX = "mb_analysis_"
+
+
 @dataclass
 class DeleteResult:
     affected: list[str]
@@ -69,9 +73,8 @@ class DeleteResult:
 
 
 class GraphStore:
-    def __init__(self, driver: Driver, database: str | None = None):
+    def __init__(self, driver: Driver):
         self._driver = driver
-        self._db = database
 
     @classmethod
     def from_settings(cls, settings: Neo4jSettings) -> GraphStore:
@@ -88,9 +91,7 @@ class GraphStore:
 
     def _run(self, query: str, *, _timeout: float | None = None, **params) -> list[dict]:
         statement = Query(query, timeout=_timeout) if _timeout is not None else query
-        records, _, _ = self._driver.execute_query(
-            statement, parameters_=params, database_=self._db
-        )
+        records, _, _ = self._driver.execute_query(statement, parameters_=params)
         return [r.data() for r in records]
 
     def _write(self, query: str, **params) -> None:
@@ -100,7 +101,7 @@ class GraphStore:
             tx.run(_INVALIDATE_ANALYSIS, **params).consume()
             tx.run(query, **params).consume()
 
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session() as session:
             session.execute_write(write)
 
     # ---- схема / обслуживание ----
@@ -113,7 +114,7 @@ class GraphStore:
     def wipe(self) -> None:
         """Удаляет узлы mnogobase пачками по своим транзакциям: одна транзакция на весь
         большой граф не помещается в heap Neo4j."""
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session() as session:
             session.run(
                 "MATCH (n) WHERE n:Document OR n:Chunk OR n:Entity OR n:WikiPage "
                 "OR n:AnalysisState "
@@ -204,7 +205,7 @@ class GraphStore:
         # одна write-транзакция: падение посреди каскада не должно оставить Document удалённым,
         # а его сущности — с устаревшими счётчиками упоминаний / осиротевшими wiki-страницами
         # (повтор ничего бы не сделал)
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session() as session:
             return session.execute_write(_delete_document_tx, doc_id)
 
     def chunks_by_ids(self, chunk_ids: list[str]) -> list[ChunkView]:
@@ -310,32 +311,6 @@ class GraphStore:
         )
         return [EntityRecord(**r["e"]) for r in rows]
 
-    def add_mentions(self, chunk_id: str, entity_ids: list[str]) -> None:
-        self.add_chunk_facts(chunk_id, entity_ids, [])
-
-    def merge_relation(
-        self,
-        src_id: str,
-        dst_id: str,
-        predicate: str,
-        description: str,
-        strength: int,
-        chunk_id: str,
-    ) -> None:
-        self.add_chunk_facts(
-            chunk_id,
-            [],
-            [
-                {
-                    "src": src_id,
-                    "dst": dst_id,
-                    "predicate": predicate,
-                    "description": description,
-                    "strength": strength,
-                }
-            ],
-        )
-
     def add_chunk_facts(self, chunk_id: str, entity_ids: list[str], relations: list[dict]) -> None:
         """Упоминания и связи одного чанка одной транзакцией (UNWIND вместо транзакции на
         каждое упоминание). `relations`: dict с src, dst, predicate, description, strength.
@@ -376,7 +351,7 @@ class GraphStore:
                     rels=list(unique.values()),
                 ).consume()
 
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session() as session:
             session.execute_write(write)
 
     def entity_context(self, entity_id: str, max_relations: int) -> EntityContext:
@@ -464,7 +439,7 @@ class GraphStore:
                 seeds=seed_ids,
                 hops=max(1, min(int(hops), 3)),
                 limit=limit,
-                label_filter=f"+{self.entity_label}",
+                label_filter="+Entity",
                 _timeout=timeout,
             )
         except ClientError as exc:
@@ -475,10 +450,6 @@ class GraphStore:
         return [RelationView(**r) for r in rows]
 
     # ---- производная аналитика (не меняет IDs и evidence) ----
-    entity_label = "Entity"
-    # Входит в имена GDS-проекций и метаданные снимка; прежнее значение сохраняет
-    # уже записанный анализ действительным.
-    analysis_scope = "legacy"
 
     def analysis_status(self) -> dict:
         rows = self._run(
@@ -605,22 +576,20 @@ class GraphStore:
     def gds_project_estimate(self, timeout: float) -> int:
         return int(
             self._run(
-                "CALL gds.graph.project.estimate($label, "
+                "CALL gds.graph.project.estimate('Entity', "
                 "{RELATED:{orientation:'UNDIRECTED', properties:'weight'}}, "
                 "{readConcurrency:1, validateRelationships:false}) "
                 "YIELD bytesMax RETURN bytesMax AS bytes",
-                label=self.entity_label,
                 _timeout=timeout,
             )[0]["bytes"]
         )
 
     def gds_project(self, name: str, timeout: float) -> None:
         self._run(
-            "CALL gds.graph.project($name, $label, "
+            "CALL gds.graph.project($name, 'Entity', "
             "{RELATED:{orientation:'UNDIRECTED', properties:'weight'}}, "
             "{readConcurrency:1, validateRelationships:false}) YIELD graphName RETURN graphName",
             name=name,
-            label=self.entity_label,
             _timeout=timeout,
         )
 
@@ -662,13 +631,13 @@ class GraphStore:
             for r in self._run(
                 "CALL gds.graph.list() YIELD graphName "
                 "WHERE graphName STARTS WITH $prefix RETURN graphName AS name",
-                prefix=f"mb_analysis_{self.analysis_scope}_",
+                prefix=PROJECTION_PREFIX,
             )
         ]
 
     def drop_projection(self, name: str) -> None:
-        if not name.startswith(f"mb_analysis_{self.analysis_scope}_"):
-            raise ValueError("Cannot drop another scope's projection")
+        if not name.startswith(PROJECTION_PREFIX):
+            raise ValueError("Cannot drop a projection mnogobase did not create")
         self._run("CALL gds.graph.drop($name, false) YIELD graphName RETURN graphName", name=name)
 
     def clear_analysis(self) -> None:
@@ -689,9 +658,7 @@ class GraphStore:
         run_id = uuid.uuid4().hex
 
         def publish(tx):
-            def run(query, **params):
-                return tx.run(query, **params)
-
+            run = tx.run
             # Taking a write lock before reading the revision serializes with source writes.
             state = run(
                 "MATCH (s:AnalysisState {key: 'graph'}) "
@@ -719,7 +686,7 @@ class GraphStore:
             ).consume()
             return True
 
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session() as session:
             return session.execute_write(publish)
 
     # ---- wiki-страницы ----
@@ -757,7 +724,7 @@ class GraphStore:
                 cites=cites,
             ).consume()
 
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session() as session:
             session.execute_write(write)
 
     def invalidate_wiki_page(self, page_id: str) -> None:
@@ -799,8 +766,7 @@ class GraphStore:
 
 
 def _delete_document_tx(tx: ManagedTransaction, doc_id: str) -> DeleteResult:
-    def run(query: str, **params):
-        return tx.run(query, **params)
+    run = tx.run
 
     run(_INVALIDATE_ANALYSIS).consume()
     found = run(

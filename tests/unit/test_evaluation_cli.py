@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 
 from mnogobase import cli
 from mnogobase.config import Settings
-from mnogobase.database import database_target, mark_project
+from mnogobase.database import LockBusyError, database_target, mark_project
 from mnogobase.evaluation import core
 from mnogobase.models import ContextItem
 from mnogobase.registry import Registry
@@ -28,7 +28,7 @@ def offline(tmp_path, monkeypatch):
 
 
 def test_cli_run_uses_three_modes_and_closes_app(offline, tmp_path, monkeypatch):
-    Registry(database_target(Settings(), "state")).close()
+    Registry(database_target(Settings())).close()
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     closed = []
     monkeypatch.setattr(cli, "_preflight", lambda *a: None)
@@ -110,11 +110,9 @@ def test_eval_ingest_saves_processing_and_closes_app(offline, tmp_path, monkeypa
 
 
 def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, monkeypatch):
-    from filelock import Timeout
-
     from mnogobase.registry import ingest_lock
 
-    Registry(database_target(Settings(), "state")).close()
+    Registry(database_target(Settings())).close()
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     monkeypatch.setattr(cli, "_preflight", lambda *a: None)
     monkeypatch.setattr(cli, "build_app", lambda *a: SimpleNamespace(close=lambda: None))
@@ -122,7 +120,7 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
 
     class Retriever:
         def retrieve(self, query, k, alt_queries=()):
-            with pytest.raises(Timeout):
+            with pytest.raises(LockBusyError):
                 ingest_lock(database_target(Settings())).acquire()
             return [ContextItem(kind="chunk", ref="c", text="Answer")]
 
@@ -163,7 +161,7 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
 
 
 def test_benchmark_scores_the_answers_that_succeeded(offline, tmp_path, monkeypatch):
-    Registry(database_target(Settings(), "state")).close()
+    Registry(database_target(Settings())).close()
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     monkeypatch.setattr(cli, "_preflight", lambda *a: None)
     monkeypatch.setattr(cli, "build_app", lambda *a: SimpleNamespace(close=lambda: None))

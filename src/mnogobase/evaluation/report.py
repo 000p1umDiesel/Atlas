@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 from statistics import mean
 
-from .artifacts import fingerprint, latest_records
+from mnogobase.files import fingerprint
+
+from .artifacts import latest_records
 from .comparison import comparison_reports
 from .core import planned_answers
 from .ragas import METRIC_NAMES

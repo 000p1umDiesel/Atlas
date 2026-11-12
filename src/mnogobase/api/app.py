@@ -92,8 +92,7 @@ async def _too_large(send: Send) -> None:
 
 
 def get_kb(request: Request) -> Any:
-    """Единственная точка выбора базы знаний: несколько баз в одном процессе меняют
-    только её, обработчики остаются как есть."""
+    """Единственная зависимость, через которую обработчики получают базу знаний."""
     return request.app.state.kb
 
 
@@ -176,7 +175,7 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
 
     @app.get("/api/auth/me")
     def me(user: User):
-        return {key: user[key] for key in ("id", "username", "role")}
+        return {key: user[key] for key in ("id", "username")}
 
     @app.get("/api/documents")
     async def documents(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):

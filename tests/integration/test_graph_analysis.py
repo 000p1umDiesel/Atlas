@@ -1,6 +1,7 @@
 import pytest
 
 from mnogobase.models import EntityRecord
+from tests.integration.graph_seed import add_mentions, merge_relation
 
 pytestmark = pytest.mark.integration
 
@@ -68,8 +69,8 @@ def test_source_mutations_invalidate_published_scores(graph, mutation):
         "document": lambda: graph.upsert_document(doc),
         "chunks": lambda: graph.upsert_chunks(chunks),
         "path": lambda: graph.set_document_path(DOC_ID, "/renamed.md"),
-        "mentions": lambda: graph.add_mentions(CHUNKS[0], ["e1"]),
-        "relation": lambda: graph.merge_relation("e1", "e2", "new", "new edge", 1, CHUNKS[0]),
+        "mentions": lambda: add_mentions(graph, CHUNKS[0], ["e1"]),
+        "relation": lambda: merge_relation(graph, "e1", "e2", "new", "new edge", 1, CHUNKS[0]),
     }
     mutations[mutation]()
     assert not graph.analysis_status()["ready"]

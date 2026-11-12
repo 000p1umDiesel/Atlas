@@ -10,12 +10,17 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from filelock import Timeout
 from rich.markup import escape
 from rich.table import Table
 from sqlalchemy.exc import DBAPIError
 
-from mnogobase.database import DatabaseError, database_lock, database_target, target_exists
+from mnogobase.database import (
+    DatabaseError,
+    LockBusyError,
+    database_lock,
+    database_target,
+    target_exists,
+)
 from mnogobase.ids import file_doc_id
 from mnogobase.llm.telemetry import job_scope
 from mnogobase.log import get_logger, new_run_id
@@ -48,7 +53,7 @@ def enqueue(
     files = discover(paths, settings.parsing.extensions, _excluded(settings))
     if not files:
         cli._fail_cleanly(ValueError("No supported source files found"))
-    q = JobQueue(database_target(settings, "jobs"))
+    q = JobQueue(database_target(settings))
     try:
         for path in files:
             job_id = q.enqueue(path, file_doc_id(path), force=force)
@@ -64,11 +69,11 @@ def list_jobs(limit: Annotated[int, typer.Option(min=1)] = 100) -> None:
     from mnogobase import cli
 
     settings = cli._settings()
-    path = database_target(settings, "jobs")
-    if not target_exists(path, "jobs"):
+    target = database_target(settings)
+    if not target_exists(target, "jobs"):
         cli.console.print("Queue is empty.")
         return
-    q = JobQueue(path)
+    q = JobQueue(target)
     try:
         cli.console.print(str(q.counts()))
         table = Table("id", "status", "attempts", "path", "progress", "error", "retry at (Unix)")
@@ -94,11 +99,11 @@ def retry(job_id: Annotated[int | None, typer.Option("--id", min=1)] = None) -> 
     from mnogobase import cli
 
     settings = cli._settings()
-    path = database_target(settings, "jobs")
-    if not target_exists(path, "jobs"):
+    target = database_target(settings)
+    if not target_exists(target, "jobs"):
         cli.console.print("Queue is empty.")
         return
-    q = JobQueue(path)
+    q = JobQueue(target)
     try:
         cli.console.print(f"Requeued: {q.retry(job_id)}")
     finally:
@@ -182,7 +187,7 @@ def run_worker(
     worker_lock = database_lock(settings, "worker")
     try:
         worker_lock.acquire()
-    except Timeout:
+    except LockBusyError:
         cli._fail_cleanly(ValueError("Another worker is already running for this project"))
     q, application = None, None
     previous_term = None
@@ -192,14 +197,14 @@ def run_worker(
             previous_term = signal.signal(signal.SIGTERM, signal.default_int_handler)
         max_attempts = max_attempts or settings.jobs.max_attempts
         retry_delay = retry_delay or settings.jobs.retry_delay_s
-        q = JobQueue(database_target(settings, "jobs"))
+        q = JobQueue(database_target(settings))
         resumed = q.recover(max_attempts)
         cli.console.print(f"Worker started; recovered {resumed}; queue {q.counts()}")
         if watch:
             thread = threading.Thread(
                 target=_watch_loop,
                 args=(
-                    database_target(settings, "jobs"),
+                    database_target(settings),
                     settings,
                     watch,
                     stop,

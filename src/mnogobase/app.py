@@ -28,7 +28,6 @@ from mnogobase.wiki.builder import WikiBuilder
 @dataclass
 class App:
     settings: Settings
-    device: str
     registry: Registry
     embedder: Embedder
     sparse: SparseEncoder
@@ -37,8 +36,6 @@ class App:
     llm: LLMClient
     parser: DoclingParser
     chunker: Chunker
-    extractor: Extractor
-    resolver: EntityResolver
     wiki: WikiBuilder
     pipeline: Pipeline
     reranker: Reranker | None = None  # rerank.enabled
@@ -75,14 +72,13 @@ def build_app(
     graph: GraphStore | None = None,
 ) -> App:
     owned_clients: list[object] = []
-    device = detect_device(settings.device)
     registry = Registry(database_target(settings))
     owned_graph = False
     try:
         mark_project(settings)
         owned_embedder, owned_vectors, owned_llm = embedder is None, vectors is None, llm is None
         embedder = embedder or OpenAICompatEmbedder(settings.embedder)
-        sparse = sparse or BM25Encoder(settings.sparse.model, device=device)
+        sparse = sparse or BM25Encoder(settings.sparse.model)
         # при `embedder.dim: auto` размерность спросит у сервера только команда, которой она нужна
         vectors = vectors or QdrantStore.from_settings(settings.qdrant, lambda: embedder.dim)
         owned_graph = graph is None
@@ -107,7 +103,10 @@ def build_app(
             reranker = ApiReranker(settings.rerank)
             owned_clients.append(reranker)
         parser = DoclingParser(
-            settings.parsing, device, settings.data_dir / "cache", settings.vision
+            settings.parsing,
+            detect_device(settings.device),
+            settings.data_dir / "cache",
+            settings.vision,
         )
         chunker = Chunker(settings.chunking, settings.embedder)
         extractor = Extractor(llm, registry, settings.extract.entity_types)
@@ -137,7 +136,6 @@ def build_app(
         )
         return App(
             settings,
-            device,
             registry,
             embedder,
             sparse,
@@ -146,8 +144,6 @@ def build_app(
             llm,
             parser,
             chunker,
-            extractor,
-            resolver,
             wiki,
             pipeline,
             reranker,

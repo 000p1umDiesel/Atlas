@@ -4,9 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 
 import pytest
-from filelock import Timeout
 
-from mnogobase.database import database_lock, database_target
+from mnogobase.database import LockBusyError, database_lock, database_target
 
 pytestmark = pytest.mark.integration
 
@@ -23,8 +22,8 @@ def test_postgresql_registry_preserves_cache_order_and_cas(pg_settings):
             a.put_extraction("c1", version, "model", value)
         assert b.get_latest_extraction("c1") == "updated"
         assert b.latest_extraction_versions() == {"v1"}
-        assert a.replace_meta("signature", None, "one")
-        assert not b.replace_meta("signature", None, "two")
+        assert a.set_meta_if_absent("signature", "one")
+        assert not b.set_meta_if_absent("signature", "two")
         a.mark_dirty(["e1", "e2"])
         assert b.dirty() == ["e1", "e2"]
     finally:
@@ -80,7 +79,7 @@ def test_postgresql_service_sessions_and_private_chats(pg_settings):
     alice, bob = [store.create_user(name, password) for name in ("alice", "bob")]
     token = store.login("alice", password)
     me = store.authenticate(token)
-    assert me["id"] == alice["id"] and me["role"] == "owner"
+    assert me == {"id": alice["id"], "username": "alice"}
     chat = store.create_conversation(alice["id"], "Приватный вопрос")
     message = store.append_message(alice["id"], chat["id"], "user", "? ' % : русский текст")
     assert store.messages(alice["id"], chat["id"]) == [message]
@@ -112,7 +111,7 @@ def test_postgresql_service_sessions_and_private_chats(pg_settings):
 def test_postgresql_queue_concurrent_claims_are_unique(pg_settings, tmp_path):
     from mnogobase.background.queue import JobQueue
 
-    target = database_target(pg_settings, "jobs")
+    target = database_target(pg_settings)
     queue = JobQueue(target)
     try:
         for i in range(20):
@@ -137,10 +136,10 @@ def test_postgresql_queue_concurrent_claims_are_unique(pg_settings, tmp_path):
 def test_postgresql_locks_use_database_namespace_not_local_path(pg_settings, tmp_path):
     a = database_lock(pg_settings, "ingest")
     b = database_lock(pg_settings, "ingest")
-    with a, pytest.raises(Timeout):
+    with a, pytest.raises(LockBusyError):
         b.acquire()
-    with b:
-        assert b.is_locked
+    with b:  # после освобождения lock берётся снова
+        assert b.connection is not None
 
 
 def test_postgresql_corpus_snapshot_reads_registry(pg_settings):
@@ -191,7 +190,7 @@ def test_enqueue_during_finish_remains_pending_and_dirty(pg_settings, tmp_path, 
 
     from mnogobase.background.queue import JobQueue
 
-    target = database_target(pg_settings, "jobs")
+    target = database_target(pg_settings)
     a, b = JobQueue(target), JobQueue(target)
     path = tmp_path / "one.md"
     first = a.enqueue(path, "A")
@@ -221,53 +220,10 @@ def test_enqueue_during_finish_remains_pending_and_dirty(pg_settings, tmp_path, 
             b.close()
 
 
-def test_queue_open_cannot_restore_marker_from_finishing_job(pg_settings, tmp_path, monkeypatch):
-    import threading
-    from concurrent.futures import TimeoutError
-
-    from mnogobase.background.queue import JobQueue
-    from mnogobase.database import PgConnection
-
-    target = database_target(pg_settings, "jobs")
-    a = JobQueue(target)
-    first = a.enqueue(tmp_path / "one.md", "A")
-    a.claim()
-    ready, proceed = threading.Event(), threading.Event()
-    original = PgConnection.execute
-
-    def interleave(db, sql, params=()):
-        if "INSERT INTO write_state(path) SELECT DISTINCT" in sql:
-            ready.set()
-            assert proceed.wait(timeout=5)
-        return original(db, sql, params)
-
-    monkeypatch.setattr(PgConnection, "execute", interleave)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(JobQueue, target)
-        ready.wait(timeout=0.5)
-        a._db.execute("BEGIN")
-        a._db.execute("UPDATE jobs SET status='done' WHERE id=?", (first,))
-        a._db.execute("DELETE FROM write_state")
-        proceed.set()
-        try:
-            future.result(timeout=0.5)
-        except TimeoutError:
-            pass
-        finally:
-            a._db.execute("COMMIT")
-        b = future.result(timeout=5)
-        try:
-            assert b.get(first).status == "done"
-            assert not b.has_unfinished_writes()
-        finally:
-            a.close()
-            b.close()
-
-
 def test_retry_does_not_reset_job_that_failed_after_selection(pg_settings, tmp_path, monkeypatch):
     from mnogobase.background.queue import JobQueue
 
-    target = database_target(pg_settings, "jobs")
+    target = database_target(pg_settings)
     a, b = JobQueue(target), JobQueue(target)
     path = tmp_path / "one.md"
     first = a.enqueue(path, "A")

@@ -35,14 +35,12 @@ def _cache_version(entity_types: Mapping[str, str]) -> str:
 def stale_entity_types(registry: Registry, entity_types: Mapping[str, str]) -> bool:
     """True, если последнее извлечение какого-либо чанка сделано с другим набором типов.
 
-    Учитывается только часть версии кэша, отвечающая за типы (новая версия промпта с теми же
-    типами — не смена типов); версия без неё появилась раньше ключей с типами."""
+    Учитывается только часть версии кэша после `:`, отвечающая за типы: новая версия промпта
+    с теми же типами — не смена типов."""
     signature = entity_types_signature(entity_types)
-    for version in registry.latest_extraction_versions():
-        prompt, sep, types = version.rpartition(":")
-        if not sep or not prompt or types != signature:
-            return True
-    return False
+    return any(
+        version.rpartition(":")[2] != signature for version in registry.latest_extraction_versions()
+    )
 
 
 def format_entity_types(entity_types: Mapping[str, str]) -> str:

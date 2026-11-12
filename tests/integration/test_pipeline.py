@@ -501,20 +501,20 @@ async def test_embedder_template_change_is_refused(make_app, docs):
 async def test_signature_upgrade_never_overwrites_a_concurrent_reindex(make_app, monkeypatch):
     app = make_app()
     app.registry.set_meta("embedder", "reindex-in-progress")  # тем временем запущен reindex
-    read = {"embedder": "fake-embed:64", "reset": None}  # что этот процесс прочитал до этого
+    read = {"embedder": None, "reset": None}  # этот процесс прочитал: индекса ещё нет
     monkeypatch.setattr(app.registry, "get_meta", lambda key: read[key])
     app.pipeline.prepare(resume=False)
     monkeypatch.undo()
     assert app.registry.get_meta("embedder") == "reindex-in-progress"
 
 
-async def test_legacy_signature_of_the_same_model_is_accepted_and_upgraded(make_app):
+async def test_new_index_gets_the_current_signature(make_app):
     app = make_app()
-    app.registry.set_meta("embedder", "fake-embed:64")  # записано до включения шаблонов в сигнатуру
+    assert app.registry.get_meta("embedder") is None
     app.pipeline.prepare()
     assert app.registry.get_meta("embedder") == embedder_signature(app.embedder)
 
-    app.registry.set_meta("embedder", "fake-embed:32")  # старый формат, но другая размерность
+    app.registry.set_meta("embedder", "fake-embed:32:tpl-00000000")  # другая размерность
     with pytest.raises(EmbedderMismatchError, match="reindex"):
         app.pipeline.prepare()
 

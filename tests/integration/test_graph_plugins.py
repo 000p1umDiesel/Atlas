@@ -9,7 +9,7 @@ from mnogobase.database import database_target, mark_project
 from mnogobase.models import EntityRecord
 from mnogobase.stores.graph_store import GraphStore
 from tests.conftest import NEO4J_IMAGE
-from tests.integration.graph_seed import CHUNKS, DOC_ID, populate
+from tests.integration.graph_seed import CHUNKS, DOC_ID, add_mentions, merge_relation, populate
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).parents[2]
@@ -82,8 +82,8 @@ def test_plugins_analysis_and_deletion(plugin_store):
     for i in range(3, 7):
         eid = f"e{i}"
         store.upsert_entity(EntityRecord(entity_id=eid, name=eid, type="Concept"))
-        store.add_mentions(CHUNKS[0], [eid])
-        store.merge_relation("e1", eid, "uses", "edge", 5, CHUNKS[0])
+        add_mentions(store, CHUNKS[0], [eid])
+        merge_relation(store, "e1", eid, "uses", "edge", 5, CHUNKS[0])
     preview = analyze(store, GraphAnalysisSettings(), estimate_only=True)
     assert preview["nodes"] == 6 and preview["projection_bytes"] > 0
     assert store.analysis_scores(["e1"]) == {}
@@ -176,9 +176,9 @@ def test_apoc_cycles_hops_and_original_citations(plugin_store):
     populate(store, "Alpha")
     for eid in ("e3", "e4", "e5"):
         store.upsert_entity(EntityRecord(entity_id=eid, name=eid, type="Concept"))
-        store.add_mentions(CHUNKS[0], [eid])
+        add_mentions(store, CHUNKS[0], [eid])
     for src, dst in (("e2", "e3"), ("e3", "e1"), ("e3", "e4"), ("e4", "e5")):
-        store.merge_relation(src, dst, "uses", "edge", 5, CHUNKS[0])
+        merge_relation(store, src, dst, "uses", "edge", 5, CHUNKS[0])
     one_hop = store.neighborhood_apoc(["e1"], 1, 30)
     assert len(one_hop) == 3
     assert {eid for r in one_hop for eid in (r.src_id, r.dst_id)} == {"e1", "e2", "e3"}
@@ -218,7 +218,6 @@ def test_graph_cli_works_without_model_servers(
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
             {
-                "database": {"backend": "postgresql"},
                 "neo4j": {
                     "uri": plugin_container.get_connection_url(),
                     "password_env": "TEST_NEO4J_PASSWORD",
@@ -226,7 +225,7 @@ def test_graph_cli_works_without_model_servers(
             }
         )
     )
-    Registry(database_target(Settings(), "state")).close()
+    Registry(database_target(Settings())).close()
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
     monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("model application created"))
     runner = CliRunner()

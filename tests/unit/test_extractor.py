@@ -25,7 +25,7 @@ def registry():
     created: list[Registry] = []
 
     def make() -> Registry:
-        created.append(Registry(database_target(Settings(), "state")))
+        created.append(Registry(database_target(Settings())))
         return created[-1]
 
     yield make
@@ -239,13 +239,6 @@ async def test_a_chunk_re_extracted_with_the_current_types_is_not_stale(registry
     await Extractor(llm, reg, DEFAULT_ENTITY_TYPES).extract(c, "Doc")
     await Extractor(llm, reg, GENES).extract(c, "Doc")  # например, --retry-failed для extract
     assert not stale_entity_types(reg, GENES)  # учитывается только последняя строка чанка
-
-
-def test_legacy_extractions_are_stale(registry, tmp_path):
-    reg = registry()
-    empty = ExtractionResult(entities=[], relations=[]).model_dump_json()
-    reg.put_extraction(f"{DOC}:00000", "extract-v1", "fake-extract", empty)
-    assert stale_entity_types(reg, DEFAULT_ENTITY_TYPES)  # создано до того, как типы вошли в ключ
 
 
 def test_a_new_prompt_version_with_the_same_types_is_not_stale(registry, tmp_path):

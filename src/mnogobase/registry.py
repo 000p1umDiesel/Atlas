@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
-from mnogobase.database import DatabaseTarget, PgLock, connect, initialize
+from mnogobase.database import DatabaseTarget, PgLock, connect, initialize, utc_timestamp
 
 STAGES: tuple[str, ...] = ("parse", "chunk", "embed", "extract", "graph")
 
@@ -32,10 +31,6 @@ _MIGRATIONS = ("ALTER TABLE files ALTER COLUMN size TYPE BIGINT",)
 # Хранится, пока идёт `reset`: прерванный reset оставляет данные частично, и
 # `Pipeline.prepare` отказывается работать, пока `mnogobase reset` не завершится.
 RESET_IN_PROGRESS = "reset-in-progress"
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 @dataclass(frozen=True)
@@ -71,12 +66,12 @@ class Registry:
             "INSERT INTO files(path, doc_id, size, mtime, status, updated_at) VALUES(?,?,?,?,?,?) "
             "ON CONFLICT(path) DO UPDATE SET doc_id=excluded.doc_id, size=excluded.size, "
             "mtime=excluded.mtime, status=excluded.status, updated_at=excluded.updated_at",
-            (path, doc_id, size, mtime, status, _now()),
+            (path, doc_id, size, mtime, status, utc_timestamp()),
         )
 
     def set_file_status(self, path: str, status: str) -> None:
         self._db.execute(
-            "UPDATE files SET status=?, updated_at=? WHERE path=?", (status, _now(), path)
+            "UPDATE files SET status=?, updated_at=? WHERE path=?", (status, utc_timestamp(), path)
         )
 
     def drop_file(self, path: str) -> None:
@@ -116,7 +111,7 @@ class Registry:
             "VALUES(?,?,?,?,?,?) ON CONFLICT(doc_id, stage) DO UPDATE SET "
             "status=excluded.status, error=excluded.error, updated_at=excluded.updated_at, "
             "attempts=stages.attempts + ?",
-            (doc_id, stage, status, started, error, _now(), started),
+            (doc_id, stage, status, started, error, utc_timestamp(), started),
         )
 
     def pending_stages(self, doc_id: str) -> list[str]:
@@ -184,7 +179,7 @@ class Registry:
 
     # ---- dirty-сущности ----
     def mark_dirty(self, entity_ids: Iterable[str]) -> None:
-        now = _now()
+        now = utc_timestamp()
         self._db.executemany(
             "INSERT INTO dirty_entities(entity_id, marked_at) VALUES(?, ?) ON CONFLICT(entity_id) DO UPDATE SET marked_at=excluded.marked_at",
             [(e, now) for e in set(entity_ids)],
@@ -230,19 +225,12 @@ class Registry:
             (key, value),
         )
 
-    def replace_meta(self, key: str, expected: str | None, value: str) -> bool:
-        """Записывает `value` в `key`, только если там всё ещё `expected` (None: значения
-        пока нет), чтобы не затереть значение, записанное тем временем другим процессом.
-        Возвращает, было ли значение записано."""
-        if expected is None:
-            cursor = self._db.execute(
-                "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING",
-                (key, value),
-            )
-        else:
-            cursor = self._db.execute(
-                "UPDATE meta SET value=? WHERE key=? AND value=?", (value, key, expected)
-            )
+    def set_meta_if_absent(self, key: str, value: str) -> bool:
+        """Записывает `value`, только если у `key` ещё нет значения, чтобы не затереть то,
+        что тем временем записал другой процесс. Возвращает, было ли значение записано."""
+        cursor = self._db.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING", (key, value)
+        )
         return cursor.rowcount == 1
 
     def wipe(self) -> None:

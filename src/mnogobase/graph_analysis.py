@@ -12,7 +12,7 @@ from neo4j.exceptions import Neo4jError
 
 from mnogobase.config import GraphAnalysisSettings
 from mnogobase.log import get_logger
-from mnogobase.stores.graph_store import GraphStore
+from mnogobase.stores.graph_store import PROJECTION_PREFIX, GraphStore
 
 
 class AnalysisError(RuntimeError):
@@ -64,7 +64,6 @@ def analyze(
         raise AnalysisError("RELATED weights must be positive finite numbers")
     report = {
         **counts,
-        "scope": graph.analysis_scope,
         "revision": state["revision"],
         "plugins": plugins,
         "settings": settings.model_dump(),
@@ -83,7 +82,7 @@ def analyze(
         if not graph.publish_analysis(state["revision"], [], report):
             raise AnalysisError("Graph changed during analysis; rerun graph analyze")
         return report
-    name = f"mb_analysis_{graph.analysis_scope}_{uuid.uuid4().hex}"
+    name = f"{PROJECTION_PREFIX}{uuid.uuid4().hex}"
     try:
         graph.gds_project(name, settings.timeout_s)
         # The algorithms run sequentially; only the larger workspace overlaps the projection.

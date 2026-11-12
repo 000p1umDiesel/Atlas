@@ -11,7 +11,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def registry(tmp_path):
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     yield registry
     registry.close()
 

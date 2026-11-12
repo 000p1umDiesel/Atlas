@@ -6,6 +6,7 @@ from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput, EntityReco
 from mnogobase.retrieval.graph import GraphRetriever
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeEmbedder
+from tests.integration.graph_seed import add_mentions, merge_relation
 
 pytestmark = [
     pytest.mark.integration,
@@ -44,8 +45,8 @@ def test_graph_retriever_returns_entities_relations_and_evidence(graph):
         entities,
         emb.embed_documents([EmbedInput(text=f"{e.name}: {e.description}") for e in entities]),
     )
-    graph.add_mentions(chunk.chunk_id, ["e1", "e2"])
-    graph.merge_relation("e1", "e2", "uses", "Transformer uses softmax.", 5, chunk.chunk_id)
+    add_mentions(graph, chunk.chunk_id, ["e1", "e2"])
+    merge_relation(graph, "e1", "e2", "uses", "Transformer uses softmax.", 5, chunk.chunk_id)
 
     # порог 0.9 отключает нечёткий векторный поиск стартовых узлов, они берутся
     # только из fulltext-индекса

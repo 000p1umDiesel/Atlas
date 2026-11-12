@@ -1,35 +1,17 @@
 from __future__ import annotations
 
-import platform
-import shutil
 from typing import Literal
 
-Device = Literal["cuda", "mps", "cpu"]
-
-
-def _cuda_available() -> bool:
-    try:
-        import torch
-
-        return bool(torch.cuda.is_available())
-    except ImportError:
-        return shutil.which("nvidia-smi") is not None
+Device = Literal["mps", "cpu"]
 
 
 def _mps_available() -> bool:
-    try:
-        import torch
+    import torch  # тяжёлый импорт: только когда устройство действительно выбирают
 
-        return bool(torch.backends.mps.is_available())
-    except ImportError:
-        return platform.system() == "Darwin" and platform.machine() == "arm64"
+    return bool(torch.backends.mps.is_available())
 
 
 def detect_device(preference: str = "auto") -> Device:
-    if preference in ("cuda", "mps", "cpu"):
+    if preference in ("mps", "cpu"):
         return preference  # type: ignore[return-value]
-    if _cuda_available():
-        return "cuda"
-    if _mps_available():
-        return "mps"
-    return "cpu"
+    return "mps" if _mps_available() else "cpu"

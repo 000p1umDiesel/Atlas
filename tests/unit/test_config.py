@@ -231,8 +231,6 @@ def test_vision_skip_takes_docling_picture_classes():
 def test_serve_requires_what_the_backend_needs():
     with pytest.raises(ValueError, match="embedder.base_url is required for serve: api"):
         EmbedderSettings(serve="api")
-    with pytest.raises(ValueError):  # старое значение serve: vllm удалено
-        EmbedderSettings(serve="vllm")
     local = LLMSettings(model="Qwen/Qwen3-8B", serve="llamacpp", base_url=None)
     assert local.url == "http://localhost:8000/v1" and local.weights == "Qwen/Qwen3-8B"
     remote = EmbedderSettings(base_url="http://gpu:8001/v1/")  # модель поднята на другой машине

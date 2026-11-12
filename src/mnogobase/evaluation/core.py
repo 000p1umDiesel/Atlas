@@ -7,11 +7,12 @@ from importlib.metadata import version
 from pathlib import Path
 
 from mnogobase.config import Settings
+from mnogobase.files import append_jsonl, fingerprint
 from mnogobase.llm.templates import render_messages
 from mnogobase.models import Answer
 from mnogobase.retrieval.compare import run_mode
 
-from .artifacts import append_jsonl, ensure_manifest, fingerprint, latest_records, load_questions
+from .artifacts import ensure_manifest, latest_records, load_questions
 from .ragas import METRIC_NAMES, RagasJudge, evaluate_one, skip_reason
 
 MODES = ("rag", "wiki", "graph", "all")

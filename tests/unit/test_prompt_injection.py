@@ -68,7 +68,7 @@ async def test_answer_keeps_question_source_and_path_in_data():
 
 @pytest.mark.integration
 async def test_extract_keeps_title_headings_and_fragment_in_data(tmp_path):
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     try:
         c = chunk(ATTACK)
         c.headings = [ATTACK]

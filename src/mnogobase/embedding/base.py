@@ -48,28 +48,21 @@ def truncate_normalize(vec: Sequence[float], dim: int) -> list[float]:
     return [x / norm for x in head]
 
 
-def _legacy_signature(embedder: Embedder) -> str:
-    """Сигнатура в старом формате, до того как в неё вошли шаблоны."""
-    return f"{embedder.model_id}:{embedder.dim}"
-
-
 def embedder_signature(embedder: Embedder) -> str:
-    """От чего зависят сохранённые векторы: `model_id:dim:tpl-<hash of both templates>`."""
+    """От чего зависят сохранённые векторы: `model_id:dim:tpl-<хеш обоих шаблонов>`."""
     templates = json.dumps(list(embedder.templates), ensure_ascii=False)
     digest = hashlib.sha256(templates.encode("utf-8")).hexdigest()[:8]
-    return f"{_legacy_signature(embedder)}:tpl-{digest}"
+    return f"{embedder.model_id}:{embedder.dim}:tpl-{digest}"
 
 
 def signature_mismatch(stored: str | None, embedder: Embedder) -> str | None:
     """Почему индекс с сигнатурой `stored` нельзя использовать с `embedder`; None, если можно.
 
-    Отсутствие сигнатуры (индекса ещё нет) допустимо, как и старая сигнатура `model_id:dim`
-    той же модели и размерности: такой индекс построен с шаблонами своего времени, и
-    вызывающий код перезаписывает сигнатуру в текущем формате."""
+    Отсутствие сигнатуры (индекса ещё нет) допустимо: её запишет первый `prepare`."""
     current = embedder_signature(embedder)
-    if stored in (None, current, _legacy_signature(embedder)):
+    if stored in (None, current):
         return None
     reason = f"index was built with {stored}, config now uses {current}"
-    if stored.startswith(f"{_legacy_signature(embedder)}:tpl-"):
+    if stored.startswith(f"{embedder.model_id}:{embedder.dim}:tpl-"):
         reason += " (embedder templates changed: doc_template / query_template)"
     return reason

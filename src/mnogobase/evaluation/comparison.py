@@ -8,7 +8,8 @@ from itertools import combinations
 from pathlib import Path
 from statistics import mean
 
-from .artifacts import read_jsonl
+from mnogobase.files import read_jsonl
+
 from .ragas import METRIC_NAMES
 
 

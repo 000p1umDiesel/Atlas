@@ -15,6 +15,7 @@ from mnogobase.stores.qdrant_store import QdrantStore
 from mnogobase.wiki.builder import WikiBuilder
 from mnogobase.wiki.obsidian import GRAPH_FILTER
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
+from tests.integration.graph_seed import add_mentions, merge_relation
 
 pytestmark = [
     pytest.mark.integration,
@@ -86,10 +87,12 @@ def world(graph, tmp_path):
             )
         )
         for chunk, ids in ((chunks[0], ["e1"]), (chunks[1], ["e2"]), (chunks[2], ["e1", "e2"])):
-            graph.add_mentions(chunk.chunk_id, ids)
+            add_mentions(graph, chunk.chunk_id, ids)
             vectors.set_chunk_entities(chunk.chunk_id, ids)
-        graph.merge_relation("e1", "e2", "uses", "Transformer uses softmax.", 5, chunks[2].chunk_id)
-        registry = Registry(database_target(Settings(), "state"))
+        merge_relation(
+            graph, "e1", "e2", "uses", "Transformer uses softmax.", 5, chunks[2].chunk_id
+        )
+        registry = Registry(database_target(Settings()))
         registries.append(registry)
         registry.mark_dirty(["e1", "e2"])
         llm = FakeLLM(handler)
@@ -321,7 +324,7 @@ async def test_same_slug_entities_get_distinct_pages(world, graph):
     for eid, name in (("e3", "C#"), ("e4", "CSharp")):
         graph.upsert_entity(EntityRecord(entity_id=eid, name=name, type="Language"))
     for chunk, ids in ((w.chunks[0], ["e1", "e3", "e4"]), (w.chunks[2], ["e1", "e2", "e3", "e4"])):
-        graph.add_mentions(chunk.chunk_id, ids)
+        add_mentions(graph, chunk.chunk_id, ids)
         w.vectors.set_chunk_entities(chunk.chunk_id, ids)
     w.registry.mark_dirty(["e3", "e4"])
     report = await w.builder.build()
@@ -380,7 +383,7 @@ async def test_rebuild_keeps_still_valid_citations_outside_the_top_k(world, grap
         FakeEmbedder().embed_documents([EmbedInput(text=extra.text)]),
         FakeSparse().encode_documents([extra.text]),
     )
-    graph.add_mentions(extra.chunk_id, ["e1"])
+    add_mentions(graph, extra.chunk_id, ["e1"])
     w.vectors.set_chunk_entities(extra.chunk_id, ["e1"])
     await w.builder.build()
     page = w.wiki / "entities" / "transformer.md"

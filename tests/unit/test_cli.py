@@ -44,7 +44,7 @@ def test_graph_status_needs_no_models_or_qdrant(tmp_path, monkeypatch):
 def register_source(root, name="a.md"):
     path = root / name
     path.write_text("source")
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     try:
         registry.upsert_file(str(path), "d1", 6, 0, "done")
     finally:
@@ -64,7 +64,7 @@ def test_remove_preview_and_decline_do_not_connect_to_services(tmp_path, monkeyp
     declined = runner.invoke(cli.app, ["remove", str(source)], input="n\n")
     assert declined.exit_code == 1, declined.output
     assert source.read_text() == "source"
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     assert registry.get_file(str(source)) is not None
     registry.close()
 
@@ -159,7 +159,7 @@ def offline(monkeypatch):
 
 
 def make_project(root: Path) -> None:
-    Registry(database_target(Settings(), "state")).close()
+    Registry(database_target(Settings())).close()
     mark_project(Settings(data_dir=root / ".mnogobase"))
 
 
@@ -506,7 +506,7 @@ def test_wiki_build_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monk
 
 def test_status_shows_pending_removals(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     registry.put_removal("abcd1234abcd1234", "{}")
     registry.close()
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
@@ -526,7 +526,7 @@ def test_doctor_warning_is_shown_but_does_not_fail(tmp_path, monkeypatch):
 
 
 def _extracted_project(root: Path, types_signature: str) -> None:
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     registry.put_extraction("c1", f"{PROMPT_VERSION}:{types_signature}", "m", "{}")
     registry.close()
     mark_project(Settings(data_dir=root / ".mnogobase"))

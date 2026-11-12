@@ -11,10 +11,8 @@ Async-клиенты `App` (LLM, семафор конкурентности) п
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
-import tempfile
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -22,7 +20,6 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from neo4j.exceptions import ServiceUnavailable, SessionExpired
 from sqlalchemy.exc import DBAPIError
@@ -40,7 +37,7 @@ from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import NO_SOURCES, Answerer
 from mnogobase.retrieval.compare import run_mode
 from mnogobase.retrieval.translate import QueryTranslator
-from mnogobase.service.errors import ServiceError
+from mnogobase.service.errors import ServiceError, check_pagination
 from mnogobase.service.observability import UsageStore
 from mnogobase.service.store import ServiceStore
 
@@ -64,22 +61,11 @@ class CoreLoop:
         # Отмена запроса не прерывает операцию ядра: она дорабатывает в своём цикле.
         return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
 
-    async def call[T](self, fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-        async def invoke() -> T:
-            return fn(*args, **kwargs)
-
-        return await self.run(invoke())
-
     def close(self) -> None:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=10)
         if not self._thread.is_alive():
             self._loop.close()
-
-
-def _page(limit: int, offset: int) -> None:
-    if not 1 <= limit <= 1000 or offset < 0:
-        raise ServiceError(422, "Invalid pagination")
 
 
 def _mode(mode: str) -> None:
@@ -174,7 +160,7 @@ class KnowledgeBase:
 
     @contextmanager
     def _queue(self):
-        queue = JobQueue(database_target(self.settings, "jobs"))
+        queue = JobQueue(database_target(self.settings))
         try:
             yield queue
         finally:
@@ -219,19 +205,6 @@ class KnowledgeBase:
         атомарным `rename`."""
         self.uploads.root.mkdir(parents=True, exist_ok=True)
         return self.uploads.root
-
-    def upload(self, filename: str, content: bytes) -> dict:
-        """Загрузка из памяти (тесты, локальные вызовы); API пишет поток сразу в файл."""
-        self.upload_suffix(filename)
-        with tempfile.NamedTemporaryFile(
-            dir=self.staging_dir(), prefix=".upload-", delete=False
-        ) as stream:
-            staged = Path(stream.name)
-            stream.write(content)
-        try:
-            return self.upload_file(filename, staged, hashlib.sha256(content).hexdigest())
-        finally:
-            staged.unlink(missing_ok=True)
 
     def upload_file(self, filename: str, staged: Path, sha256: str) -> dict:
         """Ставит в очередь уже записанный во временный файл `staged` документ. Файл
@@ -296,7 +269,7 @@ class KnowledgeBase:
 
     async def documents(self, limit: int = 50, offset: int = 0) -> list[dict]:
         """Все документы корпуса: загруженные через API и добавленные из CLI или папки."""
-        _page(limit, offset)
+        check_pagination(limit, offset)
 
         async def run(app: App) -> list[dict]:
             out = []
@@ -317,7 +290,7 @@ class KnowledgeBase:
         return await self._with_app(run, "Document list unavailable")
 
     def jobs(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        _page(limit, offset)
+        check_pagination(limit, offset)
         with self._queue() as queue:
             return [_job(j) for j in queue.jobs(limit, offset)]
 
@@ -500,7 +473,7 @@ class KnowledgeBase:
     def history(
         self, user_id: str, conversation_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict]:
-        _page(limit, offset)
+        check_pagination(limit, offset)
         messages = self.store.messages(user_id, conversation_id, limit=limit, offset=offset)
         wiki_root = self.settings.wiki.dir.resolve()
         for message in messages:
@@ -518,7 +491,7 @@ class KnowledgeBase:
         return messages
 
     async def wiki_pages(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        _page(limit, offset)
+        check_pagination(limit, offset)
 
         async def run(app: App) -> list[dict]:
             return [
@@ -547,7 +520,7 @@ class KnowledgeBase:
         return await self._with_app(run, "Wiki unavailable")
 
     async def graph_search(self, query: str, limit: int = 20) -> list[dict]:
-        _page(limit, 0)
+        check_pagination(limit, 0)
 
         async def run(app: App) -> list[dict]:
             return [
@@ -558,7 +531,7 @@ class KnowledgeBase:
         return await self._with_app(run, "Graph unavailable")
 
     async def graph_neighbors(self, entity_id: str, depth: int = 1, limit: int = 50) -> dict:
-        _page(limit, 0)
+        check_pagination(limit, 0)
         if not 1 <= depth <= 3:
             raise ServiceError(422, "Graph depth must be between 1 and 3")
 

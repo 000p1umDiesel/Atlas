@@ -6,6 +6,7 @@ from mnogobase.config import GraphSettings
 from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord
 from mnogobase.retrieval.graph import GraphRetriever
 from tests.fakes import FakeEmbedder
+from tests.integration.graph_seed import add_mentions, merge_relation
 
 pytestmark = [
     pytest.mark.integration,
@@ -33,8 +34,8 @@ def populate_community(store, name="Alpha"):
                 )
             ]
         )
-        store.add_mentions(f"d:{i}", [eid])
-    store.merge_relation("seed", "near", "uses", "local relation", 5, "d:1")
+        add_mentions(store, f"d:{i}", [eid])
+    merge_relation(store, "seed", "near", "uses", "local relation", 5, "d:1")
     rows = [
         {"entity_id": eid, "pagerank": rank, "community": group}
         for eid, rank, group in (

@@ -453,7 +453,6 @@ class DatabaseSettings(Section):
     """PostgreSQL: адрес — здесь, пароль — в `.env` (`password_env`). Полный DSN в
     переменной `url_env` (если задана) переопределяет оба."""
 
-    backend: Literal["postgresql"] = "postgresql"
     host: str = "localhost"
     port: int = Field(default=5432, ge=1, le=65535)
     name: str = "mnogobase"
@@ -501,7 +500,7 @@ class Settings(BaseSettings):
         env_prefix="MNOGOBASE_", env_nested_delimiter="__", extra="ignore"
     )
 
-    device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
+    device: Literal["auto", "mps", "cpu"] = "auto"
     data_dir: Path = Path(".mnogobase")
     logs_dir: Path = Path("logs")
     runs_dir: Path = Path("runs")

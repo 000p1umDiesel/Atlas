@@ -15,6 +15,7 @@ from mnogobase.retrieval.combined import CombinedRetriever
 from mnogobase.retrieval.graph import GraphRetriever
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
+from tests.integration.graph_seed import add_mentions, merge_relation
 from tests.integration.test_graph_plugins import plugin_container as plugin_container
 
 pytestmark = pytest.mark.e2e
@@ -67,8 +68,8 @@ async def test_leiden_evidence_reaches_real_api(plugin_container, qdrant_client,
                     )
                 ]
             )
-            store.add_mentions(cid, [eid, "hub"])
-            store.merge_relation(eid, "hub", "belongs", "Topic membership", 5, cid)
+            add_mentions(store, cid, [eid, "hub"])
+            merge_relation(store, eid, "hub", "belongs", "Topic membership", 5, cid)
         report = analyze(store, settings.graph.analysis)
         memberships = {r["entity_id"]: r["community"] for r in store.analysis_details()}
         assert memberships["seed"] == memberships["remote"], memberships

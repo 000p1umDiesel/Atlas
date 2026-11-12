@@ -5,7 +5,7 @@ from qdrant_client import QdrantClient
 from mnogobase import doctor
 from mnogobase.chunking.tokenizer import TokenizerError
 from mnogobase.config import EmbedderSettings, RerankSettings, Settings, VisionSettings
-from mnogobase.database import database_target
+from mnogobase.database import database_target, target_exists
 from mnogobase.doctor import run_checks
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
@@ -50,7 +50,7 @@ def mock_embedder(monkeypatch, handler) -> None:
 
 
 def store_signature(tmp_path, signature: str) -> None:
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     registry.set_meta("embedder", signature)
     registry.close()
 
@@ -59,10 +59,9 @@ def test_index_check_compares_with_the_configured_embedder(tmp_path):
     settings = make_settings(tmp_path)
     [fresh] = run_checks(settings, only=["index"])
     assert fresh.ok and fresh.detail == "no index yet"
-    assert not (tmp_path / ".mb" / "state.db").exists()
+    assert not target_exists(database_target(Settings()))  # проверка ничего не создаёт
 
-    # старый формат подписи (без шаблонов) той же модели и размерности допустим
-    store_signature(tmp_path, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560")
+    store_signature(tmp_path, embedder_signature(OpenAICompatEmbedder(settings.embedder)))
     [same] = run_checks(settings, only=["index"])
     assert same.ok
 
@@ -88,7 +87,7 @@ def test_index_check_fails_when_only_the_templates_changed(tmp_path):
 
 
 def test_unreachable_service_is_a_failed_check_not_a_crash(tmp_path, monkeypatch):
-    # имитируем отказ в соединении: на Windows закрытый порт может вместо этого дать таймаут
+    # имитируем отказ в соединении, не завися от того, что слушает на локальных портах
     def refuse(url, **kwargs):
         raise httpx.ConnectError("connection refused", request=httpx.Request("GET", url))
 
@@ -191,9 +190,9 @@ def test_types_check_warns_without_failing_when_the_types_changed(tmp_path):
     settings = make_settings(tmp_path)
     [fresh] = run_checks(settings, only=["types"])
     assert fresh.ok and not fresh.warn
-    assert not (tmp_path / ".mb" / "state.db").exists()
+    assert not target_exists(database_target(Settings()))  # проверка ничего не создаёт
 
-    registry = Registry(database_target(Settings(), "state"))
+    registry = Registry(database_target(Settings()))
     sig = entity_types_signature(settings.extract.entity_types)
     registry.put_extraction("c1", f"{PROMPT_VERSION}:{sig}", "m", "{}")
     [same] = run_checks(settings, only=["types"])
@@ -232,7 +231,7 @@ def test_auto_dimension_is_compared_with_what_the_embedder_returns(tmp_path, mon
     monkeypatch.setattr(client, "close", lambda: None)
     monkeypatch.setattr(doctor, "connect_qdrant", lambda *args, **kwargs: client)
     settings = make_settings(tmp_path, embedder=EmbedderSettings())  # dim: auto
-    store_signature(tmp_path, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:64")
+    store_signature(tmp_path, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:64:tpl-dbe41d80")
     calls = []
 
     def vectors(size):

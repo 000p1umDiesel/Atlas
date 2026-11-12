@@ -10,22 +10,21 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from mnogobase.database import (
-    INTEGRITY_ERRORS,
-    OPERATIONAL_ERRORS,
     DatabaseTarget,
     PgConnection,
     Row,
     connect,
     initialize,
+    utc_timestamp,
 )
 from mnogobase.log import get_logger
-from mnogobase.service.errors import ServiceError
+from mnogobase.service.errors import ServiceError, check_pagination
 
 MIN_PASSWORD = 12
 # argon2 берёт 64 MiB на хеш: без предела параллельные логины исчерпали бы память.
@@ -35,8 +34,7 @@ _ARGON2_WAIT_S = 5.0
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
-    role TEXT NOT NULL DEFAULT 'owner'
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1))
 );
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
@@ -60,10 +58,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_owner ON messages(user_id, conversation_id, created_at);
 """
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="microseconds")
+_MIGRATIONS = (
+    # v2: роли пользователей остались от командного режима; владелец у базы один
+    "ALTER TABLE users DROP COLUMN IF EXISTS role",
+)
 
 
 def _record(row) -> dict:
@@ -76,35 +74,30 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _pagination(limit: int, offset: int) -> None:
-    if type(limit) is not int or type(offset) is not int or not 1 <= limit <= 1000 or offset < 0:
-        raise ServiceError(400, "Invalid pagination")
-
-
 def _check_password(password: str) -> None:
     if len(password) < MIN_PASSWORD:
         raise ServiceError(400, f"Password must have at least {MIN_PASSWORD} characters")
 
 
 class ServiceStore:
-    def __init__(self, path: DatabaseTarget):
-        self.path = path
+    def __init__(self, target: DatabaseTarget):
+        self.target = target
         self._passwords = PasswordHasher()
-        conn = connect(path)
+        conn = connect(target)
         try:
-            initialize(conn, _SCHEMA, "service")
+            initialize(conn, _SCHEMA, "service", _MIGRATIONS)
         finally:
             conn.close()
 
     @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[PgConnection]:
-        conn = connect(self.path)
+        conn = connect(self.target)
         try:
             if write:
                 conn.execute("BEGIN")
             with conn:
                 yield conn
-        except OPERATIONAL_ERRORS as exc:
+        except OperationalError as exc:
             if getattr(getattr(exc, "orig", None), "sqlstate", None) in {
                 "55P03",
                 "40P01",
@@ -142,7 +135,7 @@ class ServiceStore:
                     "INSERT INTO users(id, username, password_hash) VALUES(?, ?, ?)",
                     (user["id"], username, password_hash),
                 )
-        except INTEGRITY_ERRORS:
+        except IntegrityError:
             raise ServiceError(409, "Username already exists") from None
         return user
 
@@ -173,7 +166,7 @@ class ServiceStore:
     def users(self) -> list[dict]:
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT id, username, role, active FROM users ORDER BY username"
+                "SELECT id, username, active FROM users ORDER BY username"
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -217,7 +210,7 @@ class ServiceStore:
     def authenticate(self, token: str) -> dict:
         with self._connection() as conn:
             user = conn.execute(
-                "SELECT u.id, u.username, u.role FROM users u JOIN sessions s ON s.user_id=u.id "
+                "SELECT u.id, u.username FROM users u JOIN sessions s ON s.user_id=u.id "
                 "WHERE s.token_hash=? AND s.expires_at>? AND u.active=1",
                 (_token_hash(token), time.time()),
             ).fetchone()
@@ -239,7 +232,12 @@ class ServiceStore:
         return chat
 
     def create_conversation(self, user_id: str, title: str = "") -> dict:
-        chat = {"id": uuid.uuid4().hex, "user_id": user_id, "title": title, "created_at": _now()}
+        chat = {
+            "id": uuid.uuid4().hex,
+            "user_id": user_id,
+            "title": title,
+            "created_at": utc_timestamp(),
+        }
         with self._connection(write=True) as conn:
             conn.execute(
                 "INSERT INTO conversations(id, user_id, title, created_at) "
@@ -249,7 +247,7 @@ class ServiceStore:
         return chat
 
     def conversations(self, user_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
-        _pagination(limit, offset)
+        check_pagination(limit, offset)
         with self._connection() as conn:
             return [
                 _record(row)
@@ -273,7 +271,7 @@ class ServiceStore:
     def messages(
         self, user_id: str, conversation_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict]:
-        _pagination(limit, offset)
+        check_pagination(limit, offset)
         with self._connection() as conn:
             self._conversation(conn, user_id, conversation_id)
             return [
@@ -287,7 +285,7 @@ class ServiceStore:
 
     def recent_messages(self, user_id: str, conversation_id: str, limit: int = 12) -> list[dict]:
         """Последние сообщения в хронологическом порядке, без загрузки всего чата."""
-        _pagination(limit, 0)
+        check_pagination(limit, 0)
         with self._connection() as conn:
             self._conversation(conn, user_id, conversation_id)
             rows = conn.execute(
@@ -327,7 +325,7 @@ class ServiceStore:
             "sources": sources_json,
             "status": status,
             "query": query,
-            "created_at": _now(),
+            "created_at": utc_timestamp(),
         }
         with self._connection(write=True) as conn:
             self._conversation(conn, user_id, conversation_id)

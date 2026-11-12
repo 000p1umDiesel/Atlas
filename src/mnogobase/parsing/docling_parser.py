@@ -40,11 +40,10 @@ from docling_core.types.doc.labels import PictureClassificationLabel
 from PIL import Image
 
 from mnogobase.config import ParsingSettings, VisionSettings
+from mnogobase.files import write_atomic
 from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
 from mnogobase.log import get_logger
 
-_CUDA_BATCH_SIZE = 16
-_BATCH_SIZE_ATTRS = ("layout_batch_size", "ocr_batch_size", "table_batch_size")
 _SKIP_CONFIDENCE = 0.5  # картинка не описывается, если класс из vision.skip вероятнее этого
 MAX_VLM_SIDE = 2048  # пикселей по длинной стороне картинки, которую описывает VLM
 
@@ -93,10 +92,6 @@ class DoclingParser:
                 images_scale=2.0,
                 accelerator_options=AcceleratorOptions(device=AcceleratorDevice(self._device)),
             )
-            if self._device == "cuda":
-                for attr in _BATCH_SIZE_ATTRS:
-                    if hasattr(pdf_options, attr):
-                        setattr(pdf_options, attr, _CUDA_BATCH_SIZE)
             # картинки (скриншоты) идут тем же конвейером, что и PDF: разметка, OCR, описание
             formats: dict[InputFormat, FormatOption] = {
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
@@ -305,7 +300,5 @@ def _save_images(doc: DoclingDocument, out_dir: Path) -> int:
             }
         )
     if manifest:
-        (out_dir / "images.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        write_atomic(out_dir / "images.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return len(manifest)

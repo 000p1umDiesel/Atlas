@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from mnogobase.database import database_target
+from mnogobase.database import LockBusyError, database_target
 from mnogobase.processing import corpus_snapshot, measured_ingest
 from mnogobase.registry import ingest_lock
 from mnogobase.retrieval import Mode
@@ -124,7 +124,7 @@ def run(
             finally:
                 application.close()
             report(output)
-    except (OSError, ValueError, filelock.Timeout) as exc:
+    except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
         cli._fail_cleanly(exc)
     cli.console.print(
         f"Answers saved in {escape(str(output))}; failed: {failed}. Next: eval score {escape(str(output))}"
@@ -153,7 +153,7 @@ def score(
                     score_run(output, judge_config(settings), names=metric, progress=progress)
                 )
             summary = _print_summary(output, cli.console)
-    except (OSError, ValueError, filelock.Timeout) as exc:
+    except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
         cli._fail_cleanly(exc)
     if failed or any(s["answers_error"] or s["answers_missing"] for s in summary):
         raise typer.Exit(1)
@@ -168,7 +168,7 @@ def report_command(output: Annotated[Path, typer.Argument(help="Saved run direct
         load_run(output)
         with _lock(output):
             _print_summary(output, cli.console)
-    except (OSError, ValueError, filelock.Timeout) as exc:
+    except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
         cli._fail_cleanly(exc)
 
 
@@ -214,7 +214,7 @@ def ingest_measured(
                     )
             finally:
                 application.close()
-    except (OSError, ValueError, RuntimeError, filelock.Timeout) as exc:
+    except (OSError, ValueError, RuntimeError, filelock.Timeout, LockBusyError) as exc:
         cli._fail_cleanly(exc)
     cli.console.print(f"Processing measurements: {escape(str(output / 'processing.jsonl'))}")
     if result.failed or (result.wiki and result.wiki.failed):

@@ -8,18 +8,13 @@ def database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:password@localhost/test")
 
 
-def test_postgresql_is_default_and_namespace_does_not_depend_on_paths():
-    from mnogobase.config import DatabaseSettings, Settings
+def test_schema_does_not_depend_on_paths():
+    from mnogobase.config import Settings
     from mnogobase.database import database_target
 
-    assert DatabaseSettings().backend == "postgresql"
-    a = Settings(database={"backend": "postgresql"}, data_dir="a")
+    a = Settings(data_dir="a")
     b = a.model_copy(update={"data_dir": Path("b")})
     assert database_target(a).schema == database_target(b).schema
-    # всё состояние проекта, включая пользователей и очередь, в одной схеме
-    assert database_target(a, "jobs") == database_target(a)
-    with pytest.raises(ValueError):
-        database_target(a, "service")
 
 
 def test_projects_have_separate_schemas():
@@ -71,22 +66,6 @@ def test_missing_database_url_is_a_clean_cli_error(monkeypatch):
     assert result.exit_code == 2
     assert "Set MISSING_TEST_PG (or MISSING_TEST_DATABASE_URL)" in result.output
     assert "Traceback" not in result.output
-
-
-def test_sqlite_backend_is_rejected_before_any_store_is_opened():
-    from mnogobase.config import DatabaseSettings
-
-    with pytest.raises(ValueError, match="postgresql"):
-        DatabaseSettings(backend="sqlite")
-
-
-def test_file_database_target_is_rejected_without_creating_files(tmp_path):
-    from mnogobase.database import DatabaseError, connect
-
-    path = tmp_path / "legacy" / "state.db"
-    with pytest.raises(DatabaseError, match="PostgreSQL"):
-        connect(path)
-    assert not path.parent.exists()
 
 
 def test_url_is_built_from_config_and_password(monkeypatch):

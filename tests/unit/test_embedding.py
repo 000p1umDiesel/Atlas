@@ -84,7 +84,7 @@ def test_embedder_orders_by_index_and_sends_the_api_key(monkeypatch):
     assert seen[0].headers["authorization"] == "Bearer secret"
 
 
-def test_signature_covers_the_templates_and_accepts_legacy_signatures():
+def test_signature_covers_the_templates():
     def sig(**update):
         return embedder_signature(OpenAICompatEmbedder(EmbedderSettings(dim=2560, **update)))
 
@@ -93,8 +93,10 @@ def test_signature_covers_the_templates_and_accepts_legacy_signatures():
     assert sig(doc_template="title: {title} | {text}") != default
     assert sig(query_template="{query}") != default
     emb = OpenAICompatEmbedder(EmbedderSettings(dim=2560))
-    for accepted in (None, default, "llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560"):
+    for accepted in (None, default):
         assert signature_mismatch(accepted, emb) is None, accepted
+    legacy = signature_mismatch("llamacpp:Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M:2560", emb)
+    assert legacy is not None  # подпись без шаблонов больше не принимается
     templates = signature_mismatch(sig(doc_template="title: {title} | {text}"), emb)
     assert templates is not None and "templates changed" in templates
     model = signature_mismatch("ollama:qwen3-embedding:4b:2560:tpl-dbe41d80", emb)

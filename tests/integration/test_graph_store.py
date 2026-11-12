@@ -4,6 +4,7 @@ import pytest
 
 from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
 from mnogobase.stores.graph_store import DeleteResult
+from tests.integration.graph_seed import add_mentions, merge_relation
 
 pytestmark = pytest.mark.integration
 
@@ -55,14 +56,14 @@ def test_mentions_and_relations_are_idempotent(graph):
     chunks = make_doc(graph)
     make_entity(graph, "e1", "Transformer")
     make_entity(graph, "e2", "Softmax")
-    graph.add_mentions(chunks[0].chunk_id, ["e1", "e2"])
-    graph.add_mentions(chunks[1].chunk_id, ["e1"])
-    graph.add_mentions(chunks[1].chunk_id, ["e1"])
+    add_mentions(graph, chunks[0].chunk_id, ["e1", "e2"])
+    add_mentions(graph, chunks[1].chunk_id, ["e1"])
+    add_mentions(graph, chunks[1].chunk_id, ["e1"])
     assert graph.get_entity("e1").mention_count == 2
-    graph.merge_relation("e1", "e2", "uses", "T uses softmax", 5, chunks[0].chunk_id)
-    graph.merge_relation("e1", "e2", "uses", "T uses softmax", 5, chunks[0].chunk_id)
-    graph.merge_relation(
-        "e1", "e2", "uses", "Transformer uses softmax in attention", 3, chunks[1].chunk_id
+    merge_relation(graph, "e1", "e2", "uses", "T uses softmax", 5, chunks[0].chunk_id)
+    merge_relation(graph, "e1", "e2", "uses", "T uses softmax", 5, chunks[0].chunk_id)
+    merge_relation(
+        graph, "e1", "e2", "uses", "Transformer uses softmax in attention", 3, chunks[1].chunk_id
     )
     rels = graph.entity_context("e1", max_relations=10).relations
     assert len(rels) == 1
@@ -94,13 +95,13 @@ def test_delete_document_cascade(graph):
     make_entity(graph, "e1", "Shared")
     make_entity(graph, "e2", "Only A")
     make_entity(graph, "e3", "Only B")
-    graph.add_mentions(a[0].chunk_id, ["e1", "e2"])
-    graph.add_mentions(b[0].chunk_id, ["e1", "e3"])
-    graph.merge_relation("e1", "e2", "uses", "", 4, a[0].chunk_id)
+    add_mentions(graph, a[0].chunk_id, ["e1", "e2"])
+    add_mentions(graph, b[0].chunk_id, ["e1", "e3"])
+    merge_relation(graph, "e1", "e2", "uses", "", 4, a[0].chunk_id)
     # у e1-uses->e3 есть evidence из обоих документов: сначала запись a, затем b
-    graph.merge_relation("e1", "e3", "uses", "", 3, a[0].chunk_id)
-    graph.merge_relation("e1", "e3", "uses", "", 4, b[0].chunk_id)
-    graph.merge_relation("e1", "e3", "cites", "", 2, a[1].chunk_id)
+    merge_relation(graph, "e1", "e3", "uses", "", 3, a[0].chunk_id)
+    merge_relation(graph, "e1", "e3", "uses", "", 4, b[0].chunk_id)
+    merge_relation(graph, "e1", "e3", "cites", "", 2, a[1].chunk_id)
     graph.upsert_wiki_page(
         WikiPageRecord(page_id="e2", slug="only-a", title="Only A", path="entities/only-a.md"),
         "e2",
@@ -154,9 +155,9 @@ def test_neighborhood_hops_and_ranking(graph):
     chunks = make_doc(graph)
     for i in range(1, 5):
         make_entity(graph, f"e{i}", f"Entity {i}")
-    graph.merge_relation("e1", "e2", "r", "", 9, chunks[0].chunk_id)
-    graph.merge_relation("e2", "e3", "r", "", 2, chunks[0].chunk_id)
-    graph.merge_relation("e3", "e4", "r", "", 5, chunks[0].chunk_id)
+    merge_relation(graph, "e1", "e2", "r", "", 9, chunks[0].chunk_id)
+    merge_relation(graph, "e2", "e3", "r", "", 2, chunks[0].chunk_id)
+    merge_relation(graph, "e3", "e4", "r", "", 5, chunks[0].chunk_id)
     two = graph.neighborhood(["e1"], hops=2, limit=10)
     assert {(r.src_id, r.dst_id) for r in two} == {("e1", "e2"), ("e2", "e3")}
     assert two[0].weight == 9
@@ -295,8 +296,8 @@ def test_doc_chunks_rebuilds_records_from_the_graph(graph):
 def test_chunks_mentioning_keeps_existing_mentioning_chunks_in_order(graph):
     chunks = make_doc(graph, n=3)
     make_entity(graph, "e1", "Transformer")
-    graph.add_mentions(chunks[0].chunk_id, ["e1"])
-    graph.add_mentions(chunks[2].chunk_id, ["e1"])
+    add_mentions(graph, chunks[0].chunk_id, ["e1"])
+    add_mentions(graph, chunks[2].chunk_id, ["e1"])
     asked = [chunks[2].chunk_id, chunks[1].chunk_id, "gone:00000", chunks[0].chunk_id]
     views = graph.chunks_mentioning("e1", asked)
     assert [v.chunk_id for v in views] == [chunks[2].chunk_id, chunks[0].chunk_id]

@@ -1,8 +1,7 @@
-import filelock
 import pytest
 
 from mnogobase.config import Settings
-from mnogobase.database import database_target
+from mnogobase.database import LockBusyError, database_target
 from mnogobase.registry import STAGES, Registry, ingest_lock
 
 pytestmark = pytest.mark.integration
@@ -10,7 +9,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def reg(tmp_path):
-    r = Registry(database_target(Settings(), "state"))
+    r = Registry(database_target(Settings()))
     yield r
     r.close()
 
@@ -73,13 +72,10 @@ def test_extraction_cache_dirty_meta(reg):
     assert reg.dirty() == [] and reg.get_meta("embedder") is None
 
 
-def test_replace_meta_only_swaps_the_expected_value(reg):
-    assert reg.replace_meta("embedder", None, "a:1:tpl-x")  # значения ещё нет: устанавливаем
-    assert not reg.replace_meta("embedder", None, "b")  # тем временем значение появилось
-    assert not reg.replace_meta("embedder", "a:1", "a:1:tpl-y")  # не то значение, что прочитали
+def test_set_meta_if_absent_never_overwrites(reg):
+    assert reg.set_meta_if_absent("embedder", "a:1:tpl-x")  # значения ещё нет: устанавливаем
+    assert not reg.set_meta_if_absent("embedder", "b")  # тем временем значение появилось
     assert reg.get_meta("embedder") == "a:1:tpl-x"
-    assert reg.replace_meta("embedder", "a:1:tpl-x", "a:1:tpl-y")
-    assert reg.get_meta("embedder") == "a:1:tpl-y"
 
 
 def test_drop_file_removes_only_that_path(reg):
@@ -90,7 +86,7 @@ def test_drop_file_removes_only_that_path(reg):
 
 
 def test_ingest_lock_is_exclusive(tmp_path):
-    with ingest_lock(database_target(Settings())), pytest.raises(filelock.Timeout):
+    with ingest_lock(database_target(Settings())), pytest.raises(LockBusyError):
         ingest_lock(database_target(Settings())).acquire()
 
 

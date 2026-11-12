@@ -132,7 +132,6 @@ evaluation:
   strictness: 3
 
 database:                          # адрес PostgreSQL; пароль — POSTGRES_PASSWORD в .env
-  backend: postgresql
   host: localhost
   port: 5432
   name: mnogobase

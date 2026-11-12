@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-
 from mnogobase.config import LLMRate
-from mnogobase.database import DatabaseTarget, connect, initialize
+from mnogobase.database import DatabaseTarget, connection, initialize
 from mnogobase.llm.telemetry import CallEvent
 
 _SCHEMA = """
@@ -23,22 +21,14 @@ CREATE INDEX IF NOT EXISTS llm_usage_time ON llm_usage(created_at);
 class UsageStore:
     def __init__(self, target: DatabaseTarget):
         self.target = target
-        with self._connection() as db:
+        with connection(self.target) as db:
             initialize(db, _SCHEMA, "llm_usage")
-
-    @contextmanager
-    def _connection(self):
-        db = connect(self.target)
-        try:
-            yield db
-        finally:
-            db.close()
 
     def record(self, event: CallEvent, rate: LLMRate | None = None) -> None:
         """A local attempt ID is stable across start/result and persistence retries."""
         if not event.external:
             rate = None
-        with self._connection() as db, db:
+        with connection(self.target) as db, db:
             db.execute(
                 "INSERT INTO llm_usage(id,model,operation,created_at,job_id,external,status,"
                 "currency,input_rate,output_rate) VALUES(?,?,?,?,?,?,'started',?,?,?) "
@@ -72,7 +62,7 @@ class UsageStore:
 
     def tokens_since(self, since: float) -> int:
         """Токены (вход + выход) всех вызовов LLM начиная с `since`."""
-        with self._connection() as db:
+        with connection(self.target) as db:
             row = db.execute(
                 "SELECT COALESCE(SUM(COALESCE(tokens_in,0) + COALESCE(tokens_out,0)),0) "
                 "FROM llm_usage WHERE created_at>=?",
@@ -87,7 +77,7 @@ class UsageStore:
                 clauses.append(clause)
                 args.append(value)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with self._connection() as db:
+        with connection(self.target) as db:
             rows = db.execute(
                 "SELECT model,currency,external,COUNT(*) AS calls,"
                 "SUM(tokens_in) AS tokens_in,SUM(tokens_out) AS tokens_out,"

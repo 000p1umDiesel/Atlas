@@ -11,27 +11,33 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import lru_cache
-from uuid import uuid4
 
-from filelock import Timeout
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 from mnogobase.config import Settings
+from mnogobase.files import write_atomic
 from mnogobase.log import get_logger
 
 _log = get_logger(__name__)
-INTEGRITY_ERRORS = (IntegrityError,)
-OPERATIONAL_ERRORS = (OperationalError,)
 
 
 class DatabaseError(RuntimeError):
     """Безопасная ошибка: содержит контекст, но не DSN/пароль/SQL."""
+
+
+class LockBusyError(RuntimeError):
+    """Advisory lock `key` уже держит другой процесс (второй писатель, второй worker)."""
+
+    def __init__(self, key: str):
+        super().__init__(f"Lock {key!r} is held by another process")
+        self.key = key
 
 
 @dataclass(frozen=True)
@@ -48,11 +54,15 @@ class DatabaseTarget:
         return f"PostgreSQL schema {self.schema}"
 
 
-def database_target(settings: Settings, kind: str = "state") -> DatabaseTarget:
+def utc_timestamp() -> str:
+    """Метка времени для TEXT-колонок: ISO 8601 в UTC с микросекундами, чтобы строки
+    сортировались так же, как моменты времени."""
+    return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+def database_target(settings: Settings) -> DatabaseTarget:
     """Схема проекта `<prefix>_project_<project>`: в ней всё — registry, очередь,
-    загрузки, пользователи и учёт LLM. `kind` оставлен для читаемости вызовов."""
-    if kind not in {"state", "jobs", "uploads"}:
-        raise ValueError("Unknown database kind")
+    загрузки, пользователи и учёт LLM."""
     db = settings.database
     url = os.environ.get(db.url_env)
     if not url:
@@ -210,11 +220,17 @@ class PgConnection:
 
 
 def connect(target: DatabaseTarget, *, pooled: bool = True) -> PgConnection:
-    if not isinstance(target, DatabaseTarget):
-        raise DatabaseError(
-            "A PostgreSQL DatabaseTarget is required; file databases are unsupported"
-        )
     return PgConnection(target, pooled=pooled)
+
+
+@contextlib.contextmanager
+def connection(target: DatabaseTarget) -> Iterator[PgConnection]:
+    """Короткое соединение из пула на время блока `with`; закрывается и при ошибке."""
+    db = connect(target)
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def initialize(connection, script: str, component: str, migrations: Sequence[str] = ()):
@@ -269,10 +285,6 @@ class PgLock:
     def __init__(self, target: DatabaseTarget, key: str):
         self.target, self.key, self.connection = target, key, None
 
-    @property
-    def is_locked(self):
-        return self.connection is not None
-
     def acquire(self):
         connection = connect(self.target, pooled=False)
         try:
@@ -280,7 +292,7 @@ class PgLock:
                 "SELECT pg_try_advisory_lock(?)", (_lock_key(self.target, self.key),)
             ).fetchone()[0]
             if not acquired:
-                raise Timeout(self.key)
+                raise LockBusyError(self.key)
         except BaseException:
             connection.close()
             raise
@@ -322,15 +334,8 @@ def _project_identity(target: DatabaseTarget) -> dict:
 
 
 def mark_project(settings: Settings) -> None:
-    target = database_target(settings)
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    path = settings.data_dir / "postgresql-project.json"
-    temporary = path.with_suffix(f".{uuid4().hex}.tmp")
-    try:
-        temporary.write_text(json.dumps(_project_identity(target)), encoding="utf-8")
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    identity = _project_identity(database_target(settings))
+    write_atomic(settings.data_dir / "postgresql-project.json", json.dumps(identity))
 
 
 def project_exists(settings: Settings) -> bool:

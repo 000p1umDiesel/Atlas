@@ -1,25 +1,11 @@
-"""Durable manifests and JSONL with recovery of an interrupted final byte line."""
+"""Манифест эксперимента, последние записи JSONL и набор вопросов для оценки."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 from pathlib import Path
 
-
-def fingerprint(value) -> str:
-    body = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
-    return hashlib.sha256(body.encode()).hexdigest()
-
-
-def write_json(path: Path, value) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
-    )
-    tmp.replace(path)
+from mnogobase.files import fingerprint, read_jsonl, write_json
 
 
 def ensure_manifest(path: Path, config: dict) -> dict:
@@ -34,49 +20,6 @@ def ensure_manifest(path: Path, config: dict) -> dict:
     else:
         write_json(path, expected)
     return expected
-
-
-def read_jsonl(path: Path, *, recover_tail: bool = False) -> list[dict]:
-    if not path.exists():
-        return []
-    body = path.read_bytes()
-    lines = body.splitlines()
-    rows = []
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line.decode("utf-8"))
-            if not isinstance(row, dict):
-                raise ValueError("expected an object")
-        except (ValueError, TypeError) as exc:
-            if recover_tail and number == len(lines) and not body.endswith(b"\n"):
-                break  # оборванную строку исправит append_jsonl перед следующей записью
-            raise ValueError(f"{path}, line {number}: {exc}") from exc
-        rows.append(row)
-    return rows
-
-
-def append_jsonl(path: Path, row: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    has_tail = False
-    if path.exists() and path.stat().st_size:
-        with path.open("rb") as stream:
-            stream.seek(-1, os.SEEK_END)
-            has_tail = stream.read(1) != b"\n"
-    if has_tail:
-        # Исправляем только оборванную последнюю строку; остальные ошибки требуют проверки.
-        valid = read_jsonl(path, recover_tail=True)
-        tmp = path.with_suffix(".repair")
-        tmp.write_text(
-            "".join(json.dumps(r, ensure_ascii=False, allow_nan=False) + "\n" for r in valid),
-            encoding="utf-8",
-        )
-        tmp.replace(path)
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
 
 
 def latest_records(path: Path, keys: tuple[str, ...] = ("id",)) -> dict:
