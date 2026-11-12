@@ -9,7 +9,7 @@ from collections.abc import Callable
 from qdrant_client import models as qm
 
 from mnogobase.core.models import ChunkRecord
-from mnogobase.llm.client import Usage
+from mnogobase.llm.client import Usage, count_usage
 
 VOCAB = {
     "transformer": (
@@ -51,8 +51,7 @@ class FakeLLM:
         prompt = "\n".join(m["content"] for m in messages)
         self.calls.append((task, prompt))
         reply = self.handler(task, prompt)
-        self.usage.tokens_in += len(prompt) // 4
-        self.usage.tokens_out += len(reply) // 4
+        count_usage(self.usage, len(prompt) // 4, len(reply) // 4)
         return reply
 
     async def complete(self, messages, *, task: str) -> str:

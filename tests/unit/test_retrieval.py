@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -363,3 +364,30 @@ def test_build_retrievers_wires_every_mode():
     assert isinstance(retrievers["graph"], GraphRetriever)
     assert isinstance(retrievers["all"], CombinedRetriever)
     assert retrievers["wiki"]._graph is graph
+
+
+async def test_concurrent_answers_count_only_their_own_tokens():
+    """Параллельные вопросы на одном LLM-клиенте (как в API) не смешивают учёт токенов."""
+    from mnogobase.llm.client import Usage, count_usage
+
+    class SlowLLM:
+        usage = Usage()
+
+        def model_for(self, task):
+            return "slow"
+
+        async def complete(self, messages, *, task):
+            size = len(messages[-1]["content"])
+            await asyncio.sleep(0.01)  # второй вопрос успевает завершиться, пока ждёт первый
+            count_usage(self.usage, size, size)
+            return "Answer [1]"
+
+    llm = SlowLLM()
+    answerer = Answerer(llm, 1000, "en")
+    short = [ContextItem(kind="chunk", ref="a", text="short")]
+    long = [ContextItem(kind="chunk", ref="b", text="long " * 200)]
+    first, second = await asyncio.gather(
+        answerer.answer("q1", "rag", short), answerer.answer("q2", "rag", long)
+    )
+    assert first.tokens_in < second.tokens_in
+    assert first.tokens_in + second.tokens_in == llm.usage.tokens_in

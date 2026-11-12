@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypeVar
 
@@ -55,8 +57,37 @@ class StructuredOutputError(RuntimeError):
 
 @dataclass
 class Usage:
+    """Счётчик токенов: входные (prompt) и выходные (completion)."""
+
     tokens_in: int = 0
     tokens_out: int = 0
+
+
+# Открытые `usage_scope` текущей asyncio-задачи. ContextVar копируется в каждую задачу,
+# поэтому параллельные вопросы на одном клиенте (API) считают только свои вызовы.
+_USAGE_SCOPES: ContextVar[tuple[Usage, ...]] = ContextVar("llm_usage_scopes", default=())
+
+
+@contextmanager
+def usage_scope() -> Iterator[Usage]:
+    """Счётчик токенов всех вызовов LLM внутри блока `with` в текущей задаче.
+
+    Разница общего `client.usage` до и после вызова тут не годится: пока задача ждёт ответа,
+    тот же клиент успевает обслужить вызовы других задач."""
+    scope = Usage()
+    token = _USAGE_SCOPES.set((*_USAGE_SCOPES.get(), scope))
+    try:
+        yield scope
+    finally:
+        _USAGE_SCOPES.reset(token)
+
+
+def count_usage(total: Usage, tokens_in: int, tokens_out: int) -> None:
+    """Добавляет токены одного вызова LLM к общему счётчику клиента `total` и ко всем
+    открытым `usage_scope` текущей задачи. Вызывает каждая реализация `LLMClient`."""
+    for usage in (total, *_USAGE_SCOPES.get()):
+        usage.tokens_in += tokens_in
+        usage.tokens_out += tokens_out
 
 
 class LLMClient(Protocol):
@@ -187,8 +218,7 @@ class OpenAICompatLLM:
         usage = response.usage
         tokens_in = usage.prompt_tokens if usage else 0
         tokens_out = usage.completion_tokens if usage else 0
-        self.usage.tokens_in += tokens_in
-        self.usage.tokens_out += tokens_out
+        count_usage(self.usage, tokens_in, tokens_out)
         self._log.info(
             "llm_call",
             task=task,

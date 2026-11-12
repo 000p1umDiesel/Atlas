@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mnogobase.core.config import LANGUAGE_NAMES
 from mnogobase.core.models import Answer, ContextItem, Source
-from mnogobase.llm.client import LLMClient
+from mnogobase.llm.client import LLMClient, usage_scope
 from mnogobase.llm.templates import render_messages
 from mnogobase.retrieval.base import estimate_tokens
 
@@ -76,11 +76,11 @@ class Answerer:
                 text=NO_SOURCES,
                 latency_ms=int((time.perf_counter() - start) * 1000),
             )
-        before_in, before_out = self._llm.usage.tokens_in, self._llm.usage.tokens_out
         messages = render_messages(
             "answer", question=question, context=context, language=self._language
         )
-        text = await self._llm.complete(messages, task="answer")
+        with usage_scope() as used:  # только этот вызов, а не параллельные вопросы
+            text = await self._llm.complete(messages, task="answer")
         cited = {int(n) for n in _CITED.findall(text)}
         for source in sources:
             source.cited = source.n in cited
@@ -91,7 +91,7 @@ class Answerer:
             sources=sources,
             contexts=blocks,
             latency_ms=int((time.perf_counter() - start) * 1000),
-            tokens_in=self._llm.usage.tokens_in - before_in,
-            tokens_out=self._llm.usage.tokens_out - before_out,
+            tokens_in=used.tokens_in,
+            tokens_out=used.tokens_out,
             context_tokens=context_tokens,
         )
