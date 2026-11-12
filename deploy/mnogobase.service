@@ -1,5 +1,7 @@
 # Запуск и остановка всего стека compose. Включением управляет host-mode
 # (режимы Mnogobase ↔ Minecraft), поэтому юнит не нужно `enable`.
+# Docker сам поднимает контейнеры с restart: on-failure после перезагрузки или сбоя питания;
+# такие «бесхозные» контейнеры останавливает host-mode перед выбором режима.
 [Unit]
 Description=mnogobase (docker compose)
 Requires=docker.service
@@ -12,7 +14,9 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/srv/mnogobase/app
 ExecStart=/usr/bin/docker compose up -d --wait --wait-timeout 1800
-ExecStop=/usr/bin/docker compose stop --timeout 120
+# ExecStopPost, а не ExecStop: срабатывает и после неудачного запуска, иначе контейнеры
+# остаются работать без службы, и host-mode отказывается переключать режим.
+ExecStopPost=/usr/bin/docker compose stop --timeout 120
 TimeoutStartSec=35min
 TimeoutStopSec=20min
 
