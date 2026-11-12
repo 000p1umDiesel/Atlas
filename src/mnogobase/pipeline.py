@@ -618,6 +618,7 @@ class Pipeline:
             self._log.warning("extract_partial", failed=failed, total=len(chunks))
 
     async def _build_graph(self, doc_id: str, progress: ProgressSink) -> None:
+        self._resolver.forget()
         _doc, chunks = self.load_chunks(doc_id)
         # стадия extract могла отработать с другой моделью / версией промпта (их сменили
         # перед повтором этой стадии): её результаты всё равно — знания этого документа

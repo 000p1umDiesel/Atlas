@@ -45,8 +45,13 @@ class EntityResolver:
         self._embedder = embedder
         self._llm = llm
         self._s = settings
-        self._resolved: dict[str, str] = {}  # извлечённый id -> канонический id (на процесс)
+        self._resolved: dict[str, str] = {}  # извлечённый id -> канонический id (на документ)
         self._log = get_logger(__name__)
+
+    def forget(self) -> None:
+        """Сбрасывает кэш сопоставлений: в долгоживущем worker сущности между задачами
+        удаляются и пересоздаются, и старое сопоставление могло бы увести не туда."""
+        self._resolved.clear()
 
     def _vector(self, record: EntityRecord | ExtractedEntity) -> list[float]:
         return self._embedder.embed_documents([entity_embed_input(record)])[0]

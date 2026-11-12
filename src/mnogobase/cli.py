@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Annotated
 
 import filelock
+import httpx
+import openai
 import typer
 import yaml
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
@@ -47,7 +49,8 @@ from mnogobase.evaluation.cli import app as evaluation_app
 from mnogobase.extraction.extractor import TYPES_CHANGED, stale_entity_types
 from mnogobase.graph_analysis import AnalysisError
 from mnogobase.graph_analysis import analyze as analyze_graph
-from mnogobase.log import configure_logging, new_run_id
+from mnogobase.llm.client import StructuredOutputError
+from mnogobase.log import configure_logging, get_logger, new_run_id, safe_error
 from mnogobase.maintenance import ReindexError
 from mnogobase.maintenance import reindex as do_reindex
 from mnogobase.maintenance import reset as do_reset
@@ -565,7 +568,7 @@ def wiki_build(
     rebuild_all: Annotated[bool, typer.Option("--all", help="Regenerate every page.")] = False,
 ) -> None:
     """Перегенерировать страницы wiki для сущностей с новыми упоминаниями (или все с --all)."""
-    settings = _settings()
+    settings = _settings(project=True)
     _preflight(settings)
     lock = _lock(settings)
     try:
@@ -619,6 +622,16 @@ def _answer_setup(
     return retrievers, answerer, translator
 
 
+@contextmanager
+def _model_errors():
+    """Сбой LLM или эмбеддера при ответе: короткое сообщение и exit 2 вместо traceback."""
+    try:
+        yield
+    except (openai.OpenAIError, httpx.HTTPError, StructuredOutputError) as exc:
+        get_logger(__name__).error("answer_failed", error=safe_error(exc))
+        _fail_cleanly(RuntimeError(f"Model call failed: {safe_error(exc)}"))
+
+
 @app.command()
 def ask(
     question: Annotated[str, typer.Argument(help="Question to answer from the knowledge base.")],
@@ -631,16 +644,17 @@ def ask(
     application = build_app(settings)
     try:
         retrievers, answerer, translator = _answer_setup(application)
-        answer = asyncio.run(
-            run_mode(
-                question,
-                mode.value,
-                retrievers[mode.value],
-                answerer,
-                k or settings.retrieval.k,
-                translator,
+        with _model_errors():
+            answer = asyncio.run(
+                run_mode(
+                    question,
+                    mode.value,
+                    retrievers[mode.value],
+                    answerer,
+                    k or settings.retrieval.k,
+                    translator,
+                )
             )
-        )
     finally:
         application.close()
     _print_answer(answer)
@@ -657,17 +671,18 @@ def compare(
     application = build_app(settings)
     try:
         retrievers, answerer, translator = _answer_setup(application)
-        answers = asyncio.run(
-            do_compare(
-                question,
-                retrievers,
-                answerer,
-                k or settings.retrieval.k,
-                settings.runs_dir,
-                config_hash(settings),
-                translator,
+        with _model_errors():
+            answers = asyncio.run(
+                do_compare(
+                    question,
+                    retrievers,
+                    answerer,
+                    k or settings.retrieval.k,
+                    settings.runs_dir,
+                    config_hash(settings),
+                    translator,
+                )
             )
-        )
     finally:
         application.close()
     table = Table("mode", "answer", "sources (cited)", "latency ms", "tokens in/out", "context")
@@ -687,7 +702,7 @@ def compare(
 @app.command()
 def reindex() -> None:
     """Пересчитать все векторы после смены embedder (граф и wiki сохраняются)."""
-    settings = _settings()
+    settings = _settings(project=True)
     # reindex пересоздаёт коллекции: смена размерности — ровно то, для чего он нужен
     _preflight(settings, REINDEX_CHECKS, check_dim=False)
     lock = _lock(settings)

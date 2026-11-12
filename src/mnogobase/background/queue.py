@@ -26,6 +26,14 @@ class Job:
     started_at: float | None = None
 
 
+_JOB_FIELDS = tuple(Job.__dataclass_fields__)
+
+
+def _job(row) -> Job:
+    """Job по именам колонок, а не по их порядку в `SELECT *` (он зависит от миграций)."""
+    return Job(**{name: row[name] for name in _JOB_FIELDS})
+
+
 class JobQueue:
     def __init__(self, path: DatabaseTarget, *, clock=time.time):
         self.target = path
@@ -139,7 +147,7 @@ class JobQueue:
                     (row[1],),
                 )
             self._db.execute("COMMIT")
-            return Job(*row) if row else None
+            return _job(row) if row else None
         except BaseException:
             self._db.execute("ROLLBACK")
             raise
@@ -273,11 +281,11 @@ class JobQueue:
 
     def get(self, job_id: int) -> Job | None:
         row = self._db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        return Job(*row) if row else None
+        return _job(row) if row else None
 
     def jobs(self, limit: int = 100, offset: int = 0) -> list[Job]:
         return [
-            Job(*r)
+            _job(r)
             for r in self._db.execute(
                 "SELECT * FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
             )

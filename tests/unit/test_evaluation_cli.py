@@ -160,3 +160,50 @@ def test_benchmark_runs_and_resumes_whole_workflow_offline(offline, tmp_path, mo
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "configuration changed" in result.output
+
+
+def test_benchmark_scores_the_answers_that_succeeded(offline, tmp_path, monkeypatch):
+    Registry(database_target(Settings(), "state")).close()
+    mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
+    monkeypatch.setattr(cli, "_preflight", lambda *a: None)
+    monkeypatch.setattr(cli, "build_app", lambda *a: SimpleNamespace(close=lambda: None))
+    scored = []
+
+    class Retriever:
+        def __init__(self, broken=False):
+            self.broken = broken
+
+        def retrieve(self, query, k, alt_queries=()):
+            if self.broken:
+                raise RuntimeError("graph is down")
+            return [ContextItem(kind="chunk", ref="c", text="Answer")]
+
+    class Judge:
+        def __init__(self, *a):
+            pass
+
+        def metrics(self, names):
+            class Metric:
+                async def ascore(self, **kwargs):
+                    scored.append(1)
+                    return SimpleNamespace(value=1.0)
+
+            return {name: Metric() for name in names}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(core, "RagasJudge", Judge)
+    llm = FakeLLM(lambda *a: "Answer [1]")
+    retrievers = {"rag": Retriever(), "wiki": Retriever(), "graph": Retriever(broken=True)}
+    monkeypatch.setattr(cli, "_answer_setup", lambda app: (retrievers, Answerer(llm, 1000), None))
+    result = runner.invoke(cli.app, ["eval", "benchmark", str(offline), "--output", "run"])
+    assert result.exit_code == 1, result.output  # прогон неполный
+    assert scored and (tmp_path / "run/details.csv").is_file()  # но оценка выполнена
+
+
+def test_latest_records_reports_a_record_without_its_key(tmp_path):
+    path = tmp_path / "rows.jsonl"
+    path.write_text('{"id": "a"}\n{"value": 1}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="record 2: no id"):
+        core.latest_records(path)

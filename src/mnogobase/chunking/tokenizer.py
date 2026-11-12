@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
@@ -8,7 +9,7 @@ from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTok
 from pydantic import ConfigDict, PrivateAttr
 
 from mnogobase.config import ChunkingSettings, EmbedderSettings
-from mnogobase.http import auth_headers, server_root
+from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry, server_root
 
 AUTO = "auto"
 _HF_HINT = "set chunking.tokenizer to the model's Hugging Face repo"
@@ -28,19 +29,28 @@ class ServerTokenizer(BaseTokenizer):
 
     client: httpx.Client  # base_url — корень сервера, без /v1
     max_tokens: int
+    retry_wait: Any = DEFAULT_RETRY_WAIT  # пауза между повторами при сбоях сети и 5xx
     _cache: dict[str, int] = PrivateAttr(default_factory=dict)
 
     def count_tokens(self, text: str) -> int:
         if text not in self._cache:
             if len(self._cache) >= _CACHE_SIZE:
                 self._cache.clear()
-            response = self.client.post("/tokenize", json={"content": text, "add_special": False})
-            response.raise_for_status()
+            response = post_json_with_retry(
+                self.client,
+                "/tokenize",
+                {"content": text, "add_special": False},
+                attempts=3,
+                wait=self.retry_wait,
+            )
             self._cache[text] = len(response.json()["tokens"])
         return self._cache[text]
 
     def get_max_tokens(self) -> int:
         return self.max_tokens
+
+    def close(self) -> None:
+        self.client.close()
 
     def get_tokenizer(self) -> Callable[[str], int]:
         # HybridChunker отдаёт его semchunk для дробления длинных текстов: тот принимает

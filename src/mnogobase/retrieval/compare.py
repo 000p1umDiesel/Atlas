@@ -7,10 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from mnogobase.config import Settings
+from mnogobase.files import rotate_if_large
 from mnogobase.models import Answer
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.translate import QueryTranslator
+
+COMPARE_MAX_BYTES = 20 * 1024 * 1024
 
 
 def config_hash(settings: Settings) -> str:
@@ -73,7 +76,9 @@ async def compare(
     ]
     runs_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(UTC).isoformat()
-    with (runs_dir / "compare.jsonl").open("a", encoding="utf-8") as fh:
+    log = runs_dir / "compare.jsonl"
+    rotate_if_large(log, COMPARE_MAX_BYTES)  # прошлые строки — в compare.1.jsonl
+    with log.open("a", encoding="utf-8") as fh:
         for answer in answers:
             fh.write(json.dumps(_row(answer, ts, config_hash), ensure_ascii=False) + "\n")
     return answers

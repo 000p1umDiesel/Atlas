@@ -60,6 +60,15 @@ def test_registry_migrates_file_size_to_bigint(pg_settings):
         db.close()
 
 
+def test_lock_release_never_hides_the_original_error(pg_settings):
+    lock = database_lock(pg_settings, "release-test")
+    with pytest.raises(ValueError, match="original"), lock:
+        lock.connection.raw.close()  # соединение оборвалось: unlock не выполнится
+        raise ValueError("original")
+    with database_lock(pg_settings, "release-test"):  # закрытое соединение отпустило lock
+        pass
+
+
 def test_postgresql_service_sessions_and_private_chats(pg_settings):
     from mnogobase.service.errors import ServiceError
     from mnogobase.service.store import ServiceStore

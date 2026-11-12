@@ -81,7 +81,10 @@ def append_jsonl(path: Path, row: dict) -> None:
 
 def latest_records(path: Path, keys: tuple[str, ...] = ("id",)) -> dict:
     result = {}
-    for row in read_jsonl(path, recover_tail=True):
+    for number, row in enumerate(read_jsonl(path, recover_tail=True), 1):
+        missing = [k for k in keys if k not in row]
+        if missing:
+            raise ValueError(f"{path}, record {number}: no {', '.join(missing)}")
         key = tuple(row[k] for k in keys)
         result[key[0] if len(key) == 1 else key] = row
     return result

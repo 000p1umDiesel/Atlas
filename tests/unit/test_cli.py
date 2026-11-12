@@ -190,6 +190,36 @@ def test_status_outside_a_project_creates_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / ".mnogobase").exists()
 
 
+@pytest.mark.parametrize("args", [["wiki", "build"], ["reindex"]])
+def test_wiki_build_and_reindex_refuse_outside_a_project(tmp_path, monkeypatch, args):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2, result.output
+    assert "No mnogobase project here" in result.output
+    assert not (tmp_path / ".mnogobase").exists() and not (tmp_path / "logs").exists()
+
+
+@pytest.mark.parametrize("args", [["ask", "what?"], ["compare", "what?"]])
+def test_model_failure_while_answering_is_a_clean_error(tmp_path, monkeypatch, args):
+    import httpx
+
+    monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
+    monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(cli, "_answer_setup", lambda app: ({"all": None}, None, None))
+
+    async def down(*args, **kwargs):
+        raise httpx.ConnectError("connection refused to http://user:pw@llm/v1")
+
+    monkeypatch.setattr(cli, "run_mode", down)
+    monkeypatch.setattr(cli, "do_compare", down)
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 2, result.output
+    assert "Model call failed: ConnectError" in result.output
+    assert "Traceback" not in result.output and "pw@" not in result.output
+
+
 @pytest.mark.parametrize("args", [["ask", "what is attention?"], ["compare", "what?"]])
 def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)  # здесь нет маркера проекта PostgreSQL
@@ -337,6 +367,7 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args, extra)
 
 def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
     asked: list[tuple[str, ...]] = []
 
     def failing(settings, only=None, **kwargs):
@@ -354,6 +385,7 @@ def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
 
 def test_wiki_build_finishes_pending_removals_first(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
     calls: list[str] = []
 
     async def build(**kwargs):
@@ -456,6 +488,7 @@ def test_ingest_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monkeypa
 
 def test_wiki_build_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    make_project(tmp_path)
 
     def finish():
         raise STUCK

@@ -45,8 +45,11 @@ class App:
     _owned_clients: tuple[object, ...] = field(default=(), repr=False)
 
     def close(self) -> None:
-        self.graph.close()
-        self.registry.close()
+        try:
+            self.chunker.close()
+        finally:
+            self.graph.close()
+            self.registry.close()
 
     async def aclose(self) -> None:
         """Закрывает ресурсы операции, сохраняя внедрённые клиентские зависимости."""

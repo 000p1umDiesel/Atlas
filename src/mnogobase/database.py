@@ -6,6 +6,7 @@ SQL хранилищ использует bind-параметры DB-API; SQLAlc
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -18,11 +19,13 @@ from uuid import uuid4
 from filelock import Timeout
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 from mnogobase.config import Settings
+from mnogobase.log import get_logger
 
+_log = get_logger(__name__)
 INTEGRITY_ERRORS = (IntegrityError,)
 OPERATIONAL_ERRORS = (OperationalError,)
 
@@ -285,14 +288,19 @@ class PgLock:
         return self
 
     def release(self):
+        """Не бросает ошибок БД: закрытие соединения само отпускает session-level lock, а
+        ошибка здесь подменила бы исходное исключение блока `with`."""
         if self.connection is not None:
             connection, self.connection = self.connection, None
             try:
                 connection.execute(
                     "SELECT pg_advisory_unlock(?)", (_lock_key(self.target, self.key),)
                 )
+            except (SQLAlchemyError, DatabaseError) as exc:
+                _log.warning("lock_release_failed", key=self.key, error_type=type(exc).__name__)
             finally:
-                connection.close()
+                with contextlib.suppress(SQLAlchemyError, DatabaseError):
+                    connection.close()
 
     def __enter__(self):
         return self.acquire()

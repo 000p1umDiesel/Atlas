@@ -25,6 +25,13 @@ class Chunker:
             self._chunker = HybridChunker(tokenizer=self._tokenizer, merge_peers=True)
         return self._chunker, self._tokenizer
 
+    def close(self) -> None:
+        """Закрывает HTTP-клиент токенизатора сервера эмбеддера, если он создавался."""
+        close = getattr(self._tokenizer, "close", None)
+        if close is not None:
+            close()
+        self._chunker = self._tokenizer = None
+
     def chunk(self, parsed: ParsedDocument, doc_id: str, path: str) -> list[ChunkRecord]:
         chunker, tokenizer = self._get()
         records: list[ChunkRecord] = []

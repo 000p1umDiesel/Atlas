@@ -233,8 +233,18 @@ def benchmark(
     ] = False,
 ) -> None:
     """Run answers, Ragas scoring and reports; rerun the same command to resume."""
-    run(dataset, output, mode=mode, limit=limit, k=k)
+    # Неудавшиеся ответы не останавливают оценку остальных: их повторит следующий запуск,
+    # а код выхода 1 сообщит о неполном прогоне.
+    partial = False
+    try:
+        run(dataset, output, mode=mode, limit=limit, k=k)
+    except typer.Exit as exc:
+        if exc.exit_code != 1:
+            raise
+        partial = True
     if skip_score:
         report_command(output)
     else:
         score(output)
+    if partial:
+        raise typer.Exit(1)

@@ -9,6 +9,7 @@ from typing import NamedTuple
 
 import yaml
 
+from mnogobase.files import rotate_if_large
 from mnogobase.models import EntityRecord, PageIndexRow, RelationView
 from mnogobase.wiki.validate import strip_reserved_sections
 
@@ -138,6 +139,9 @@ def render_index(rows: list[PageIndexRow]) -> str:
     return "\n".join(lines)
 
 
+LOG_MAX_BYTES = 1024 * 1024
+
+
 def append_log(
     path: Path,
     run_id: str,
@@ -150,6 +154,7 @@ def append_log(
     """Дописывает в wiki-лог одну запись о запуске (обработанные документы, изменения страниц)."""
     now = (now or datetime.now(UTC)).astimezone(UTC)
     path.parent.mkdir(parents=True, exist_ok=True)
+    rotate_if_large(path, LOG_MAX_BYTES)  # прошлые записи — в log.1.md
     if not path.exists():
         path.write_text("# Wiki Log\n", encoding="utf-8")
     lines = ["", f"## {now:%Y-%m-%d %H:%M:%S} UTC · run {run_id or '-'}"]

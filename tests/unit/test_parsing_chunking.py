@@ -25,6 +25,7 @@ from docling_core.types.doc import (
 from docling_core.types.doc.labels import PictureClassificationLabel
 from docx import Document
 from PIL import Image
+from tenacity import wait_none
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
@@ -180,6 +181,19 @@ def test_chunker_splits_long_text_with_a_server_tokenizer(tmp_path, monkeypatch)
     chunks = Chunker(ChunkingSettings(max_tokens=16), EmbedderSettings()).chunk(parsed, DOC, "/x")
     assert len(chunks) > 5
     assert all(0 < c.n_tokens <= 16 for c in chunks)
+
+
+def test_server_tokenizer_retries_server_errors_and_closes_its_client():
+    replies = [httpx.Response(503), httpx.Response(200, json={"tokens": [1, 2, 3]})]
+    client = httpx.Client(
+        base_url="http://llama:8001", transport=httpx.MockTransport(lambda r: replies.pop(0))
+    )
+    tokenizer = ServerTokenizer(client=client, max_tokens=16, retry_wait=wait_none())
+    assert tokenizer.count_tokens("one two three") == 3 and replies == []
+    chunker = Chunker(ChunkingSettings(), EmbedderSettings())
+    chunker._tokenizer = tokenizer
+    chunker.close()
+    assert client.is_closed
 
 
 VISION = VisionSettings(enabled=True, base_url="http://vl:8003/v1", model="vl", skip=["logo"])
