@@ -247,6 +247,7 @@ class PgConnection:
     def __init__(self, target: DatabaseTarget, *, pooled: bool = True):
         self.target = target
         self.in_transaction = False
+        self._opened: list[bool] = []  # для каждого вложенного `with`: открыл ли он транзакцию
         self._pooled = pooled
         self._open()
 
@@ -350,15 +351,18 @@ class PgConnection:
     def __enter__(self):
         """`with connection:` — транзакция: BEGIN на входе, если она ещё не открыта.
 
-        Вложенный блок не открывает новую транзакцию, но на выходе всё равно выполнит
-        COMMIT/ROLLBACK, завершив и внешнюю."""
-        if not self.in_transaction:
+        Вложенный блок (транзакция уже открыта) становится её частью: завершает её только
+        тот блок, который её начал."""
+        self._opened.append(not self.in_transaction)
+        if self._opened[-1]:
             self.execute("BEGIN")
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """COMMIT при успехе, ROLLBACK при исключении; исключение пробрасывается дальше."""
-        self.execute("ROLLBACK" if exc_type else "COMMIT")
+        """COMMIT при успехе, ROLLBACK при исключении — только во внешнем блоке;
+        исключение пробрасывается дальше."""
+        if self._opened.pop():
+            self.execute("ROLLBACK" if exc_type else "COMMIT")
 
 
 def connect(target: DatabaseTarget, *, pooled: bool = True) -> PgConnection:

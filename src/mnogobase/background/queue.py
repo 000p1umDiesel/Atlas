@@ -434,6 +434,17 @@ class JobQueue:
             )
         ]
 
+    def find(self, path: Path, fingerprint: str) -> Job | None:
+        """Задача для пути и версии источника (пара уникальна), если она есть."""
+        row = self._db.execute(
+            "SELECT * FROM jobs WHERE path=? AND fingerprint=?", (str(path.resolve()), fingerprint)
+        ).fetchone()
+        return _job(row) if row else None
+
+    def running(self) -> list[Job]:
+        """Все выполняемые сейчас задачи (для статуса; их не больше числа worker'ов)."""
+        return [_job(r) for r in self._db.execute("SELECT * FROM jobs WHERE status='running'")]
+
     def counts(self) -> dict[str, int]:
         """Число задач по статусам: `{"pending": 3, "done": 10, ...}`; нулевых нет."""
         return dict(self._db.execute("SELECT status,COUNT(*) FROM jobs GROUP BY status"))

@@ -307,3 +307,17 @@ def test_long_lived_connection_recovers_after_disconnect(pg_settings, tmp_path):
         assert q.get(job_id).progress == ""
     finally:
         q.close()
+
+
+def test_nested_transaction_block_does_not_commit_the_outer_one(pg_settings):
+    from mnogobase.core.database import connection
+
+    target = database_target(pg_settings)
+    with connection(target) as db:
+        db.execute(f'CREATE SCHEMA IF NOT EXISTS "{target.schema}"')
+        db.execute("CREATE TABLE IF NOT EXISTS nested(x INTEGER)")
+        with pytest.raises(RuntimeError), db:
+            with db:  # вложенный блок не завершает внешнюю транзакцию
+                db.execute("INSERT INTO nested VALUES (1)")
+            raise RuntimeError("outer fails")
+        assert db.execute("SELECT count(*) FROM nested").fetchone()[0] == 0

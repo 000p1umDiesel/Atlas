@@ -186,10 +186,11 @@ class QdrantStore:
         return vectors[DENSE].size
 
     def drop_collections(self) -> None:
-        """Удаляет все три коллекции (для `reset` и `reindex`); без повторов при сбоях сети."""
+        """Удаляет все три коллекции (для `reset` и `reindex`), с теми же повторами при
+        транспортных сбоях, что и остальные вызовы Qdrant."""
         for name in (self.chunks, self.entities, self.wiki):
-            if self.client.collection_exists(name):
-                self.client.delete_collection(name)
+            if self._call(self.client.collection_exists, name):
+                self._call(self.client.delete_collection, name)
 
     def _upsert(self, name: str, points: list[qm.PointStruct], batch: int = 256) -> None:
         """Upsert точек пачками по `batch`; `wait=True` — вызов возвращается после того, как

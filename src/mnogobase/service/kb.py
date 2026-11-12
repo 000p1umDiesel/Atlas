@@ -68,7 +68,7 @@ from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import NO_SOURCES, Answerer
 from mnogobase.retrieval.compare import run_mode
 from mnogobase.retrieval.translate import QueryTranslator
-from mnogobase.service.errors import ServiceError, check_pagination
+from mnogobase.service.errors import MAX_QUESTION_CHARS, ServiceError, check_pagination
 from mnogobase.service.observability import UsageStore
 from mnogobase.service.store import ServiceStore
 
@@ -118,9 +118,9 @@ def _mode(mode: str) -> None:
 
 
 def _question(question: str) -> str:
-    """Вопрос без пробелов по краям; 422, если он пустой или длиннее 20000 символов."""
-    if not question.strip() or len(question) > 20000:
-        raise ServiceError(422, "Question must contain 1–20000 characters")
+    """Вопрос без пробелов по краям; 422, если он пустой или длиннее `MAX_QUESTION_CHARS`."""
+    if not question.strip() or len(question) > MAX_QUESTION_CHARS:
+        raise ServiceError(422, f"Question must contain 1–{MAX_QUESTION_CHARS} characters")
     return question.strip()
 
 
@@ -323,18 +323,13 @@ class KnowledgeBase:
         # записано; повторная загрузка допишет его, если прервалось раньше.
         self.uploads.add(doc_id, filename, path)
         with self._queue() as queue:
-            resolved = str(path.resolve())
-            existing = next(
-                (
-                    j
-                    for j in queue.jobs(100000)
-                    if j.path == resolved
-                    and j.fingerprint == doc_id
-                    and j.status not in ("failed", "superseded")
-                ),
-                None,
-            )
-            if existing is not None and queue.is_current(existing) and path.is_file():
+            existing = queue.find(path, doc_id)
+            if (
+                existing is not None
+                and existing.status not in ("failed", "superseded")
+                and queue.is_current(existing)
+                and path.is_file()
+            ):
                 return _job(existing)
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -680,10 +675,11 @@ class KnowledgeBase:
         check_pagination(limit, 0)
 
         async def run(app: App) -> list[dict]:
-            return [
-                app.graph.get_entity(eid).model_dump()
-                for eid, _ in app.graph.fulltext_entities(query, limit)
-            ]
+            found = (
+                app.graph.get_entity(eid) for eid, _ in app.graph.fulltext_entities(query, limit)
+            )
+            # сущность могла исчезнуть между двумя запросами (параллельное удаление документа)
+            return [entity.model_dump() for entity in found if entity is not None]
 
         return await self._with_app(run, "Graph unavailable")
 
@@ -700,7 +696,8 @@ class KnowledgeBase:
                 raise ServiceError(404, "Entity not found")
             relations = app.graph.neighborhood([entity_id], depth, limit)
             ids = {entity_id} | {r.src_id for r in relations} | {r.dst_id for r in relations}
-            nodes = [app.graph.get_entity(eid).model_dump() for eid in sorted(ids)]
+            found = (app.graph.get_entity(eid) for eid in sorted(ids))
+            nodes = [node.model_dump() for node in found if node is not None]
             return {"nodes": nodes, "relations": [r.model_dump() for r in relations]}
 
         return await self._with_app(run, "Graph unavailable")
@@ -714,7 +711,7 @@ class KnowledgeBase:
         with self._queue() as queue:
             counts = queue.counts()
             heartbeat = queue.last_heartbeat()
-            running = [_job(j) for j in queue.jobs(1000) if j.status == "running"]
+            running = [_job(j) for j in queue.running()]
         day = _day_start(now)
         month = datetime.fromtimestamp(day, UTC).replace(day=1).timestamp()
         return {

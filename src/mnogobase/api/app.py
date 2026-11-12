@@ -54,7 +54,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mnogobase.core.config import Settings, load_settings
-from mnogobase.service.errors import ServiceError
+from mnogobase.service.errors import MAX_QUESTION_CHARS, ServiceError
 
 # Пагинация списков: страница до 200 элементов.
 Limit = Annotated[int, Query(ge=1, le=200)]
@@ -73,7 +73,7 @@ class Login(BaseModel):
 class Question(BaseModel):
     """Тело `/api/ask` и сообщения диалога: вопрос и режим поиска."""
 
-    question: str = Field(min_length=1, max_length=16000)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     mode: Mode = "rag"
 
 

@@ -19,6 +19,11 @@ class ServiceError(Exception):
         super().__init__(detail)
 
 
+# Один предел длины вопроса для модели запроса API и для ядра (`KnowledgeBase`): 16000
+# символов кириллицы — около 32 КиБ, это укладывается в предел тела запроса API (64 КиБ).
+MAX_QUESTION_CHARS = 16000
+
+
 def check_pagination(limit: int, offset: int) -> None:
     """Общая проверка `limit` / `offset` для списков API и хранилища (422 при ошибке)."""
     if type(limit) is not int or type(offset) is not int or not 1 <= limit <= 1000 or offset < 0:

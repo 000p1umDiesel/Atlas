@@ -114,7 +114,7 @@ class ServiceStore:
             conn.close()
 
     @contextmanager
-    def _connection(self, *, write: bool = False) -> Iterator[PgConnection]:
+    def _connection(self) -> Iterator[PgConnection]:
         """Соединение с транзакцией на время блока: COMMIT при успехе, ROLLBACK при ошибке.
 
         Конфликт блокировок в PostgreSQL — истёк `lock_timeout` (55P03), взаимоблокировка
@@ -122,8 +122,6 @@ class ServiceStore:
         повторить запрос; прочие ошибки базы пробрасываются."""
         conn = connect(self.target)
         try:
-            if write:
-                conn.execute("BEGIN")
             with conn:
                 yield conn
         except OperationalError as exc:
@@ -166,7 +164,7 @@ class ServiceStore:
         user = {"id": uuid.uuid4().hex, "username": username}
         password_hash = self._hash(password)
         try:
-            with self._connection(write=True) as conn:
+            with self._connection() as conn:
                 conn.execute(
                     "INSERT INTO users(id, username, password_hash) VALUES(?, ?, ?)",
                     (user["id"], username, password_hash),
@@ -191,7 +189,7 @@ class ServiceStore:
         400 — короткий пароль, 404 — нет пользователя, 429 — заняты слоты argon2."""
         _check_password(password)
         password_hash = self._hash(password)
-        with self._connection(write=True) as conn:
+        with self._connection() as conn:
             user_id = self._user_id(conn, username)
             conn.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
             conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
@@ -199,7 +197,7 @@ class ServiceStore:
     def set_active(self, username: str, active: bool) -> None:
         """Включает или отключает пользователя; при отключении все его сессии отзываются.
         404 — нет пользователя."""
-        with self._connection(write=True) as conn:
+        with self._connection() as conn:
             user_id = self._user_id(conn, username)
             conn.execute("UPDATE users SET active=? WHERE id=?", (int(active), user_id))
             if not active:
@@ -246,7 +244,7 @@ class ServiceStore:
             )
             raise ServiceError(401, "Invalid username or password") from None
         token = secrets.token_urlsafe(32)
-        with self._connection(write=True) as conn:
+        with self._connection() as conn:
             # Пользователя могли отключить, пока проверялся пароль: тогда тоже отказ.
             if not conn.execute(
                 "SELECT id FROM users WHERE id=? AND active=1 FOR UPDATE",
@@ -275,7 +273,7 @@ class ServiceStore:
 
     def logout(self, token: str) -> None:
         """Отзывает сессию этого токена (остальные сессии пользователя остаются)."""
-        with self._connection(write=True) as conn:
+        with self._connection() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash=?", (_token_hash(token),))
 
     # ---- диалоги ----
@@ -297,7 +295,7 @@ class ServiceStore:
             "title": title,
             "created_at": utc_timestamp(),
         }
-        with self._connection(write=True) as conn:
+        with self._connection() as conn:
             conn.execute(
                 "INSERT INTO conversations(id, user_id, title, created_at) "
                 "VALUES(:id, :user_id, :title, :created_at)",
@@ -399,7 +397,7 @@ class ServiceStore:
             "query": query,
             "created_at": utc_timestamp(),
         }
-        with self._connection(write=True) as conn:
+        with self._connection() as conn:
             self._conversation(conn, user_id, conversation_id)
             conn.execute(
                 "INSERT INTO messages(id, conversation_id, user_id, role, content, mode, "

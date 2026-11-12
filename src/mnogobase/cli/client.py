@@ -21,6 +21,7 @@ from typing import Annotated
 from urllib.parse import quote, urlsplit
 
 import typer
+import yaml
 
 from mnogobase.cli import common
 from mnogobase.service.client import DEFAULT_CREDENTIALS, Client, Credentials
@@ -33,7 +34,7 @@ def _default_api_url() -> str:
     и без config.yaml."""
     try:
         return common.load_settings(common.state.get("config")).service.api_url
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, yaml.YAMLError) as exc:  # нет файла, битый YAML, схема
         raise typer.BadParameter("Cannot load client configuration") from exc
 
 
