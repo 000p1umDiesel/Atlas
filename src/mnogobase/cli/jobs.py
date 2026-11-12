@@ -241,9 +241,15 @@ def run_worker(
                 uploaded = uploads.contained(path, must_exist=False)
             except FileNotFoundError:
                 return
-            uploaded.unlink(missing_ok=True)
-            if doc_id:
-                uploads.delete(doc_id)
+            # Пока шло удаление, файл могли загрузить снова (desired уже не remove:...): тогда
+            # он нужен новой задаче ingest. Проверка и удаление — под блокировкой пути, которую
+            # берёт и загрузка через API.
+            with q.locked_path(job.path):
+                if not q.is_current(job):
+                    return
+                uploaded.unlink(missing_ok=True)
+                if doc_id:
+                    uploads.delete(doc_id)
 
         async def handle(job):
             q.heartbeat()

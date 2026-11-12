@@ -43,8 +43,9 @@ class FileRow:
 
 
 class Registry:
-    def __init__(self, db_path: DatabaseTarget):
-        self._db = connect(db_path)
+    def __init__(self, target: DatabaseTarget):
+        self.target = target
+        self._db = connect(target)
         try:
             initialize(self._db, _SCHEMA, "registry", _MIGRATIONS)
         except BaseException:

@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from mnogobase import cli
 from mnogobase.app import build_app
 from mnogobase.core.config import load_settings
+from mnogobase.ingest.pipeline import Pipeline
 from mnogobase.llm.telemetry import CallEvent
 from mnogobase.service.errors import ServiceError
 from mnogobase.service.kb import KnowledgeBase
@@ -137,6 +138,34 @@ async def test_upload_ingest_answer_and_remove(env):
         assert not list((root / "documents/uploads").glob("*.md"))
         with pytest.raises(ServiceError):
             kb.read_source(doc["id"])
+    finally:
+        await kb.close()
+
+
+async def test_removal_keeps_a_file_uploaded_again_meanwhile(env, monkeypatch):
+    """Пока удаление документа выполняется, его загрузили снова: файл не должен пропасть."""
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        content = (FIXTURES / "attention_en.md").read_bytes()
+        upload(kb, "paper.md", content)
+        await work_once()
+        [doc] = await kb.documents()
+        await kb.remove_document(doc["id"])
+
+        original = Pipeline.remove
+
+        async def remove_then_reupload(self, *args, **kwargs):
+            report = await original(self, *args, **kwargs)
+            upload(kb, "paper.md", content)  # новая загрузка во время работы remove-задачи
+            return report
+
+        monkeypatch.setattr(Pipeline, "remove", remove_then_reupload)
+        await work_once()
+        monkeypatch.setattr(Pipeline, "remove", original)
+        assert list((root / "documents/uploads").glob("*.md"))  # файл новой загрузки на месте
+        await work_once()
+        assert [d["name"] for d in await kb.documents()] == ["paper.md"]
     finally:
         await kb.close()
 

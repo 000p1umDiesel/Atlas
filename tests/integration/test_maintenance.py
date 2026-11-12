@@ -7,6 +7,7 @@ from qdrant_client import QdrantClient
 from typer.testing import CliRunner
 
 from mnogobase.app import build_app
+from mnogobase.background.queue import JobQueue
 from mnogobase.core.config import ChunkingSettings, WikiSettings, load_settings
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.ingest.pipeline import EmbedderMismatchError, InterruptedResetError
@@ -91,7 +92,11 @@ async def test_reindex_after_embedder_change_then_reset(graph, tmp_path, docs, s
     assert second.registry.get_meta("embedder") == embedder_signature(embedder)
     assert ":tpl-" in second.registry.get_meta("embedder")  # новый формат, шаблоны в сигнатуре
 
+    queue = JobQueue(second.registry.target)
+    queue.enqueue(docs / "attention_en.md", "v1")
     reset(second)
+    assert queue.jobs() == []  # после reset те же файлы загружаются заново, а не «уже готовы»
+    queue.close()
     assert graph.counts()["Entity"] == 0
     # страницы удалены, а настройки Obsidian остаются: в .obsidian/ могут быть и чужие
     assert sorted(p.name for p in (tmp_path / "wiki").iterdir()) == [".obsidian"]

@@ -69,6 +69,32 @@ def test_force_requeues_completed_content(tmp_path):
     q.close()
 
 
+def test_removed_source_is_not_requeued_without_force(tmp_path):
+    """Файл из inbox, забытый через API, не возвращается после рестарта worker'а
+    (watcher снова ставит его в очередь без force); явный force по-прежнему работает."""
+    q = queue()
+    ingest = q.enqueue(Path("a.md"), "v1")
+    q.finish(q.claim().id)
+    q.enqueue(Path("a.md"), "remove:v1", force=True, kind="remove")
+    q.finish(q.claim().id)
+    q.enqueue(Path("a.md"), "v1")  # watcher после рестарта
+    assert q.claim() is None
+    q.enqueue(Path("a.md"), "v1", force=True)
+    assert q.claim().id == ingest
+    q.close()
+
+
+def test_clear_forgets_queue_history(tmp_path):
+    q = queue()
+    q.enqueue(Path("a.md"), "v1")
+    q.finish(q.claim().id)
+    q.clear()
+    assert q.jobs() == []
+    q.enqueue(Path("a.md"), "v1")  # после reset тот же файл снова загружается
+    assert q.claim() is not None
+    q.close()
+
+
 def test_reverting_file_to_previous_content_is_a_new_request(tmp_path):
     q = queue()
     first = q.enqueue(Path("a.md"), "v1")

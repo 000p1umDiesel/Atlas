@@ -244,8 +244,8 @@ class KnowledgeBase:
                 return _job(existing)
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
-            staged.replace(path)
-            job_id = queue.enqueue(path, doc_id, force=True)
+            # файл кладётся под блокировкой пути: идущая remove-задача не удалит его следом
+            job_id = queue.enqueue(path, doc_id, force=True, on_locked=lambda: staged.replace(path))
             return _job(queue.get(job_id))
 
     def _upload_path(self, doc_id: str) -> Path:

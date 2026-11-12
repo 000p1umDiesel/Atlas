@@ -4,6 +4,7 @@ import contextlib
 import shutil
 
 from mnogobase.app import App
+from mnogobase.background.queue import JobQueue
 from mnogobase.core.log import get_logger
 from mnogobase.core.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.embedding.base import embedder_signature
@@ -126,6 +127,12 @@ def reset(app: App) -> None:
     app.registry.set_meta("reset", RESET_IN_PROGRESS)
     app.vectors.drop_collections()
     app.graph.wipe()
+    # история очереди: иначе повторная загрузка тех же файлов считалась бы уже выполненной
+    queue = JobQueue(app.registry.target)
+    try:
+        queue.clear()
+    finally:
+        queue.close()
     shutil.rmtree(app.settings.data_dir / "cache", ignore_errors=True)
     wiki_dir = app.settings.wiki.dir
     shutil.rmtree(wiki_dir / "entities", ignore_errors=True)

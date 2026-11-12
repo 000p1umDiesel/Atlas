@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,7 +85,15 @@ class JobQueue:
         force: bool = False,
         kind: str = "ingest",
         payload_json: str | None = None,
+        on_locked: Callable[[], None] | None = None,
     ) -> int:
+        """Ставит в очередь операцию над `path` с версией `fingerprint` и возвращает id задачи.
+
+        Повтор той же версии не создаёт новую задачу; уже выполненная задача запускается
+        снова только с `force` или если версия источника сменилась. Источник, который забыли
+        (`desired` = `remove:<та же версия>`), без `force` не возвращается: так watcher после
+        рестарта не загрузит обратно файл, удалённый через API. `on_locked` выполняется под
+        блокировкой пути, до записи (API кладёт туда файл загрузки)."""
         path = str(path.resolve())
         self._db.execute("BEGIN")
         try:
@@ -91,6 +101,14 @@ class JobQueue:
             previous = self._db.execute(
                 "SELECT fingerprint FROM desired WHERE path=?", (path,)
             ).fetchone()
+            if not force and previous is not None and previous[0] == f"remove:{fingerprint}":
+                job_id = self._db.execute(
+                    "SELECT id FROM jobs WHERE path=? AND fingerprint=?", (path, previous[0])
+                ).fetchone()[0]
+                self._db.execute("COMMIT")
+                return job_id
+            if on_locked is not None:
+                on_locked()
             self._db.execute(
                 "INSERT INTO jobs(path,fingerprint,kind,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(path,fingerprint) DO NOTHING",
                 (path, fingerprint, kind, payload_json, self._clock(), self._clock()),
@@ -157,6 +175,25 @@ class JobQueue:
         except BaseException:
             self._db.execute("ROLLBACK")
             raise
+
+    @contextmanager
+    def locked_path(self, path: str) -> Iterator[None]:
+        """Транзакция с блокировкой пути: внутри неё ни enqueue, ни API не меняют этот путь."""
+        self._db.execute("BEGIN")
+        try:
+            transaction_lock(self._db, f"queue-path:{path}")
+            yield
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+
+    def clear(self) -> None:
+        """Забывает всю историю очереди (для `reset`): после него те же файлы снова
+        загружаются, а не считаются уже выполненными."""
+        with self._db:
+            self._db.execute("DELETE FROM jobs")
+            self._db.execute("DELETE FROM desired")
 
     def is_current(self, job: Job) -> bool:
         return (
