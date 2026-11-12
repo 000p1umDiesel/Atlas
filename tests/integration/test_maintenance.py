@@ -7,10 +7,10 @@ from qdrant_client import QdrantClient
 from typer.testing import CliRunner
 
 from mnogobase.app import build_app
-from mnogobase.config import ChunkingSettings, WikiSettings, load_settings
+from mnogobase.core.config import ChunkingSettings, WikiSettings, load_settings
 from mnogobase.embedding.base import embedder_signature
-from mnogobase.maintenance import ReindexError, reindex, reset
-from mnogobase.pipeline import EmbedderMismatchError, InterruptedResetError
+from mnogobase.ingest.pipeline import EmbedderMismatchError, InterruptedResetError
+from mnogobase.ops.maintenance import ReindexError, reindex, reset
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import (
     FakeEmbedder,
@@ -225,11 +225,11 @@ def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs)
     Отдаёт `write_config(dim)`; preflight выполняет настоящую проверку `qdrant` (сервисы,
     которые заменены фейками, помечаются как ok)."""
     from mnogobase import cli
-    from mnogobase.doctor import Check, run_checks
+    from mnogobase.ops.doctor import Check, run_checks
     from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.common, "configure_logging", lambda *args, **kwargs: None)
     prefix = f"it_{uuid.uuid4().hex[:8]}_"
 
     def write_config(dim: int, doc_template: str = "{text}") -> None:
@@ -257,8 +257,8 @@ def cli_project(tmp_path, monkeypatch, qdrant_url, neo4j_container, graph, docs)
             graph=GraphStore(neo4j_container.get_driver(**DRIVER_OPTIONS)),
         )
 
-    monkeypatch.setattr(cli, "run_checks", preflight)
-    monkeypatch.setattr(cli, "build_app", app_with_fakes)
+    monkeypatch.setattr(cli.common, "run_checks", preflight)
+    monkeypatch.setattr(cli.common, "build_app", app_with_fakes)
     yield write_config
     QdrantStore(QdrantClient(url=qdrant_url), prefix, 1).drop_collections()
 
@@ -281,7 +281,7 @@ def test_cli_reindex_rebuilds_the_index_after_a_dimension_change(cli_project, tm
     assert "reindexed:" in result.output
 
     settings = load_settings(tmp_path / "config.yaml")
-    app = cli.build_app(settings)
+    app = cli.common.build_app(settings)
     try:
         for name in (app.vectors.chunks, app.vectors.entities, app.vectors.wiki):
             assert app.vectors.collection_dim(name) == 32
@@ -315,7 +315,7 @@ def test_cli_template_change_requires_reindex(cli_project, tmp_path):
     result = runner.invoke(cli.app, ["reindex"])
     assert result.exit_code == 0, result.output
     settings = load_settings(tmp_path / "config.yaml")
-    app = cli.build_app(settings)
+    app = cli.common.build_app(settings)
     try:
         assert app.registry.get_meta("embedder") == embedder_signature(app.embedder)
     finally:
@@ -356,7 +356,7 @@ def test_cli_reindex_interrupted_at_a_new_dimension_can_be_rerun(
     assert result.exit_code == 0, result.output
     assert "reindexed:" in result.output
     settings = load_settings(tmp_path / "config.yaml")
-    app = cli.build_app(settings)
+    app = cli.common.build_app(settings)
     try:
         for name in (app.vectors.chunks, app.vectors.entities, app.vectors.wiki):
             assert app.vectors.collection_dim(name) == 32

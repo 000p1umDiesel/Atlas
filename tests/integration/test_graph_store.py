@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
 from mnogobase.stores.graph_store import DeleteResult
 from tests.integration.graph_seed import add_mentions, merge_relation
 

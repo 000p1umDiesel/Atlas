@@ -1,6 +1,6 @@
 import uuid
 
-from mnogobase import ids
+from mnogobase.core import ids
 
 
 def test_normalize_name():

@@ -21,9 +21,9 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
-from mnogobase.config import Settings
-from mnogobase.files import write_atomic
-from mnogobase.log import get_logger
+from mnogobase.core.config import Settings
+from mnogobase.core.files import write_atomic
+from mnogobase.core.log import get_logger
 
 _log = get_logger(__name__)
 

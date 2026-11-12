@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from mnogobase.config import GraphSettings
+from mnogobase.core.config import GraphSettings
+from mnogobase.core.log import get_logger
+from mnogobase.core.models import ContextItem
 from mnogobase.embedding.base import Embedder
-from mnogobase.log import get_logger
-from mnogobase.models import ContextItem
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 

@@ -5,7 +5,8 @@ import httpx
 import pytest
 from tenacity import wait_none
 
-from mnogobase.config import EmbedderSettings
+from mnogobase.core.config import EmbedderSettings
+from mnogobase.core.models import EmbedInput
 from mnogobase.embedding.base import (
     embedder_signature,
     format_document,
@@ -14,7 +15,6 @@ from mnogobase.embedding.base import (
     truncate_normalize,
 )
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
-from mnogobase.models import EmbedInput
 from tests.fakes import FakeEmbedder
 
 

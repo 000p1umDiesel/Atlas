@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import Settings
-from mnogobase.database import database_target
-from mnogobase.registry import Registry
+from mnogobase.core.config import Settings
+from mnogobase.core.database import database_target
+from mnogobase.stores.registry import Registry
 
 pytestmark = pytest.mark.integration
 
@@ -21,7 +21,7 @@ def register(registry, path, doc_id="d1"):
 
 
 def test_select_removals_matches_registered_paths_under_missing_directory(registry, tmp_path):
-    from mnogobase.removal import select_removals
+    from mnogobase.ingest.removal import select_removals
 
     a, b = tmp_path / "gone" / "a.md", tmp_path / "gone" / "nested" / "b.md"
     outside = tmp_path / "gone-other" / "c.md"
@@ -33,7 +33,7 @@ def test_select_removals_matches_registered_paths_under_missing_directory(regist
 
 
 def test_missing_selection_keeps_live_sources_and_honors_scope(registry, tmp_path):
-    from mnogobase.removal import select_removals
+    from mnogobase.ingest.removal import select_removals
 
     live, gone, outside = tmp_path / "a.md", tmp_path / "b.md", tmp_path / "other" / "c.md"
     live.write_text("live")
@@ -49,14 +49,14 @@ def test_missing_selection_keeps_live_sources_and_honors_scope(registry, tmp_pat
 
 
 def test_selection_requires_targets_unless_missing_is_explicit(registry):
-    from mnogobase.removal import select_removals
+    from mnogobase.ingest.removal import select_removals
 
     with pytest.raises(ValueError, match="paths|--missing"):
         select_removals(registry, [])
 
 
 def test_missing_selection_handles_a_parent_directory_replaced_by_a_file(registry, tmp_path):
-    from mnogobase.removal import select_removals
+    from mnogobase.ingest.removal import select_removals
 
     folder = tmp_path / "docs"
     folder.mkdir()
@@ -70,7 +70,7 @@ def test_missing_selection_handles_a_parent_directory_replaced_by_a_file(registr
 def test_missing_selection_does_not_treat_access_errors_as_deletions(
     registry, tmp_path, monkeypatch
 ):
-    from mnogobase.removal import select_removals
+    from mnogobase.ingest.removal import select_removals
 
     source = tmp_path / "restricted.md"
     register(registry, source)

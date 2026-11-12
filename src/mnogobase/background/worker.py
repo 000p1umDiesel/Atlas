@@ -7,9 +7,9 @@ from collections.abc import Callable
 
 from sqlalchemy.exc import DBAPIError
 
-from mnogobase.database import DatabaseError, LockBusyError
-from mnogobase.log import get_logger
-from mnogobase.registry import ingest_lock
+from mnogobase.core.database import DatabaseError, LockBusyError
+from mnogobase.core.log import get_logger
+from mnogobase.stores.registry import ingest_lock
 
 from .queue import JobQueue
 

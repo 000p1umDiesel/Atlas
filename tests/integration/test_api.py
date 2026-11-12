@@ -10,10 +10,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mnogobase.api.app import create_api
-from mnogobase.config import Settings
-from mnogobase.database import database_target
-from mnogobase.kb import KnowledgeBase
+from mnogobase.core.config import Settings
+from mnogobase.core.database import database_target
 from mnogobase.service.errors import ServiceError
+from mnogobase.service.kb import KnowledgeBase
 from mnogobase.service.store import ServiceStore
 
 pytestmark = pytest.mark.integration

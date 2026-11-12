@@ -2,8 +2,8 @@
 
 import pytest
 
-from mnogobase.config import GraphSettings
-from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord
+from mnogobase.core.config import GraphSettings
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EntityRecord
 from mnogobase.retrieval.graph import GraphRetriever
 from tests.fakes import FakeEmbedder
 from tests.integration.graph_seed import add_mentions, merge_relation

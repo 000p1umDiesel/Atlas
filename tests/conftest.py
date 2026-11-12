@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 import pytest
 from qdrant_client import QdrantClient
 
-from mnogobase.config import Settings
-from mnogobase.database import connect, database_target
+from mnogobase.core.config import Settings
+from mnogobase.core.database import connect, database_target
 
 if TYPE_CHECKING:
     from testcontainers.community.neo4j import Neo4jContainer
@@ -32,7 +32,7 @@ def isolated_database(request, monkeypatch):
         monkeypatch.setenv("DATABASE_URL", url)
     yield
     if uses_database:
-        from mnogobase.database import DatabaseTarget
+        from mnogobase.core.database import DatabaseTarget
 
         connection = connect(DatabaseTarget(url, "public"))
         try:

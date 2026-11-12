@@ -4,7 +4,7 @@ import httpx
 import pytest
 from tenacity import wait_none
 
-from mnogobase.config import LLMSettings, ServiceSettings
+from mnogobase.core.config import LLMSettings, ServiceSettings
 from mnogobase.llm.client import OpenAICompatLLM
 from mnogobase.llm.telemetry import job_scope
 from tests.unit.test_llm_client import _completion

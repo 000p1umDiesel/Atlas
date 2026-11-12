@@ -5,13 +5,13 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 
-from mnogobase.ids import normalize_name
+from mnogobase.core.ids import normalize_name
+from mnogobase.core.log import get_logger, safe_error
+from mnogobase.core.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
+from mnogobase.core.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger, safe_error
-from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
-from mnogobase.progress import NULL_PROGRESS, ProgressSink
-from mnogobase.registry import Registry
+from mnogobase.stores.registry import Registry
 
 PROMPT_VERSION = "extract-v4"
 TYPES_CHANGED = (

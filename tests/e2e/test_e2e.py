@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 
 from mnogobase.app import build_app
-from mnogobase.config import load_settings
+from mnogobase.core.config import load_settings
+from mnogobase.core.ids import file_doc_id, normalize_name
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
-from mnogobase.graph_analysis import analyze
-from mnogobase.ids import file_doc_id, normalize_name
+from mnogobase.ops.graph_analysis import analyze
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.compare import run_mode

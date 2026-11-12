@@ -2,16 +2,16 @@ import httpx
 import pytest
 from qdrant_client import QdrantClient
 
-from mnogobase import doctor
 from mnogobase.chunking.tokenizer import TokenizerError
-from mnogobase.config import EmbedderSettings, RerankSettings, Settings, VisionSettings
-from mnogobase.database import database_target, target_exists
-from mnogobase.doctor import run_checks
+from mnogobase.core.config import EmbedderSettings, RerankSettings, Settings, VisionSettings
+from mnogobase.core.database import database_target, target_exists
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.extraction.extractor import PROMPT_VERSION, entity_types_signature
-from mnogobase.registry import Registry
+from mnogobase.ops import doctor
+from mnogobase.ops.doctor import run_checks
 from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.stores.registry import Registry
 
 pytestmark = pytest.mark.integration
 

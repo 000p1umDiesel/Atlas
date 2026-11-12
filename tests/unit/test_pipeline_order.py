@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mnogobase.pipeline import Pipeline
+from mnogobase.ingest.pipeline import Pipeline
 
 
 def test_embed_failure_does_not_create_graph_document():

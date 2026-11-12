@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import (
+from mnogobase.core.config import (
     DEFAULT_ENTITY_TYPES,
     EmbedderSettings,
     ExtractSettings,

@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException
 from tenacity import wait_none
 
-from mnogobase.models import ChunkRecord, EmbedInput, EntityRecord
+from mnogobase.core.models import ChunkRecord, EmbedInput, EntityRecord
 from mnogobase.stores.qdrant_store import DimensionMismatchError, QdrantStore
 from mnogobase.wiki.render import Section
 from tests.fakes import FakeEmbedder, FakeSparse

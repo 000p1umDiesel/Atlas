@@ -8,7 +8,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from mnogobase.chunking.hybrid import Chunker
-from mnogobase.config import Settings
+from mnogobase.core.config import Settings
+from mnogobase.core.files import write_atomic
+from mnogobase.core.ids import file_doc_id, normalize_name
+from mnogobase.core.log import bind_context, get_logger, log_stage, safe_error, unbind_context
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EmbedInput
+from mnogobase.core.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.embedding.base import (
     Embedder,
     SparseEncoder,
@@ -17,16 +22,11 @@ from mnogobase.embedding.base import (
 )
 from mnogobase.extraction.extractor import TYPES_CHANGED, Extractor, stale_entity_types
 from mnogobase.extraction.resolver import EntityResolver, entity_embed_input
-from mnogobase.files import write_atomic
-from mnogobase.ids import file_doc_id, normalize_name
-from mnogobase.log import bind_context, get_logger, log_stage, safe_error, unbind_context
-from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput
+from mnogobase.ingest.removal import RemovalReport, select_removals
 from mnogobase.parsing.docling_parser import DoclingParser
-from mnogobase.progress import NULL_PROGRESS, ProgressSink
-from mnogobase.registry import Registry
-from mnogobase.removal import RemovalReport, select_removals
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.stores.registry import Registry
 from mnogobase.wiki.builder import WikiBuilder, WikiReport
 
 ENTITY_BATCH = 64  # сущностей на один запрос эмбеддера и одну транзакцию графа

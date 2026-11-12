@@ -9,8 +9,8 @@ from typing import NamedTuple
 
 import yaml
 
-from mnogobase.files import rotate_if_large
-from mnogobase.models import EntityRecord, PageIndexRow, RelationView
+from mnogobase.core.files import rotate_if_large
+from mnogobase.core.models import EntityRecord, PageIndexRow, RelationView
 from mnogobase.wiki.validate import strip_reserved_sections
 
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)

@@ -17,9 +17,9 @@ from neo4j import (
 )
 from neo4j.exceptions import ClientError, Neo4jError
 
-from mnogobase.config import Neo4jSettings
-from mnogobase.log import get_logger
-from mnogobase.models import (
+from mnogobase.core.config import Neo4jSettings
+from mnogobase.core.log import get_logger
+from mnogobase.core.models import (
     ChunkRecord,
     ChunkView,
     DocumentRecord,

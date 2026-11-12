@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from mnogobase.database import DatabaseTarget, PgLock, connect, initialize, utc_timestamp
+from mnogobase.core.database import DatabaseTarget, PgLock, connect, initialize, utc_timestamp
 
 STAGES: tuple[str, ...] = ("parse", "chunk", "embed", "extract", "graph")
 

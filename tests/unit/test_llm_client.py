@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 from tenacity import wait_none
 
-from mnogobase.config import LLMSettings
+from mnogobase.core.config import LLMSettings
 from mnogobase.llm.client import (
     OpenAICompatLLM,
     StructuredOutputError,

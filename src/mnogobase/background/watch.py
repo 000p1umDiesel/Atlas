@@ -6,7 +6,7 @@ import os
 import time
 from pathlib import Path
 
-from mnogobase.ids import file_doc_id
+from mnogobase.core.ids import file_doc_id
 
 from .queue import JobQueue
 

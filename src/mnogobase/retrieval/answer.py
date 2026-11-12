@@ -4,10 +4,10 @@ import re
 import time
 from pathlib import Path
 
-from mnogobase.config import LANGUAGE_NAMES
+from mnogobase.core.config import LANGUAGE_NAMES
+from mnogobase.core.models import Answer, ContextItem, Source
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.models import Answer, ContextItem, Source
 from mnogobase.retrieval.base import estimate_tokens
 
 NO_SOURCES = "The knowledge base has no relevant sources for this question."

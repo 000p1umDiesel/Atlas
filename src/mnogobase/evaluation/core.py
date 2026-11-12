@@ -6,10 +6,10 @@ import json
 from importlib.metadata import version
 from pathlib import Path
 
-from mnogobase.config import Settings
-from mnogobase.files import append_jsonl, fingerprint
+from mnogobase.core.config import Settings
+from mnogobase.core.files import append_jsonl, fingerprint
+from mnogobase.core.models import Answer
 from mnogobase.llm.templates import render_messages
-from mnogobase.models import Answer
 from mnogobase.retrieval.compare import run_mode
 
 from .artifacts import ensure_manifest, latest_records, load_questions

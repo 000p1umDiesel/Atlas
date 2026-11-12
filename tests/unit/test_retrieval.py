@@ -3,8 +3,8 @@ import json
 import pytest
 from qdrant_client import QdrantClient
 
-from mnogobase.config import Settings
-from mnogobase.models import ChunkRecord, ChunkView, ContextItem, EmbedInput, SearchHit
+from mnogobase.core.config import Settings
+from mnogobase.core.models import ChunkRecord, ChunkView, ContextItem, EmbedInput, SearchHit
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import NO_SOURCES, Answerer, _context_blocks
 from mnogobase.retrieval.combined import CombinedRetriever

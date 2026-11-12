@@ -5,7 +5,7 @@ import sys
 import httpx
 import pytest
 
-from mnogobase.config import (
+from mnogobase.core.config import (
     EmbedderSettings,
     LLMSettings,
     RerankSettings,
@@ -13,7 +13,7 @@ from mnogobase.config import (
     Settings,
     VisionSettings,
 )
-from mnogobase.model_servers import (
+from mnogobase.ops.model_servers import (
     NativeRunner,
     Served,
     ServeError,

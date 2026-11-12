@@ -20,9 +20,9 @@ from tenacity import (
     wait_exponential,
 )
 
-from mnogobase.config import LLMSettings
+from mnogobase.core.config import LLMSettings
+from mnogobase.core.log import get_logger
 from mnogobase.llm.telemetry import CallEvent, new_call, record_call
-from mnogobase.log import get_logger
 
 T = TypeVar("T", bound=BaseModel)
 Message = dict[str, str]

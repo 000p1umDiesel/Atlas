@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from mnogobase.config import GraphSettings
+from mnogobase.core.config import GraphSettings
 
 
 def test_graph_extensions_are_opt_in_for_library_users():
@@ -33,7 +33,7 @@ def test_graph_extensions_reject_unsafe_budgets(overrides):
 
 
 def test_algorithm_memory_is_added_to_projection_memory():
-    from mnogobase.graph_analysis import AnalysisError, check_memory
+    from mnogobase.ops.graph_analysis import AnalysisError, check_memory
 
     check_memory(700_000, 300_000, budget_mb=1)
     with pytest.raises(AnalysisError, match="memory"):
@@ -41,7 +41,7 @@ def test_algorithm_memory_is_added_to_projection_memory():
 
 
 def test_community_keys_follow_membership_not_leiden_integer_ids():
-    from mnogobase.graph_analysis import community_keys
+    from mnogobase.ops.graph_analysis import community_keys
 
     first = community_keys(
         [{"entity_id": "b", "community_id": 8}, {"entity_id": "a", "community_id": 8}]
@@ -81,7 +81,7 @@ def test_community_query_timeout_keeps_normal_retrieval_available():
 def test_retrieval_uses_pagerank_only_to_break_equal_relation_weights():
     from types import SimpleNamespace
 
-    from mnogobase.models import EntityRecord, RelationView
+    from mnogobase.core.models import EntityRecord, RelationView
     from mnogobase.retrieval.graph import GraphRetriever
     from tests.fakes import FakeEmbedder
 

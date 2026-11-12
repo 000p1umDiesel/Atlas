@@ -15,7 +15,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from mnogobase.database import (
+from mnogobase.core.database import (
     DatabaseTarget,
     PgConnection,
     Row,
@@ -23,7 +23,7 @@ from mnogobase.database import (
     initialize,
     utc_timestamp,
 )
-from mnogobase.log import get_logger
+from mnogobase.core.log import get_logger
 from mnogobase.service.errors import ServiceError, check_pagination
 
 MIN_PASSWORD = 12

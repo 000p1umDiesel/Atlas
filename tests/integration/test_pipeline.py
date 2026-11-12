@@ -8,11 +8,11 @@ from qdrant_client import models as qm
 from structlog.testing import capture_logs
 
 from mnogobase.app import build_app
-from mnogobase.config import ChunkingSettings, ExtractSettings, WikiSettings, load_settings
+from mnogobase.core.config import ChunkingSettings, ExtractSettings, WikiSettings, load_settings
+from mnogobase.core.ids import entity_id, file_doc_id
 from mnogobase.embedding.base import embedder_signature
-from mnogobase.ids import entity_id, file_doc_id
-from mnogobase.maintenance import reindex, reset
-from mnogobase.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
+from mnogobase.ingest.pipeline import EmbedderMismatchError, PendingRemovalError, _RemovalPlan
+from mnogobase.ops.maintenance import reindex, reset
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import (
     FakeEmbedder,

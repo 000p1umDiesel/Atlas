@@ -8,24 +8,24 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from mnogobase.config import LANGUAGE_NAMES, WikiSettings
-from mnogobase.embedding.base import Embedder, SparseEncoder
-from mnogobase.files import write_atomic
-from mnogobase.ids import normalize_name, slugify
-from mnogobase.llm.client import LLMClient
-from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger, safe_error
-from mnogobase.models import (
+from mnogobase.core.config import LANGUAGE_NAMES, WikiSettings
+from mnogobase.core.files import write_atomic
+from mnogobase.core.ids import normalize_name, slugify
+from mnogobase.core.log import get_logger, safe_error
+from mnogobase.core.models import (
     EmbedInput,
     EntityRecord,
     RelationView,
     SearchHit,
     WikiPageRecord,
 )
-from mnogobase.progress import NULL_PROGRESS, ProgressSink
-from mnogobase.registry import Registry
+from mnogobase.core.progress import NULL_PROGRESS, ProgressSink
+from mnogobase.embedding.base import Embedder, SparseEncoder
+from mnogobase.llm.client import LLMClient
+from mnogobase.llm.templates import render_messages
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.stores.registry import Registry
 from mnogobase.wiki.obsidian import write_graph_settings
 from mnogobase.wiki.render import (
     SourceRef,

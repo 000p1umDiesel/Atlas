@@ -3,7 +3,7 @@ import json
 import httpx
 from tenacity import wait_none
 
-from mnogobase.config import RerankSettings
+from mnogobase.core.config import RerankSettings
 from mnogobase.retrieval.rag import RagRetriever
 from mnogobase.retrieval.rerank import ApiReranker
 from tests.fakes import FakeEmbedder, FakeSparse

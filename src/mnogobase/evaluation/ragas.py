@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import os
 
-from mnogobase.config import Settings
+from mnogobase.core.config import Settings
 
 METRIC_NAMES = (
     "faithfulness",

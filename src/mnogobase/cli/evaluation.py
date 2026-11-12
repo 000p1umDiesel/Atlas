@@ -14,15 +14,23 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from mnogobase.database import LockBusyError, database_target
-from mnogobase.processing import corpus_snapshot, measured_ingest
-from mnogobase.registry import ingest_lock
+from mnogobase.cli import common, render
+from mnogobase.core.database import LockBusyError, database_target
+from mnogobase.evaluation.core import (
+    load_questions,
+    load_run,
+    prepare_run,
+    report,
+    run_answers,
+    score_run,
+)
+from mnogobase.evaluation.ragas import judge_config
+from mnogobase.ingest.processing import corpus_snapshot, measured_ingest
 from mnogobase.retrieval import Mode
-
-from .core import load_questions, load_run, prepare_run, report, run_answers, score_run
-from .ragas import judge_config
+from mnogobase.stores.registry import ingest_lock
 
 app = typer.Typer(no_args_is_help=True, help="Compare retrieval modes with Ragas metrics.")
+common.app.add_typer(app, name="eval")
 
 
 @contextmanager
@@ -98,16 +106,14 @@ def run(
     k: Annotated[int | None, typer.Option("--k", min=1)] = None,
 ) -> None:
     """Generate and save answers in each selected mode; resume successful records."""
-    from mnogobase import cli
-
     try:
         load_questions(dataset)  # reject invalid input before any services/configuration
-        settings = cli._settings(project=True)
+        settings = common.get_settings(project=True)
         with _lock(output), ingest_lock(database_target(settings)):
-            cli._preflight(settings)
-            application = cli.build_app(settings)
+            common.preflight(settings)
+            application = common.build_app(settings)
             try:
-                retrievers, answerer, translator = cli._answer_setup(application)
+                retrievers, answerer, translator = common.answer_setup(application)
                 prepare_run(
                     dataset,
                     output,
@@ -117,7 +123,7 @@ def run(
                     k=k,
                     corpus=corpus_snapshot(settings),
                 )
-                with _progress(cli.console) as progress:
+                with _progress(common.console) as progress:
                     failed = asyncio.run(
                         run_answers(output, retrievers, answerer, translator, progress=progress)
                     )
@@ -125,8 +131,8 @@ def run(
                 application.close()
             report(output)
     except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
-        cli._fail_cleanly(exc)
-    cli.console.print(
+        common.fail(exc)
+    common.console.print(
         f"Answers saved in {escape(str(output))}; failed: {failed}. Next: eval score {escape(str(output))}"
     )
     if failed:
@@ -142,19 +148,17 @@ def score(
     ] = None,
 ) -> None:
     """Score saved answers using a judge, without retrieval services."""
-    from mnogobase import cli
-
     try:
         load_run(output)
-        settings = cli._settings()
+        settings = common.get_settings()
         with _lock(output):
-            with _progress(cli.console) as progress:
+            with _progress(common.console) as progress:
                 failed = asyncio.run(
                     score_run(output, judge_config(settings), names=metric, progress=progress)
                 )
-            summary = _print_summary(output, cli.console)
+            summary = _print_summary(output, common.console)
     except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
-        cli._fail_cleanly(exc)
+        common.fail(exc)
     if failed or any(s["answers_error"] or s["answers_missing"] for s in summary):
         raise typer.Exit(1)
 
@@ -162,14 +166,12 @@ def score(
 @app.command(name="report")
 def report_command(output: Annotated[Path, typer.Argument(help="Saved run directory.")]) -> None:
     """Write reports from saved artifacts, without model calls or service checks."""
-    from mnogobase import cli
-
     try:
         load_run(output)
         with _lock(output):
-            _print_summary(output, cli.console)
+            _print_summary(output, common.console)
     except (OSError, ValueError, filelock.Timeout, LockBusyError) as exc:
-        cli._fail_cleanly(exc)
+        common.fail(exc)
 
 
 class Phase(StrEnum):
@@ -186,21 +188,19 @@ def ingest_measured(
     ] = Phase.BUILD,
 ) -> None:
     """Measure shared preprocessing, keeping failed attempts in processing.jsonl."""
-    from mnogobase import cli
-
-    settings = cli._settings()
+    settings = common.get_settings()
     try:
         with _lock(output), ExitStack() as locks:
-            corpus_lock = cli._lock(settings)
+            corpus_lock = common.corpus_lock(settings)
             locks.callback(corpus_lock.release)
             if (output / "run.json").exists():
                 raise ValueError(
                     "This experiment already has an answer plan; use a new output directory for updates"
                 )
-            cli._preflight(settings, cli.INGEST_CHECKS)
-            application = cli.build_app(settings)
+            common.preflight(settings, common.INGEST_CHECKS)
+            application = common.build_app(settings)
             try:
-                with cli._progress() as progress:
+                with render.progress() as progress:
                     result = asyncio.run(
                         measured_ingest(
                             application,
@@ -215,8 +215,8 @@ def ingest_measured(
             finally:
                 application.close()
     except (OSError, ValueError, RuntimeError, filelock.Timeout, LockBusyError) as exc:
-        cli._fail_cleanly(exc)
-    cli.console.print(f"Processing measurements: {escape(str(output / 'processing.jsonl'))}")
+        common.fail(exc)
+    common.console.print(f"Processing measurements: {escape(str(output / 'processing.jsonl'))}")
     if result.failed or (result.wiki and result.wiki.failed):
         raise typer.Exit(1)
 

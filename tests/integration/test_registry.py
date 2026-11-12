@@ -1,8 +1,8 @@
 import pytest
 
-from mnogobase.config import Settings
-from mnogobase.database import LockBusyError, database_target
-from mnogobase.registry import STAGES, Registry, ingest_lock
+from mnogobase.core.config import Settings
+from mnogobase.core.database import LockBusyError, database_target
+from mnogobase.stores.registry import STAGES, Registry, ingest_lock
 
 pytestmark = pytest.mark.integration
 

@@ -4,11 +4,11 @@ import contextlib
 import shutil
 
 from mnogobase.app import App
+from mnogobase.core.log import get_logger
+from mnogobase.core.progress import NULL_PROGRESS, ProgressSink
 from mnogobase.embedding.base import embedder_signature
 from mnogobase.extraction.resolver import entity_embed_input
-from mnogobase.log import get_logger
-from mnogobase.progress import NULL_PROGRESS, ProgressSink
-from mnogobase.registry import RESET_IN_PROGRESS
+from mnogobase.stores.registry import RESET_IN_PROGRESS
 
 ENTITY_BATCH = 64
 WIKI_FILES = ("index.md", "log.md", "log.1.md")

@@ -7,15 +7,15 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from mnogobase import cli
-from mnogobase.config import Settings
-from mnogobase.database import database_target, mark_project
-from mnogobase.doctor import Check
+from mnogobase.core.config import Settings
+from mnogobase.core.database import database_target, mark_project
+from mnogobase.core.models import Answer, Source
 from mnogobase.extraction.extractor import PROMPT_VERSION
-from mnogobase.maintenance import ReindexError
-from mnogobase.model_servers import NativeRunner, ServeError
-from mnogobase.models import Answer, Source
-from mnogobase.pipeline import PendingRemovalError
-from mnogobase.registry import Registry
+from mnogobase.ingest.pipeline import PendingRemovalError
+from mnogobase.ops.doctor import Check
+from mnogobase.ops.maintenance import ReindexError
+from mnogobase.ops.model_servers import NativeRunner, ServeError
+from mnogobase.stores.registry import Registry
 
 pytestmark = pytest.mark.integration
 
@@ -25,7 +25,7 @@ runner = CliRunner()
 def test_graph_status_needs_no_models_or_qdrant(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     register_source(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models app was built"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models app was built"))
     from mnogobase.stores.graph_store import GraphStore
 
     closed = []
@@ -56,8 +56,8 @@ def register_source(root, name="a.md"):
 def test_remove_preview_and_decline_do_not_connect_to_services(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source = register_source(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **kw: pytest.fail("preflight ran"))
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("remote app created"))
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **kw: pytest.fail("preflight ran"))
     preview = runner.invoke(cli.app, ["remove", str(source), "--dry-run"])
     assert preview.exit_code == 0, preview.output
     assert str(source) in preview.output and "1" in preview.output
@@ -80,7 +80,7 @@ def test_remove_refuses_outside_project(tmp_path, monkeypatch, args):
 def test_remove_requires_targets_and_unknown_target_is_noop(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     register_source(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("remote app created"))
     result = runner.invoke(cli.app, ["remove", "--yes"])
     assert result.exit_code == 2 and "--missing" in result.output
     result = runner.invoke(cli.app, ["remove", "unknown.md", "--yes"])
@@ -89,7 +89,7 @@ def test_remove_requires_targets_and_unknown_target_is_noop(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_remove_runs_cascade_and_prints_wiki_summary(tmp_path, monkeypatch, missing):
-    from mnogobase.removal import RemovalReport
+    from mnogobase.ingest.removal import RemovalReport
     from mnogobase.wiki.builder import WikiReport
 
     monkeypatch.chdir(tmp_path)
@@ -103,7 +103,7 @@ def test_remove_runs_cascade_and_prints_wiki_summary(tmp_path, monkeypatch, miss
         return RemovalReport(removed=[str(source)], wiki=WikiReport(updated=["Concept"]))
 
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda settings: SimpleNamespace(
             pipeline=SimpleNamespace(remove=remove), close=lambda: closed.append(True)
@@ -119,7 +119,7 @@ def test_remove_runs_cascade_and_prints_wiki_summary(tmp_path, monkeypatch, miss
 
 
 def test_remove_returns_failure_when_wiki_needs_retry(tmp_path, monkeypatch):
-    from mnogobase.removal import RemovalReport
+    from mnogobase.ingest.removal import RemovalReport
     from mnogobase.wiki.builder import WikiReport
 
     monkeypatch.chdir(tmp_path)
@@ -129,7 +129,7 @@ def test_remove_returns_failure_when_wiki_needs_retry(tmp_path, monkeypatch):
         return RemovalReport(removed=[str(source)], wiki=WikiReport(failed=["Concept"]))
 
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda settings: SimpleNamespace(
             pipeline=SimpleNamespace(remove=remove), close=lambda: None
@@ -141,11 +141,11 @@ def test_remove_returns_failure_when_wiki_needs_retry(tmp_path, monkeypatch):
 
 
 def test_remove_obeys_writer_lock(tmp_path, monkeypatch):
-    from mnogobase.registry import ingest_lock
+    from mnogobase.stores.registry import ingest_lock
 
     monkeypatch.chdir(tmp_path)
     source = register_source(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("remote app created"))
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("remote app created"))
     with ingest_lock(database_target(Settings())):
         result = runner.invoke(cli.app, ["remove", str(source), "--yes"])
     assert result.exit_code == 2 and "in progress" in result.output
@@ -154,8 +154,10 @@ def test_remove_obeys_writer_lock(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
     """Юнит-тесты не ходят в сеть и не перенастраивают логирование всего процесса."""
-    monkeypatch.setattr(cli, "configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "run_checks", lambda settings, **kwargs: [Check("qdrant", True, "ok")])
+    monkeypatch.setattr(cli.common, "configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli.common, "run_checks", lambda settings, **kwargs: [Check("qdrant", True, "ok")]
+    )
 
 
 def make_project(root: Path) -> None:
@@ -168,7 +170,7 @@ def make_project(root: Path) -> None:
 def test_query_rejects_nonpositive_k_before_connecting(tmp_path, monkeypatch, command, k):
     monkeypatch.chdir(tmp_path)
     make_project(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda *_: pytest.fail("services contacted"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *_: pytest.fail("services contacted"))
     result = runner.invoke(cli.app, [command, "question", "--k", k])
     assert result.exit_code == 2, result.output
     assert "Invalid value" in result.output
@@ -193,7 +195,7 @@ def test_status_outside_a_project_creates_nothing(tmp_path, monkeypatch):
 @pytest.mark.parametrize("args", [["wiki", "build"], ["reindex"]])
 def test_wiki_build_and_reindex_refuse_outside_a_project(tmp_path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "No mnogobase project here" in result.output
@@ -206,14 +208,16 @@ def test_model_failure_while_answering_is_a_clean_error(tmp_path, monkeypatch, a
 
     monkeypatch.chdir(tmp_path)
     make_project(tmp_path)
-    monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(cli, "_answer_setup", lambda app: ({"all": None}, None, None))
+    monkeypatch.setattr(
+        cli.common, "build_app", lambda settings: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(cli.common, "answer_setup", lambda app: ({"all": None}, None, None))
 
     async def down(*args, **kwargs):
         raise httpx.ConnectError("connection refused to http://user:pw@llm/v1")
 
-    monkeypatch.setattr(cli, "run_mode", down)
-    monkeypatch.setattr(cli, "do_compare", down)
+    monkeypatch.setattr(cli.query, "run_mode", down)
+    monkeypatch.setattr(cli.query, "do_compare", down)
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "Model call failed: ConnectError" in result.output
@@ -223,7 +227,7 @@ def test_model_failure_while_answering_is_a_clean_error(tmp_path, monkeypatch, a
 @pytest.mark.parametrize("args", [["ask", "what is attention?"], ["compare", "what?"]])
 def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)  # здесь нет маркера проекта PostgreSQL
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "No mnogobase project here" in result.output and "PostgreSQL" in result.output
@@ -233,7 +237,7 @@ def test_ask_and_compare_refuse_outside_a_project(tmp_path, monkeypatch, args):
 def test_doctor_exit_code_reflects_failures(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "run_checks",
         lambda settings: [
             Check("device", True, "mps"),
@@ -249,8 +253,10 @@ def test_reset_requires_confirmation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     make_project(tmp_path)
     called = []
-    monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(cli, "do_reset", lambda application: called.append(application))
+    monkeypatch.setattr(
+        cli.common, "build_app", lambda settings: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(cli.project, "do_reset", lambda application: called.append(application))
     declined = runner.invoke(cli.app, ["reset"], input="n\n")
     assert declined.exit_code == 1 and called == []
     accepted = runner.invoke(cli.app, ["reset", "--yes"])
@@ -266,7 +272,9 @@ def test_reset_prompt_lists_the_resolved_targets(tmp_path, monkeypatch):
         "wiki:\n  dir: kb\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(cli, "do_reset", lambda application: pytest.fail("declined reset ran"))
+    monkeypatch.setattr(
+        cli.project, "do_reset", lambda application: pytest.fail("declined reset ran")
+    )
     result = runner.invoke(cli.app, ["reset"], input="n\n")
     assert result.exit_code == 1, result.output
     assert "bolt://graph.example:7999" in result.output
@@ -278,8 +286,8 @@ def test_reset_prompt_lists_the_resolved_targets(tmp_path, monkeypatch):
 @pytest.mark.parametrize("args", [["reset"], ["reset", "--yes"]])
 def test_reset_refuses_outside_a_project(tmp_path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)  # здесь нет маркера проекта PostgreSQL
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
-    monkeypatch.setattr(cli, "do_reset", lambda application: pytest.fail("reset ran"))
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
+    monkeypatch.setattr(cli.project, "do_reset", lambda application: pytest.fail("reset ran"))
     result = runner.invoke(cli.app, args, input="y\n")
     assert result.exit_code == 2, result.output
     assert "No mnogobase project" in result.output and "PostgreSQL" in result.output
@@ -299,8 +307,8 @@ def test_reset_and_reindex_preflight(tmp_path, monkeypatch, args, expected):
         asked.append(tuple(only or ()))
         return [Check("neo4j", False, "ServiceUnavailable: down")]
 
-    monkeypatch.setattr(cli, "run_checks", failing)
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    monkeypatch.setattr(cli.common, "run_checks", failing)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "ServiceUnavailable: down" in result.output
@@ -323,7 +331,7 @@ def test_invalid_config_is_a_clear_error(tmp_path, monkeypatch, content):
 def test_ingest_without_paths_is_a_noop(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     stub = SimpleNamespace(registry=SimpleNamespace(failed_paths=lambda: []), close=lambda: None)
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "--retry-failed"])
     assert result.exit_code == 0
     assert "Nothing to ingest" in result.output
@@ -357,8 +365,8 @@ def test_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch, args, extra)
     def no_app(settings):
         raise AssertionError("build_app must not run after a failed preflight")
 
-    monkeypatch.setattr(cli, "run_checks", failing)
-    monkeypatch.setattr(cli, "build_app", no_app)
+    monkeypatch.setattr(cli.common, "run_checks", failing)
+    monkeypatch.setattr(cli.common, "build_app", no_app)
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert "models" in result.output and "ConnectError: refused" in result.output
@@ -374,8 +382,8 @@ def test_wiki_build_preflight_failure_stops_with_exit_2(tmp_path, monkeypatch):
         asked.append(tuple(only or ()))
         return [Check("neo4j", False, "ServiceUnavailable: down")]
 
-    monkeypatch.setattr(cli, "run_checks", failing)
-    monkeypatch.setattr(cli, "build_app", lambda settings: pytest.fail("build_app ran"))
+    monkeypatch.setattr(cli.common, "run_checks", failing)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: pytest.fail("build_app ran"))
     result = runner.invoke(cli.app, ["wiki", "build"])
     assert result.exit_code == 2, result.output
     assert "ServiceUnavailable: down" in result.output
@@ -403,7 +411,7 @@ def test_wiki_build_finishes_pending_removals_first(tmp_path, monkeypatch):
         wiki=SimpleNamespace(build=build),
         close=lambda: None,
     )
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["wiki", "build"])
     assert result.exit_code == 0, result.output
     assert calls == ["finish", "build deleted=['Softmax']"]
@@ -420,7 +428,7 @@ def test_ingest_summary_reports_wiki_failures(tmp_path, monkeypatch):
         )
 
     stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 1, result.output
     assert "processed 1" in result.output
@@ -429,14 +437,14 @@ def test_ingest_summary_reports_wiki_failures(tmp_path, monkeypatch):
 
 def test_print_answer_shows_source_ref(monkeypatch):
     printed = []
-    monkeypatch.setattr(cli.console, "print", lambda *args, **kwargs: printed.extend(args))
+    monkeypatch.setattr(cli.common.console, "print", lambda *args, **kwargs: printed.extend(args))
     answer = Answer(
         question="q",
         mode="rag",
         text="Attention [1].",
         sources=[Source(n=1, kind="chunk", ref="abc:00001", path="/d/a.md", page=2, cited=True)],
     )
-    cli._print_answer(answer)
+    cli.render.print_answer(answer)
     table = printed[-1]
     headers = [col.header for col in table.columns]
     assert "ref" in headers
@@ -445,7 +453,7 @@ def test_print_answer_shows_source_ref(monkeypatch):
 
 def test_print_answer_shows_document_text_verbatim(monkeypatch):
     recorder = Console(record=True, width=300, file=io.StringIO())
-    monkeypatch.setattr(cli, "console", recorder)
+    monkeypatch.setattr(cli.common, "console", recorder)
     text = "see [/foo] and [link here](http://x) [1]"
     answer = Answer(
         question="q",
@@ -453,7 +461,7 @@ def test_print_answer_shows_document_text_verbatim(monkeypatch):
         text=text,
         sources=[Source(n=1, kind="chunk", ref="abc:00001", snippet="[b]raw[/b]", cited=True)],
     )
-    cli._print_answer(answer)  # Rich выбросил бы MarkupError на неэкранированном "[/foo]"
+    cli.render.print_answer(answer)  # Rich выбросил бы MarkupError на неэкранированном "[/foo]"
     output = recorder.export_text()
     assert text in output and "[b]raw[/b]" in output
 
@@ -464,7 +472,9 @@ def test_read_only_commands_outside_a_project_do_not_start_file_logging(
 ):
     monkeypatch.chdir(tmp_path)
     started: list[Path] = []
-    monkeypatch.setattr(cli, "configure_logging", lambda logs_dir, **kw: started.append(logs_dir))
+    monkeypatch.setattr(
+        cli.common, "configure_logging", lambda logs_dir, **kw: started.append(logs_dir)
+    )
     runner.invoke(cli.app, args)
     assert started == []  # configure_logging создал бы logs/ в этом каталоге
 
@@ -479,7 +489,7 @@ def test_ingest_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monkeypa
         raise STUCK
 
     stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 2, result.output
     assert "abcd1234abcd1234" in result.output
@@ -497,7 +507,7 @@ def test_wiki_build_with_a_stuck_pending_removal_is_a_clear_error(tmp_path, monk
         pipeline=SimpleNamespace(prepare=lambda resume: None, finish_pending_removals=finish),
         close=lambda: None,
     )
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["wiki", "build"])
     assert result.exit_code == 2, result.output
     assert "abcd1234abcd1234" in result.output
@@ -519,7 +529,9 @@ def test_status_shows_pending_removals(tmp_path, monkeypatch):
 def test_doctor_warning_is_shown_but_does_not_fail(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     warning = Check("types", True, "entity types changed: run `mnogobase reset`", warn=True)
-    monkeypatch.setattr(cli, "run_checks", lambda settings: [Check("device", True, "mps"), warning])
+    monkeypatch.setattr(
+        cli.common, "run_checks", lambda settings: [Check("device", True, "mps"), warning]
+    )
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
     assert "warn" in result.output and "mnogobase reset" in result.output
@@ -542,7 +554,7 @@ def test_status_warns_when_the_entity_types_changed(tmp_path, monkeypatch):
 
 
 def test_status_is_quiet_when_the_entity_types_match(tmp_path, monkeypatch):
-    from mnogobase.config import DEFAULT_ENTITY_TYPES
+    from mnogobase.core.config import DEFAULT_ENTITY_TYPES
     from mnogobase.extraction.extractor import entity_types_signature
 
     monkeypatch.chdir(tmp_path)
@@ -561,7 +573,7 @@ def test_ingest_prints_the_entity_types_warning(tmp_path, monkeypatch):
         )
 
     stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 0, result.output
     assert "TYPES CHANGED" in result.output
@@ -582,7 +594,7 @@ def test_only_reindex_accepts_a_collection_of_another_dimension(
         seen.append(check_dim)
         return [Check("qdrant", False, "stop here")]
 
-    monkeypatch.setattr(cli, "run_checks", checks)
+    monkeypatch.setattr(cli.common, "run_checks", checks)
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 2, result.output
     assert seen == [check_dim]
@@ -595,8 +607,10 @@ def test_reindex_with_a_wrong_embedder_dimension_is_a_clear_error(tmp_path, monk
     def failing(application, **kwargs):
         raise ReindexError("embedder check failed: model returned 768 dims; nothing was changed")
 
-    monkeypatch.setattr(cli, "build_app", lambda settings: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(cli, "do_reindex", failing)
+    monkeypatch.setattr(
+        cli.common, "build_app", lambda settings: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(cli.project, "do_reindex", failing)
     result = runner.invoke(cli.app, ["reindex"])
     assert result.exit_code == 2, result.output
     assert "model returned 768 dims" in result.output
@@ -634,7 +648,7 @@ def test_ingest_reports_progress_and_prints_only_the_summary_off_a_terminal(tmp_
         )
 
     stub = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None)
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
     result = runner.invoke(cli.app, ["ingest", "docs"])
     assert result.exit_code == 0, result.output
     assert len(seen) == 1
@@ -645,9 +659,9 @@ def test_ingest_reports_progress_and_prints_only_the_summary_off_a_terminal(tmp_
 
 
 def test_progress_shows_files_the_current_file_its_stage_and_failures(monkeypatch):
-    monkeypatch.setattr(cli, "console", Console(file=io.StringIO(), force_terminal=True))
+    monkeypatch.setattr(cli.common, "console", Console(file=io.StringIO(), force_terminal=True))
     screen = Console(record=True, width=120, file=io.StringIO())
-    with cli._progress() as progress:
+    with cli.render.progress() as progress:
         progress.files_found(12)
         progress.file_started("/docs/a/statya.pdf")
         progress.step("extract")
@@ -685,8 +699,8 @@ def test_wiki_build_and_reindex_report_progress(tmp_path, monkeypatch):
         wiki=SimpleNamespace(build=build),
         close=lambda: None,
     )
-    monkeypatch.setattr(cli, "build_app", lambda settings: stub)
-    monkeypatch.setattr(cli, "do_reindex", reindex)
+    monkeypatch.setattr(cli.common, "build_app", lambda settings: stub)
+    monkeypatch.setattr(cli.project, "do_reindex", reindex)
     assert runner.invoke(cli.app, ["wiki", "build"]).exit_code == 0
     result = runner.invoke(cli.app, ["reindex"])
     assert result.exit_code == 0, result.output
@@ -702,10 +716,10 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     )
     started: list = []
     monkeypatch.setattr(
-        cli, "make_runner", lambda settings: NativeRunner(tmp_path, tmp_path, gpu=False)
+        cli.models, "make_runner", lambda settings: NativeRunner(tmp_path, tmp_path, gpu=False)
     )
     monkeypatch.setattr(
-        cli,
+        cli.models,
         "bring_up",
         lambda served, model_runner, timeout, on_wait, keep: started.append((served, keep)),
     )
@@ -725,22 +739,24 @@ def test_models_up_starts_the_served_roles_and_reports_failures(tmp_path, monkey
     def broken(served, model_runner, timeout, on_wait, keep):
         raise ServeError("embedder: llama-server exited")
 
-    monkeypatch.setattr(cli, "bring_up", broken)
+    monkeypatch.setattr(cli.models, "bring_up", broken)
     result = runner.invoke(cli.app, ["models", "up", "embedder"])
     assert result.exit_code == 2 and "server exited" in result.output
 
 
 def test_models_up_reports_waiting_and_ready_servers(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "make_runner", lambda settings: NativeRunner(tmp_path, tmp_path))
-    monkeypatch.setattr(cli, "health_state", lambda served: "loading the model")
+    monkeypatch.setattr(
+        cli.models, "make_runner", lambda settings: NativeRunner(tmp_path, tmp_path)
+    )
+    monkeypatch.setattr(cli.models, "health_state", lambda served: "loading the model")
 
     def bring_up(served, model_runner, timeout, on_wait, keep):
         on_wait(served, 5)  # эмбеддер ещё грузится
         on_wait(served, 10)  # через 5 с: повтор строки не печатается
         on_wait([], 15)  # готов
 
-    monkeypatch.setattr(cli, "bring_up", bring_up)
+    monkeypatch.setattr(cli.models, "bring_up", bring_up)
     result = runner.invoke(cli.app, ["models", "up", "embedder"])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
@@ -751,7 +767,7 @@ def test_models_up_reports_waiting_and_ready_servers(tmp_path, monkeypatch):
 
 def test_models_status_shows_where_each_role_runs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "is_ready", lambda served: served.role == "embedder")
+    monkeypatch.setattr(cli.models, "is_ready", lambda served: served.role == "embedder")
     result = runner.invoke(cli.app, ["models", "status"])
     assert result.exit_code == 0, result.output
     lines = {line.split()[1]: line for line in result.output.splitlines() if "│" in line[:3]}

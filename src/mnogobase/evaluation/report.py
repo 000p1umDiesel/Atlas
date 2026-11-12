@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from statistics import mean
 
-from mnogobase.files import fingerprint
+from mnogobase.core.files import fingerprint
 
 from .artifacts import latest_records
 from .comparison import comparison_reports

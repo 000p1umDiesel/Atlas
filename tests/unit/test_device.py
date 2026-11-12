@@ -1,4 +1,4 @@
-from mnogobase import device
+from mnogobase.core import device
 
 
 def test_explicit_preference_wins(monkeypatch):

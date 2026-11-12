@@ -4,7 +4,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from mnogobase.files import write_atomic
+from mnogobase.core.files import write_atomic
 
 # `path:` ищет подстроку, поэтому якоря: `-file:log` скрыл бы и `entities/logistic-regression.md`
 GRAPH_FILTER = r"-path:/^(index|log)\.md$/"

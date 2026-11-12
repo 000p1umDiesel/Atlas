@@ -1,7 +1,8 @@
 import pytest
 
-from mnogobase.config import DEFAULT_ENTITY_TYPES, Settings
-from mnogobase.database import database_target
+from mnogobase.core.config import DEFAULT_ENTITY_TYPES, Settings
+from mnogobase.core.database import database_target
+from mnogobase.core.models import ExtractedEntity, ExtractedRelation, ExtractionResult
 from mnogobase.extraction.extractor import (
     PROMPT_VERSION,
     Extractor,
@@ -10,9 +11,8 @@ from mnogobase.extraction.extractor import (
     format_entity_types,
     stale_entity_types,
 )
-from mnogobase.models import ChunkRecord, ExtractedEntity, ExtractedRelation, ExtractionResult
-from mnogobase.registry import Registry
-from tests.fakes import FakeLLM, RecordingProgress, scripted_llm_handler
+from mnogobase.stores.registry import Registry
+from tests.fakes import FakeLLM, RecordingProgress, chunk, scripted_llm_handler
 
 pytestmark = pytest.mark.integration
 
@@ -31,17 +31,6 @@ def registry():
     yield make
     for reg in created:
         reg.close()
-
-
-def chunk(text: str, idx: int = 0, doc: str = DOC) -> ChunkRecord:
-    return ChunkRecord(
-        chunk_id=f"{doc}:{idx:05d}",
-        doc_id=doc,
-        idx=idx,
-        text=text,
-        context_text=text,
-        headings=["Intro"],
-    )
 
 
 def E(name, etype="Concept", aliases=()):  # noqa: N802

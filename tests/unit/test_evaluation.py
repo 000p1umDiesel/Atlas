@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from mnogobase.config import Settings
-from mnogobase.models import ContextItem
+from mnogobase.core.config import Settings
+from mnogobase.core.models import ContextItem
 from mnogobase.retrieval.answer import Answerer
 from tests.fakes import FakeLLM
 
@@ -234,7 +234,7 @@ async def test_tampered_manifest_blocks_resume_before_retrieval_and_preserves_fi
 async def test_invalid_saved_answer_blocks_pending_retry_and_preserves_artifacts(
     tmp_path, changes, omitted, match
 ):
-    from mnogobase.files import append_jsonl
+    from mnogobase.core.files import append_jsonl
 
     core = evaluation()
     run = tmp_path / "run"
@@ -267,7 +267,7 @@ async def test_invalid_saved_answer_blocks_pending_retry_and_preserves_artifacts
 
 
 def test_jsonl_recovers_utf8_tail_but_rejects_middle_corruption(tmp_path):
-    from mnogobase.files import append_jsonl, read_jsonl
+    from mnogobase.core.files import append_jsonl, read_jsonl
 
     path = tmp_path / "a.jsonl"
     path.write_bytes(b'{"id":"ok"}\n{"id":"\xd0')
@@ -327,7 +327,7 @@ async def test_metric_arguments_and_skips():
 
 async def test_scores_resume_latest_failure_and_invalidate_changed_answers(tmp_path):
     core = evaluation()
-    from mnogobase.files import append_jsonl
+    from mnogobase.core.files import append_jsonl
 
     run = tmp_path / "run"
     core.prepare_run(dataset(tmp_path), run, Settings(), modes=["rag"], limit=1)

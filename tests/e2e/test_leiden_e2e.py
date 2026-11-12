@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import GraphSettings, load_settings
+from mnogobase.core.config import GraphSettings, load_settings
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EntityRecord
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
-from mnogobase.graph_analysis import analyze
 from mnogobase.llm.client import OpenAICompatLLM
-from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord
+from mnogobase.ops.graph_analysis import analyze
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.combined import CombinedRetriever
 from mnogobase.retrieval.graph import GraphRetriever

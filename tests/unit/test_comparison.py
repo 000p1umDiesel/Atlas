@@ -1,9 +1,9 @@
 import csv
 
-from mnogobase.config import Settings
+from mnogobase.core.config import Settings
+from mnogobase.core.files import append_jsonl, fingerprint
 from mnogobase.evaluation.artifacts import ensure_manifest
 from mnogobase.evaluation.core import prepare_run, report
-from mnogobase.files import append_jsonl, fingerprint
 
 
 def test_paired_comparison_uses_same_questions_and_reports_categories(tmp_path):

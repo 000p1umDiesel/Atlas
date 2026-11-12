@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from mnogobase.config import Settings, WikiSettings
-from mnogobase.maintenance import ReindexError, reindex, reset
+from mnogobase.core.config import Settings, WikiSettings
+from mnogobase.ops.maintenance import ReindexError, reindex, reset
 
 
 def make_app(tmp_path, calls: list[str]):

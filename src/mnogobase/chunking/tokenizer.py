@@ -8,8 +8,8 @@ from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from pydantic import ConfigDict, PrivateAttr
 
-from mnogobase.config import ChunkingSettings, EmbedderSettings
-from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry, server_root
+from mnogobase.core.config import ChunkingSettings, EmbedderSettings
+from mnogobase.core.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry, server_root
 
 AUTO = "auto"
 _HF_HINT = "set chunking.tokenizer to the model's Hugging Face repo"

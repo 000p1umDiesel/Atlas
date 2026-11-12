@@ -10,9 +10,9 @@ from qdrant_client import models as qm
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from mnogobase.config import QdrantSettings
-from mnogobase.ids import entity_name_keys, point_id
-from mnogobase.models import ChunkRecord, EntityRecord, SearchHit
+from mnogobase.core.config import QdrantSettings
+from mnogobase.core.ids import entity_name_keys, point_id
+from mnogobase.core.models import ChunkRecord, EntityRecord, SearchHit
 
 if TYPE_CHECKING:
     from mnogobase.wiki.render import Section

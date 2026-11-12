@@ -4,9 +4,9 @@ from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 
 from mnogobase.chunking.tokenizer import load_tokenizer
-from mnogobase.config import ChunkingSettings, EmbedderSettings
-from mnogobase.ids import chunk_id
-from mnogobase.models import ChunkRecord
+from mnogobase.core.config import ChunkingSettings, EmbedderSettings
+from mnogobase.core.ids import chunk_id
+from mnogobase.core.models import ChunkRecord
 from mnogobase.parsing.docling_parser import ParsedDocument
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from mnogobase.core.log import get_logger, safe_error
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger, safe_error
 
 # вопрос переводится, если доля не-ASCII (не латинских) букв в нём больше этого порога
 NON_LATIN_SHARE = 0.3

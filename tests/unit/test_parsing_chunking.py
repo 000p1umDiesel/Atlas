@@ -34,7 +34,12 @@ from transformers import PreTrainedTokenizerFast
 from mnogobase.chunking import hybrid
 from mnogobase.chunking.hybrid import Chunker
 from mnogobase.chunking.tokenizer import ServerTokenizer
-from mnogobase.config import ChunkingSettings, EmbedderSettings, ParsingSettings, VisionSettings
+from mnogobase.core.config import (
+    ChunkingSettings,
+    EmbedderSettings,
+    ParsingSettings,
+    VisionSettings,
+)
 from mnogobase.parsing import docling_parser
 from mnogobase.parsing.docling_parser import DoclingParser, VisionError
 

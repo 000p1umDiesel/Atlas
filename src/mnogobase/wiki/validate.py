@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from mnogobase.ids import normalize_name
+from mnogobase.core.ids import normalize_name
 
 _CITE = re.compile(r"[ \t]?\[\^([^\]\s]+)\]")
 # "#" разрешён в цели ссылки: имена сущностей вроде "C#" сохраняют его после normalize_name

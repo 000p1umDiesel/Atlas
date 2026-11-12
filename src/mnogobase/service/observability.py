@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mnogobase.config import LLMRate
-from mnogobase.database import DatabaseTarget, connection, initialize
+from mnogobase.core.config import LLMRate
+from mnogobase.core.database import DatabaseTarget, connection, initialize
 from mnogobase.llm.telemetry import CallEvent
 
 _SCHEMA = """

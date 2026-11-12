@@ -4,7 +4,7 @@ import logging
 import pytest
 import structlog
 
-from mnogobase.log import (
+from mnogobase.core.log import (
     bind_context,
     configure_logging,
     get_logger,
@@ -99,7 +99,7 @@ def test_third_party_noise_is_quieted_but_warnings_pass(tmp_path):
 
 
 def test_safe_error_hides_credentials_and_limits_length():
-    from mnogobase.log import safe_error
+    from mnogobase.core.log import safe_error
 
     exc = RuntimeError(
         "401 for https://user:hunter2@llm.example/v1 with Authorization: Bearer abc.def "

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mnogobase.config import Settings
-from mnogobase.database import connection, database_target, initialize
+from mnogobase.core.config import Settings
+from mnogobase.core.database import connection, database_target, initialize
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS uploads("

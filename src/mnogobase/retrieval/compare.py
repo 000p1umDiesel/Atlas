@@ -6,9 +6,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mnogobase.config import Settings
-from mnogobase.files import rotate_if_large
-from mnogobase.models import Answer
+from mnogobase.core.config import Settings
+from mnogobase.core.files import rotate_if_large
+from mnogobase.core.models import Answer
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.translate import QueryTranslator

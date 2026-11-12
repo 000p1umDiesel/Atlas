@@ -6,9 +6,9 @@ from typing import Protocol
 
 import httpx
 
-from mnogobase.config import RerankSettings
-from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
-from mnogobase.log import get_logger
+from mnogobase.core.config import RerankSettings
+from mnogobase.core.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
+from mnogobase.core.log import get_logger
 
 
 class Reranker(Protocol):

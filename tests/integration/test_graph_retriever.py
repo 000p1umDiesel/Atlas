@@ -1,8 +1,8 @@
 import pytest
 from qdrant_client import QdrantClient
 
-from mnogobase.config import GraphSettings
-from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput, EntityRecord
+from mnogobase.core.config import GraphSettings
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EmbedInput, EntityRecord
 from mnogobase.retrieval.graph import GraphRetriever
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeEmbedder

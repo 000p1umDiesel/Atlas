@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import GraphAnalysisSettings, Settings
-from mnogobase.database import database_target, mark_project
-from mnogobase.models import EntityRecord
+from mnogobase.core.config import GraphAnalysisSettings, Settings
+from mnogobase.core.database import database_target, mark_project
+from mnogobase.core.models import EntityRecord
 from mnogobase.stores.graph_store import GraphStore
 from tests.conftest import NEO4J_IMAGE
 from tests.integration.graph_seed import CHUNKS, DOC_ID, add_mentions, merge_relation, populate
@@ -71,7 +71,7 @@ def test_apoc_neighborhood_matches_cypher(plugin_store):
 
 
 def test_plugins_analysis_and_deletion(plugin_store):
-    from mnogobase.graph_analysis import analyze
+    from mnogobase.ops.graph_analysis import analyze
 
     store = plugin_store
     populate(store, "Alpha")
@@ -102,7 +102,7 @@ def test_plugins_analysis_and_deletion(plugin_store):
 
 
 def test_gds_rejects_budget_and_cleans_up_after_algorithm_failure(plugin_store, monkeypatch):
-    from mnogobase.graph_analysis import AnalysisError, analyze
+    from mnogobase.ops.graph_analysis import AnalysisError, analyze
 
     store = plugin_store
     populate(store, "Legacy")
@@ -121,7 +121,7 @@ def test_gds_rejects_budget_and_cleans_up_after_algorithm_failure(plugin_store, 
 
 
 def test_empty_and_singleton_graphs(plugin_store):
-    from mnogobase.graph_analysis import analyze
+    from mnogobase.ops.graph_analysis import analyze
 
     store = plugin_store
     assert analyze(store, GraphAnalysisSettings())["nodes"] == 0
@@ -134,7 +134,7 @@ def test_empty_and_singleton_graphs(plugin_store):
 
 @pytest.mark.parametrize("weight", [0.0, -1.0, float("nan"), float("inf")])
 def test_invalid_weights_are_rejected_before_projection(plugin_store, weight):
-    from mnogobase.graph_analysis import AnalysisError, analyze
+    from mnogobase.ops.graph_analysis import AnalysisError, analyze
 
     store = plugin_store
     populate(store, "Legacy")
@@ -145,7 +145,7 @@ def test_invalid_weights_are_rejected_before_projection(plugin_store, weight):
 
 
 def test_changed_graph_cannot_publish_scores_from_old_projection(plugin_store, monkeypatch):
-    from mnogobase.graph_analysis import AnalysisError, analyze
+    from mnogobase.ops.graph_analysis import AnalysisError, analyze
 
     store = plugin_store
     populate(store, "Legacy")
@@ -166,8 +166,8 @@ def test_changed_graph_cannot_publish_scores_from_old_projection(plugin_store, m
 def test_apoc_cycles_hops_and_original_citations(plugin_store):
     from qdrant_client import QdrantClient
 
-    from mnogobase.config import GraphSettings
-    from mnogobase.graph_analysis import analyze
+    from mnogobase.core.config import GraphSettings
+    from mnogobase.ops.graph_analysis import analyze
     from mnogobase.retrieval.graph import GraphRetriever
     from mnogobase.stores.qdrant_store import QdrantStore
     from tests.fakes import FakeEmbedder
@@ -209,7 +209,7 @@ def test_graph_cli_works_without_model_servers(
     from typer.testing import CliRunner
 
     from mnogobase import cli
-    from mnogobase.registry import Registry
+    from mnogobase.stores.registry import Registry
 
     store = plugin_store
     populate(store, "Legacy")
@@ -227,7 +227,9 @@ def test_graph_cli_works_without_model_servers(
     )
     Registry(database_target(Settings())).close()
     mark_project(Settings(data_dir=tmp_path / ".mnogobase"))
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("model application created"))
+    monkeypatch.setattr(
+        cli.common, "build_app", lambda *a: pytest.fail("model application created")
+    )
     runner = CliRunner()
     for args in (["graph", "analyze", "--estimate"], ["graph", "analyze"], ["graph", "status"]):
         result = runner.invoke(cli.app, args)

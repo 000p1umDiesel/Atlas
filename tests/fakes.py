@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from qdrant_client import models as qm
 
+from mnogobase.core.models import ChunkRecord
 from mnogobase.llm.client import Usage
 
 VOCAB = {
@@ -183,3 +184,15 @@ class RecordingProgress:
             elif event[0] == "advance" and current == step:
                 out.append(event)
         return out
+
+
+def chunk(text: str, idx: int = 0, doc: str = "a" * 16) -> ChunkRecord:
+    """Чанк документа `doc` с заголовком «Intro» для тестов извлечения."""
+    return ChunkRecord(
+        chunk_id=f"{doc}:{idx:05d}",
+        doc_id=doc,
+        idx=idx,
+        text=text,
+        context_text=text,
+        headings=["Intro"],
+    )

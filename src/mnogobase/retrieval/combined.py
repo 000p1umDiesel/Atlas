@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from mnogobase.models import ContextItem
+from mnogobase.core.models import ContextItem
 from mnogobase.retrieval.base import Retriever, estimate_tokens
 
 

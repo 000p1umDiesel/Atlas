@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mnogobase.registry import FileRow, Registry
+from mnogobase.stores.registry import FileRow, Registry
 from mnogobase.wiki.builder import WikiReport
 
 

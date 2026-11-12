@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from mnogobase.config import Settings, load_settings
+from mnogobase.core.config import Settings, load_settings
 from mnogobase.service.errors import ServiceError
 
 Limit = Annotated[int, Query(ge=1, le=200)]
@@ -122,7 +122,7 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         owned = app.state.kb is None
         if owned:
-            from mnogobase.kb import KnowledgeBase
+            from mnogobase.service.kb import KnowledgeBase
 
             app.state.kb = await run_in_threadpool(KnowledgeBase, settings)
         try:

@@ -9,11 +9,11 @@ from sqlalchemy.exc import ResourceClosedError
 from typer.testing import CliRunner
 
 from mnogobase import cli
-from mnogobase.background import cli as background_cli
 from mnogobase.background.queue import JobQueue
-from mnogobase.config import Settings
-from mnogobase.database import DatabaseTarget, database_lock, database_target
-from mnogobase.ids import file_doc_id
+from mnogobase.cli import jobs as background_cli
+from mnogobase.core.config import Settings
+from mnogobase.core.database import DatabaseTarget, database_lock, database_target
+from mnogobase.core.ids import file_doc_id
 
 pytestmark = pytest.mark.integration
 
@@ -23,7 +23,7 @@ runner = CliRunner()
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "configure_logging", lambda *a: None)
+    monkeypatch.setattr(cli.common, "configure_logging", lambda *a: None)
     source = tmp_path / "a.md"
     source.write_text("document")
     return source
@@ -54,7 +54,7 @@ def tracked_queues(monkeypatch):
 
 
 def test_enqueue_list_and_retry_without_models(project, monkeypatch):
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models constructed"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
     result = runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
     assert result.exit_code == 0, result.output
     result = runner.invoke(cli.app, ["jobs", "list"])
@@ -84,8 +84,8 @@ def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
         return SimpleNamespace(failed={}, wiki=None, processed=paths, skipped=[])
 
     app = SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: closed.append(1))
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
-    monkeypatch.setattr(cli, "build_app", lambda *a: app)
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: app)
     result = runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
     assert result.exit_code == 0, result.output
     result = runner.invoke(cli.app, ["worker", "run", "--once"])
@@ -115,9 +115,9 @@ def test_worker_wiki_failure_remains_retryable(project, monkeypatch):
     async def ingest(paths, **options):
         return SimpleNamespace(failed={}, wiki=SimpleNamespace(failed=["page"]))
 
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda *a: SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None),
     )
@@ -138,9 +138,9 @@ def test_worker_never_acknowledges_missing_or_changing_source(project, monkeypat
             processed = paths
         return SimpleNamespace(processed=processed, skipped=[], failed={}, wiki=None)
 
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda *a: SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None),
     )
@@ -161,9 +161,9 @@ def test_worker_handles_cancellation_and_restores_sigterm(project, monkeypatch):
         observed.append(signal.getsignal(signal.SIGTERM))
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda *a: SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None),
     )
@@ -177,7 +177,7 @@ def test_worker_handles_cancellation_and_restores_sigterm(project, monkeypatch):
 
 def test_worker_rebinds_changed_queued_revision_before_ingest(project, monkeypatch):
     from mnogobase.background.queue import JobQueue
-    from mnogobase.ids import file_doc_id
+    from mnogobase.core.ids import file_doc_id
 
     calls = []
 
@@ -185,9 +185,9 @@ def test_worker_rebinds_changed_queued_revision_before_ingest(project, monkeypat
         calls.extend(paths)
         return SimpleNamespace(processed=paths, skipped=[], failed={}, wiki=None)
 
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda *a: SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None),
     )
@@ -206,7 +206,7 @@ def test_worker_rebinds_changed_queued_revision_before_ingest(project, monkeypat
 
 @pytest.mark.parametrize("arguments", [["list"], ["retry"], ["retry", "--id", "1"]])
 def test_empty_queue_commands_do_not_create_a_database(project, monkeypatch, arguments):
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models constructed"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
 
     result = runner.invoke(cli.app, ["jobs", *arguments])
 
@@ -260,7 +260,7 @@ def test_enqueue_closes_queue_if_discovered_source_disappears(project, monkeypat
 def test_worker_rejects_invalid_options_before_opening_queue(
     project, monkeypatch, arguments, error
 ):
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models constructed"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
 
     result = runner.invoke(cli.app, ["worker", "run", *arguments])
 
@@ -278,7 +278,7 @@ def test_job_progress_persists_steps_and_counts_and_updates_display(tmp_path):
         job_id = q.enqueue(tmp_path / "a.md", "revision")
         q.claim()
         bars = Progress(disable=True)
-        progress = background_cli.JobProgress(q, job_id, cli.RichProgress(bars))
+        progress = background_cli.JobProgress(q, job_id, cli.render.RichProgress(bars))
         progress.files_found(2)
         progress.file_started("/documents/a.md")
 
@@ -310,7 +310,7 @@ def test_job_progress_persists_steps_and_counts_and_updates_display(tmp_path):
 def test_watch_loop_scans_new_files_and_excludes_project_outputs(
     project, monkeypatch, tracked_queues
 ):
-    settings = cli.load_settings()
+    settings = cli.common.load_settings()
     for directory in background_cli._excluded(settings):
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "generated.md").write_text("generated content")
@@ -356,7 +356,7 @@ def test_watch_loop_reports_failure_to_open_queue(project):
     health = []
 
     background_cli._watch_loop(
-        db, cli.load_settings(), [project.parent], threading.Event(), 0.1, 0, health
+        db, cli.common.load_settings(), [project.parent], threading.Event(), 0.1, 0, health
     )
 
     assert health == ["DatabaseError"]
@@ -387,7 +387,7 @@ def test_worker_exits_on_watcher_database_failure_and_releases_resources(
 
     monkeypatch.setattr(background_cli, "JobQueue", open_queue)
     monkeypatch.setattr(background_cli, "process_one", bounded_process_one)
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models constructed"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
 
     result = runner.invoke(
         cli.app,
@@ -463,9 +463,9 @@ def test_worker_watch_joins_watcher_before_closing_app(project, monkeypatch, tra
 
     monkeypatch.setattr(background_cli, "_watch_loop", observe_watch)
     monkeypatch.setattr(background_cli, "process_one", cancellable_process_one)
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
     monkeypatch.setattr(
-        cli,
+        cli.common,
         "build_app",
         lambda *a: SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=close_app),
     )
@@ -504,8 +504,8 @@ def test_worker_watch_joins_watcher_before_closing_app(project, monkeypatch, tra
 
 
 def test_worker_missing_source_fails_job_before_constructing_models(project, monkeypatch):
-    monkeypatch.setattr(cli, "build_app", lambda *a: pytest.fail("models constructed"))
-    monkeypatch.setattr(cli, "_preflight", lambda *a: pytest.fail("services checked"))
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
+    monkeypatch.setattr(cli.common, "preflight", lambda *a: pytest.fail("services checked"))
     assert runner.invoke(cli.app, ["jobs", "enqueue", str(project)]).exit_code == 0
     project.unlink()
 

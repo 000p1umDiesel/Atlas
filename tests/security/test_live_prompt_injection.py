@@ -11,15 +11,15 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from mnogobase.config import DEFAULT_ENTITY_TYPES, Settings, WikiSettings, load_settings
-from mnogobase.database import database_target
+from mnogobase.core.config import DEFAULT_ENTITY_TYPES, Settings, WikiSettings, load_settings
+from mnogobase.core.database import database_target
+from mnogobase.core.models import ContextItem, EntityContext, EntityRecord, SearchHit
 from mnogobase.extraction.extractor import Extractor
 from mnogobase.llm.client import OpenAICompatLLM
-from mnogobase.models import ContextItem, EntityContext, EntityRecord, SearchHit
-from mnogobase.registry import Registry
 from mnogobase.retrieval.answer import Answerer
+from mnogobase.stores.registry import Registry
 from mnogobase.wiki.builder import WikiBuilder
-from tests.unit.test_extractor import chunk
+from tests.fakes import chunk
 
 pytestmark = pytest.mark.e2e
 FIXTURES = sorted((Path(__file__).parent / "fixtures").glob("*.md"))

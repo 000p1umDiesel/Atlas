@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
+from mnogobase.core.models import ContextItem
 from mnogobase.embedding.base import Embedder, SparseEncoder
-from mnogobase.models import ContextItem
 from mnogobase.stores.qdrant_store import QueryVectors
 
 

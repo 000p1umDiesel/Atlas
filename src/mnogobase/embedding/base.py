@@ -8,7 +8,7 @@ from typing import Protocol
 
 from qdrant_client import models as qm
 
-from mnogobase.models import EmbedInput
+from mnogobase.core.models import EmbedInput
 
 
 class Embedder(Protocol):

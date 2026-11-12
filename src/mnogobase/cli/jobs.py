@@ -14,26 +14,28 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy.exc import DBAPIError
 
-from mnogobase.database import (
+from mnogobase.background.queue import JobQueue
+from mnogobase.background.uploads import Uploads
+from mnogobase.background.watch import Watcher, discover
+from mnogobase.background.worker import ServicesUnavailable, process_one
+from mnogobase.cli import common, render
+from mnogobase.core.database import (
     DatabaseError,
     LockBusyError,
     database_lock,
     database_target,
     target_exists,
 )
-from mnogobase.ids import file_doc_id
+from mnogobase.core.ids import file_doc_id
+from mnogobase.core.log import get_logger, new_run_id
+from mnogobase.core.progress import NullProgress
+from mnogobase.ingest.processing import measured_ingest
 from mnogobase.llm.telemetry import job_scope
-from mnogobase.log import get_logger, new_run_id
-from mnogobase.processing import measured_ingest
-from mnogobase.progress import NullProgress
-
-from .queue import JobQueue
-from .uploads import Uploads
-from .watch import Watcher, discover
-from .worker import ServicesUnavailable, process_one
 
 jobs_app = typer.Typer(no_args_is_help=True, help="Persistent local ingest queue.")
 worker_app = typer.Typer(no_args_is_help=True, help="Run a single local ingest worker.")
+common.app.add_typer(jobs_app, name="jobs")
+common.app.add_typer(worker_app, name="worker")
 
 
 def _excluded(settings):
@@ -47,35 +49,31 @@ def enqueue(
         bool, typer.Option(help="Requeue previously completed/failed content.")
     ] = False,
 ) -> None:
-    from mnogobase import cli
-
-    settings = cli._settings()
+    settings = common.get_settings()
     files = discover(paths, settings.parsing.extensions, _excluded(settings))
     if not files:
-        cli._fail_cleanly(ValueError("No supported source files found"))
+        common.fail(ValueError("No supported source files found"))
     q = JobQueue(database_target(settings))
     try:
         for path in files:
             job_id = q.enqueue(path, file_doc_id(path), force=force)
-            cli.console.print(f"job {job_id}: {escape(str(path))}")
+            common.console.print(f"job {job_id}: {escape(str(path))}")
     except OSError as exc:
-        cli._fail_cleanly(exc)
+        common.fail(exc)
     finally:
         q.close()
 
 
 @jobs_app.command("list")
 def list_jobs(limit: Annotated[int, typer.Option(min=1)] = 100) -> None:
-    from mnogobase import cli
-
-    settings = cli._settings()
+    settings = common.get_settings()
     target = database_target(settings)
     if not target_exists(target, "jobs"):
-        cli.console.print("Queue is empty.")
+        common.console.print("Queue is empty.")
         return
     q = JobQueue(target)
     try:
-        cli.console.print(str(q.counts()))
+        common.console.print(str(q.counts()))
         table = Table("id", "status", "attempts", "path", "progress", "error", "retry at (Unix)")
         for job in q.jobs(limit):
             table.add_row(
@@ -87,25 +85,23 @@ def list_jobs(limit: Annotated[int, typer.Option(min=1)] = 100) -> None:
                 escape(job.error or ""),
                 str(int(job.available_at)) if job.status == "pending" and job.error else "",
             )
-        cli.console.print(table)
+        common.console.print(table)
         for job in q.jobs(limit):
-            cli.console.print(f"{job.id}: {escape(job.path)}", soft_wrap=True)
+            common.console.print(f"{job.id}: {escape(job.path)}", soft_wrap=True)
     finally:
         q.close()
 
 
 @jobs_app.command()
 def retry(job_id: Annotated[int | None, typer.Option("--id", min=1)] = None) -> None:
-    from mnogobase import cli
-
-    settings = cli._settings()
+    settings = common.get_settings()
     target = database_target(settings)
     if not target_exists(target, "jobs"):
-        cli.console.print("Queue is empty.")
+        common.console.print("Queue is empty.")
         return
     q = JobQueue(target)
     try:
-        cli.console.print(f"Requeued: {q.retry(job_id)}")
+        common.console.print(f"Requeued: {q.retry(job_id)}")
     finally:
         q.close()
 
@@ -174,21 +170,17 @@ def run_worker(
         float | None, typer.Option(min=0.1, help="Default: jobs.retry_delay_s.")
     ] = None,
 ) -> None:
-    from mnogobase import cli
-
-    settings = cli._settings()
+    settings = common.get_settings()
     if once and watch:
-        cli._fail_cleanly(
-            ValueError("Use jobs enqueue before worker run --once; --watch is continuous")
-        )
+        common.fail(ValueError("Use jobs enqueue before worker run --once; --watch is continuous"))
     if any(not p.is_dir() for p in watch or []):
-        cli._fail_cleanly(ValueError("Every --watch path must be an existing directory"))
+        common.fail(ValueError("Every --watch path must be an existing directory"))
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     worker_lock = database_lock(settings, "worker")
     try:
         worker_lock.acquire()
     except LockBusyError:
-        cli._fail_cleanly(ValueError("Another worker is already running for this project"))
+        common.fail(ValueError("Another worker is already running for this project"))
     q, application = None, None
     previous_term = None
     stop, health, thread = threading.Event(), [], None
@@ -199,7 +191,7 @@ def run_worker(
         retry_delay = retry_delay or settings.jobs.retry_delay_s
         q = JobQueue(database_target(settings))
         resumed = q.recover(max_attempts)
-        cli.console.print(f"Worker started; recovered {resumed}; queue {q.counts()}")
+        common.console.print(f"Worker started; recovered {resumed}; queue {q.counts()}")
         if watch:
             thread = threading.Thread(
                 target=_watch_loop,
@@ -222,7 +214,7 @@ def run_worker(
 
         async def services():
             nonlocal application, stale
-            failed = [c for c in cli.run_checks(settings, only=cli.INGEST_CHECKS) if not c.ok]
+            failed = [c for c in common.run_checks(settings, only=common.INGEST_CHECKS) if not c.ok]
             if failed:
                 raise ServicesUnavailable(", ".join(c.name for c in failed))
             if application is not None and stale:
@@ -230,7 +222,7 @@ def run_worker(
                 application = None
             stale = False
             if application is None:
-                application = cli.build_app(settings)
+                application = common.build_app(settings)
             return application
 
         async def remove(job):
@@ -238,8 +230,8 @@ def run_worker(
             doc_id = json.loads(job.payload_json or "{}").get("doc_id")
             path = Path(job.path)
             app = await services()
-            cli.console.print(f"Removing job {job.id}: {escape(job.path)}")
-            with cli._progress() as progress:
+            common.console.print(f"Removing job {job.id}: {escape(job.path)}")
+            with render.progress() as progress:
                 report = await app.pipeline.remove(
                     [path], run_id=new_run_id(), progress=JobProgress(q, job.id, progress)
                 )
@@ -270,8 +262,8 @@ def run_worker(
                 q.supersede(job.id)
                 return
             app = await services()
-            cli.console.print(f"Processing job {job.id}: {escape(job.path)}")
-            with cli._progress() as progress, job_scope(job.id):
+            common.console.print(f"Processing job {job.id}: {escape(job.path)}")
+            with render.progress() as progress, job_scope(job.id):
                 report = await measured_ingest(
                     app,
                     [Path(job.path)],
@@ -290,7 +282,7 @@ def run_worker(
             # Соединения App могли оборваться (рестарт PostgreSQL): следующая задача
             # создаст App заново.
             nonlocal stale
-            cli.console.print(f"Services unavailable ({type(exc).__name__}); job deferred.")
+            common.console.print(f"Services unavailable ({type(exc).__name__}); job deferred.")
             if isinstance(exc, DatabaseError | DBAPIError):
                 stale = True
 
@@ -308,7 +300,7 @@ def run_worker(
                     on_transient=reconnect,
                 )
                 if processed:
-                    cli.console.print(f"Queue: {q.counts()}")
+                    common.console.print(f"Queue: {q.counts()}")
                 elif once:
                     break
                 else:
@@ -317,11 +309,11 @@ def run_worker(
         try:
             asyncio.run(dispatch())
         except (KeyboardInterrupt, asyncio.CancelledError):
-            cli.console.print("Worker stopped; unfinished job will resume on restart.")
+            common.console.print("Worker stopped; unfinished job will resume on restart.")
         except (OSError, ValueError, RuntimeError) as exc:
-            cli._fail_cleanly(exc)
+            common.fail(exc)
         counts = q.counts()
-        cli.console.print(f"Queue: {counts}")
+        common.console.print(f"Queue: {counts}")
         if once and (
             counts.get("failed", 0) or counts.get("pending", 0) or counts.get("running", 0)
         ):

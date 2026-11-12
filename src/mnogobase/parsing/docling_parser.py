@@ -39,10 +39,10 @@ from docling_core.types.doc import (
 from docling_core.types.doc.labels import PictureClassificationLabel
 from PIL import Image
 
-from mnogobase.config import ParsingSettings, VisionSettings
-from mnogobase.files import write_atomic
-from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
-from mnogobase.log import get_logger
+from mnogobase.core.config import ParsingSettings, VisionSettings
+from mnogobase.core.files import write_atomic
+from mnogobase.core.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
+from mnogobase.core.log import get_logger
 
 _SKIP_CONFIDENCE = 0.5  # картинка не описывается, если класс из vision.skip вероятнее этого
 MAX_VLM_SIDE = 2048  # пикселей по длинной стороне картинки, которую описывает VLM

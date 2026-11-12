@@ -5,13 +5,13 @@ from contextlib import suppress
 
 import pytest
 
-from mnogobase.database import LockBusyError, database_lock, database_target
+from mnogobase.core.database import LockBusyError, database_lock, database_target
 
 pytestmark = pytest.mark.integration
 
 
 def test_postgresql_registry_preserves_cache_order_and_cas(pg_settings):
-    from mnogobase.registry import Registry
+    from mnogobase.stores.registry import Registry
 
     target = database_target(pg_settings)
     a, b = Registry(target), Registry(target)
@@ -32,8 +32,8 @@ def test_postgresql_registry_preserves_cache_order_and_cas(pg_settings):
 
 
 def test_registry_migrates_file_size_to_bigint(pg_settings):
-    from mnogobase.database import connect
-    from mnogobase.registry import Registry
+    from mnogobase.core.database import connect
+    from mnogobase.stores.registry import Registry
 
     target = database_target(pg_settings)
     Registry(target).close()
@@ -143,8 +143,8 @@ def test_postgresql_locks_use_database_namespace_not_local_path(pg_settings, tmp
 
 
 def test_postgresql_corpus_snapshot_reads_registry(pg_settings):
-    from mnogobase.processing import corpus_snapshot
-    from mnogobase.registry import Registry
+    from mnogobase.ingest.processing import corpus_snapshot
+    from mnogobase.stores.registry import Registry
 
     registry = Registry(database_target(pg_settings))
     try:
@@ -155,8 +155,8 @@ def test_postgresql_corpus_snapshot_reads_registry(pg_settings):
 
 
 def test_postgresql_project_marker_guards_wrong_cwd(pg_settings, tmp_path):
-    from mnogobase.database import mark_project, project_exists
-    from mnogobase.registry import Registry
+    from mnogobase.core.database import mark_project, project_exists
+    from mnogobase.stores.registry import Registry
 
     registry = Registry(database_target(pg_settings))
     registry.close()
@@ -170,7 +170,7 @@ def test_postgresql_project_marker_guards_wrong_cwd(pg_settings, tmp_path):
 def test_postgresql_failed_transaction_can_be_reused(pg_settings):
     from sqlalchemy.exc import IntegrityError
 
-    from mnogobase.registry import Registry
+    from mnogobase.stores.registry import Registry
 
     registry = Registry(database_target(pg_settings))
     db = registry._db
@@ -255,8 +255,8 @@ def test_concurrent_project_marker_creation_is_atomic(pg_settings, monkeypatch):
     import threading
     from pathlib import Path
 
-    from mnogobase.database import mark_project, project_exists
-    from mnogobase.registry import Registry
+    from mnogobase.core.database import mark_project, project_exists
+    from mnogobase.stores.registry import Registry
 
     Registry(database_target(pg_settings)).close()
     barrier = threading.Barrier(2)

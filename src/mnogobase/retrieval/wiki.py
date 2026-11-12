@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from mnogobase.core.models import ContextItem
 from mnogobase.embedding.base import Embedder, SparseEncoder
-from mnogobase.models import ContextItem
 from mnogobase.retrieval.base import query_vectors
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore

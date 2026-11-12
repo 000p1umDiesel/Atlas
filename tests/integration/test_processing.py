@@ -3,17 +3,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from mnogobase.config import Settings
-from mnogobase.database import database_target
-from mnogobase.files import read_jsonl
+from mnogobase.core.config import Settings
+from mnogobase.core.database import database_target
+from mnogobase.core.files import read_jsonl
 from mnogobase.llm.client import Usage
-from mnogobase.registry import Registry
+from mnogobase.stores.registry import Registry
 
 pytestmark = pytest.mark.integration
 
 
 async def test_measured_ingest_records_stages_usage_and_wiki_failure(tmp_path):
-    from mnogobase.processing import measured_ingest
+    from mnogobase.ingest.processing import measured_ingest
 
     settings = Settings(data_dir=tmp_path / "state", wiki={"dir": tmp_path / "wiki"})
     usage = Usage()
@@ -47,7 +47,7 @@ async def test_measured_ingest_records_stages_usage_and_wiki_failure(tmp_path):
 
 
 async def test_interruption_is_persisted_without_hiding_exception(tmp_path):
-    from mnogobase.processing import measured_ingest
+    from mnogobase.ingest.processing import measured_ingest
 
     async def ingest(*args, progress, **kwargs):
         progress.step("parse")
@@ -63,7 +63,7 @@ async def test_interruption_is_persisted_without_hiding_exception(tmp_path):
 
 
 def test_corpus_binding_detects_changed_wiki_and_indexed_sources(tmp_path):
-    from mnogobase.processing import corpus_snapshot
+    from mnogobase.ingest.processing import corpus_snapshot
 
     settings = Settings(data_dir=tmp_path / "state", wiki={"dir": tmp_path / "wiki"})
     before = corpus_snapshot(settings)
@@ -91,7 +91,7 @@ def test_changed_corpus_blocks_resume(tmp_path):
 
 
 def test_partial_graph_retry_changes_corpus_even_if_file_still_failed(tmp_path):
-    from mnogobase.processing import corpus_snapshot
+    from mnogobase.ingest.processing import corpus_snapshot
 
     settings = Settings(data_dir=tmp_path / "state", wiki={"dir": tmp_path / "wiki"})
     registry = Registry(database_target(settings))

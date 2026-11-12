@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mnogobase.files import fingerprint, read_jsonl, write_json
+from mnogobase.core.files import fingerprint, read_jsonl, write_json
 
 
 def ensure_manifest(path: Path, config: dict) -> dict:

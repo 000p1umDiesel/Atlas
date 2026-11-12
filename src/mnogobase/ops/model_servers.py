@@ -19,8 +19,8 @@ from pathlib import Path
 
 import httpx
 
-from mnogobase.config import ServedModel, Settings
-from mnogobase.http import server_root
+from mnogobase.core.config import ServedModel, Settings
+from mnogobase.core.http import server_root
 
 ROLES = ("embedder", "rerank", "vision", "llm")
 

@@ -13,10 +13,10 @@ from typer.testing import CliRunner
 
 from mnogobase import cli
 from mnogobase.app import build_app
-from mnogobase.config import load_settings
-from mnogobase.kb import KnowledgeBase
+from mnogobase.core.config import load_settings
 from mnogobase.llm.telemetry import CallEvent
 from mnogobase.service.errors import ServiceError
+from mnogobase.service.kb import KnowledgeBase
 from mnogobase.stores.graph_store import DRIVER_OPTIONS, GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler
@@ -72,9 +72,9 @@ def env(graph, neo4j_container, tmp_path, monkeypatch):
             graph=GraphStore(neo4j_container.get_driver(**DRIVER_OPTIONS)),
         )
 
-    monkeypatch.setattr(cli, "build_app", factory)
-    monkeypatch.setattr(cli, "run_checks", lambda *a, **k: [])
-    monkeypatch.setattr(cli, "configure_logging", lambda *a: None)
+    monkeypatch.setattr(cli.common, "build_app", factory)
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "configure_logging", lambda *a: None)
     return settings, factory, tmp_path
 
 

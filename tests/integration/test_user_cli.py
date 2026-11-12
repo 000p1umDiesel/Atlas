@@ -12,7 +12,7 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "configure_logging", lambda *a: None)
+    monkeypatch.setattr(cli.common, "configure_logging", lambda *a: None)
 
 
 def test_user_lifecycle_from_cli():

@@ -1,4 +1,4 @@
-from mnogobase.files import rotate_if_large, write_atomic
+from mnogobase.core.files import rotate_if_large, write_atomic
 
 
 def test_write_atomic_replaces_whole_file_and_leaves_no_temporary(tmp_path):

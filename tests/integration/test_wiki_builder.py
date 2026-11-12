@@ -6,12 +6,12 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client import models as qm
 
-from mnogobase.config import Settings, WikiSettings
-from mnogobase.database import database_target
-from mnogobase.ids import point_id
-from mnogobase.models import ChunkRecord, DocumentRecord, EmbedInput, EntityRecord
-from mnogobase.registry import Registry
+from mnogobase.core.config import Settings, WikiSettings
+from mnogobase.core.database import database_target
+from mnogobase.core.ids import point_id
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EmbedInput, EntityRecord
 from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.stores.registry import Registry
 from mnogobase.wiki.builder import WikiBuilder
 from mnogobase.wiki.obsidian import GRAPH_FILTER
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSparse, scripted_llm_handler

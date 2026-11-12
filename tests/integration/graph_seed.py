@@ -1,6 +1,6 @@
 """Небольшой граф для интеграционных тестов: документ, два чанка, две сущности, wiki."""
 
-from mnogobase.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
+from mnogobase.core.models import ChunkRecord, DocumentRecord, EntityRecord, WikiPageRecord
 
 DOC_ID = "d" * 16
 CHUNKS = [f"{DOC_ID}:{i:05d}" for i in range(2)]

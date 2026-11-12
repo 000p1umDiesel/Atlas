@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from mnogobase.config import Settings
-from mnogobase.database import database_target
-from mnogobase.registry import ingest_lock
+from mnogobase.core.config import Settings
+from mnogobase.core.database import database_target
+from mnogobase.stores.registry import ingest_lock
 
 pytestmark = pytest.mark.integration
 
@@ -238,7 +238,7 @@ async def test_watcher_can_enqueue_while_worker_holds_writer_lock(tmp_path):
     from mnogobase.background.queue import JobQueue
     from mnogobase.background.watch import Watcher
     from mnogobase.background.worker import process_one
-    from mnogobase.ids import file_doc_id
+    from mnogobase.core.ids import file_doc_id
 
     source = tmp_path / "a.md"
     source.write_text("a")

@@ -10,7 +10,7 @@ from mnogobase.chunking.tokenizer import (
     load_tokenizer,
     tokenizer_source,
 )
-from mnogobase.config import ChunkingSettings, EmbedderSettings
+from mnogobase.core.config import ChunkingSettings, EmbedderSettings
 
 AUTO = ChunkingSettings(max_tokens=64)
 # внешний llama.cpp: токенизатор по его /tokenize

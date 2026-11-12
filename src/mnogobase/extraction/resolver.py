@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from mnogobase.config import ResolveSettings
+from mnogobase.core.config import ResolveSettings
+from mnogobase.core.ids import entity_id, entity_name_keys, normalize_name
+from mnogobase.core.log import get_logger
+from mnogobase.core.models import EmbedInput, EntityRecord, ExtractedEntity
 from mnogobase.embedding.base import Embedder
-from mnogobase.ids import entity_id, entity_name_keys, normalize_name
 from mnogobase.llm.client import LLMClient
 from mnogobase.llm.templates import render_messages
-from mnogobase.log import get_logger
-from mnogobase.models import EmbedInput, EntityRecord, ExtractedEntity
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
 

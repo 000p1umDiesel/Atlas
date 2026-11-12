@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 
-from mnogobase.models import EntityRecord, PageIndexRow, RelationView
+from mnogobase.core.models import EntityRecord, PageIndexRow, RelationView
 from mnogobase.wiki.render import (
     Section,
     SourceRef,

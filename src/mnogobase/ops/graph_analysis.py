@@ -10,8 +10,8 @@ from collections import defaultdict
 
 from neo4j.exceptions import Neo4jError
 
-from mnogobase.config import GraphAnalysisSettings
-from mnogobase.log import get_logger
+from mnogobase.core.config import GraphAnalysisSettings
+from mnogobase.core.log import get_logger
 from mnogobase.stores.graph_store import PROJECTION_PREFIX, GraphStore
 
 

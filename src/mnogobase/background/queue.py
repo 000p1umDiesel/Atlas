@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from mnogobase.database import DatabaseTarget, connect, initialize, transaction_lock
+from mnogobase.core.database import DatabaseTarget, connect, initialize, transaction_lock
 
 
 @dataclass(frozen=True)

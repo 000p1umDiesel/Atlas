@@ -3,10 +3,10 @@ import json
 import pytest
 from qdrant_client import QdrantClient
 
-from mnogobase.config import ResolveSettings
+from mnogobase.core.config import ResolveSettings
+from mnogobase.core.ids import entity_id
+from mnogobase.core.models import ExtractedEntity
 from mnogobase.extraction.resolver import EntityResolver
-from mnogobase.ids import entity_id
-from mnogobase.models import ExtractedEntity
 from mnogobase.stores.qdrant_store import QdrantStore
 from tests.fakes import FakeLLM, scripted_llm_handler
 

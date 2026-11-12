@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from mnogobase.config import Settings
+from mnogobase.core.config import Settings
 from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.combined import CombinedRetriever

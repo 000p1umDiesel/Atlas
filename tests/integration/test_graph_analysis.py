@@ -1,6 +1,6 @@
 import pytest
 
-from mnogobase.models import EntityRecord
+from mnogobase.core.models import EntityRecord
 from tests.integration.graph_seed import add_mentions, merge_relation
 
 pytestmark = pytest.mark.integration

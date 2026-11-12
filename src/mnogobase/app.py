@@ -4,24 +4,24 @@ import inspect
 from dataclasses import dataclass, field
 
 from mnogobase.chunking.hybrid import Chunker
-from mnogobase.config import Settings
-from mnogobase.database import (
+from mnogobase.core.config import Settings
+from mnogobase.core.database import (
     database_target,
     mark_project,
 )
-from mnogobase.device import detect_device
+from mnogobase.core.device import detect_device
 from mnogobase.embedding.base import Embedder, SparseEncoder
 from mnogobase.embedding.openai_compat import OpenAICompatEmbedder
 from mnogobase.embedding.sparse import BM25Encoder
 from mnogobase.extraction.extractor import Extractor
 from mnogobase.extraction.resolver import EntityResolver
+from mnogobase.ingest.pipeline import Pipeline
 from mnogobase.llm.client import LLMClient, OpenAICompatLLM
 from mnogobase.parsing.docling_parser import DoclingParser
-from mnogobase.pipeline import Pipeline
-from mnogobase.registry import Registry
 from mnogobase.retrieval.rerank import ApiReranker, Reranker
 from mnogobase.stores.graph_store import GraphStore
 from mnogobase.stores.qdrant_store import QdrantStore
+from mnogobase.stores.registry import Registry
 from mnogobase.wiki.builder import WikiBuilder
 
 

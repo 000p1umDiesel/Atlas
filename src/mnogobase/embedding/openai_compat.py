@@ -5,11 +5,11 @@ from collections.abc import Sequence
 
 import httpx
 
-from mnogobase.config import EmbedderSettings
+from mnogobase.core.config import EmbedderSettings
+from mnogobase.core.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
+from mnogobase.core.log import get_logger
+from mnogobase.core.models import EmbedInput
 from mnogobase.embedding.base import format_document, format_query, truncate_normalize
-from mnogobase.http import DEFAULT_RETRY_WAIT, auth_headers, post_json_with_retry
-from mnogobase.log import get_logger
-from mnogobase.models import EmbedInput
 
 
 class OpenAICompatEmbedder:
