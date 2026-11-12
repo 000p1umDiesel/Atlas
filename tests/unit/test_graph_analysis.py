@@ -78,6 +78,29 @@ def test_community_query_timeout_keeps_normal_retrieval_available():
         store.community_chunks(["seed"], 2)
 
 
+def test_apoc_traversal_timeout_falls_back_to_one_hop_cypher():
+    """Таймаут обхода APOC не роняет ответ в режимах graph/all: берётся сосед в один шаг."""
+    from neo4j.exceptions import Neo4jError
+
+    from mnogobase.stores.graph_store import GraphStore
+
+    store = GraphStore(None)
+
+    def run(query, **params):
+        if "count(e)" in query:
+            return [{"n": 10}]
+        raise Neo4jError._hydrate_neo4j(
+            code="Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+            message="timed out",
+        )
+
+    fallback = []
+    store._run = run
+    store.neighborhood = lambda seeds, hops, limit: fallback.append((seeds, hops, limit)) or []
+    assert store.neighborhood_apoc(["seed"], 3, 40) == []
+    assert fallback == [(["seed"], 1, 40)]
+
+
 def test_retrieval_uses_pagerank_only_to_break_equal_relation_weights():
     from types import SimpleNamespace
 

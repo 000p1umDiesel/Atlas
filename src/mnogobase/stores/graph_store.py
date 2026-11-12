@@ -443,10 +443,16 @@ class GraphStore:
                 _timeout=timeout,
             )
         except ClientError as exc:
-            if exc.code != "Neo.ClientError.Procedure.ProcedureNotFound":
-                raise
-            get_logger(__name__).warning("apoc_fallback", reason="procedure_missing")
-            return self.neighborhood(seed_ids, hops, limit)
+            code = exc.code or ""
+            if code == "Neo.ClientError.Procedure.ProcedureNotFound":
+                get_logger(__name__).warning("apoc_fallback", reason="procedure_missing")
+                return self.neighborhood(seed_ids, hops, limit)
+            if "TransactionTimedOut" in code:
+                # обход вокруг узла-хаба не уложился в timeout: соседи в один шаг дёшевы и
+                # всё равно дают контекст, а ответ в режимах graph/all не падает целиком
+                get_logger(__name__).warning("apoc_fallback", reason="timeout")
+                return self.neighborhood(seed_ids, 1, limit)
+            raise
         return [RelationView(**r) for r in rows]
 
     # ---- производная аналитика (не меняет IDs и evidence) ----
