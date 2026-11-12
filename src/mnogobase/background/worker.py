@@ -75,19 +75,21 @@ async def process_one(
         job = queue.claim(max_attempts)
         if job is None:
             return False
+        deadline = asyncio.timeout(timeout)  # None — без срока
         try:
-            if timeout is None:
+            async with deadline:
                 await handler(job)
-            else:
-                await asyncio.wait_for(handler(job), timeout)
         except TRANSIENT_ERRORS as exc:
             queue.release(job.id, delay)
             log.warning("job_deferred", job_id=job.id, error_type=type(exc).__name__)
             if on_transient is not None:
                 on_transient(exc)
-        except TimeoutError:
-            queue.fail(job.id, "JobTimeout", max_attempts=max_attempts, delay=delay)
-            log.error("job_timeout", job_id=job.id, timeout_s=timeout)
+        except TimeoutError as exc:
+            # JobTimeout — только истёкший `jobs.timeout_s`; TimeoutError из самого обработчика
+            # (сокет, клиент модели) — обычная ошибка документа со своим типом
+            error = "JobTimeout" if deadline.expired() else type(exc).__name__
+            queue.fail(job.id, error, max_attempts=max_attempts, delay=delay)
+            log.error("job_timeout" if deadline.expired() else "job_failed", job_id=job.id)
         except Exception as exc:
             # Текст ошибки провайдера может содержать ключи и URL: сохраняем только тип.
             queue.fail(job.id, type(exc).__name__, max_attempts=max_attempts, delay=delay)

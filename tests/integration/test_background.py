@@ -240,6 +240,21 @@ async def test_worker_defers_on_unavailable_services_and_times_out(tmp_path):
     q.close()
 
 
+async def test_timeout_inside_the_handler_is_not_reported_as_job_timeout(tmp_path):
+    """Таймаут сокета внутри обработчика — обычная ошибка документа, а не истёкший срок задачи."""
+    from mnogobase.background.worker import process_one
+
+    q = queue()
+    q.enqueue(Path("a.md"), "v1")
+
+    async def socket_timeout(job):
+        raise TimeoutError("read timed out")
+
+    assert await process_one(q, socket_timeout, max_attempts=1, timeout=60)
+    assert q.jobs()[0].error == "TimeoutError"
+    q.close()
+
+
 async def test_worker_records_failures_and_continues_other_files(tmp_path):
     from mnogobase.background.worker import process_one
 
