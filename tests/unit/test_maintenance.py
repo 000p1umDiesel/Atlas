@@ -15,10 +15,32 @@ def make_app(tmp_path, calls: list[str]):
         vectors=SimpleNamespace(drop_collections=lambda: calls.append("vectors")),
         graph=SimpleNamespace(wipe=lambda: calls.append("graph")),
         registry=SimpleNamespace(
+            target="db",
             set_meta=lambda key, value: calls.append(f"flag {key}"),
             wipe=lambda: calls.append("registry"),
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def fake_queue(monkeypatch):
+    """Очередь без PostgreSQL: reset только должен её очистить."""
+    from mnogobase.ops import maintenance
+
+    class Queue:
+        calls: list[str] = []
+
+        def __init__(self, target):
+            assert target == "db"
+
+        def clear(self):
+            Queue.calls.append("queue")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(maintenance, "JobQueue", Queue)
+    return Queue.calls
 
 
 def write(path, text="x"):
@@ -26,7 +48,7 @@ def write(path, text="x"):
     path.write_text(text, encoding="utf-8")
 
 
-def test_reset_deletes_only_the_wiki_files_mnogobase_writes(tmp_path):
+def test_reset_deletes_only_the_wiki_files_mnogobase_writes(tmp_path, fake_queue):
     wiki = tmp_path / "wiki"
     for rel in ("entities/attention.md", "index.md", "log.md", "notes.md", "drafts/idea.md"):
         write(wiki / rel)
@@ -36,7 +58,7 @@ def test_reset_deletes_only_the_wiki_files_mnogobase_writes(tmp_path):
     reset(make_app(tmp_path, calls))
 
     # флаг первым, registry последней: прерванный reset не оставит registry без данных
-    assert calls == ["flag reset", "vectors", "graph", "registry"]
+    assert calls == ["flag reset", "vectors", "graph", "registry"] and fake_queue == ["queue"]
     assert not (tmp_path / ".mb" / "cache").exists()
     assert sorted(p.relative_to(wiki).as_posix() for p in wiki.rglob("*")) == [
         "drafts",
