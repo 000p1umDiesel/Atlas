@@ -13,7 +13,8 @@
   удаление (задача `remove`);
 - `/api/jobs` — задачи фоновой очереди и их повтор;
 - `/api/search`, `/api/ask` — поиск фрагментов и ответ на вопрос;
-- `/api/conversations` — личные диалоги и сообщения в них (вопрос с учётом истории);
+- `/api/conversations` — личные диалоги (создание, переименование, удаление) и сообщения в
+  них (вопрос с учётом истории, в том числе потоком SSE);
 - `/api/wiki`, `/api/graph` — страницы wiki, поиск сущностей и их окрестность в графе;
 - `/api/status` — очередь, жив ли worker, расход LLM.
 
@@ -489,6 +490,17 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     def conversations(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
         """Страница диалогов текущего пользователя, новые первыми."""
         return kb.store.conversations(user["id"], limit=limit, offset=offset)
+
+    @app.patch("/api/conversations/{conversation_id}")
+    def rename_conversation(conversation_id: str, body: Conversation, kb: KB, user: User):
+        """Переименовывает диалог; 404 — чужой или нет."""
+        return kb.store.rename_conversation(user["id"], conversation_id, body.title)
+
+    @app.delete("/api/conversations/{conversation_id}")
+    def delete_conversation(conversation_id: str, kb: KB, user: User):
+        """Удаляет диалог со всеми сообщениями; 404 — чужой или нет."""
+        kb.store.delete_conversation(user["id"], conversation_id)
+        return {"status": "ok"}
 
     @app.get("/api/conversations/{conversation_id}/messages")
     def history(conversation_id: str, kb: KB, user: User, limit: Limit = 100, offset: Offset = 0):

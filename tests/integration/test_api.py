@@ -368,3 +368,50 @@ def test_index_has_no_inline_script_or_style(api):
     html = api.client.get("/").text
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
     assert " style=" not in html and "<style" not in html
+
+
+def test_rename_and_delete_conversations(api):
+    store, owner, other = api.store, api.owner, api.other
+    chat = store.create_conversation(owner["id"], "")
+    renamed = store.rename_conversation(owner["id"], chat["id"], "  Про внимание  ")
+    assert renamed["title"] == "Про внимание" and "seq" not in renamed
+    with pytest.raises(ServiceError) as foreign:
+        store.rename_conversation(other["id"], chat["id"], "x")
+    assert foreign.value.status == 404
+    store.append_message(owner["id"], chat["id"], "user", "q")
+    with pytest.raises(ServiceError):
+        store.delete_conversation(other["id"], chat["id"])
+    store.delete_conversation(owner["id"], chat["id"])
+    with pytest.raises(ServiceError) as gone:
+        store.messages(owner["id"], chat["id"])
+    assert gone.value.status == 404
+
+
+def test_title_is_set_only_when_empty(api):
+    chat = api.store.create_conversation(api.owner["id"], "")
+    api.store.set_title_if_empty(api.owner["id"], chat["id"], "Первый вопрос")
+    api.store.set_title_if_empty(api.owner["id"], chat["id"], "Второй вопрос")
+    assert api.store.conversation(api.owner["id"], chat["id"])["title"] == "Первый вопрос"
+
+
+def test_message_meta_round_trips_and_migration_is_idempotent(api):
+    chat = api.store.create_conversation(api.owner["id"])
+    saved = api.store.append_message(
+        api.owner["id"], chat["id"], "assistant", "a", meta={"latency_ms": 5}
+    )
+    assert saved["meta"] == {"latency_ms": 5}
+    api.store.append_message(api.owner["id"], chat["id"], "user", "q")
+    again = ServiceStore(database_target(api.settings))  # миграции второй раз — без ошибок
+    metas = [m["meta"] for m in again.messages(api.owner["id"], chat["id"])]
+    assert metas == [{"latency_ms": 5}, None]
+
+
+def test_conversation_routes(api):
+    h = api.headers
+    cid = api.client.post("/api/conversations", headers=h, json={}).json()["id"]
+    patched = api.client.patch(f"/api/conversations/{cid}", headers=h, json={"title": "Новое"})
+    assert patched.status_code == 200 and patched.json()["title"] == "Новое"
+    assert api.client.delete(f"/api/conversations/{cid}", headers=h).json() == {"status": "ok"}
+    assert api.client.delete(f"/api/conversations/{cid}", headers=h).status_code == 404
+    assert api.client.patch(f"/api/conversations/{cid}", json={"title": "x"}).status_code == 401
+    assert api.client.delete(f"/api/conversations/{cid}").status_code == 401

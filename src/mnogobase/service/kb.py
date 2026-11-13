@@ -133,6 +133,16 @@ def _job(job) -> dict:
     return data
 
 
+def _meta(answer: dict) -> dict:
+    """Метрики ответа для сообщения диалога: полное время, токены ответа и переводы запроса."""
+    return {
+        "latency_ms": int(answer.get("latency_ms", 0)),
+        "tokens_in": int(answer.get("tokens_in", 0)),
+        "tokens_out": int(answer.get("tokens_out", 0)),
+        "alt_queries": list(answer.get("alt_queries", [])),
+    }
+
+
 def _source_url(doc_id: str) -> str:
     """URL API для скачивания загруженного исходника."""
     return f"/api/documents/{doc_id}/content"
@@ -580,6 +590,7 @@ class KnowledgeBase:
             else []
         )
         history = [m for m in messages if m["status"] == "done"]
+        await asyncio.to_thread(store.set_title_if_empty, user_id, conversation_id, question[:60])
         await asyncio.to_thread(
             store.append_message, user_id, conversation_id, "user", question, mode=mode
         )
@@ -610,6 +621,7 @@ class KnowledgeBase:
             mode=mode,
             sources=answer.get("sources", []),
             query=answer.get("query", question),
+            meta=_meta(answer),
         )
 
     def history(

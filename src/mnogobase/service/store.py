@@ -77,7 +77,10 @@ CREATE INDEX IF NOT EXISTS messages_owner ON messages(user_id, conversation_id, 
 _MIGRATIONS = (
     # v2: колонка role осталась от командного режима (удалён 2026-11-10); владелец у базы один
     "ALTER TABLE users DROP COLUMN IF EXISTS role",
+    # v3: метрики ответа (время, токены, переводы запроса) для веб-интерфейса, JSON
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS meta TEXT",
 )
+MAX_TITLE = 200
 
 
 def _record(row) -> dict:
@@ -353,6 +356,38 @@ class ServiceStore:
                 )
             ]
 
+    def rename_conversation(self, user_id: str, conversation_id: str, title: str) -> dict:
+        """Меняет заголовок диалога (пробелы по краям убираются, не длиннее `MAX_TITLE`) и
+        возвращает запись; 404 — нет диалога или он чужой."""
+        title = title.strip()[:MAX_TITLE]
+        with self._connection() as conn:
+            self._conversation(conn, user_id, conversation_id)
+            conn.execute(
+                "UPDATE conversations SET title=? WHERE id=? AND user_id=?",
+                (title, conversation_id, user_id),
+            )
+            return _record(self._conversation(conn, user_id, conversation_id))
+
+    def set_title_if_empty(self, user_id: str, conversation_id: str, title: str) -> None:
+        """Заголовок по первому вопросу: ставится, только если у диалога его ещё нет."""
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE conversations SET title=? WHERE id=? AND user_id=? AND title=''",
+                (title.strip()[:MAX_TITLE], conversation_id, user_id),
+            )
+
+    def delete_conversation(self, user_id: str, conversation_id: str) -> None:
+        """Удаляет диалог вместе с сообщениями (одна транзакция); 404 — нет или чужой."""
+        with self._connection() as conn:
+            self._conversation(conn, user_id, conversation_id)
+            conn.execute(
+                "DELETE FROM messages WHERE conversation_id=? AND user_id=?",
+                (conversation_id, user_id),
+            )
+            conn.execute(
+                "DELETE FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)
+            )
+
     def conversation(self, user_id: str, conversation_id: str) -> dict:
         """Запись диалога пользователя; 404, если его нет или он чужой."""
         with self._connection() as conn:
@@ -360,9 +395,10 @@ class ServiceStore:
 
     @staticmethod
     def _message(row: Row) -> dict:
-        """Сообщение как словарь, `sources` разобран из JSON."""
+        """Сообщение как словарь, `sources` и `meta` разобраны из JSON."""
         message = _record(row)
         message["sources"] = json.loads(message["sources"])
+        message["meta"] = json.loads(message["meta"]) if message.get("meta") else None
         return message
 
     def messages(
@@ -406,13 +442,15 @@ class ServiceStore:
         sources: list | None = None,
         status: str = "done",
         query: str | None = None,
+        meta: dict | None = None,
     ) -> dict:
         """Добавляет сообщение в диалог и возвращает его запись (с разобранным `sources`).
 
         `role` — `user` / `assistant` / `system`; `sources` — список источников ответа (должен
         сериализоваться в JSON); `status` — `done` или `error` (неудачный ответ, в историю для
         переформулировки не попадает); `query` — запрос, которым реально искали (вопрос,
-        переписанный с учётом истории). Существование и владелец диалога проверяются в той
+        переписанный с учётом истории); `meta` — метрики ответа (`latency_ms`, `tokens_in`,
+        `tokens_out`, `alt_queries`). Существование и владелец диалога проверяются в той
         же транзакции. 400 — неверные `role` или `sources`, 404 — нет диалога."""
         if role not in {"user", "assistant", "system"}:
             raise ServiceError(400, "Неверная роль сообщения")
@@ -422,6 +460,7 @@ class ServiceStore:
             sources_json = json.dumps(sources if sources is not None else [], ensure_ascii=False)
         except (TypeError, ValueError):
             raise ServiceError(400, "Неверные источники сообщения") from None
+        meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
         message = {
             "id": uuid.uuid4().hex,
             "conversation_id": conversation_id,
@@ -432,15 +471,17 @@ class ServiceStore:
             "sources": sources_json,
             "status": status,
             "query": query,
+            "meta": meta_json,
             "created_at": utc_timestamp(),
         }
         with self._connection() as conn:
             self._conversation(conn, user_id, conversation_id)
             conn.execute(
                 "INSERT INTO messages(id, conversation_id, user_id, role, content, mode, "
-                "sources, status, query, created_at) VALUES(:id, :conversation_id, :user_id, "
-                ":role, :content, :mode, :sources, :status, :query, :created_at)",
+                "sources, status, query, meta, created_at) VALUES(:id, :conversation_id, :user_id, "
+                ":role, :content, :mode, :sources, :status, :query, :meta, :created_at)",
                 message,
             )
         message["sources"] = json.loads(sources_json)
+        message["meta"] = meta
         return message

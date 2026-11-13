@@ -262,3 +262,20 @@ async def test_validation_and_queue_limits(env):
         assert error.value.status == 404
     finally:
         await kb.close()
+
+
+async def test_messages_keep_metrics_and_first_question_titles_the_chat(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    user = kb.store.create_user("owner", "long-enough-password")
+    try:
+        upload(kb, "Attention paper.md", (FIXTURES / "attention_en.md").read_bytes())
+        await work_once()
+        chat = kb.store.create_conversation(user["id"])
+        question = "What is the Transformer architecture and why does it use attention?" * 2
+        reply = await kb.send_message(user["id"], chat["id"], question)
+        assert isinstance(reply["meta"]["latency_ms"], int)
+        assert reply["meta"]["tokens_out"] > 0
+        assert kb.store.conversation(user["id"], chat["id"])["title"] == question[:60]
+    finally:
+        await kb.close()
