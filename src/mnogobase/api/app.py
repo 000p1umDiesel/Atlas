@@ -47,6 +47,7 @@ from __future__ import annotations
 # ruff: noqa: B008
 import hashlib
 import json
+import mimetypes
 import os
 import tempfile
 from collections.abc import AsyncIterator
@@ -79,6 +80,9 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 WEB_DIR = FilePath(str(files("mnogobase") / "web"))
 # сборка React-интерфейса (`npm --prefix frontend run build`)
 WEB_DIST = WEB_DIR / "dist"
+# В `python:3.12-slim` нет `/etc/mime.types`: без этого шрифты сборки уходят как
+# application/octet-stream (с nosniff браузер может их не принять).
+mimetypes.add_type("font/woff2", ".woff2")
 ASSETS_CACHE = "public, max-age=31536000, immutable"
 NOT_BUILT = "Веб-интерфейс не собран: npm --prefix frontend ci && npm --prefix frontend run build"
 # CSP страниц: только свои скрипты, стили и шрифты, без inline-кода и CDN (§6.4 аудита)
