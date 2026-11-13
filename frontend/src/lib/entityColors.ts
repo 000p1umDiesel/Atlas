@@ -53,6 +53,17 @@ export function withAlpha(rgb: string, alpha: number): string {
   return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${alpha})`;
 }
 
+/** Смесь двух `rgb(r, g, b)`: доля `t` второго цвета (0 — первый, 1 — второй). */
+export function mixRgb(a: string, b: string, t: number): string {
+  const re = /^rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)$/;
+  const p = re.exec(a);
+  const q = re.exec(b);
+  if (!p || !q) return a;
+  const k = Math.min(1, Math.max(0, t));
+  const ch = (i: number) => Math.round(Number(p[i]) * (1 - k) + Number(q[i]) * k);
+  return `rgb(${ch(1)}, ${ch(2)}, ${ch(3)})`;
+}
+
 let colorContext: ColorContext | null | undefined;
 
 function getColorContext(): ColorContext | null {

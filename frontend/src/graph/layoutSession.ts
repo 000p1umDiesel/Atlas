@@ -13,8 +13,14 @@ const BARNES_HUT_FROM = 500;
 /** Сходимость: средний сдвиг узла за пачку меньше этой доли размаха раскладки. */
 const CONVERGED = 1e-4;
 
+/** Сколько ещё итераций и времени даёт раскладке каждый сдвиг закреплённого узла. */
+const PIN_ITERATIONS = 400;
+const PIN_TIME_MS = 2500;
+
 export interface LayoutSession {
   step(): { positions: Float32Array; done: boolean };
+  /** Закрепить узел в (x, y) и продолжить раскладку (перетаскивание). */
+  pin(id: string, x: number, y: number): void;
 }
 
 export function createLayoutSession(
@@ -43,9 +49,11 @@ export function createLayoutSession(
     ...forceAtlas2.inferSettings(g),
     barnesHutOptimize: g.order > BARNES_HUT_FROM,
   };
-  const started = now();
+  let started = now();
+  let timeLimit = TIME_LIMIT_MS;
   let done = g.order === 0;
   let iterations = 0;
+  let limit = req.iterations;
 
   const snapshot = (): Float32Array => {
     const out = new Float32Array(ids.length * 2);
@@ -60,7 +68,7 @@ export function createLayoutSession(
     step() {
       if (done) return { positions: snapshot(), done: true };
       const before = snapshot();
-      const batch = Math.min(BATCH, req.iterations - iterations);
+      const batch = Math.max(1, Math.min(BATCH, limit - iterations));
       forceAtlas2.assign(g, { iterations: batch, settings, getEdgeWeight: "weight" });
       iterations += batch;
       const positions = snapshot();
@@ -81,8 +89,16 @@ export function createLayoutSession(
       }
       const extent = Math.max(maxX - minX, maxY - minY, 1);
       const converged = moved / ids.length / extent < CONVERGED;
-      done = converged || iterations >= req.iterations || now() - started >= TIME_LIMIT_MS;
+      done = converged || iterations >= limit || now() - started >= timeLimit;
       return { positions, done };
+    },
+    pin(id, x, y) {
+      if (!g.hasNode(id) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+      g.mergeNodeAttributes(id, { x, y, fixed: true });
+      limit = Math.max(limit, iterations + PIN_ITERATIONS);
+      started = now();
+      timeLimit = PIN_TIME_MS;
+      done = false;
     },
   };
 }

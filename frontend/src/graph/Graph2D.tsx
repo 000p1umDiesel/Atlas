@@ -1,10 +1,15 @@
 import { MultiDirectedGraph } from "graphology";
 import type { Attributes } from "graphology-types";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Sigma from "sigma";
+import type { EdgeExtremitySpec, NodeLayerSpec } from "sigma/primitives";
+import { extremityArrow, layerFill } from "sigma/rendering";
 import type { NodeView } from "../api/types";
-import { cssColor, schemeColor, typeColorVar, withAlpha } from "../lib/entityColors";
+import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorVar, withAlpha } from "../lib/entityColors";
+import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
+import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { communityColorMap } from "./insights";
+import { neighborhood, smoothTowards } from "./interaction";
 import {
   applyFrame,
   encodeLayoutRequest,
@@ -24,13 +29,26 @@ import {
   type GraphFilters,
 } from "./model";
 
+/** Сдвиг точки фокуса от центра холста, CSS-пиксели (место под карточку сущности). */
+export interface FocusOffset {
+  x: number;
+  y: number;
+}
+
 export interface Graph2DApi {
-  /** Снимок текущего вида в PNG (фон — `--bg`). */
+  /** Снимок текущего вида в PNG. */
   exportPng(): Promise<Blob>;
   /** Вписать видимые узлы в экран. */
   fit(): void;
   /** Освободить WebGL и воркер (повторный вызов безопасен; размонтирование делает то же). */
   dispose(): void;
+  /** Приблизить / отдалить на шаг. */
+  zoomIn?(): void;
+  zoomOut?(): void;
+  /** Плавно навести камеру на узел: он окажется в центре, сдвинутом на `offset`. */
+  focusNode?(id: string, offset?: FocusOffset): void;
+  /** Подсветить набор узлов (наведение на пункт легенды); null — снять. */
+  emphasize?(ids: ReadonlySet<string> | null): void;
 }
 
 export interface Graph2DProps {
@@ -38,54 +56,97 @@ export interface Graph2DProps {
   filters: GraphFilters;
   /** Настроенные типы сущностей в порядке конфигурации (цвета как в легенде). */
   entityTypes?: string[];
-  /** Выбранная сущность: её подпись видна всегда. */
+  /** Выбранная сущность: её окрестность подсвечена, подписи видны. */
   selected?: string | null;
   onSelect(entityId: string): void;
+  /** Клик по пустому месту холста (снять выделение, закрыть карточку). */
+  onBackgroundClick?(): void;
   onReady?(api: Graph2DApi): void;
 }
 
 type RenderNode = NodeView & { x: number; y: number; size: number; color: string; label: string };
 type RenderEdge = { weight: number; predicate: string; size: number };
 type RenderGraph = MultiDirectedGraph<RenderNode, RenderEdge>;
-type NodeState = { isActive: boolean; isMatch: boolean; isSelected: boolean };
+/** isActive — не приглушён; isNeighbor — окрестность наведения/выбора (подпись видна всегда). */
+type NodeState = { isActive: boolean; isNeighbor: boolean; isMatch: boolean; isSelected: boolean };
 type EdgeState = { isActive: boolean };
 type GraphState = { hasActive: boolean };
-type Renderer = Sigma<RenderNode, RenderEdge, Attributes, NodeState, EdgeState, GraphState>;
+/** Свои переменные шейдера узла: цвет обводки (слой `ring`). */
+type Primitives = {
+  nodes: { variables: { ringColor: { type: "color"; default: string } }; layers: NodeLayerSpec[] };
+  edges: {
+    extremities: EdgeExtremitySpec[];
+    label: { minVisibilityThreshold: number; fullVisibilityThreshold: number };
+  };
+};
+type Renderer = Sigma<RenderNode, RenderEdge, Attributes, NodeState, EdgeState, GraphState, Primitives>;
 
 /** Порог подписи: узлы мельче (в пикселях на экране) подписываются только при наведении. */
 const LABEL_THRESHOLD = 9;
+const LABEL_SIZE = 13;
+const EDGE_LABEL_SIZE = 11;
 const MATCH_SCALE = 1.35;
 const HOVER_SCALE = 1.15;
 const EXPORT_TIMEOUT_MS = 3000;
+/** Постоянная времени следования узла за курсором при перетаскивании, мс. */
+const DRAG_TAU_MS = 90;
+const FOCUS_MS = 450;
+const ZOOM_MS = 260;
+
+const FONT_REGULAR = `500 ${GRAPH_FONT_FAMILY}`;
+const FONT_STRONG = `600 ${GRAPH_FONT_FAMILY}`;
+const FONTS = [graphFont(500, LABEL_SIZE), graphFont(600, LABEL_SIZE)];
+
+/** GL_UNSIGNED_BYTE: константа, а не `WebGL2RenderingContext.…` (в jsdom его нет). */
+const UNSIGNED_BYTE = 5121;
+
+/**
+ * Тонкая обводка узла цветом холста (слой фрагментного шейдера Sigma 4): край узла
+ * читается чисто, а налезающие друг на друга узлы разделены просветом.
+ */
+const ringLayer = {
+  name: "ring",
+  uniforms: [],
+  attributes: [{ name: "ringColor", size: 4 as const, type: UNSIGNED_BYTE, normalized: true, source: "ringColor" }],
+  glsl: /* glsl */ `
+vec4 layer_ring(vec4 v_ringColor) {
+  float w = 1.4 * context.pixelToUV;
+  float t = smoothstep(-w - context.aaWidth, -w + context.aaWidth, context.sdf);
+  return vec4(v_ringColor.rgb, v_ringColor.a * t);
+}
+`,
+};
 
 interface Palette {
-  label: string;
+  ink: string;
+  muted: string;
   edge: string;
   edgeActive: string;
-  dim: string;
   edgeDim: string;
-  ring: string;
   card: string;
-  bg: string;
+  labelBg: string;
 }
 
 function readPalette(): Palette {
-  const muted = cssColor("--muted");
+  const ink = cssColor("--ink");
+  const card = cssColor("--card");
+  const dark = isDarkScheme();
   return {
-    label: cssColor("--ink"),
-    edge: withAlpha(muted, 0.45),
-    edgeActive: cssColor("--primary"),
-    dim: withAlpha(muted, 0.25),
-    edgeDim: withAlpha(muted, 0.12),
-    ring: cssColor("--primary-deep"),
-    card: cssColor("--card"),
-    bg: cssColor("--bg"),
+    ink,
+    muted: cssColor("--muted"),
+    edge: withAlpha(ink, dark ? 0.24 : 0.26),
+    edgeActive: dark ? cssColor("--primary-ink") : cssColor("--primary-deep"),
+    edgeDim: withAlpha(ink, 0.06),
+    card,
+    labelBg: withAlpha(card, 0.82),
   };
 }
 
 function prefersReducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
+
+const predicateLabel = (p: string) => p.replaceAll("_", " ");
 
 /**
  * Граф для отрисовки: копия модели с позициями, размером, цветом и подписью.
@@ -116,7 +177,7 @@ function toRenderGraph(graph: Graph): RenderGraph {
     rg.addEdgeWithKey(key, src, dst, {
       weight: a.weight,
       predicate: a.predicate,
-      size: 0.6 + 1.6 * Math.sqrt(w),
+      size: 0.8 + 1.8 * Math.sqrt(w),
     });
   });
   return rg;
@@ -129,8 +190,18 @@ function createLayoutWorker(): WorkerLike {
 }
 
 /** Интерактивный 2D-граф (Sigma 4, WebGL) с живой раскладкой ForceAtlas2 в модульном воркере. */
-export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect, onReady }: Graph2DProps) {
+export function Graph2D({
+  graph,
+  filters,
+  entityTypes,
+  selected = null,
+  onSelect,
+  onBackgroundClick,
+  onReady,
+}: Graph2DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const pointerRef = useRef({ x: 0, y: 0 });
   const sigmaRef = useRef<Renderer | null>(null);
   const renderGraphRef = useRef<RenderGraph | null>(null);
   const controllerRef = useRef<LayoutController | null>(null);
@@ -141,61 +212,132 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     edges: new Set(),
   });
   const hoveredRef = useRef<string | null>(null);
+  const selectedRef = useRef<string | null>(selected);
+  const emphasisRef = useRef<ReadonlySet<string> | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onBackgroundRef = useRef(onBackgroundClick);
   const onReadyRef = useRef(onReady);
   const [themeVersion, setThemeVersion] = useState(0);
+  // Sigma создаётся после загрузки шрифта подписей: атлас глифов рисуется один раз.
+  const [fontsLoaded, setFontsLoaded] = useState(() => fontsReady(FONTS));
+  const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
 
   useEffect(() => {
     onSelectRef.current = onSelect;
+    onBackgroundRef.current = onBackgroundClick;
     onReadyRef.current = onReady;
   });
 
-  // Активное подмножество при наведении: узел, его видимые соседи и рёбра к ним.
-  const activeRef = useRef<{ nodes: string[]; edges: string[] }>({ nodes: [], edges: [] });
-  const setHover = useCallback((node: string | null) => {
+  useEffect(() => {
+    if (fontsLoaded) return;
+    let cancelled = false;
+    void loadFonts(FONTS).then(() => {
+      if (!cancelled) setFontsLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fontsLoaded]);
+
+  // Активное подмножество: окрестность наведённого узла, иначе узлы пункта легенды,
+  // иначе окрестность выбранного. Всё остальное приглушено.
+  const activeRef = useRef<{ nodes: string[]; edges: string[]; neighbors: string[] }>({
+    nodes: [],
+    edges: [],
+    neighbors: [],
+  });
+  const refreshActive = useCallback(() => {
     const sigma = sigmaRef.current;
     const rg = renderGraphRef.current;
     if (!sigma || !rg) return;
-    hoveredRef.current = node;
     const prev = activeRef.current;
-    sigma.setNodesState(prev.nodes, { isActive: false });
+    sigma.setNodesState(prev.nodes, { isActive: false, isNeighbor: false });
     sigma.setEdgesState(prev.edges, { isActive: false });
     const visible = visibleRef.current;
-    if (node === null || !rg.hasNode(node) || !visible.nodes.has(node)) {
-      activeRef.current = { nodes: [], edges: [] };
-      sigma.setGraphState({ hasActive: false });
+    const hovered = hoveredRef.current;
+    const emphasis = emphasisRef.current;
+    let next = { nodes: [] as string[], edges: [] as string[], neighbors: [] as string[] };
+    if (hovered !== null && visible.nodes.has(hovered)) {
+      const n = neighborhood(rg, hovered, visible);
+      next = { ...n, neighbors: n.nodes };
+    } else if (emphasis !== null) {
+      next = { nodes: [...emphasis].filter((id) => visible.nodes.has(id)), edges: [], neighbors: [] };
+    } else if (selectedRef.current !== null) {
+      const n = neighborhood(rg, selectedRef.current, visible);
+      next = { ...n, neighbors: n.nodes };
+    }
+    activeRef.current = next;
+    sigma.setNodesState(next.nodes, { isActive: true });
+    sigma.setNodesState(next.neighbors, { isNeighbor: true });
+    sigma.setEdgesState(next.edges, { isActive: true });
+    sigma.setGraphState({ hasActive: next.nodes.length > 0 || emphasis !== null });
+  }, []);
+
+  const showTooltip = useCallback((node: string | null) => {
+    const rg = renderGraphRef.current;
+    if (node === null || !rg || !rg.hasNode(node)) {
+      setTooltip(null);
       return;
     }
-    const nodes = new Set([node]);
-    const edges: string[] = [];
-    rg.forEachEdge(node, (edge, _a, src, dst) => {
-      if (!visible.edges.has(edge)) return;
-      edges.push(edge);
-      nodes.add(src === node ? dst : src);
-    });
-    activeRef.current = { nodes: [...nodes], edges };
-    sigma.setNodesState(activeRef.current.nodes, { isActive: true });
-    sigma.setEdgesState(edges, { isActive: true });
-    sigma.setGraphState({ hasActive: true });
+    const a = rg.getNodeAttributes(node);
+    setTooltip({ id: node, name: a.name, type: a.type, mentions: a.mention_count, color: a.color });
   }, []);
 
   // Создание рендерера и воркера на каждый новый граф; разрушение при размонтировании.
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !fontsLoaded) return;
     const rg = toRenderGraph(graph);
     renderGraphRef.current = rg;
     paletteRef.current = readPalette();
     const pal = () => paletteRef.current as Palette;
     const reduced = prefersReducedMotion();
 
-    const sigma: Renderer = new Sigma<RenderNode, RenderEdge, Attributes, NodeState, EdgeState, GraphState>(
+    // Перетаскивание: Sigma сообщает цель (позицию указателя), узел догоняет её плавно.
+    let drag: { node: string; target: { x: number; y: number }; last: number; released: boolean } | null = null;
+    let dragFrame = 0;
+    const dragStep = (now: number) => {
+      dragFrame = 0;
+      const d = drag;
+      if (!d || !rg.hasNode(d.node)) {
+        drag = null;
+        return;
+      }
+      const cur = rg.getNodeAttributes(d.node);
+      const next = smoothTowards(cur, d.target, Math.min(64, now - d.last), DRAG_TAU_MS);
+      d.last = now;
+      rg.mergeNodeAttributes(d.node, next);
+      dragGuardRef.current?.follow(d.node, next.x, next.y);
+      if (d.released && Math.hypot(d.target.x - next.x, d.target.y - next.y) < 1e-3) {
+        drag = null;
+        return;
+      }
+      dragFrame = requestAnimationFrame(dragStep);
+    };
+    const follow = (node: string, x: number, y: number) => {
+      if (!drag || drag.node !== node) drag = { node, target: { x, y }, last: performance.now(), released: false };
+      else drag.target = { x, y };
+      if (!dragFrame) dragFrame = requestAnimationFrame(dragStep);
+    };
+
+    const sigma: Renderer = new Sigma<RenderNode, RenderEdge, Attributes, NodeState, EdgeState, GraphState, Primitives>(
       rg,
       container,
       {
-        customNodeState: { isActive: false, isMatch: false, isSelected: false },
+        customNodeState: { isActive: false, isNeighbor: false, isMatch: false, isSelected: false },
         customEdgeState: { isActive: false },
         customGraphState: { hasActive: false },
+        primitives: {
+          nodes: {
+            variables: { ringColor: { type: "color", default: "#fffdf8" } },
+            layers: [layerFill(), ringLayer],
+          },
+          edges: {
+            extremities: [extremityArrow({ lengthRatio: 5, widthRatio: 4 })],
+            // Подпись связи — только целиком: если не помещается вдоль ребра, её нет (не обрубок).
+            label: { minVisibilityThreshold: 0.98, fullVisibilityThreshold: 1 },
+          },
+        },
         settings: {
           // "shared" вставляет <style> (подсказка жестов) — CSP страницы его запрещает.
           gestureTarget: "graph",
@@ -203,14 +345,24 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
           itemSizesReference: "screen",
           enableNodeDrag: true,
           enableCameraRotation: false,
+          renderEdgeLabels: true,
+          edgeLabelAnchors: "allNodes",
+          minEdgeThickness: 0.8,
           labelRenderedSizeThreshold: LABEL_THRESHOLD,
-          labelDensity: 0.8,
-          labelGridCellSize: 120,
+          labelDensity: 0.7,
+          labelGridCellSize: 140,
           minCameraRatio: 0.03,
           maxCameraRatio: 20,
-          ...(reduced
-            ? { zoomDuration: 0, inertiaDuration: 0, doubleClickZoomingDuration: 0 }
-            : {}),
+          // Мягкая инерция камеры после панорамирования (по умолчанию 200 мс — резко).
+          inertiaDuration: 700,
+          inertiaRatio: 4,
+          zoomDuration: 320,
+          dragPositionToAttributes: (pos, node) => {
+            if (reduced) return { x: pos.x, y: pos.y };
+            follow(node, pos.x, pos.y);
+            return {};
+          },
+          ...(reduced ? { zoomDuration: 0, inertiaDuration: 0, doubleClickZoomingDuration: 0 } : {}),
         },
         styles: {
           nodes: [
@@ -219,9 +371,13 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
               y: { attribute: "y" },
               size: { attribute: "size" },
               color: { attribute: "color" },
+              ringColor: () => pal().card,
               label: { attribute: "label" },
-              labelColor: () => pal().label,
-              labelSize: 12,
+              labelColor: () => pal().ink,
+              labelSize: LABEL_SIZE,
+              labelFont: FONT_REGULAR,
+              labelBackgroundColor: () => pal().labelBg,
+              labelBackgroundPadding: 2,
               depth: "nodes",
               visibility: { whenState: "isHidden", then: "hidden", else: "visible" },
               labelVisibility: "auto",
@@ -233,12 +389,13 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
               then: {
                 size: (a) => a.size * MATCH_SCALE,
                 labelVisibility: "visible",
+                labelFont: FONT_STRONG,
                 backdropVisibility: "visible",
                 backdropArea: "node",
                 backdropColor: "transparent",
                 backdropShadowColor: "transparent",
                 backdropShadowBlur: 0,
-                backdropBorderColor: () => pal().ring,
+                backdropBorderColor: () => pal().edgeActive,
                 backdropBorderWidth: 2,
                 backdropPadding: 2,
               },
@@ -246,25 +403,27 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
             {
               when: (_a, s, gs) => gs.hasActive && !s.isActive,
               then: {
-                color: () => pal().dim,
+                color: (a) => mixRgb(a.color, pal().card, 0.8),
                 labelVisibility: "hidden",
                 backdropVisibility: "hidden",
               },
             },
             { whenState: "isActive", then: { depth: "topNodes" } },
+            { whenState: "isNeighbor", then: { labelVisibility: "visible" } },
             {
               whenState: "isSelected",
               then: {
                 labelVisibility: "visible",
+                labelFont: FONT_STRONG,
                 depth: "topNodes",
                 backdropVisibility: "visible",
                 backdropArea: "node",
                 backdropColor: "transparent",
                 backdropShadowColor: "transparent",
                 backdropShadowBlur: 0,
-                backdropBorderColor: () => pal().ring,
+                backdropBorderColor: () => pal().edgeActive,
                 backdropBorderWidth: 3,
-                backdropPadding: 2,
+                backdropPadding: 2.5,
               },
             },
             {
@@ -272,14 +431,8 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
               then: {
                 size: (a, s) => a.size * (s.isMatch ? MATCH_SCALE : 1) * HOVER_SCALE,
                 labelVisibility: "visible",
+                labelFont: FONT_STRONG,
                 depth: "topNodes",
-                backdropVisibility: "visible",
-                backdropArea: "both",
-                backdropColor: () => pal().card,
-                backdropShadowColor: "rgba(0, 0, 0, 0.18)",
-                backdropShadowBlur: 8,
-                backdropBorderWidth: 0,
-                backdropPadding: 4,
               },
             },
           ],
@@ -289,38 +442,81 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
               color: () => pal().edge,
               depth: "edges",
               visibility: { whenState: "isHidden", then: "hidden", else: "visible" },
+              head: "none",
+              label: (a) => predicateLabel(a.predicate),
+              labelVisibility: "hidden",
+              labelSize: EDGE_LABEL_SIZE,
+              labelFont: FONT_REGULAR,
+              labelColor: () => pal().muted,
+              labelBackgroundColor: () => pal().labelBg,
+              labelBackgroundPadding: 2,
+              labelPosition: "over",
             },
             {
               when: (_a, s, gs) => gs.hasActive && !s.isActive,
               then: { color: () => pal().edgeDim },
             },
-            { whenState: "isActive", then: { color: () => pal().edgeActive, depth: "topEdges" } },
+            {
+              whenState: "isActive",
+              then: {
+                color: () => pal().edgeActive,
+                depth: "topEdges",
+                head: "arrow",
+                size: (a) => Math.max(1.8, a.size),
+                labelVisibility: "visible",
+              },
+            },
           ],
         },
       },
     );
     sigmaRef.current = sigma;
 
-    sigma.on("enterNode", ({ node }) => setHover(node));
-    sigma.on("leaveNode", () => setHover(null));
+    sigma.on("enterNode", ({ node, event }) => {
+      hoveredRef.current = node;
+      const original = event.original;
+      if ("clientX" in original) pointerRef.current = { x: original.clientX, y: original.clientY };
+      refreshActive();
+      showTooltip(node);
+    });
+    sigma.on("leaveNode", () => {
+      hoveredRef.current = null;
+      refreshActive();
+      showTooltip(null);
+    });
     sigma.on("clickNode", ({ node }) => onSelectRef.current(node));
+    sigma.on("clickStage", () => onBackgroundRef.current?.());
 
     const controller = new LayoutController(createLayoutWorker, (ids, frame: LayoutFrame) => {
       // При prefers-reduced-motion узлы не «плывут»: применяется только итоговый кадр.
       if (reduced && !frame.done) return;
-      applyFrame(rg, ids, frame);
+      applyFrame(rg, ids, frame, drag ? new Set([drag.node]) : undefined);
     });
     controllerRef.current = controller;
     // Перетаскивание встроено в Sigma 4 (камера не двигается, отпускание — pointerup).
-    // Сдвиг больше порога останавливает раскладку; отпустили узел — она продолжается
-    // с текущих позиций, перетащенные узлы закреплены. Клик с дрожанием её не трогает.
-    const dragGuard = new LayoutDragGuard(controller, (pinned) =>
-      encodeLayoutRequest(rg, visibleRef.current, LAYOUT_ITERATIONS, pinned),
+    // Живой режим: раскладка продолжается, перетаскиваемый узел закреплён у курсора и
+    // тянет соседей. При prefers-reduced-motion — остановка и перезапуск после отпускания.
+    const dragGuard = new LayoutDragGuard(
+      controller,
+      (pinned) => encodeLayoutRequest(rg, visibleRef.current, LAYOUT_ITERATIONS, pinned),
+      { live: !reduced },
     );
     dragGuardRef.current = dragGuard;
-    sigma.on("nodeDragStart", ({ event }) => dragGuard.start(event.x, event.y));
+    sigma.on("nodeDragStart", ({ node, event }) => {
+      dragGuard.start(event.x, event.y, node);
+      showTooltip(null);
+    });
     sigma.on("nodeDrag", ({ event }) => dragGuard.move(event.x, event.y));
-    sigma.on("nodeDragEnd", ({ allDraggedNodes }) => dragGuard.end(allDraggedNodes));
+    sigma.on("nodeDragEnd", ({ allDraggedNodes }) => {
+      dragGuard.end(allDraggedNodes);
+      if (drag) drag.released = true;
+    });
+
+    const onPointerMove = (e: PointerEvent) => {
+      pointerRef.current = { x: e.clientX, y: e.clientY };
+      if (hoveredRef.current !== null) placeTooltip(tooltipRef.current, container, e.clientX, e.clientY);
+    };
+    container.addEventListener("pointermove", onPointerMove);
 
     // Смена темы: data-theme на <html> или системная схема.
     const bump = () => setThemeVersion((v) => v + 1);
@@ -337,6 +533,9 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     const dispose = () => {
       if (disposed) return;
       disposed = true;
+      cancelAnimationFrame(dragFrame);
+      drag = null;
+      container.removeEventListener("pointermove", onPointerMove);
       observer.disconnect();
       scheme?.removeEventListener("change", bump);
       resizer?.disconnect();
@@ -346,8 +545,9 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
       if (controllerRef.current === controller) controllerRef.current = null;
       if (dragGuardRef.current === dragGuard) dragGuardRef.current = null;
       if (renderGraphRef.current === rg) renderGraphRef.current = null;
-      activeRef.current = { nodes: [], edges: [] };
+      activeRef.current = { nodes: [], edges: [], neighbors: [] };
       hoveredRef.current = null;
+      setTooltip(null);
     };
 
     const fit = () => {
@@ -374,6 +574,36 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
       void camera.animate({ x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio, angle: 0 }, { duration });
     };
 
+    const zoom = (dir: 1 | -1) => {
+      if (disposed) return;
+      const camera = sigma.getCamera();
+      const duration = prefersReducedMotion() ? 0 : ZOOM_MS;
+      void (dir > 0 ? camera.zoomIn({ duration }) : camera.zoomOut({ duration }));
+    };
+
+    const focusNode = (id: string, offset: FocusOffset = { x: 0, y: 0 }) => {
+      if (disposed || !rg.hasNode(id)) return;
+      const camera = sigma.getCamera();
+      const p = sigma.graphToFramedGraph(rg.getNodeAttributes(id));
+      const ratio = Math.min(camera.getState().ratio, 0.45);
+      const { width, height } = sigma.getDimensions();
+      // Камера в узле, затем сдвиг на offset: узел окажется левее/выше центра на offset.
+      const shifted = sigma.viewportToFramedGraph(
+        { x: width / 2 + offset.x, y: height / 2 + offset.y },
+        { cameraState: { x: p.x, y: p.y, ratio, angle: 0 } },
+      );
+      void camera.animate(
+        { x: shifted.x, y: shifted.y, ratio, angle: 0 },
+        { duration: prefersReducedMotion() ? 0 : FOCUS_MS },
+      );
+    };
+
+    const emphasize = (ids: ReadonlySet<string> | null) => {
+      if (disposed) return;
+      emphasisRef.current = ids;
+      refreshActive();
+    };
+
     const exportPng = () =>
       new Promise<Blob>((resolve, reject) => {
         if (disposed) {
@@ -392,7 +622,7 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
             reject(new Error("Canvas недоступен"));
             return;
           }
-          ctx.fillStyle = pal().bg;
+          ctx.fillStyle = pal().card;
           ctx.fillRect(0, 0, out.width, out.height);
           ctx.drawImage(stage, 0, 0);
           out.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Не удалось получить PNG"))), "image/png");
@@ -405,9 +635,17 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
         sigma.scheduleRender();
       });
 
-    onReadyRef.current?.({ exportPng, fit, dispose });
+    onReadyRef.current?.({
+      exportPng,
+      fit,
+      dispose,
+      zoomIn: () => zoom(1),
+      zoomOut: () => zoom(-1),
+      focusNode,
+      emphasize,
+    });
     return dispose;
-  }, [graph, setHover]);
+  }, [graph, fontsLoaded, refreshActive, showTooltip]);
 
   // Видимость по фильтрам и перезапуск раскладки — только при смене состава графа.
   const typesKey = filters.types.join("\u0000");
@@ -435,12 +673,12 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     rg.forEachEdge((key) => (visible.edges.has(key) ? shownEdges : hiddenEdges).push(key));
     sigma.setEdgesState(shownEdges, { isHidden: false });
     sigma.setEdgesState(hiddenEdges, { isHidden: true });
-    setHover(hoveredRef.current);
+    refreshActive();
     controllerRef.current?.start(
       encodeLayoutRequest(rg, visible, LAYOUT_ITERATIONS, dragGuardRef.current?.pinned),
     );
     // Цвет, размер и подсветка в зависимости не входят: они не перезапускают раскладку.
-  }, [graph, setHover, typesKey, community, minWeight, minMentions, hideIsolated]);
+  }, [graph, fontsLoaded, refreshActive, typesKey, community, minWeight, minMentions, hideIsolated]);
 
   // Подсветка по строке поиска (подстрока имени без учёта регистра), только среди видимых.
   const highlight = filters.highlight.trim().toLowerCase();
@@ -457,7 +695,7 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     });
     sigma.setNodesState(off, { isMatch: false });
     sigma.setNodesState(on, { isMatch: true });
-  }, [graph, highlight, typesKey, community, minWeight, minMentions, hideIsolated]);
+  }, [graph, fontsLoaded, highlight, typesKey, community, minWeight, minMentions, hideIsolated]);
 
   // Цвет и размер узлов; при смене темы цвета пересчитываются заново.
   const { colorBy, sizeBy } = filters;
@@ -487,18 +725,26 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
         : cssColor(typeColorVar(a.type, configured)),
     }));
     sigma.refresh();
-  }, [graph, colorBy, sizeBy, typesOrder, themeVersion]);
+  }, [graph, fontsLoaded, colorBy, sizeBy, typesOrder, themeVersion]);
 
-  // Выбранный узел: подпись всегда видна, кольцо вокруг.
+  // Выбранный узел: кольцо, подпись, подсвеченная окрестность.
   useEffect(() => {
+    selectedRef.current = selected;
     const sigma = sigmaRef.current;
     const rg = renderGraphRef.current;
-    if (!sigma || !rg || selected === null || !rg.hasNode(selected)) return;
+    if (!sigma || !rg) return;
+    refreshActive();
+    if (selected === null || !rg.hasNode(selected)) return;
     sigma.setNodeState(selected, { isSelected: true });
     return () => {
       if (sigmaRef.current === sigma && rg.hasNode(selected)) sigma.setNodeState(selected, { isSelected: false });
     };
-  }, [graph, selected]);
+  }, [graph, fontsLoaded, selected, refreshActive]);
+
+  // Подсказка появилась — сразу к курсору, без кадра в углу.
+  useLayoutEffect(() => {
+    if (tooltip) placeTooltip(tooltipRef.current, containerRef.current, pointerRef.current.x, pointerRef.current.y);
+  }, [tooltip]);
 
   return (
     <div
@@ -506,6 +752,8 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
       className="relative h-full min-h-0 w-full overflow-hidden"
       role="img"
       aria-label="Граф связей между сущностями"
-    />
+    >
+      {tooltip && <GraphTooltip ref={tooltipRef} info={tooltip} />}
+    </div>
   );
 }

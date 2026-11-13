@@ -18,7 +18,10 @@ export type LayoutStartRequest = {
   iterations: number;
 };
 
-export type LayoutRequest = LayoutStartRequest | { kind: "stop" };
+/** Перетаскиваемый узел: закрепить в (x, y) и продолжать раскладку вокруг него. */
+export type LayoutPinRequest = { kind: "pin"; id: string; x: number; y: number };
+
+export type LayoutRequest = LayoutStartRequest | LayoutPinRequest | { kind: "stop" };
 
 /** Кадр раскладки: x,y подряд в порядке `nodes` запроса; буфер передаётся как transferable. */
 export interface LayoutFrame {
@@ -64,11 +67,13 @@ export function encodeLayoutRequest(
 /**
  * Записывает кадр в атрибуты x/y одним пакетным обновлением (одно событие для sigma).
  * Кадр неверной длины игнорируется: возвращает false, без исключения.
+ * Узлы из `skip` (перетаскиваемый) не трогаются: их ведёт указатель.
  */
 export function applyFrame(
   graph: AbstractGraph<Attributes, Attributes>,
   ids: string[],
   frame: LayoutFrame,
+  skip?: ReadonlySet<string>,
 ): boolean {
   const p = frame.positions;
   if (p.length !== ids.length * 2) return false;
@@ -77,7 +82,7 @@ export function applyFrame(
   graph.updateEachNodeAttributes(
     (id, attrs) => {
       const i = index.get(id);
-      if (i === undefined) return attrs;
+      if (i === undefined || skip?.has(id)) return attrs;
       const x = p[2 * i];
       const y = p[2 * i + 1];
       if (!Number.isFinite(x) || !Number.isFinite(y)) return attrs;
@@ -133,6 +138,13 @@ export class LayoutController {
     worker.postMessage(request);
   }
 
+  /** Сдвинуть закреплённый узел в идущей раскладке; false — раскладки нет. */
+  pin(id: string, x: number, y: number): boolean {
+    if (!this.worker || !this.active) return false;
+    this.worker.postMessage({ kind: "pin", id, x, y });
+    return true;
+  }
+
   /** Остановить раскладку (перетаскивание узла): воркер жив, но кадры больше не применяются. */
   stop(): void {
     if (!this.worker || !this.active) return;
@@ -160,38 +172,65 @@ export const DRAG_THRESHOLD_PX = 4;
 
 /**
  * Раскладка и перетаскивание узлов. Sigma начинает перетаскивание с первого же движения
- * указателя, поэтому раскладка останавливается только после сдвига больше порога
- * (обычный клик с дрожанием её не трогает). Отпустили узел — раскладка продолжается с
- * текущих позиций, а перетащенные узлы остаются закреплёнными (`pinned`).
+ * указателя, поэтому перетаскиванием считается только сдвиг больше порога (клик с дрожанием
+ * ничего не трогает). Перетащенные узлы остаются закреплёнными (`pinned`).
+ *
+ * Живой режим (по умолчанию): раскладка во время перетаскивания продолжается, узел закреплён
+ * в позиции указателя (`follow` → `pin`), соседи плавно тянутся следом. Без живого режима
+ * (prefers-reduced-motion) раскладка на время перетаскивания останавливается и
+ * возобновляется после отпускания с текущих позиций.
  */
 export class LayoutDragGuard {
   readonly pinned = new Set<string>();
   private origin: { x: number; y: number } | null = null;
-  private dragging = false;
+  private node: string | null = null;
+  private active = false;
+  private readonly live: boolean;
 
   constructor(
-    private readonly controller: Pick<LayoutController, "start" | "stop">,
+    private readonly controller: Pick<LayoutController, "start" | "stop" | "pin" | "running">,
     private readonly encode: (pinned: ReadonlySet<string>) => LayoutStartRequest,
-  ) {}
+    options: { live?: boolean } = {},
+  ) {
+    this.live = options.live ?? true;
+  }
 
-  start(x: number, y: number): void {
+  /** Идёт перетаскивание (сдвиг больше порога). */
+  get dragging(): boolean {
+    return this.active;
+  }
+
+  start(x: number, y: number, node: string | null = null): void {
     this.origin = { x, y };
-    this.dragging = false;
+    this.node = node;
+    this.active = false;
   }
 
   move(x: number, y: number): void {
-    if (!this.origin || this.dragging) return;
+    if (!this.origin || this.active) return;
     if (Math.hypot(x - this.origin.x, y - this.origin.y) <= DRAG_THRESHOLD_PX) return;
-    this.dragging = true;
-    this.controller.stop();
+    this.active = true;
+    if (!this.live) {
+      this.controller.stop();
+      return;
+    }
+    if (this.node !== null) this.pinned.add(this.node);
+    if (!this.controller.running) this.controller.start(this.encode(this.pinned));
+  }
+
+  /** Текущая (сглаженная) позиция перетаскиваемого узла — в идущую раскладку. */
+  follow(node: string, x: number, y: number): void {
+    if (!this.active || !this.live) return;
+    if (!this.controller.pin(node, x, y)) this.controller.start(this.encode(this.pinned));
   }
 
   end(nodes: string[]): void {
-    const dragged = this.dragging;
+    const dragged = this.active;
     this.origin = null;
-    this.dragging = false;
+    this.node = null;
+    this.active = false;
     if (!dragged) return;
     for (const n of nodes) this.pinned.add(n);
-    this.controller.start(this.encode(this.pinned));
+    if (!this.live) this.controller.start(this.encode(this.pinned));
   }
 }

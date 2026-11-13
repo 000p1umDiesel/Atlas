@@ -90,6 +90,13 @@ describe("applyFrame", () => {
     expect(g.getNodeAttributes("a")).toMatchObject({ x: 1, y: 2 });
   });
 
+  it("не трогает узлы из skip (перетаскиваемый узел ведёт указатель, а не кадр)", () => {
+    const g = sample();
+    applyFrame(g, ["a", "b"], { positions: new Float32Array([10, 20, 30, 40]) }, new Set(["a"]));
+    expect(g.getNodeAttributes("a")).toMatchObject({ x: 1, y: 2 });
+    expect(g.getNodeAttributes("b")).toMatchObject({ x: 30, y: 40 });
+  });
+
   it("пропускает исчезнувшие узлы и нечисловые координаты", () => {
     const g = sample();
     applyFrame(g, ["gone", "b"], { positions: new Float32Array([1, 1, Number.NaN, 9]) });
@@ -173,6 +180,16 @@ describe("LayoutController", () => {
     expect(alive()).toHaveLength(0);
   });
 
+  it("pin передаёт воркеру позицию закреплённого узла, пока раскладка идёт", () => {
+    const c = new LayoutController(() => new FakeWorker(), () => {});
+    expect(c.pin("a", 1, 2)).toBe(false);
+    c.start(req(["a"]));
+    expect(c.pin("a", 5, 6)).toBe(true);
+    expect(FakeWorker.all[0].sent.at(-1)).toEqual({ kind: "pin", id: "a", x: 5, y: 6 });
+    c.stop();
+    expect(c.pin("a", 7, 8)).toBe(false);
+  });
+
   it("ошибка воркера останавливает раскладку и завершает его", () => {
     const c = new LayoutController(() => new FakeWorker(), () => {});
     c.start(req(["a"]));
@@ -190,7 +207,9 @@ describe("LayoutDragGuard", () => {
   const setup = () => {
     const g = sample();
     const controller = new LayoutController(() => new FakeWorker(), () => {});
-    const guard = new LayoutDragGuard(controller, (pinned) => encodeLayoutRequest(g, visible, 100, pinned));
+    const guard = new LayoutDragGuard(controller, (pinned) => encodeLayoutRequest(g, visible, 100, pinned), {
+      live: false,
+    });
     controller.start(encodeLayoutRequest(g, visible, 100, guard.pinned));
     return { g, controller, guard };
   };
@@ -231,6 +250,55 @@ describe("LayoutDragGuard", () => {
     guard.move(500, 500);
     guard.end(["a"]);
     expect(FakeWorker.all).toHaveLength(1);
+  });
+});
+
+describe("LayoutDragGuard: живая раскладка во время перетаскивания", () => {
+  beforeEach(() => {
+    FakeWorker.all = [];
+  });
+  const visible = { nodes: new Set(["a", "b", "c"]), edges: new Set(["a|r|b", "b|r|c"]) };
+  const setup = (startLayout = true) => {
+    const g = sample();
+    const controller = new LayoutController(() => new FakeWorker(), () => {});
+    const guard = new LayoutDragGuard(controller, (pinned) => encodeLayoutRequest(g, visible, 100, pinned));
+    if (startLayout) controller.start(encodeLayoutRequest(g, visible, 100, guard.pinned));
+    return { g, controller, guard };
+  };
+
+  it("раскладка не останавливается: узел закреплён и ведётся через pin", () => {
+    const { controller, guard } = setup();
+    guard.start(100, 100, "a");
+    guard.move(130, 120);
+    expect(controller.running).toBe(true);
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(guard.pinned.has("a")).toBe(true);
+    expect(guard.dragging).toBe(true);
+    guard.follow("a", 42, -7);
+    expect(FakeWorker.all[0].sent.at(-1)).toEqual({ kind: "pin", id: "a", x: 42, y: -7 });
+    guard.end(["a"]);
+    expect(guard.dragging).toBe(false);
+    expect(guard.pinned.has("a")).toBe(true);
+    expect(FakeWorker.all.filter((w) => w.sent.some((m) => m.kind === "stop"))).toHaveLength(0);
+  });
+
+  it("если раскладки нет — перетаскивание запускает её с закреплённым узлом", () => {
+    const { controller, guard } = setup(false);
+    guard.start(0, 0, "b");
+    guard.move(50, 0);
+    expect(controller.running).toBe(true);
+    const req = FakeWorker.all[0].sent[0];
+    expect(req.kind === "start" && req.nodes.find((n) => n.id === "b")?.fixed).toBe(true);
+  });
+
+  it("клик с дрожанием ничего не закрепляет и не шлёт pin", () => {
+    const { guard } = setup();
+    guard.start(100, 100, "a");
+    guard.move(101, 101);
+    guard.follow("a", 1, 1);
+    guard.end(["a"]);
+    expect(guard.pinned.size).toBe(0);
+    expect(FakeWorker.all[0].sent).toHaveLength(1);
   });
 });
 
@@ -276,6 +344,17 @@ describe("createLayoutSession (ядро воркера)", () => {
     expect(positions[6]).toBeCloseTo(req.nodes[3].x, 5);
     expect(positions[7]).toBeCloseTo(req.nodes[3].y, 5);
     expect(positions[0]).not.toBeCloseTo(req.nodes[0].x, 5);
+  });
+
+  it("pin двигает закреплённый узел и снова запускает завершённую раскладку", () => {
+    const s = createLayoutSession(start(10, 20));
+    expect(s.step().done).toBe(true);
+    s.pin("n2", 123, -45);
+    const { positions, done } = s.step();
+    expect(done).toBe(false);
+    expect(positions[4]).toBeCloseTo(123, 5);
+    expect(positions[5]).toBeCloseTo(-45, 5);
+    s.pin("missing", 1, 1); // неизвестный узел игнорируется
   });
 
   it("пустой граф сразу завершён; совпадающие позиции не дают NaN", () => {

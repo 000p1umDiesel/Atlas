@@ -65,6 +65,9 @@ vi.mock("sigma", () => {
   return { default: FakeSigma };
 });
 
+// Фабрики слоёв обращаются к WebGL2RenderingContext, которого в jsdom нет.
+vi.mock("sigma/rendering", () => ({ layerFill: () => ({}), extremityArrow: () => ({}) }));
+
 class FakeWorker {
   onmessage = null;
   onerror = null;

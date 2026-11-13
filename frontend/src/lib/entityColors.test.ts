@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import {
   clearCssColorCache,
   cssColor,
+  mixRgb,
   normalizeColor,
   schemeColor,
   typeColorVar,
@@ -117,4 +118,11 @@ test("без canvas cssColor всё равно отдаёт rgb(): запасн�
   expect(cssColor("--e")).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
   expect(normalizeColor("oklab(0.5 0.1 0.1)", null)).toBe("rgb(189, 182, 168)");
   expect(normalizeColor("rgb(1, 2, 3)", null)).toBe("rgb(1, 2, 3)");
+});
+
+test("mixRgb смешивает два rgb() по доле второго цвета; чужие строки — первый как есть", () => {
+  expect(mixRgb("rgb(0, 0, 0)", "rgb(200, 100, 50)", 0.5)).toBe("rgb(100, 50, 25)");
+  expect(mixRgb("rgb(10, 20, 30)", "rgb(200, 100, 50)", 0)).toBe("rgb(10, 20, 30)");
+  expect(mixRgb("rgb(10, 20, 30)", "rgb(200, 100, 50)", 1)).toBe("rgb(200, 100, 50)");
+  expect(mixRgb("red", "rgb(1, 2, 3)", 0.5)).toBe("red");
 });
