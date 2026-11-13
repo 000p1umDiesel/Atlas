@@ -34,8 +34,10 @@ beforeAll(() => {
 beforeEach(() => {
   vi.stubEnv("VITE_FIXTURES", "1");
   for (const fn of Object.values(fake2d.api)) fn.mockClear();
+  for (const fn of Object.values(fake3d.api)) fn.mockClear();
   fake2d.last = null;
   fake3d.last = null;
+  fake3d.ready = false;
 });
 
 afterEach(() => {
@@ -267,4 +269,89 @@ test("без фикстур — спокойное сообщение вмест
   await router.load();
   render(<App router={router} client={createQueryClient()} />);
   expect(await screen.findByText(/API появится на этапе 2/, {}, { timeout: 3000 })).toBeTruthy();
+});
+
+describe("выбранный узел живёт в URL (focus) и переживает смену 2D↔3D", () => {
+  const params = (router: ReturnType<typeof createAppRouter>) => new URLSearchParams(searchStr(router));
+
+  test("выбор узла пишет ?focus=<id> заменой записи истории; Esc убирает", async () => {
+    const { graph } = generateFixtures();
+    const first = graph.nodes[0]!;
+    const router = await renderAt("/graph");
+    const before = router.history.length;
+    await click(screen.getByRole("button", { name: "выбрать узел" }));
+    await vi.waitFor(() => expect(params(router).get("focus")).toBe(first.entity_id));
+    expect(router.history.length).toBe(before);
+    expect(await screen.findByRole("dialog", { name: first.name })).toBeTruthy();
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+  });
+
+  test("ссылка с ?focus= открывает карточку и наводит камеру", async () => {
+    const { graph } = generateFixtures();
+    const node = graph.nodes[5]!;
+    await renderAt(`/graph?focus=${node.entity_id}`);
+    expect(await screen.findByRole("dialog", { name: node.name })).toBeTruthy();
+    expect(fake2d.last?.selected).toBe(node.entity_id);
+    await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything()));
+  });
+
+  test("неизвестный id в focus снимается", async () => {
+    const router = await renderAt("/graph?focus=nope-404");
+    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("смена вида сохраняет focus и карточку; новый рендерер наводится на узел, а не вписывает всё", async () => {
+    const { graph } = generateFixtures();
+    const node = graph.nodes[3]!;
+    fake3d.ready = true;
+    const router = await renderAt(`/graph?focus=${node.entity_id}`);
+    await screen.findByRole("dialog", { name: node.name });
+    await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalled());
+
+    await click(screen.getByRole("radio", { name: "3D" }));
+    await screen.findByTestId("graph3d");
+    expect(params(router).get("view")).toBe("3d");
+    expect(params(router).get("focus")).toBe(node.entity_id);
+    expect(screen.getByRole("dialog", { name: node.name })).toBeTruthy();
+    expect(fake3d.last?.selected).toBe(node.entity_id);
+    await vi.waitFor(() => expect(fake3d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything()));
+    // Отложенное «вписать» (200 мс) при смене вида с фокусом не срабатывает.
+    await act(async () => new Promise((r) => setTimeout(r, 400)));
+    expect(fake3d.api.fit).not.toHaveBeenCalled();
+
+    fake2d.api.fit.mockClear();
+    fake2d.api.focusNode.mockClear();
+    await click(screen.getByRole("radio", { name: "2D" }));
+    await screen.findByTestId("graph2d");
+    expect(params(router).get("focus")).toBe(node.entity_id);
+    await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything()));
+    await act(async () => new Promise((r) => setTimeout(r, 400)));
+    expect(fake2d.api.fit).not.toHaveBeenCalled();
+  });
+
+  test("без фокуса смена вида по-прежнему вписывает граф", async () => {
+    fake3d.ready = true;
+    await renderAt("/graph");
+    await click(screen.getByRole("radio", { name: "3D" }));
+    await screen.findByTestId("graph3d");
+    await vi.waitFor(() => expect(fake3d.api.fit).toHaveBeenCalled(), { timeout: 1500 });
+  });
+
+  test("фильтр, скрывший выбранный узел, снимает выделение и focus", async () => {
+    const { graph, types } = generateFixtures();
+    const node = graph.nodes[0]!;
+    const other = types.find((t) => t.type !== node.type)!;
+    const router = await renderAt(`/graph?focus=${node.entity_id}`);
+    await screen.findByRole("dialog", { name: node.name });
+    await click(within(filters()).getByRole("button", { name: new RegExp(`^${other.label} `) }));
+    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+    expect(params(router).get("types")).toBe(other.type);
+    await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: node.name })).toBeNull());
+    expect(fake2d.last?.selected).toBeNull();
+  });
 });

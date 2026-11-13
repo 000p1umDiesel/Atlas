@@ -12,7 +12,7 @@ describe("graph search", () => {
     expect(parseGraphSearch({ types: ["A", "B"] }).types).toEqual(["A", "B"]);
   });
   it("пустой ввод = дефолты, дефолты не сериализуются", () => {
-    expect(parseGraphSearch({})).toEqual({ ...DEFAULT_FILTERS, view: "2d" });
+    expect(parseGraphSearch({})).toEqual({ ...DEFAULT_FILTERS, view: "2d", focus: null });
     expect(serializeGraphSearch({ ...DEFAULT_FILTERS, view: "2d" })).toEqual({});
   });
   it("round-trip", () => {
@@ -26,6 +26,7 @@ describe("graph search", () => {
       sizeBy: "degree" as const,
       highlight: "Нео",
       view: "3d" as const,
+      focus: "1a2b3c4d5e6f7a8b",
     };
     const s = serializeGraphSearch(f);
     expect(s.types).toBe("Person,Method");
@@ -44,5 +45,28 @@ describe("graph search: числа из парсера TanStack", () => {
       highlight: "",
       community: null,
     });
+  });
+});
+
+describe("graph search: выбранный узел (focus)", () => {
+  it("по умолчанию фокуса нет и в URL его нет", () => {
+    expect(parseGraphSearch({}).focus).toBeNull();
+    expect(serializeGraphSearch({ ...DEFAULT_FILTERS, view: "2d" })).toEqual({});
+    expect(serializeGraphSearch({ ...DEFAULT_FILTERS, view: "2d", focus: null })).toEqual({});
+  });
+  it("round-trip id сущности (hex из ядра и id фикстур)", () => {
+    for (const id of ["0123456789abcdef", "ent-7-042"]) {
+      const s = serializeGraphSearch({ ...DEFAULT_FILTERS, view: "3d", focus: id });
+      expect(s.focus).toBe(id);
+      expect(parseGraphSearch(s)).toMatchObject({ view: "3d", focus: id });
+    }
+  });
+  it("число из парсера — строка", () => {
+    expect(parseGraphSearch({ focus: 1234 }).focus).toBe("1234");
+  });
+  it("мусор → нет фокуса", () => {
+    for (const focus of ["", "   ", {}, ["a"], "a b", "<script>", "x".repeat(200), Number.NaN, true]) {
+      expect(parseGraphSearch({ focus }).focus).toBeNull();
+    }
   });
 });

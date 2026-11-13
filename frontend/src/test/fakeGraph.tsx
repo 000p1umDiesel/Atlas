@@ -16,7 +16,20 @@ export const fake2d = {
   last: null as Graph2DProps | null,
 };
 
-export const fake3d = { last: null as Graph3DProps | null };
+/** `ready: true` — 3D «с WebGL»: onReady отдаёт `api` (по умолчанию как без WebGL — не вызывается). */
+export const fake3d = {
+  api: {
+    fit: vi.fn(),
+    exportPng: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
+    dispose: vi.fn(),
+    zoomIn: vi.fn(),
+    zoomOut: vi.fn(),
+    focusNode: vi.fn(),
+    emphasize: vi.fn(),
+  } satisfies Graph2DApi,
+  ready: false,
+  last: null as Graph3DProps | null,
+};
 
 export function FakeGraph2D(props: Graph2DProps) {
   fake2d.last = props;
@@ -35,8 +48,12 @@ export function FakeGraph2D(props: Graph2DProps) {
   );
 }
 
-/** 3D без WebGL: onReady не вызывается (как у настоящего Graph3D). */
+/** 3D без WebGL: onReady не вызывается (как у настоящего Graph3D); с `fake3d.ready` — вызывается. */
 export function FakeGraph3D(props: Graph3DProps) {
   fake3d.last = props;
+  const { graph, onReady } = props;
+  useEffect(() => {
+    if (fake3d.ready) onReady?.(fake3d.api);
+  }, [graph]);
   return <div data-testid="graph3d" />;
 }

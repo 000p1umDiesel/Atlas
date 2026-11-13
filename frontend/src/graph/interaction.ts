@@ -43,3 +43,22 @@ export function smoothTowards(current: Point, target: Point, dtMs: number, tauMs
   const k = 1 - Math.exp(-dtMs / tauMs);
   return { x: current.x + (target.x - current.x) * k, y: current.y + (target.y - current.y) * k };
 }
+
+/** Масштаб камеры для окрестности: без соседей, пределы (Sigma: меньше — ближе). */
+const FRAME_EMPTY = 0.3;
+const FRAME_MIN = 0.06;
+const FRAME_MAX = 2;
+const FRAME_MARGIN = 1.15;
+
+/**
+ * Масштаб камеры Sigma (`ratio`), при котором все соседи узла видны: `offsets` — их смещения
+ * от узла в пикселях экрана при ratio = 1, `half` — свободная полуширина и полувысота кадра
+ * вокруг узла (за вычетом карточки). На экране смещение = offset / ratio.
+ */
+export function framingRatio(offsets: readonly Point[], half: Point): number {
+  if (offsets.length === 0) return FRAME_EMPTY;
+  if (!(half.x > 0) || !(half.y > 0)) return FRAME_MAX;
+  let need = 0;
+  for (const o of offsets) need = Math.max(need, Math.abs(o.x) / half.x, Math.abs(o.y) / half.y);
+  return Math.min(FRAME_MAX, Math.max(FRAME_MIN, need * FRAME_MARGIN));
+}

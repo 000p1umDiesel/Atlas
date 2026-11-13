@@ -86,7 +86,10 @@ export function GraphPage() {
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
   const rank = useMemo(() => (graph ? rankByPagerank(graph) : new Map<string, number>()), [graph]);
 
-  const [selected, setSelected] = useState<string | null>(null);
+  // Выбранный узел живёт в URL (`focus`): переживает смену 2D↔3D, перезагрузку и ссылку.
+  // Запись — заменой текущей записи истории, не новой на каждый клик.
+  const selected = search.focus;
+  const setSelected = useCallback((id: string | null) => update({ focus: id }, { replace: true }), [update]);
   const [autoRotate, setAutoRotate] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState("");
@@ -126,9 +129,15 @@ export function GraphPage() {
     scheduleFit();
   }, [compositionKey, scheduleFit]);
 
-  // Новый рендерер (смена вида) — вписать после первых кадров.
+  const selectedRef = useRef(selected);
+  useLayoutEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
+  // Новый рендерер (смена вида) — вписать после первых кадров. С выбранным узлом — нет:
+  // камера сразу встаёт на него (ниже), без промежуточного кадра «весь граф».
   useEffect(() => {
-    if (api) scheduleFit();
+    if (api && selectedRef.current === null) scheduleFit();
   }, [api, scheduleFit]);
 
   // Выбранный узел — в центр свободной части холста, не под карточкой.
@@ -146,10 +155,11 @@ export function GraphPage() {
   useEffect(() => {
     if (api && selected !== null) focusOn(selected);
   }, [api, selected, focusOn]);
-  const selectedRef = useRef(selected);
-  useLayoutEffect(() => {
-    selectedRef.current = selected;
-  }, [selected]);
+
+  // Выбранный узел скрыт фильтрами (или такого id нет) — выделение снимается, focus уходит из URL.
+  useEffect(() => {
+    if (selected !== null && visible && !visible.nodes.has(selected)) setSelected(null);
+  }, [selected, visible, setSelected]);
 
   // Карточка — под панелью инструментов, даже когда та переносится на вторую строку.
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -190,7 +200,7 @@ export function GraphPage() {
         else if (id === selectedRef.current) focusOn(id);
         else setSelected(id);
       }),
-    [graph, focusOn],
+    [graph, focusOn, setSelected],
   );
 
   // Горячие клавиши страницы графа.
@@ -227,7 +237,7 @@ export function GraphPage() {
           break;
       }
     },
-    [column, keysOpen, switchView],
+    [column, keysOpen, switchView, setSelected],
   );
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -307,8 +317,8 @@ export function GraphPage() {
 
   const empty = visible !== null && visible.nodes.size === 0;
   const showRotate = search.view === "3d" && !reducedMotion;
-  const deselect = useCallback(() => setSelected(null), []);
-  const showCard = graph !== null && selected !== null && graph.hasNode(selected);
+  const deselect = useCallback(() => setSelected(null), [setSelected]);
+  const showCard = graph !== null && selected !== null && visible !== null && visible.nodes.has(selected);
 
   let canvas: ReactNode;
   if (overview.isError) {

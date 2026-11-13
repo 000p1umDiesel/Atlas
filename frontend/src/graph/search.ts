@@ -1,7 +1,13 @@
 import { DEFAULT_FILTERS, type ColorBy, type GraphFilters, type SizeBy } from "./model";
 
 export type GraphView = "2d" | "3d";
-export type GraphSearch = GraphFilters & { view: GraphView };
+/** Фильтры, вид и выбранный узел (`focus` — entity_id; null — ничего не выбрано). */
+export type GraphSearch = GraphFilters & { view: GraphView; focus: string | null };
+/** Для ссылок на граф: выбранный узел можно не указывать. */
+export type GraphSearchInput = GraphFilters & { view: GraphView; focus?: string | null };
+
+/** id сущности: hex из ядра (`core/ids.py`) или id фикстур; всё прочее — не фокус. */
+const ENTITY_ID = /^[\w.:-]{1,128}$/;
 
 const D = DEFAULT_FILTERS;
 
@@ -38,11 +44,17 @@ export function parseGraphSearch(raw: Record<string, unknown>): GraphSearch {
     sizeBy: oneOf<SizeBy>(raw.sizeBy, ["pagerank", "mentions", "degree"], D.sizeBy),
     highlight: str(raw.highlight) ?? D.highlight,
     view: oneOf<GraphView>(raw.view, ["2d", "3d"], "2d"),
+    focus: entityId(raw.focus),
   };
 }
 
+function entityId(v: unknown): string | null {
+  const s = str(v)?.trim();
+  return s && ENTITY_ID.test(s) ? s : null;
+}
+
 /** Обратное преобразование: значения по умолчанию опускаются (чистые URL). */
-export function serializeGraphSearch(s: GraphSearch): Record<string, string | number | boolean> {
+export function serializeGraphSearch(s: GraphSearchInput): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
   if (s.types.length > 0) out.types = s.types.join(",");
   if (s.community !== null) out.community = s.community;
@@ -53,5 +65,6 @@ export function serializeGraphSearch(s: GraphSearch): Record<string, string | nu
   if (s.sizeBy !== D.sizeBy) out.sizeBy = s.sizeBy;
   if (s.highlight !== D.highlight) out.highlight = s.highlight;
   if (s.view !== "2d") out.view = s.view;
+  if (s.focus) out.focus = s.focus;
   return out;
 }

@@ -61,6 +61,8 @@ const MATCH_LABEL_LIMIT = 60;
 const MATCH_SCALE = 1.35;
 const HOVER_SCALE = 1.15;
 const FLY_MS = 600;
+/** Постоянная времени, с которой камера догоняет выбранный узел, пока симуляция его двигает, мс. */
+const FOLLOW_TAU_MS = 160;
 const FIT_MS = 400;
 /** Сфера по габаритам консервативна: облако в проекции заметно меньше её. */
 const FIT_MARGIN = 0.95;
@@ -236,6 +238,12 @@ class Scene3D {
   /** Центр окрестности: его связи выделены. */
   private center: string | null = null;
   private flight: Flight | null = null;
+  /**
+   * Наведение на узел, которое ещё не завершено: у узла нет позиции (сцена только создана)
+   * или симуляция его двигает. Камера ведёт узел до остановки движка или жеста пользователя.
+   */
+  private tracking: { id: string; offset: FocusOffset; placed: boolean } | null = null;
+  private lastTrack = 0;
   /** Камеру трогал пользователь: автокадрирование больше не вмешивается. */
   private userMoved = false;
   private engineRunning = false;
@@ -374,6 +382,7 @@ class Scene3D {
 
   zoom(dir: 1 | -1) {
     if (this.disposed) return;
+    this.tracking = null;
     const target = this.controls.target.clone();
     const dist = this.camera.position.distanceTo(target);
     const next = dir > 0 ? dist / ZOOM_FACTOR : dist * ZOOM_FACTOR;
@@ -448,6 +457,7 @@ class Scene3D {
 
   fit() {
     if (this.disposed) return;
+    this.tracking = null;
     const sphere = boundingSphere(
       [...this.nodes.values()].map((n) => ({ x: n.x ?? NaN, y: n.y ?? NaN, z: n.z ?? NaN, r: nodeRadius(n) })),
     );
@@ -463,21 +473,37 @@ class Scene3D {
   /**
    * Перелёт к узлу. `offset` (CSS-пиксели) сдвигает узел от центра кадра: камера смотрит
    * правее/ниже узла, и он оказывается левее/выше — например, не под карточкой сущности.
+   * У узла ещё нет позиции (сцена после смены вида) или симуляция его двигает — камера
+   * встаёт на него, как только он появится, и следует за ним до остановки движка.
    */
   focusNode(id: string, offset: FocusOffset = { x: 0, y: 0 }) {
-    const node = this.nodes.get(id);
-    if (this.disposed || !node || node.x === undefined || node.y === undefined || node.z === undefined) return;
+    if (this.disposed) return;
     this.userMoved = true;
-    // Расстояние, при котором в свободной части кадра видна вся окрестность узла.
-    const around = [node, ...[...(this.adjacency.get(id) ?? [])].map((n) => this.nodes.get(n))].filter(
-      (n): n is ForceNode => n !== undefined,
-    );
-    const sphere = boundingSphere(
-      around.map((n) => ({ x: n.x ?? NaN, y: n.y ?? NaN, z: n.z ?? NaN, r: nodeRadius(n) })),
-    );
+    const pose = this.focusPose(id, offset);
+    if (!pose || this.engineRunning) {
+      this.tracking = { id, offset, placed: pose !== null };
+      this.lastTrack = performance.now();
+      if (pose) this.flyTo(pose.target, pose.position, FLY_MS);
+      return;
+    }
+    this.tracking = null;
+    this.flyTo(pose.target, pose.position, FLY_MS);
+  }
+
+  /** Куда смотреть и где стоять камере, чтобы в свободной части кадра была вся окрестность узла. */
+  private focusPose(id: string, offset: FocusOffset): { target: Vector3; position: Vector3 } | null {
+    const node = this.nodes.get(id);
+    if (!node || node.x === undefined || node.y === undefined || node.z === undefined) return null;
+    // Камера смотрит на сам узел, а не на центр окрестности: радиус кадра — до дальнего соседа.
+    let reach = 0;
+    for (const nid of this.adjacency.get(id) ?? []) {
+      const n = this.nodes.get(nid);
+      if (!n || n.x === undefined || n.y === undefined || n.z === undefined) continue;
+      reach = Math.max(reach, Math.hypot(n.x - node.x, n.y - node.y, n.z - node.z) + nodeRadius(n));
+    }
     const w = Math.max(1, this.container.clientWidth - Math.abs(offset.x) * 2);
     const h = Math.max(1, this.container.clientHeight);
-    const spread = Math.max(sphere ? sphere.radius : 0, nodeRadius(node) * 4, 25);
+    const spread = Math.max(reach, nodeRadius(node) * 4, 25);
     const dist = fitDistance(spread, FOV, w / Math.max(1, h - Math.abs(offset.y) * 2)) * 1.05;
     const perPx = (2 * dist * Math.tan(((FOV / 2) * Math.PI) / 180)) / h;
     this.camera.updateMatrixWorld();
@@ -486,7 +512,44 @@ class Scene3D {
     const target = new Vector3(node.x, node.y, node.z)
       .addScaledVector(right, offset.x * perPx)
       .addScaledVector(up, -offset.y * perPx);
-    this.flyTo(target, target.clone().add(this.viewDirection().multiplyScalar(dist)), FLY_MS);
+    return { target, position: target.clone().add(this.viewDirection().multiplyScalar(dist)) };
+  }
+
+  /** Шаг слежения за выбранным узлом (каждый кадр цикла, пока `tracking` не снят). */
+  private track(now: number) {
+    const t = this.tracking;
+    if (!t) return;
+    if (!this.nodes.has(t.id)) {
+      this.tracking = null;
+      return;
+    }
+    const pose = this.focusPose(t.id, t.offset);
+    if (!pose) return;
+    if (!t.placed) {
+      // Позиция только появилась: сразу на узел (при reduced motion — без анимации).
+      t.placed = true;
+      this.lastTrack = now;
+      this.flyTo(pose.target, pose.position, FLY_MS);
+      if (!this.engineRunning) this.tracking = null;
+      return;
+    }
+    if (this.flight) {
+      // Перелёт ещё идёт — ведём его к текущему месту узла, а не к прежнему.
+      this.flight.toTarget.copy(pose.target);
+      this.flight.toPos.copy(pose.position);
+      this.lastTrack = now;
+      return;
+    }
+    if (!this.engineRunning) {
+      this.tracking = null;
+      this.flyTo(pose.target, pose.position, FIT_MS);
+      return;
+    }
+    const k = this.reduced ? 1 : 1 - Math.exp(-Math.min(64, now - this.lastTrack) / FOLLOW_TAU_MS);
+    this.lastTrack = now;
+    this.controls.target.lerp(pose.target, k);
+    this.camera.position.lerp(pose.position, k);
+    this.dirty = true;
   }
 
   private viewDirection(): Vector3 {
@@ -569,6 +632,7 @@ class Scene3D {
     this.nodes.clear();
     this.hovered = null;
     this.flight = null;
+    this.tracking = null;
   }
 
   // ——— цикл ———
@@ -577,6 +641,7 @@ class Scene3D {
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.loop);
     this.fg.tickFrame();
+    this.track(now);
     if (this.flight) {
       const f = this.flight;
       const t = easeInOutCubic((now - f.start) / f.duration);
@@ -729,6 +794,7 @@ class Scene3D {
   private readonly onControlsStart = () => {
     this.userMoved = true;
     this.flight = null;
+    this.tracking = null;
   };
 
   // ——— события three-forcegraph ———

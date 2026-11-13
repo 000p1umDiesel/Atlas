@@ -187,7 +187,7 @@ export function FilterPanel() {
                       style={{ backgroundColor: color }}
                       aria-hidden="true"
                     />
-                    {info.label}
+                    {info.label}{" "}
                     <span className="text-muted tabular-nums">{formatInt(counts.get(type) ?? 0)}</span>
                   </button>
                 )}

@@ -1,5 +1,5 @@
 import { MultiDirectedGraph } from "graphology";
-import { neighborhood, smoothTowards } from "./interaction";
+import { framingRatio, neighborhood, smoothTowards } from "./interaction";
 
 function sample() {
   const g = new MultiDirectedGraph();
@@ -55,5 +55,20 @@ describe("smoothTowards", () => {
 
   it("без сглаживания (tau = 0, prefers-reduced-motion) — сразу в цель", () => {
     expect(smoothTowards(from, to, 16, 0)).toEqual(to);
+  });
+});
+
+describe("framingRatio", () => {
+  it("соседи помещаются в свободную половину кадра с запасом", () => {
+    // Сосед в 100 px по x при ratio = 1, свободно 200 px: нужен ratio 0.5, с запасом 1.15.
+    expect(framingRatio([{ x: 100, y: 0 }], { x: 200, y: 300 })).toBeCloseTo(0.575, 5);
+    // Решает худшая ось.
+    expect(framingRatio([{ x: 10, y: -150 }], { x: 200, y: 100 })).toBeCloseTo(1.725, 5);
+  });
+  it("без соседей — обычный масштаб окрестности; пределы соблюдаются", () => {
+    expect(framingRatio([], { x: 200, y: 200 })).toBe(0.3);
+    expect(framingRatio([{ x: 0.1, y: 0 }], { x: 200, y: 200 })).toBe(0.06);
+    expect(framingRatio([{ x: 1e6, y: 0 }], { x: 200, y: 200 })).toBe(2);
+    expect(framingRatio([{ x: 100, y: 0 }], { x: 0, y: 0 })).toBe(2);
   });
 });

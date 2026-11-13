@@ -9,7 +9,7 @@ import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorRgb, withAlpha } 
 import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { communityColorMap } from "./insights";
-import { neighborhood, smoothTowards } from "./interaction";
+import { framingRatio, neighborhood, smoothTowards, type Point } from "./interaction";
 import {
   applyFrame,
   encodeLayoutRequest,
@@ -45,7 +45,10 @@ export interface Graph2DApi {
   /** Приблизить / отдалить на шаг. */
   zoomIn?(): void;
   zoomOut?(): void;
-  /** Плавно навести камеру на узел: он окажется в центре, сдвинутом на `offset`. */
+  /**
+   * Навести камеру на узел: он окажется в центре, сдвинутом на `offset`, в кадре — его соседи.
+   * Пока раскладка двигает узел (новый рендерер после смены вида), камера следует за ним.
+   */
   focusNode?(id: string, offset?: FocusOffset): void;
   /** Подсветить набор узлов (наведение на пункт легенды); null — снять. */
   emphasize?(ids: ReadonlySet<string> | null): void;
@@ -93,6 +96,10 @@ const EXPORT_TIMEOUT_MS = 3000;
 /** Постоянная времени следования узла за курсором при перетаскивании, мс. */
 const DRAG_TAU_MS = 90;
 const FOCUS_MS = 450;
+/** Постоянная времени, с которой камера догоняет выбранный узел, пока его двигает раскладка, мс. */
+const FOLLOW_TAU_MS = 140;
+/** Запас у края свободной части кадра при наведении на окрестность (подписи соседей), px. */
+const FRAME_PAD = 36;
 const ZOOM_MS = 260;
 
 const FONT_REGULAR = `500 ${GRAPH_FONT_FAMILY}`;
@@ -504,10 +511,75 @@ export function Graph2D({
     sigma.on("clickNode", ({ node }) => onSelectRef.current(node));
     sigma.on("clickStage", () => onBackgroundRef.current?.());
 
+    // Кадр камеры на узел: соседи 1 шага видны в свободной части холста (без карточки).
+    const focusState = (id: string, offset: FocusOffset) => {
+      const p = sigma.graphToFramedGraph(rg.getNodeAttributes(id));
+      const { width, height } = sigma.getDimensions();
+      const probe = { cameraState: { x: p.x, y: p.y, ratio: 1, angle: 0 } };
+      const center = sigma.framedGraphToViewport(p, probe);
+      const offsets: Point[] = [];
+      for (const n of neighborhood(rg, id, visibleRef.current).nodes) {
+        if (n === id) continue;
+        const q = sigma.framedGraphToViewport(sigma.graphToFramedGraph(rg.getNodeAttributes(n)), probe);
+        offsets.push({ x: q.x - center.x, y: q.y - center.y });
+      }
+      const ratio = framingRatio(offsets, {
+        x: width / 2 - Math.abs(offset.x) - FRAME_PAD,
+        y: height / 2 - Math.abs(offset.y) - FRAME_PAD,
+      });
+      // Камера в узле, затем сдвиг на offset: узел окажется левее/выше центра на offset.
+      const shifted = sigma.viewportToFramedGraph(
+        { x: width / 2 + offset.x, y: height / 2 + offset.y },
+        { cameraState: { x: p.x, y: p.y, ratio, angle: 0 } },
+      );
+      return { x: shifted.x, y: shifted.y, ratio, angle: 0 };
+    };
+
+    // Слежение за выбранным узлом, пока раскладка его двигает: новый рендерер после смены
+    // вида стартует с исходной спирали, и узел уезжает из кадра. Снимается, когда раскладка
+    // сошлась (финальный перелёт), при «Вписать», масштабе и любом жесте пользователя.
+    let tracking: { id: string; offset: FocusOffset } | null = null;
+    let layoutRunning = true;
+    let framesApplied = 0;
+    let lastFollow = 0;
+    const trackFocus = (done: boolean) => {
+      const f = tracking;
+      if (!f) return;
+      if (!rg.hasNode(f.id) || !visibleRef.current.nodes.has(f.id)) {
+        tracking = null;
+        return;
+      }
+      const camera = sigma.getCamera();
+      const target = focusState(f.id, f.offset);
+      if (done) {
+        tracking = null;
+        void camera.animate(target, { duration: reduced ? 0 : FOCUS_MS });
+        return;
+      }
+      const now = performance.now();
+      const k = 1 - Math.exp(-Math.min(64, now - lastFollow) / FOLLOW_TAU_MS);
+      lastFollow = now;
+      const cur = camera.getState();
+      camera.setState({
+        x: cur.x + (target.x - cur.x) * k,
+        y: cur.y + (target.y - cur.y) * k,
+        ratio: cur.ratio * Math.pow(target.ratio / cur.ratio, k),
+        angle: 0,
+      });
+    };
+    const stopFollow = () => {
+      tracking = null;
+    };
+    container.addEventListener("wheel", stopFollow, { capture: true, passive: true });
+    container.addEventListener("pointerdown", stopFollow, true);
+
     const controller = new LayoutController(createLayoutWorker, (ids, frame: LayoutFrame) => {
+      layoutRunning = frame.done !== true;
       // При prefers-reduced-motion узлы не «плывут»: применяется только итоговый кадр.
       if (reduced && !frame.done) return;
       applyFrame(rg, ids, frame, drag ? new Set([drag.node]) : undefined);
+      framesApplied++;
+      trackFocus(frame.done === true);
     });
     controllerRef.current = controller;
     // Перетаскивание встроено в Sigma 4 (камера не двигается, отпускание — pointerup).
@@ -556,6 +628,9 @@ export function Graph2D({
       drag = null;
       container.removeEventListener("pointermove", onPointerMove);
       container.removeEventListener("pointerdown", onPointerType, true);
+      container.removeEventListener("wheel", stopFollow, true);
+      container.removeEventListener("pointerdown", stopFollow, true);
+      tracking = null;
       observer.disconnect();
       scheme?.removeEventListener("change", bump);
       resizer?.disconnect();
@@ -572,6 +647,7 @@ export function Graph2D({
 
     const fit = () => {
       if (disposed) return;
+      tracking = null;
       const camera = sigma.getCamera();
       const duration = prefersReducedMotion() ? 0 : 300;
       let minX = Infinity;
@@ -596,6 +672,7 @@ export function Graph2D({
 
     const zoom = (dir: 1 | -1) => {
       if (disposed) return;
+      tracking = null;
       const camera = sigma.getCamera();
       const duration = prefersReducedMotion() ? 0 : ZOOM_MS;
       void (dir > 0 ? camera.zoomIn({ duration }) : camera.zoomOut({ duration }));
@@ -604,18 +681,17 @@ export function Graph2D({
     const focusNode = (id: string, offset: FocusOffset = { x: 0, y: 0 }) => {
       if (disposed || !rg.hasNode(id)) return;
       const camera = sigma.getCamera();
-      const p = sigma.graphToFramedGraph(rg.getNodeAttributes(id));
-      const ratio = Math.min(camera.getState().ratio, 0.45);
-      const { width, height } = sigma.getDimensions();
-      // Камера в узле, затем сдвиг на offset: узел окажется левее/выше центра на offset.
-      const shifted = sigma.viewportToFramedGraph(
-        { x: width / 2 + offset.x, y: height / 2 + offset.y },
-        { cameraState: { x: p.x, y: p.y, ratio, angle: 0 } },
-      );
-      void camera.animate(
-        { x: shifted.x, y: shifted.y, ratio, angle: 0 },
-        { duration: prefersReducedMotion() ? 0 : FOCUS_MS },
-      );
+      camera.cancelAnimation();
+      if (layoutRunning) {
+        // Узел ещё движется: камера ведёт его до конца раскладки. Свежий рендерер (кадров
+        // раскладки ещё не было) сразу ставит камеру на узел — без кадра «весь граф».
+        tracking = { id, offset };
+        lastFollow = performance.now();
+        if (framesApplied === 0) camera.setState(focusState(id, offset));
+        return;
+      }
+      tracking = null;
+      void camera.animate(focusState(id, offset), { duration: prefersReducedMotion() ? 0 : FOCUS_MS });
     };
 
     const emphasize = (ids: ReadonlySet<string> | null) => {

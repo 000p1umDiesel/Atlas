@@ -28,8 +28,11 @@ export function useGraphSearch(): { search: GraphSearch; update: Update; reset()
   const reset = useCallback(() => {
     void navigate({
       to: "/graph",
-      search: (prev) =>
-        serializeGraphSearch({ ...DEFAULT_FILTERS, view: parseGraphSearch(prev).view }),
+      search: (prev) => {
+        // Сброс фильтров не трогает вид и выбранный узел (после сброса он снова виден).
+        const { view, focus } = parseGraphSearch(prev);
+        return serializeGraphSearch({ ...DEFAULT_FILTERS, view, focus });
+      },
     });
   }, [navigate]);
 
