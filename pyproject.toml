@@ -75,6 +75,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mnogobase"]
+# dist собирается npm и лежит в .gitignore: без artifacts hatchling не включил бы его в wheel.
+artifacts = ["src/mnogobase/web/dist/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

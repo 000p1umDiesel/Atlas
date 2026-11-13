@@ -2,6 +2,8 @@
 
 Весь стек описан в одном `compose.yaml` в корне репозитория: API, worker, PostgreSQL, Qdrant, Neo4j (APOC + GDS) и три сервера моделей llama.cpp на CPU (embedder, reranker, vision). LLM подключается по внешнему API из `config.yaml`. Наружу публикуется только API на `127.0.0.1:8080`. На сервере перед ним стоит nginx с TLS.
 
+Веб-интерфейс (React + Vite, `frontend/`) собирается внутри `docker compose build`: Node нужен только на этапе сборки образа, в итоговом образе его нет. Для запуска без Docker соберите его вручную перед `uv run mnogobase api serve`: `npm --prefix frontend ci && npm --prefix frontend run build` (результат в `src/mnogobase/web/dist`, он в `.gitignore`, но входит в wheel).
+
 Локальный запуск и запуск на сервере отличаются только тем, есть ли nginx. В `.env` лежат только секреты (`LLM_API_KEY`, пароли PostgreSQL и Neo4j, `QDRANT_API_KEY`), всё остальное настраивается в `config.yaml`, который монтируется в контейнеры. Данные хранятся в `./data` рядом с `compose.yaml`.
 
 ## Локально (Mac или Linux, нужен Docker)
@@ -120,4 +122,4 @@ ssh -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 admin@<
 - nginx: TLS 1.2/1.3, ответ 444 на чужой Host, лимит тела 64 KiB (50 МБ только для загрузки документа), предел частоты на `/api/auth/login`, журнал без строки запроса.
 - fail2ban (`deploy/fail2ban/`): 3 неудачных входа (401 или 429 на `/api/auth/login` в журнале nginx) с одного IP за 7 дней — вечный бан на 80/443, SSH остаётся открытым. Трижды ошиблись паролем сами — снимите бан по SSH (команда в таблице выше). Журнал nginx, а не API: API за прокси видит адрес nginx, а не клиента.
 - API: нет `/docs` и `/openapi.json`, пароли argon2 (не больше двух хешей одновременно), неудачный вход пишется в журнал как `login_failed` (без IP и с хешем имени). Пользователи создаются только из CLI.
-- Сайт: сессия в cookie `HttpOnly; SameSite=Strict; Secure` (на сервере `service.cookie_secure` должен оставаться `true`), POST/PATCH/DELETE только с `Origin` своего сайта, строгий CSP без inline-кода и CDN, Markdown без HTML через DOMPurify. nginx менять не нужно: `location /` уже проксирует страницу и потоковые ответы (`proxy_buffering off`).
+- Сайт: сессия в cookie `HttpOnly; SameSite=Strict; Secure` (на сервере `service.cookie_secure` должен оставаться `true`), POST/PATCH/DELETE только с `Origin` своего сайта, строгий CSP без inline-кода и CDN, Markdown без HTML через DOMPurify. `location /` проксирует страницу и потоковые ответы (`proxy_buffering off`); хешированные файлы `/assets/` nginx отдаёт с `Cache-Control: public, max-age=31536000, immutable` (карта `$mb_cache_control` в `deploy/nginx.conf`), остальное — `no-store`; JS/CSS/SVG сжимаются gzip.

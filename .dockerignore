@@ -1,7 +1,10 @@
-# В образ попадают только pyproject.toml, uv.lock, README.md и src/ (см. Dockerfile).
+# В образ попадают только pyproject.toml, uv.lock, README.md, src/ и frontend/ (см. Dockerfile).
 *
 !pyproject.toml
 !uv.lock
 !README.md
 !src/
+!frontend/
+frontend/node_modules
+src/mnogobase/web/dist
 src/**/__pycache__

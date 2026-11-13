@@ -1,4 +1,16 @@
 # Образ приложения mnogobase: API и worker (CPU). Модели — отдельные контейнеры llama.cpp.
+
+# Этап сборки веб-интерфейса (React + Vite): Node нужен только здесь, в итоговый образ не
+# попадает. Зависимости ставятся отдельным слоем (зависит от package*.json и .npmrc),
+# кэш npm переживает пересборки. Сборка пишет в /build/src/mnogobase/web/dist (outDir
+# vite.config.ts относительно frontend/).
+FROM node:24.22.3-slim AS web
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 # uv закреплённой версии: ставит зависимости строго по uv.lock.
@@ -39,6 +51,8 @@ COPY --chown=app:app README.md ./
 COPY --chown=app:app src ./src
 RUN --mount=type=cache,target=/home/app/.cache/uv,uid=10001,gid=10001 \
     uv sync --locked --no-compile-bytecode
+# Собранный интерфейс копируется после uv sync: правка frontend/ не пересобирает слои Python.
+COPY --from=web --chown=app:app /build/src/mnogobase/web/dist ./src/mnogobase/web/dist
 
 # Относительные пути конфига (.mnogobase, wiki, documents, logs, runs) живут в томе /data;
 # там же config.yaml, который compose монтирует только для чтения.
