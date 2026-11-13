@@ -5,6 +5,9 @@ import { link, useRoute } from "./lib/router.js";
 import { Loading } from "./lib/ui.js";
 import { Account } from "./views/account.js";
 import { Chat, ConversationList } from "./views/chat.js";
+import { DocumentCard } from "./views/document.js";
+import { Documents } from "./views/documents.js";
+import { DocumentView } from "./views/docview.js";
 import { Login } from "./views/login.js";
 
 const NAV = [
@@ -26,6 +29,10 @@ function Page({ route, user, chats, reloadChats }) {
       return html`<${Account} user=${user} />`;
     case "chat":
       return html`<${Chat} id=${id} chats=${chats} reloadChats=${reloadChats} />`;
+    case "documents":
+      if (id && route.parts[2] === "view") return html`<${DocumentView} id=${id} query=${route.query} />`;
+      if (id) return html`<${DocumentCard} id=${id} />`;
+      return html`<${Documents} />`;
     default:
       return html`<${Placeholder} title=${(NAV.find(([id]) => id === section) || NAV[0])[1]} />`;
   }

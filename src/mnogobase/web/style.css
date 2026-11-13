@@ -343,3 +343,40 @@ mark, .marked { background: var(--marker); color: inherit; border-radius: 2px; }
 .compare-card { padding: 12px 0 16px; border-top: 2px solid var(--pen); min-width: 0; }
 .compare-card .prose { font-size: 15.5px; }
 .compare-card h3 { font-family: var(--sans); font-size: 15px; margin-bottom: 4px; }
+
+/* ---- документы ---- */
+.crumbs { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+.crumbs a { color: var(--muted); }
+.text-error { color: var(--err); }
+.linklike { all: unset; color: var(--pen); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.linklike:focus-visible { outline: 2px solid var(--pen); }
+.uploader { margin: 4px 0 28px; max-width: 920px; }
+.dropzone { border: 1.5px dashed color-mix(in srgb, var(--pen) 45%, var(--rule)); border-radius: 10px; padding: 22px 24px; background: var(--raised); }
+.dropzone p { margin: 0 0 4px; }
+.dropzone.over { border-color: var(--pen); background: var(--pen-soft); }
+.upload-list { list-style: none; padding: 0; margin: 12px 0 4px; display: grid; gap: 6px; }
+.upload { display: grid; grid-template-columns: minmax(0, 1fr) 180px 80px; gap: 12px; align-items: center; font-size: 14px; }
+.upload-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-error { color: var(--err); grid-column: span 2; }
+progress { width: 100%; height: 6px; appearance: none; border: 0; border-radius: 3px; background: var(--rule); overflow: hidden; }
+progress::-webkit-progress-bar { background: var(--rule); }
+progress::-webkit-progress-value { background: var(--pen); }
+progress::-moz-progress-bar { background: var(--pen); }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; align-items: start; }
+@media (max-width: 1100px) { .split { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) { .upload { grid-template-columns: minmax(0, 1fr) 70px; } .upload progress { grid-column: 1 / -1; grid-row: 2; } }
+.document-card { max-width: 980px; }
+.document-card h2 { margin-top: 30px; }
+.entity-group h3 { font: 500 13px/1.4 var(--sans); color: var(--muted); margin: 14px 0 6px; }
+.entity-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+.docview { min-height: 100vh; }
+.docview-column { max-width: 860px; padding: 32px 40px 64px 96px; }
+@media (max-width: 760px) { .docview-column { padding: 18px 16px 40px 30px; } }
+.doc-chunk { position: relative; }
+.doc-chunk h3 { margin: 22px 0 8px; }
+.doc-chunk p { font: 17px/1.68 var(--serif); white-space: pre-wrap; overflow-wrap: anywhere; max-width: 68ch; padding: 2px 4px; margin: 0 0 12px -4px; }
+.chunk-mark { position: absolute; left: -76px; top: 4px; width: 56px; text-align: right; font: 500 11.5px/1.4 var(--sans); color: var(--muted); }
+@media (max-width: 760px) { .chunk-mark { display: none; } }
+.doc-chunk.hit .chunk-mark { color: var(--pen); }
+.pager { margin: 8px 0 18px; }
