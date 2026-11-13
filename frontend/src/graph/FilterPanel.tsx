@@ -4,6 +4,7 @@ import { useEntityTypes, useOverview } from "../api/queries";
 import { typeColorVar } from "../lib/entityColors";
 import { formatInt, formatScore, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
+import { HIGHLIGHT_FIELD_ATTR, requestFlyToMatch } from "./commands";
 import { communityLabel, communitySummaries, typeCounts } from "./insights";
 import { buildGraph, DEFAULT_FILTERS, visibleSubgraph, type ColorBy, type SizeBy } from "./model";
 import { useDebouncedField, useGraphSearch } from "./useGraphSearch";
@@ -46,7 +47,13 @@ export function FilterPanel() {
   const overview = useOverview();
   const entityTypes = useEntityTypes();
   const column = useShellColumn();
-  const ids = { highlight: useId(), weight: useId(), mentions: useId(), community: useId() };
+  const ids = {
+    highlight: useId(),
+    highlightHint: useId(),
+    weight: useId(),
+    mentions: useId(),
+    community: useId(),
+  };
 
   const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
   const configured = useMemo(
@@ -115,6 +122,15 @@ export function FilterPanel() {
           type="search"
           value={highlight}
           onChange={(e) => setHighlight(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter: подсветка сразу в URL и перелёт к самому важному совпадению.
+            if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+            e.preventDefault();
+            update({ highlight }, { replace: true });
+            requestFlyToMatch(highlight);
+          }}
+          {...{ [HIGHLIGHT_FIELD_ATTR]: "" }}
+          aria-describedby={ids.highlightHint}
           placeholder="Подсветить по имени"
           autoComplete="off"
           className="w-full rounded-xl border border-line bg-card py-2 pr-9 pl-9 text-sm shadow-card outline-none placeholder:text-muted focus:border-primary [&::-webkit-search-cancel-button]:hidden"
@@ -129,6 +145,9 @@ export function FilterPanel() {
             <X size={14} />
           </button>
         )}
+        <p id={ids.highlightHint} className="sr-only">
+          Enter — перейти к самому важному совпадению
+        </p>
       </div>
 
       <Section

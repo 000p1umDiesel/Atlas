@@ -33,8 +33,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.stubEnv("VITE_FIXTURES", "1");
-  fake2d.api.fit.mockClear();
-  fake2d.api.exportPng.mockClear();
+  for (const fn of Object.values(fake2d.api)) fn.mockClear();
   fake2d.last = null;
   fake3d.last = null;
 });
@@ -143,19 +142,94 @@ test("режимы кроме «Обзор» недоступны до этап�
   }
 });
 
-test("клик по узлу открывает панель сущности", async () => {
+test("клик по узлу открывает компактную карточку; «Подробнее» раскрывает все связи; Esc закрывает", async () => {
   const { graph } = generateFixtures();
   const first = graph.nodes[0]!;
   await renderAt("/graph");
   fireEvent.click(screen.getByRole("button", { name: "выбрать узел" }));
-  const sheet = await screen.findByRole("dialog", { name: first.name });
-  expect(within(sheet).getByText(first.type)).toBeTruthy();
-  const mentions = within(sheet).getByRole("group", { name: "Упоминания" });
+  const card = await screen.findByRole("dialog", { name: first.name });
+  expect(within(card).getByText(first.type)).toBeTruthy();
+  const mentions = within(card).getByRole("group", { name: "Упоминания" });
   expect(within(mentions).getByText(first.mention_count.toLocaleString("ru-RU"))).toBeTruthy();
-  expect((within(sheet).getByRole("button", { name: "Открыть страницу" }) as HTMLButtonElement).disabled).toBe(true);
-  const rels = within(sheet).getByRole("list", { name: "Связи" });
-  expect(within(rels).getAllByRole("listitem").length).toBeLessThanOrEqual(8);
+  expect(within(card).getByRole("group", { name: "PageRank" })).toBeTruthy();
+  expect(within(card).getByRole("group", { name: "Связи" })).toBeTruthy();
+  const rels = within(card).getByRole("list", { name: "Связи" });
+  expect(within(rels).getAllByRole("listitem").length).toBeLessThanOrEqual(5);
   expect(fake2d.last?.selected).toBe(first.entity_id);
+  expect(fake2d.api.focusNode).toHaveBeenCalledWith(first.entity_id, expect.objectContaining({ x: expect.any(Number) }));
+
+  const more = within(card).queryByRole("button", { name: /Подробнее/ });
+  if (more) {
+    await click(more);
+    expect(await within(card).findByRole("list", { name: "Остальные связи" })).toBeTruthy();
+  }
+
+  await act(async () => {
+    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+    await new Promise((r) => setTimeout(r, 400));
+  });
+  await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: first.name })).toBeNull());
+  expect(fake2d.last?.selected).toBeNull();
+});
+
+test("клик по пустому месту холста снимает выделение", async () => {
+  await renderAt("/graph");
+  fireEvent.click(screen.getByRole("button", { name: "выбрать узел" }));
+  await vi.waitFor(() => expect(fake2d.last?.selected).not.toBeNull());
+  act(() => fake2d.last?.onBackgroundClick?.());
+  await vi.waitFor(() => expect(fake2d.last?.selected).toBeNull());
+});
+
+test("горячие клавиши: F — вписать, 3 — 3D, ? — подсказка по клавишам", async () => {
+  const router = await renderAt("/graph");
+  await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
+  fake2d.api.fit.mockClear();
+  fireEvent.keyDown(document.body, { key: "f", code: "KeyF" });
+  expect(fake2d.api.fit).toHaveBeenCalled();
+  fireEvent.keyDown(document.body, { key: "?", code: "Slash", shiftKey: true });
+  expect(await screen.findByRole("region", { name: "Горячие клавиши" })).toBeTruthy();
+  await act(async () => {
+    fireEvent.keyDown(document.body, { key: "3", code: "Digit3" });
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await vi.waitFor(() => expect(new URLSearchParams(searchStr(router)).get("view")).toBe("3d"));
+});
+
+test("кнопки масштаба зовут zoomIn / zoomOut", async () => {
+  await renderAt("/graph");
+  const plus = screen.getByRole("button", { name: "Приблизить" }) as HTMLButtonElement;
+  await vi.waitFor(() => expect(plus.disabled).toBe(false));
+  fireEvent.click(plus);
+  fireEvent.click(screen.getByRole("button", { name: "Отдалить" }));
+  expect(fake2d.api.zoomIn).toHaveBeenCalled();
+  expect(fake2d.api.zoomOut).toHaveBeenCalled();
+});
+
+test("легенда: клик по типу — фильтр в URL, наведение — подсветка узлов", async () => {
+  const router = await renderAt("/graph");
+  await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
+  const legend = screen.getByRole("list", { name: "Цвета типов" });
+  const person = within(legend).getByRole("button", { name: "Person" });
+  fireEvent.pointerEnter(person);
+  const ids = fake2d.api.emphasize.mock.calls.at(-1)?.[0] as Set<string>;
+  expect(ids.size).toBeGreaterThan(0);
+  await click(person);
+  await vi.waitFor(() => expect(searchStr(router)).toBe("?types=Person"));
+});
+
+test("Enter в поле подсветки выбирает самое важное совпадение", async () => {
+  const { graph } = generateFixtures();
+  const target = graph.nodes[0]!;
+  await renderAt("/graph");
+  const field = within(filters()).getByLabelText("Подсветить по имени");
+  fireEvent.change(field, { target: { value: target.name } });
+  await act(async () => {
+    fireEvent.keyDown(field, { key: "Enter", code: "Enter" });
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await vi.waitFor(() => expect(fake2d.last?.selected).not.toBeNull());
+  const chosen = graph.nodes.find((n) => n.entity_id === fake2d.last?.selected)!;
+  expect(chosen.name.toLowerCase()).toContain(target.name.toLowerCase());
 });
 
 test("чипы типов показывают число видимых сущностей", async () => {

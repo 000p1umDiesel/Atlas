@@ -8,6 +8,10 @@ export const fake2d = {
     fit: vi.fn(),
     exportPng: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
     dispose: vi.fn(),
+    zoomIn: vi.fn(),
+    zoomOut: vi.fn(),
+    focusNode: vi.fn(),
+    emphasize: vi.fn(),
   } satisfies Graph2DApi,
   last: null as Graph2DProps | null,
 };
