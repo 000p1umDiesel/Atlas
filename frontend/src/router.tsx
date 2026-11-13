@@ -7,6 +7,7 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
+import { parseGraphSearch } from "./graph/search";
 import { DesignPage } from "./routes/design";
 import { Placeholder } from "./routes/placeholder";
 import { Shell } from "./shell/Shell";
@@ -33,10 +34,11 @@ const homeRoute = createRoute({
   component: () => <Placeholder title="Главная" />,
 });
 
-// Task 6: сюда добавится validateSearch: parseGraphSearch и настоящая страница графа.
+// Страница графа — заглушка до задачи 9; фильтры живут в search-параметрах.
 const graphRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/graph",
+  validateSearch: (raw: Record<string, unknown>) => parseGraphSearch(raw),
   component: () => <Placeholder title="Граф" />,
 });
 
