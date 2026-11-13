@@ -75,6 +75,17 @@ describe("generateFixtures", () => {
       for (const small of ["Regulation", "Substance", "Equipment", "Condition", "Organism", "Other"])
         expect(count(big)).toBeGreaterThan(count(small));
   });
+  it("вес связи — сумма целых сил 1..10 по фрагментам, со степенным хвостом", () => {
+    const weights = f.graph.relations.map((r) => r.weight);
+    for (const r of f.graph.relations) {
+      expect(Number.isInteger(r.weight)).toBe(true);
+      expect(r.weight).toBeGreaterThanOrEqual(r.evidence.length);
+      expect(r.weight).toBeLessThanOrEqual(10 * r.evidence.length);
+    }
+    const sorted = [...weights].sort((a, b) => a - b);
+    expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThanOrEqual(10);
+    expect(sorted.at(-1)).toBeGreaterThan(25);
+  });
   it("статистика согласована с графом (ruling E)", () => {
     expect(f.stats.entities).toBe(300);
     expect(f.stats.relations).toBe(f.graph.relations.length);

@@ -277,7 +277,12 @@ export function generateFixtures(seed = 7): {
     const key = `${src.entity_id}|${predicate}|${dst.entity_id}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const evidenceCount = 1 + Math.floor(rnd() * 3);
+    // Как в графе: weight — сумма сил (целые 1..10 от модели) по подтверждающим фрагментам.
+    // Число фрагментов геометрическое: обычно 1–2, редкие связи подтверждены многократно.
+    let evidenceCount = 1;
+    while (evidenceCount < 14 && rnd() < 0.42) evidenceCount++;
+    let weight = 0;
+    for (let i = 0; i < evidenceCount; i++) weight += 1 + Math.floor(rnd() ** 0.8 * 10);
     relations.push({
       src_id: src.entity_id,
       src_name: src.name,
@@ -285,7 +290,7 @@ export function generateFixtures(seed = 7): {
       dst_id: dst.entity_id,
       dst_name: dst.name,
       description: `${src.name} — ${predicate.replace("_", " ")} — ${dst.name}`,
-      weight: Math.round((0.1 + rnd() * 0.9) * 100) / 100,
+      weight,
       evidence: Array.from(
         { length: evidenceCount },
         () =>

@@ -396,3 +396,17 @@ test("смена фильтров при выбранном узле, котор
   expect(fake2d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything());
   expect(fake2d.api.fit).not.toHaveBeenCalled();
 });
+
+test("ползунок веса связи — в единицах веса, диапазон по данным графа", async () => {
+  const maxWeight = Math.max(...generateFixtures().graph.relations.map((r) => r.weight));
+  expect(maxWeight).toBeGreaterThan(1);
+  const router = await renderAt("/graph?minWeight=12");
+  const slider = within(filters()).getByLabelText("Мин. вес связи") as HTMLInputElement;
+  expect(slider.getAttribute("aria-valuetext")).toBe("12");
+  expect(Number(slider.value)).toBe(Math.round(Math.sqrt(12 / maxWeight) * 100));
+  await act(async () => {
+    fireEvent.change(slider, { target: { value: "100" } });
+  });
+  await vi.waitFor(() => expect(new URLSearchParams(searchStr(router)).get("minWeight")).toBe(String(maxWeight)));
+  expect(fake2d.last?.filters.minWeight).toBe(maxWeight);
+});

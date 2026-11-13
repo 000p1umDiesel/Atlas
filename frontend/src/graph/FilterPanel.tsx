@@ -6,6 +6,7 @@ import { useShellColumn } from "../shell/columnContext";
 import { HIGHLIGHT_FIELD_ATTR, requestFlyToMatch } from "./commands";
 import { communityLabel, communitySummaries, typeCounts } from "./insights";
 import { buildGraph, DEFAULT_FILTERS, visibleSubgraph, type ColorBy, type SizeBy } from "./model";
+import { fromSlider, sliderScale, toSlider } from "./sliderScale";
 import { useDebouncedField, useGraphSearch } from "./useGraphSearch";
 import { Segmented } from "../ui/Segmented";
 import { Toggle } from "../ui/Toggle";
@@ -22,9 +23,8 @@ const SIZE_OPTIONS: { value: SizeBy; label: string }[] = [
   { value: "degree", label: "Связи" },
 ];
 
-/** Ползунок упоминаний квадратичный: распределение степенное, важна левая часть. */
-const toSlider = (v: number, max: number) => (max > 0 ? Math.round(Math.sqrt(Math.min(v, max) / max) * 100) : 0);
-const fromSlider = (p: number, max: number) => Math.round(max * (p / 100) ** 2);
+/** Вес связи: целые (суммы сил) без округления до значащих цифр, дробные — до трёх. */
+const formatWeight = (v: number) => (Number.isInteger(v) ? formatInt(v) : formatScore(v));
 
 /** Доля заполненной дорожки ползунка (CSS-переменная через CSSOM, не атрибут style в HTML). */
 const fill = (percent: number) => ({ "--fill": `${percent}%` }) as CSSProperties;
@@ -59,10 +59,9 @@ export function FilterPanel() {
   const counts = useMemo(() => (graph ? typeCounts(graph, search) : new Map<string, number>()), [graph, search]);
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
-  const maxMentions = useMemo(
-    () => (graph ? graph.reduceNodes((m, _, a) => Math.max(m, a.mention_count), 0) : 0),
-    [graph],
-  );
+  // Диапазоны ползунков — из данных: вес связи (сумма сил по фрагментам) сверху не ограничен.
+  const mentionScale = useMemo(() => sliderScale(graph ? graph.mapNodes((_, a) => a.mention_count) : []), [graph]);
+  const weightScale = useMemo(() => sliderScale(graph ? graph.mapEdges((_, a) => a.weight) : []), [graph]);
 
   const [highlight, setHighlight] = useDebouncedField(search.highlight, (v) => update({ highlight: v }, { replace: true }));
   const [minWeight, setMinWeight] = useDebouncedField(search.minWeight, (v) => update({ minWeight: v }, { replace: true }));
@@ -222,18 +221,19 @@ export function FilterPanel() {
             <label htmlFor={ids.weight} className="font-medium text-muted">
               Мин. вес связи
             </label>
-            <span className="tabular-nums">{formatScore(minWeight)}</span>
+            <span className="tabular-nums">{formatWeight(minWeight)}</span>
           </div>
           <input
             id={ids.weight}
             type="range"
             min={0}
-            max={1}
-            step={0.05}
-            value={minWeight}
-            onChange={(e) => setMinWeight(Number(e.target.value))}
+            max={100}
+            step={1}
+            value={toSlider(minWeight, weightScale)}
+            aria-valuetext={formatWeight(minWeight)}
+            onChange={(e) => setMinWeight(fromSlider(Number(e.target.value), weightScale))}
             className="range w-full"
-            style={fill(minWeight * 100)}
+            style={fill(toSlider(minWeight, weightScale))}
           />
         </div>
         <div className="space-y-1.5">
@@ -249,11 +249,11 @@ export function FilterPanel() {
             min={0}
             max={100}
             step={1}
-            value={toSlider(minMentions, maxMentions)}
+            value={toSlider(minMentions, mentionScale)}
             aria-valuetext={formatInt(minMentions)}
-            onChange={(e) => setMinMentions(fromSlider(Number(e.target.value), maxMentions))}
+            onChange={(e) => setMinMentions(fromSlider(Number(e.target.value), mentionScale))}
             className="range w-full"
-            style={fill(toSlider(minMentions, maxMentions))}
+            style={fill(toSlider(minMentions, mentionScale))}
           />
         </div>
         <button
