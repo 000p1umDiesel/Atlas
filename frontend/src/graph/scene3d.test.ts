@@ -59,6 +59,7 @@ function small() {
     ],
     ranked_by: "pagerank",
     truncated: false,
+    total_nodes: 4,
   };
   return buildGraph(payload);
 }

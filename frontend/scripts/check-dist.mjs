@@ -30,6 +30,17 @@ if (existsSync(assets)) {
   }
 }
 
+// Настоящая сборка (без VITE_FIXTURES=1) не должна тащить модуль фикстур: его выдаёт
+// строка, которая есть только в `src/fixtures/generate.ts`.
+const FIXTURE_MARKER = "Отчёт по графам знаний";
+if (process.env.VITE_FIXTURES !== "1" && existsSync(assets)) {
+  for (const name of readdirSync(assets).filter((n) => n.endsWith(".js"))) {
+    if (readFileSync(join(assets, name), "utf8").includes(FIXTURE_MARKER)) {
+      errors.push(`в assets/${name} есть фикстуры, хотя сборка без VITE_FIXTURES=1`);
+    }
+  }
+}
+
 if (errors.length) {
   for (const e of errors) console.error(`check-dist: ${e}`);
   process.exit(1);

@@ -220,7 +220,6 @@ export function generateFixtures(seed = 7): {
   graph: GraphPayload;
   stats: Stats;
   types: TypeCount[];
-  recent: RecentDocument[];
 } {
   const rnd = mulberry32(seed);
 
@@ -308,26 +307,28 @@ export function generateFixtures(seed = 7): {
   const statuses = ["done", "done", "done", "running", "pending", "failed"];
   const exts = ["pdf", "docx", "md", "pptx"];
   const docBases = ["Отчёт по графам знаний", "RAG survey", "Протокол встречи", "Neo4j handbook", "Лекция по NLP", "Embedding benchmark"];
+  // Как в `/api/stats`: сначала загрузки в очереди (`updated_at: null`), затем изменённые последними.
   const recent: RecentDocument[] = Array.from({ length: 8 }, (_, i) => ({
     id: `doc-${seed}-${i}`,
     name: `${pick(docBases, rnd)} ${CHUNK_TOPICS[i % CHUNK_TOPICS.length]}.${pick(exts, rnd)}`,
-    status: i === 0 ? "running" : pick(statuses, rnd),
-    uploaded: new Date(Date.UTC(2026, 10, 13 - i, 12, Math.floor(rnd() * 60))).toISOString(),
+    status: i === 0 ? "queued" : i === 1 ? "running" : pick(statuses, rnd),
+    updated_at: i === 0 ? null : new Date(Date.UTC(2026, 10, 13 - i, 12, Math.floor(rnd() * 60))).toISOString(),
   }));
 
   const stats: Stats = {
     documents: 40,
+    documents_by_status: { done: 34, running: 1, pending: 3, failed: 2 },
     chunks: 1260,
     entities: nodes.length,
     relations: relations.length,
     wiki_pages: 187,
     analysis: { ready: true, completed_at: "2026-11-12T21:40:00.000Z" },
+    recent,
   };
 
   return {
-    graph: { nodes, relations, ranked_by: "pagerank", truncated: false },
+    graph: { nodes, relations, ranked_by: "pagerank", truncated: false, total_nodes: nodes.length },
     stats,
     types,
-    recent,
   };
 }

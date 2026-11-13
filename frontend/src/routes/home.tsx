@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { AlertCircle, CheckCircle2, Clock3, FileText, LoaderCircle, Network, RefreshCw } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
+import { isUnauthorized } from "../api/client";
 import { useOverview, useRecentDocuments, useStats, useTypeCatalog } from "../api/queries";
 import type { NodeView, RecentDocument } from "../api/types";
 import { communityLabel, communitySummaries, type CommunitySummary } from "../graph/insights";
@@ -18,6 +19,8 @@ const RECENT_DOCUMENTS = 5;
 const STATUS: Record<string, { label: string; icon: ReactNode }> = {
   done: { label: "Обработан", icon: <CheckCircle2 size={15} className="text-primary" /> },
   running: { label: "Обрабатывается", icon: <LoaderCircle size={15} className="animate-spin text-primary" /> },
+  // queued — загрузка, которую worker ещё не взял; pending — документ registry ждёт обработки
+  queued: { label: "В очереди", icon: <Clock3 size={15} className="text-muted" /> },
   pending: { label: "В очереди", icon: <Clock3 size={15} className="text-muted" /> },
   failed: { label: "Ошибка", icon: <AlertCircle size={15} className="text-ink" /> },
 };
@@ -38,8 +41,9 @@ function Unavailable({ error }: { error: unknown }) {
     <div className="mx-auto max-w-xl rounded-[14px] bg-card p-8 shadow-card">
       <h2 className="text-xl font-semibold">Сводка пока недоступна</h2>
       <p className="mt-2 text-muted">
-        {error instanceof Error ? error.message : "Нет данных"}. До этого интерфейс работает только на тестовых
-        данных (сборка с VITE_FIXTURES=1).
+        {error instanceof Error ? error.message : "Нет данных"}.
+        {/* Без сессии подсказка о входе — в плашке оболочки. */}
+        {isUnauthorized(error) ? "" : " Обновите страницу чуть позже."}
       </p>
     </div>
   );
@@ -259,7 +263,8 @@ function RecentList({ docs }: { docs: RecentDocument[] }) {
               <p className="truncate text-sm font-medium" title={doc.name}>
                 {doc.name}
               </p>
-              <p className="mt-0.5 text-xs text-muted">{formatDay(doc.uploaded)}</p>
+              {/* null — загрузка ещё ждёт worker'а */}
+              <p className="mt-0.5 text-xs text-muted">{doc.updated_at ? formatDay(doc.updated_at) : "в очереди"}</p>
             </div>
             <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
               {status.icon}

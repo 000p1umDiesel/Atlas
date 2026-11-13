@@ -13,6 +13,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { isUnauthorized } from "../api/client";
 import { useOverview, useTypeCatalog } from "../api/queries";
 import { focusHighlightField, onFlyToMatch } from "../graph/commands";
 import { ENTITY_CARD_WIDTH, ENTITY_SHEET_SHARE, EntityCard } from "../graph/EntityCard";
@@ -339,8 +340,9 @@ export function GraphPage() {
         <div className="max-w-sm space-y-2">
           <p className="font-serif text-xl font-semibold">Граф пока недоступен</p>
           <p className="text-sm text-muted">
-            {overview.error instanceof Error ? overview.error.message : "Нет данных"}. До этого интерфейс работает
-            только на тестовых данных (сборка с VITE_FIXTURES=1).
+            {overview.error instanceof Error ? overview.error.message : "Нет данных"}.
+            {/* Без сессии подсказка о входе — в плашке оболочки. */}
+            {isUnauthorized(overview.error) ? "" : " Обновите страницу чуть позже."}
           </p>
         </div>
       </CanvasMessage>

@@ -78,6 +78,7 @@ describe("sizeRange", () => {
     relations: [],
     ranked_by: "pagerank",
     truncated: false,
+    total_nodes: nodes.length,
   });
 
   it("считается по всем узлам, а не по видимым", () => {

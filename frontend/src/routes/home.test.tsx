@@ -101,10 +101,29 @@ test("последние документы — 5, анализ графа го�
   expect(screen.getByText("Готов")).toBeTruthy();
 });
 
-test("без фикстур — спокойное сообщение", async () => {
+test("загрузка в очереди (status queued, updated_at: null) подписана «в очереди»", async () => {
+  await renderHome();
+  const docs = screen.getByRole("list", { name: "Последние документы" });
+  const first = within(docs).getAllByRole("listitem")[0]!.textContent ?? "";
+  expect(first).toContain("в очереди");
+  expect(first).toContain("В очереди");
+  expect(first).not.toContain("queued");
+});
+
+test("без сессии — сообщение и подсказка о входе через старый интерфейс", async () => {
   vi.stubEnv("VITE_FIXTURES", "");
-  const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/"] }) });
-  await router.load();
-  render(<App router={router} client={createQueryClient()} />);
-  expect(await screen.findByText(/API появится на этапе 2/, {}, { timeout: 3000 })).toBeTruthy();
+  const fetchMock = vi.fn(async () => Response.json({ detail: "Требуется вход" }, { status: 401 }));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/"] }) });
+    await router.load();
+    render(<App router={router} client={createQueryClient()} />);
+    expect(await screen.findByText("Требуется вход.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "старый интерфейс" }).getAttribute("href")).toBe("/legacy");
+    // 401 не повторяется, сводка и последние документы — один запрос
+    const urls = fetchMock.mock.calls.map((call) => String((call as unknown[])[0]));
+    expect(urls.filter((url) => url === "/api/stats")).toHaveLength(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

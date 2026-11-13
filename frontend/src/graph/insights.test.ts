@@ -34,6 +34,7 @@ const payload: GraphPayload = {
   relations: [rel("a", "b", "knows", 0.9), rel("c", "a", "uses", 0.5), rel("a", "d", "cites", 0.2)],
   ranked_by: "pagerank",
   truncated: false,
+  total_nodes: 5,
 };
 const g = buildGraph(payload);
 

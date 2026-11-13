@@ -1,4 +1,4 @@
-// Формы будущего API (этап 2); пока данные приходят из фикстур.
+// Формы ответов HTTP API (`src/mnogobase/api/app.py`); фикстуры повторяют их же.
 export interface NodeView {
   entity_id: string;
   name: string;
@@ -25,15 +25,21 @@ export interface GraphPayload {
   relations: RelationView[];
   ranked_by: "pagerank" | "mentions";
   truncated: boolean;
+  /** Узлов, прошедших фильтры (в ответе — не больше `limit`). */
+  total_nodes: number;
 }
 
+/** Ответ `GET /api/stats`. */
 export interface Stats {
   documents: number;
+  documents_by_status: Record<string, number>;
   chunks: number;
   entities: number;
   relations: number;
   wiki_pages: number;
   analysis: { ready: boolean; completed_at: string | null };
+  /** Сначала загрузки в очереди (`updated_at: null`), затем изменённые последними. */
+  recent: RecentDocument[];
 }
 
 /** Тип сущности: ключ из `extract.entity_types`, русская подпись и определение для показа. */
@@ -43,7 +49,7 @@ export interface EntityTypeInfo {
   description: string;
 }
 
-/** Ответ `GET /api/entities/types` (этап 2): в порядке `extract.entity_types`. */
+/** Ответ `GET /api/entities/types`: в порядке `extract.entity_types`. */
 export interface TypeCount extends EntityTypeInfo {
   count: number;
 }
@@ -52,5 +58,5 @@ export interface RecentDocument {
   id: string;
   name: string;
   status: string;
-  uploaded: string;
+  updated_at: string | null;
 }

@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AuthNotice } from "./AuthNotice";
 import { ShellColumnContext, type ShellColumnState } from "./columnContext";
 import { ContextColumn } from "./ContextColumn";
 import { Rail } from "./Rail";
@@ -96,6 +97,7 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
         </AnimatePresence>
         <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
           <TopBar onMenu={hasColumn ? () => setMenuOpen(true) : undefined} />
+          <AuthNotice />
           <main
             className={
               bleed

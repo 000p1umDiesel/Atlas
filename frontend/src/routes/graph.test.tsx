@@ -263,12 +263,18 @@ test("чипы типов показывают число видимых сущ�
   expect(within(filters()).getByRole("button", { name: /^Человек/ }).textContent).toContain(String(person.count));
 });
 
-test("без фикстур — спокойное сообщение вместо графа", async () => {
+test("без сессии — спокойное сообщение вместо графа и подсказка о входе", async () => {
   vi.stubEnv("VITE_FIXTURES", "");
-  const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/graph"] }) });
-  await router.load();
-  render(<App router={router} client={createQueryClient()} />);
-  expect(await screen.findByText(/API появится на этапе 2/, {}, { timeout: 3000 })).toBeTruthy();
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "Требуется вход" }, { status: 401 })));
+  try {
+    const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/graph"] }) });
+    await router.load();
+    render(<App router={router} client={createQueryClient()} />);
+    expect(await screen.findByText("Граф пока недоступен")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "старый интерфейс" }).getAttribute("href")).toBe("/legacy");
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 describe("выбранный узел живёт в URL (focus) и переживает смену 2D↔3D", () => {
