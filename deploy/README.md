@@ -11,7 +11,8 @@ cp .env.example .env              # только секреты: LLM_API_KEY, п
 deploy/prepare-data.sh            # каталоги ./data/* и закреплённый jar GDS
 docker compose up -d --build --wait
 docker compose exec api mnogobase user create owner          # спросит пароль (от 12 символов)
-uv run mnogobase client login owner                           # http://127.0.0.1:8080 по умолчанию
+# сайт: http://127.0.0.1:8080 — вход этим именем и паролем
+uv run mnogobase client login owner                           # или CLI-клиент
 uv run mnogobase client documents upload paper.pdf
 uv run mnogobase client jobs list
 uv run mnogobase client ask "О чём статья?"
@@ -71,7 +72,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 | Обновление | `sudo deploy/update.sh` — `git pull` ветки `main` и сборка `mnogobase:latest`, пока сайт работает; затем одна остановка: снимок restic и сразу запуск api и worker с новым образом. Другая ветка: `sudo deploy/update.sh <ветка>`, без снимка: `--no-backup`. Если ветки нет, она не перематывается (fast-forward), есть локальные правки или сборка упала, стек не трогается; если образ не изменился, снимка и перезапуска нет. git работает от владельца каталога, не от root; в режиме Minecraft стек не запускается |
 | Откат | `update.sh` сохраняет заменяемый образ как `mnogobase:<его коммит>` (метка `org.opencontainers.image.revision`) и в конце печатает команду отката: `git checkout <коммит>`, `docker tag mnogobase:<коммит> mnogobase:latest`, `docker compose up -d --wait`. Миграции базы назад не откатываются: если они были, восстановите снимок restic |
 | Minecraft ↔ mnogobase | `sudo host-mode vanilla` (или `neoforge`) / `sudo host-mode mnogobase`; `sudo host-mode status` |
-| Состояние | `sudo docker compose ps`, `mnogobase client status` |
+| Сайт | `https://SERVER_NAME` — вход учётной записью из `user create`; пароль можно сменить там же (меню «owner» → «Сменить пароль») |
+| Состояние | страница «Статус» на сайте, `sudo docker compose ps`, `mnogobase client status` |
 | Логи | `sudo docker compose logs -f api worker`, `journalctl -u mnogobase` |
 | Операторские команды | `sudo docker compose exec api mnogobase status / doctor / graph analyze / reindex / jobs list` |
 | Пользователь | `sudo docker compose exec api mnogobase user passwd owner` / `user disable NAME` |
@@ -118,3 +120,4 @@ ssh -L 7474:localhost:7474 -L 7687:localhost:7687 -L 6333:localhost:6333 admin@<
 - nginx: TLS 1.2/1.3, ответ 444 на чужой Host, лимит тела 64 KiB (50 МБ только для загрузки документа), предел частоты на `/api/auth/login`, журнал без строки запроса.
 - fail2ban (`deploy/fail2ban/`): 3 неудачных входа (401 или 429 на `/api/auth/login` в журнале nginx) с одного IP за 7 дней — вечный бан на 80/443, SSH остаётся открытым. Трижды ошиблись паролем сами — снимите бан по SSH (команда в таблице выше). Журнал nginx, а не API: API за прокси видит адрес nginx, а не клиента.
 - API: нет `/docs` и `/openapi.json`, пароли argon2 (не больше двух хешей одновременно), неудачный вход пишется в журнал как `login_failed` (без IP и с хешем имени). Пользователи создаются только из CLI.
+- Сайт: сессия в cookie `HttpOnly; SameSite=Strict; Secure` (на сервере `service.cookie_secure` должен оставаться `true`), POST/PATCH/DELETE только с `Origin` своего сайта, строгий CSP без inline-кода и CDN, Markdown без HTML через DOMPurify. nginx менять не нужно: `location /` уже проксирует страницу и потоковые ответы (`proxy_buffering off`).

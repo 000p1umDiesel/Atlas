@@ -37,7 +37,7 @@ async def test_app_that_fails_prepare_closes_its_own_clients():
 class _Graph:
     """Граф, в котором одна сущность исчезает между поиском и чтением (параллельное удаление)."""
 
-    def fulltext_entities(self, query, limit):
+    def fulltext_entities(self, query, limit, *, prefix=False):
         return [("alive", 1.0), ("gone", 0.5)]
 
     def get_entity(self, entity_id):

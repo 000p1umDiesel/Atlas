@@ -32,7 +32,7 @@
 13. [Что дальше](#13-что-дальше)
 14. [Оценка Hybrid RAG, WikiLLM и GraphRAG](#14-оценка-hybrid-rag-wikillm-и-graphrag)
 15. [Фоновая обработка и воспроизводимые эксперименты](#15-фоновая-обработка-и-воспроизводимые-эксперименты)
-16. [HTTP API и клиент](#16-http-api-и-клиент): [запуск и учётные записи](#161-запуск-и-учётные-записи), [клиент](#162-работа-через-клиент), [маршруты](#163-маршруты-api), [состояние и учёт LLM](#164-состояние-и-учёт-llm), [безопасность](#165-безопасность)
+16. [HTTP API и клиент](#16-http-api-и-клиент): [запуск и учётные записи](#161-запуск-и-учётные-записи), [клиент](#162-работа-через-клиент), [маршруты](#163-маршруты-api), [состояние и учёт LLM](#164-состояние-и-учёт-llm), [безопасность](#165-безопасность), [веб-интерфейс](#166-веб-интерфейс)
 
 ---
 
@@ -94,7 +94,7 @@ flowchart TB
 | Эмбеддер и реранкер | в `config.yaml` — Qwen3-Embedding-0.6B и Qwen3-Reranker-0.6B на llama.cpp; размерность эмбеддингов определяется автоматически | модели меняются через настройки; llama.cpp работает нативно на Mac (`models up`) или в CPU-контейнерах полного стека (`compose.yaml`); любой другой OpenAI-совместимый сервер или облачный API подключается как `serve: api` |
 | LLM | один клиент для любого OpenAI-совместимого API | llama.cpp, LM Studio, OpenRouter, OpenAI и прокси подключаются правкой конфига. Структурированный вывод через строгую JSON Schema |
 | Состояние | PostgreSQL, одна схема на проект | файлы, этапы, ошибки, кэш извлечения, очередь wiki, очередь заданий, пользователи и учёт LLM; на нём держатся возобновление и инкрементальность |
-| Интерфейс | пакет, CLI на Typer и HTTP API на FastAPI для одного владельца | API использует тот же пакет; веб-интерфейс и MCP можно навесить поверх |
+| Интерфейс | пакет, CLI на Typer, HTTP API на FastAPI и веб-интерфейс для одного владельца | API и сайт используют тот же пакет; сайт — Preact + htm без сборки, раздаётся самим API (раздел 16.6); MCP можно навесить поверх |
 | Язык wiki | английский по умолчанию | канонические английские имена сущностей склеивают русские и английские упоминания |
 | Логи | structlog: консоль и JSONL-файл; в контейнерах — JSON в stdout | формат готов для Loki/Grafana и трейсинга |
 
@@ -1186,6 +1186,7 @@ Leiden не пишет текст самостоятельно: готовые �
 | `service.api_url` | `http://127.0.0.1:8080` | адрес API по умолчанию для `mnogobase client` | сразу |
 | `service.uploads_dir` | `documents/uploads` | куда API сохраняет загруженные документы | перезапуск API и worker |
 | `service.session_hours` | `168` (1–720) | срок жизни сессии API | `api serve`, новые входы |
+| `service.cookie_secure` | `true` | флаг `Secure` у cookie веб-сессии; `false` только для локального сайта по `http` | `api serve`, новые входы |
 | `service.max_upload_mb` | `50` | предел размера загружаемого документа | `api serve` |
 | `service.max_pending_jobs` | `100` | сколько заданий `pending` + `running` допускает API; сверх — `429` | `api serve` |
 | `service.history_messages` | `12` (0–100) | сколько прошлых сообщений диалога используется для переформулировки уточнения | `api serve` |
@@ -1973,7 +1974,7 @@ mnogobase/
 │   │                http.py  device.py  progress.py
 │   ├── ingest/      pipeline.py  processing.py  removal.py
 │   ├── ops/         doctor.py  model_servers.py  maintenance.py  graph_analysis.py
-│   ├── api/app.py                # FastAPI: /api/*, /health (раздел 16)
+│   ├── api/app.py                # FastAPI: /api/*, /health, сайт / и /static (раздел 16)
 │   ├── service/     kb.py  store.py  observability.py  client.py  errors.py
 │   ├── background/  queue.py  uploads.py  watch.py  worker.py
 │   ├── evaluation/  core.py  artifacts.py  ragas.py  report.py  comparison.py
@@ -1984,6 +1985,7 @@ mnogobase/
 │   ├── extraction/  extractor.py  resolver.py
 │   ├── stores/      qdrant_store.py  graph_store.py  registry.py
 │   ├── wiki/        builder.py  render.py  validate.py  obsidian.py
+│   ├── web/         index.html  app.js  style.css  lib/  views/  vendor/  fonts/   # сайт (16.6)
 │   └── retrieval/   base.py  rag.py  wiki.py  graph.py  combined.py  answer.py  compare.py  rerank.py  translate.py
 ├── tests/
 │   ├── unit/  integration/  e2e/  security/
@@ -2012,7 +2014,7 @@ mnogobase/
 
 Вне текущего этапа:
 
-- Веб-интерфейс поверх HTTP API, MCP-сервер, агент Deep Research.
+- MCP-сервер, агент Deep Research.
 - Поиск пробелов и противоречий в знаниях, community summaries (GDS), нормализация предикатов.
 - Мультимодальные эмбеддинги картинок и аудио — поиск картинки по вопросу без текстового описания (задел: `EmbedInput.modality`, поле `modality` в payload; Docling уже сохраняет картинки в `.mnogobase/cache/<doc_id>/images/`). Сейчас картинки попадают в поиск через описания VLM (раздел 7.16).
 - Langfuse-трейсинг, учёт токенов на этапах `ingest`, импорт старых `runs/compare.jsonl` в оценку.
@@ -2250,6 +2252,8 @@ uv run mnogobase api serve                # 127.0.0.1:8080; --host и --port м�
 uv run mnogobase worker run               # в другом терминале: выполняет загрузки и удаления
 ```
 
+Сайт открывается по тому же адресу: http://127.0.0.1:8080 (раздел [16.6](#166-веб-интерфейс)).
+
 В полном стеке API и worker — сервисы `compose.yaml`, а учётная запись создаётся в контейнере: `docker compose exec api mnogobase user create owner`.
 
 | Команда | Что делает |
@@ -2299,25 +2303,34 @@ uv run mnogobase client logout
 
 ### 16.3 Маршруты API
 
-Все маршруты, кроме `/health` и `POST /api/auth/login`, требуют заголовок `Authorization: Bearer TOKEN`. Списки принимают `limit` (1–200) и `offset`.
+Все маршруты, кроме `/health` и `POST /api/auth/login`, требуют сессию: заголовок `Authorization: Bearer TOKEN` (CLI-клиент) или cookie `mb_session` (браузер). Для cookie-сессии POST, PATCH и DELETE принимаются только с заголовком `Origin` этого же сайта, иначе `403`. Списки принимают `limit` (1–200) и `offset`.
 
 | Маршрут | Что делает |
 |---|---|
 | `GET /health` | проверка живости без авторизации: `{"status": "ok"}` |
-| `POST /api/auth/login` | JSON `{"username": ..., "password": ...}` → `{"token": ..., "token_type": "bearer"}` |
-| `POST /api/auth/logout` / `GET /api/auth/me` | отозвать текущую сессию / `id`, `username` |
+| `POST /api/auth/login` | JSON `{"username": ..., "password": ...}` → `{"token": ..., "token_type": "bearer"}`; с `"cookie": true` (браузер) — cookie `mb_session` и `{"username"}` без токена |
+| `POST /api/auth/logout` / `GET /api/auth/me` | отозвать текущую сессию (и стереть cookie) / `id`, `username` |
+| `POST /api/auth/password` | `{"old_password", "new_password"}`: смена своего пароля, все сессии отзываются; браузер сразу получает новую cookie |
 | `GET /api/documents` | документы корпуса: `id`, `name`, `status`, `uploaded`, `url` |
 | `POST /api/documents?filename=NAME` | загрузка: файл — сырое тело запроса; ответ `202` с заданием очереди |
+| `GET /api/documents/{doc_id}` | карточка: имя, статус, стадии (`stage`, `status`, `attempts`, `error`, `updated_at`), число чанков, сущности (`has_page`, `slug`) |
+| `GET /api/documents/{doc_id}/chunks` | чанки документа по порядку (`idx`, `text`, `headings`, `page_start`, `page_end`) и `total` |
+| `GET /api/chunks/{chunk_id}` | полный текст фрагмента для цитаты: `name`, `text`, `headings`, `page`, `url` исходника |
 | `GET /api/documents/{doc_id}/content` | исходник загруженного документа как вложение |
 | `DELETE /api/documents/{doc_id}` | поставить удаление документа в очередь; ответ — задание |
-| `GET /api/jobs`, `POST /api/jobs/{job_id}/retry` | задания очереди / повтор задания `failed` |
+| `GET /api/jobs`, `POST /api/jobs/{job_id}/retry` | задания очереди (с `doc_id` и `name` файла) / повтор задания `failed` |
 | `POST /api/search` | `{"question", "mode", "k"}` → найденные фрагменты без генерации ответа |
 | `POST /api/ask` | `{"question", "mode"}` → ответ с источниками |
 | `POST /api/conversations`, `GET /api/conversations` | создать диалог (`{"title"}`) / список своих диалогов |
-| `GET` / `POST /api/conversations/{id}/messages` | история диалога / новый вопрос `{"question", "mode"}` с ответом |
-| `GET /api/wiki`, `GET /api/wiki/{page_id}` | страницы wiki / Markdown одной страницы |
-| `GET /api/graph/search?q=...`, `GET /api/graph/{entity_id}/neighbors?depth=1..3` | поиск сущностей по имени и алиасам / окрестность сущности |
+| `PATCH` / `DELETE /api/conversations/{id}` | переименовать (`{"title"}`) / удалить диалог со всеми сообщениями |
+| `GET` / `POST /api/conversations/{id}/messages` | история диалога / новый вопрос `{"question", "mode"}` с ответом; у ответов есть `meta` (`latency_ms`, `tokens_in`, `tokens_out`, `alt_queries`), первый вопрос становится заголовком диалога |
+| `POST /api/conversations/{id}/messages/stream` | то же потоком SSE: события `sources`, `delta` (`{"text"}`), затем `done` (сохранённое сообщение) или `error` (`{"detail", "status"}`); если клиент ушёл, ответ всё равно дописывается и сохраняется |
+| `GET /api/wiki?q=...`, `GET /api/wiki/{page_id}`, `GET /api/wiki/by-slug/{slug}` | страницы wiki (поиск по заголовку, slug и алиасам) / Markdown страницы с `sources` — `chunk_id` → имя документа для сносок |
+| `GET /api/graph/search?q=...`, `GET /api/graph/{entity_id}/neighbors?depth=1..3` | поиск сущностей по началу слов имени и алиасов / окрестность сущности |
+| `GET /api/graph/{entity_id}` | карточка сущности: поля узла, `pagerank` и `community` из последнего анализа, `has_page`, `slug` |
+| `GET /api/graph/analysis`, `POST /api/graph/analyze` | состояние анализа графа и топ-20 по PageRank / поставить анализ задачей worker'а (`202`; повторный запрос не плодит задачи) |
 | `GET /api/status` | очередь, worker и расход LLM (раздел 16.4) |
+| `GET /api/status/checks` | быстрые проверки PostgreSQL, Qdrant, Neo4j, плагинов графа, серверов моделей и LLM (без генерации); подробности сбоев скрыты, одна проверка за раз (`429`) |
 
 `mode` — `rag`, `wiki`, `graph` или `all` (по умолчанию `rag`). Загрузка принимает только расширения из `parsing.extensions` и не больше `service.max_upload_mb`; файл сохраняется как `service.uploads_dir/<doc_id><расширение>`. Повторная загрузка того же содержимого возвращает уже поставленное задание, если оно актуально. Если в очереди уже `service.max_pending_jobs` заданий `pending` и `running`, API отвечает `429`. В источниках ответов пути сокращены до имени файла; у чанков есть `doc_id` и `url` исходника, у разделов wiki — `url` страницы. Пустая база даёт ответ `В базе знаний нет подходящих источников для этого вопроса.`
 
@@ -2354,7 +2367,8 @@ service:
 
 ### 16.5 Безопасность
 
-- **Учётные записи** создаются только из CLI; все маршруты, кроме `/health` и входа, требуют bearer-токен. Cookie и CSRF не используются.
+- **Учётные записи** создаются только из CLI; все маршруты, кроме `/health` и входа, требуют сессию (bearer-токен или cookie браузера). Свой пароль можно сменить из веба.
+- **Cookie браузера** `mb_session`: `HttpOnly` (скрипт страницы токена не видит), `SameSite=Strict`, `Secure` при `service.cookie_secure`. От CSRF вдобавок к `SameSite` — проверка `Origin` у POST, PATCH и DELETE и у входа с cookie.
 - **Пароли:** не короче 12 символов, Argon2. Хеширование занимает около 64 МиБ памяти, поэтому одновременно идёт не больше двух; если слот не освободился за 5 секунд, вход получает `429`. Неудачный вход пишется в журнал как `login_failed` с хешем имени. IP за прокси банит fail2ban по журналу nginx (`deploy/fail2ban/`, 3 неудачи за 7 дней — вечный бан на 80/443).
 - **Сессии:** случайные токены, в базе хранится только их SHA-256; срок — `service.session_hours` (168 часов); `logout`, `user passwd` и `user disable` отзывают сессии.
 - **Размер запросов:** JSON-тело ограничено 64 KiB (`413` до разбора JSON и до проверки сессии, в том числе для тела без `Content-Length`, переданного по частям: предел проверяется по мере чтения); имя и тип загружаемого файла проверяются до чтения тела, а само тело пишется потоком во временный файл рядом с загрузками (с подсчётом SHA-256) до `service.max_upload_mb` и не копится в памяти. Двоичные форматы должны начинаться со своей сигнатуры (`%PDF-`, ZIP у DOCX/PPTX/XLSX, PNG, JPEG, TIFF, BMP, WebP), иначе `422`. В `deploy/nginx.conf` те же пределы и ограничение частоты запросов на вход.
@@ -2362,3 +2376,19 @@ service:
 - **Нет `/docs`, `/redoc` и `/openapi.json`.** Ошибки валидации не повторяют присланные значения, непредвиденные ошибки возвращают `503` без подробностей, текст ошибок провайдера LLM не сохраняется и не возвращается. Ошибки стадий в registry и поле `error` в журнале проходят через `safe_error`: ключи (`Bearer ...`, `sk-...`, пароль в URL, `api_key=...`) заменяются на `***`, длина ограничена 500 символами. Вопросы владельца пишутся в журнал только на уровне DEBUG.
 - **Исходники** отдаются как вложение (`application/octet-stream`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'`); внутренние пути в ответах заменяются именами файлов и URL API.
 - **Сеть:** `api serve` по умолчанию слушает `127.0.0.1`. Наружу API публикуется только через HTTPS-прокси (раздел [11.3](#113-сервер)).
+
+### 16.6 Веб-интерфейс
+
+Сайт раздаёт сам API: `/` — страница, `/static/*` — файлы из `src/mnogobase/web/` (Preact + htm, markdown-it, DOMPurify, Cytoscape и шрифты Literata и Golos Text лежат в `web/vendor/` и `web/fonts/` с закреплёнными версиями и sha256 в `web/vendor/VERSIONS.md`; сборки, Node и CDN нет). Вход — по имени и паролю учётной записи из `mnogobase user create`.
+
+| Раздел | Что там |
+|---|---|
+| Чат | диалоги (создать, переименовать, удалить), режим `rag` / `wiki` / `graph` / `all`, ответ появляется по мере генерации; номера `[n]` открывают полный текст фрагмента, оттуда — место в документе и скачивание исходника; под ответом источники, время и токены; «Сравнить режимы» задаёт вопрос во всех четырёх режимах по очереди и показывает ответы рядом (в диалог не сохраняется) |
+| Документы | загрузка пачкой (перетаскиванием или выбором) с прогрессом по каждому файлу, список со статусами, удаление, очередь заданий с повтором; карточка документа со стадиями и ошибками, сущностями и ссылками на граф и wiki; чтение документа по фрагментам с подсветкой процитированного |
+| Wiki | поиск, список по типам, страница с переходами по `[[ссылкам]]` и сносками на фрагменты |
+| Граф | поиск сущности, её окрестность на 1–3 шага, карточка узла (описание, алиасы, PageRank и сообщество, связи с фрагментом-доказательством) |
+| Статус | worker и очередь, расход LLM за сутки и месяц, анализ графа с кнопкой запуска (задача worker'а), проверка сервисов |
+
+Безопасность страницы: CSP `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `nosniff`, `Referrer-Policy: no-referrer`. Ответы LLM, страницы wiki и тексты документов — недоверенные данные: Markdown рендерится с выключенным HTML и проходит через DOMPurify, ссылки только `http(s)`, якоря и `/api/`, картинки из Markdown не показываются; всё остальное выводится как текст. Документ в браузере читается по фрагментам из индекса, а не открывается исходником, поэтому загруженный HTML или PDF не исполняется.
+
+Локально по `http`: если браузер не сохраняет вход (cookie с флагом `Secure` по `http` принимают не все браузеры), поставьте `service.cookie_secure: false` в локальном `config.yaml` или `MNOGOBASE_SERVICE__COOKIE_SECURE=false`. На сервере за HTTPS оставьте `true`.
