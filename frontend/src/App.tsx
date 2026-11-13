@@ -1,11 +1,8 @@
-import { DesignPage } from "./routes/design";
+import { RouterProvider } from "@tanstack/react-router";
+import { createAppRouter } from "./router";
 
-// Временная заглушка до роутера (следующая задача): /_design показывает стилевую плитку.
-export function App() {
-  if (window.location.pathname === "/_design") return <DesignPage />;
-  return (
-    <main>
-      <h1>mnogobase</h1>
-    </main>
-  );
+const defaultRouter = createAppRouter();
+
+export function App({ router = defaultRouter }: { router?: ReturnType<typeof createAppRouter> }) {
+  return <RouterProvider router={router} />;
 }
