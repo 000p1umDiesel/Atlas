@@ -30,10 +30,8 @@ function Metric({ label, value, note }: { label: string; value: string; note?: s
   return (
     <div role="group" aria-label={label} className="min-w-0 px-2.5 py-2">
       <dt className="truncate text-[11px] text-muted">{label}</dt>
-      <dd className="mt-0.5 truncate text-[15px] leading-tight font-semibold tabular-nums">
-        {value}
-        {note && <span className="ml-1 text-[11px] font-normal text-muted">{note}</span>}
-      </dd>
+      <dd className="mt-0.5 truncate text-[15px] leading-tight font-semibold tabular-nums">{value}</dd>
+      {note && <dd className="truncate text-[11px] leading-tight text-muted tabular-nums">{note}</dd>}
     </div>
   );
 }
@@ -150,7 +148,7 @@ export function EntityCard({
         <Metric
           label="PageRank"
           value={a.pagerank === null ? "—" : formatScore(a.pagerank)}
-          note={a.pagerank !== null && place !== undefined ? `${formatInt(place)}-е` : undefined}
+          note={a.pagerank !== null && place !== undefined ? `${formatInt(place)}-е место` : undefined}
         />
         <Metric label="Связи" value={formatInt(graph.degree(entityId))} />
       </dl>

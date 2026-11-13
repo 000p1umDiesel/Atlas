@@ -54,7 +54,8 @@ export interface Graph3DProps extends Graph2DProps {
 /** Мировой радиус узла на единицу `nodeSize` (4…22 → 2…11). */
 const NODE_SCALE = 0.5;
 const FOV = 50;
-const LABEL_LIMIT = 30;
+/** Подписей без наведения: больше — и в объёме они налезают друг на друга. */
+const LABEL_LIMIT = 14;
 /** Сколько совпадений поиска подписывать сверх топа (крупнейшие). */
 const MATCH_LABEL_LIMIT = 60;
 const MATCH_SCALE = 1.35;
@@ -465,9 +466,17 @@ class Scene3D {
     const node = this.nodes.get(id);
     if (this.disposed || !node || node.x === undefined || node.y === undefined || node.z === undefined) return;
     this.userMoved = true;
-    const current = this.camera.position.distanceTo(this.controls.target);
-    const dist = Math.min(current, Math.max(nodeRadius(node) * 10, 80));
+    // Расстояние, при котором в свободной части кадра видна вся окрестность узла.
+    const around = [node, ...[...(this.adjacency.get(id) ?? [])].map((n) => this.nodes.get(n))].filter(
+      (n): n is ForceNode => n !== undefined,
+    );
+    const sphere = boundingSphere(
+      around.map((n) => ({ x: n.x ?? NaN, y: n.y ?? NaN, z: n.z ?? NaN, r: nodeRadius(n) })),
+    );
+    const w = Math.max(1, this.container.clientWidth - Math.abs(offset.x) * 2);
     const h = Math.max(1, this.container.clientHeight);
+    const spread = Math.max(sphere ? sphere.radius : 0, nodeRadius(node) * 4, 25);
+    const dist = fitDistance(spread, FOV, w / Math.max(1, h - Math.abs(offset.y) * 2)) * 1.05;
     const perPx = (2 * dist * Math.tan(((FOV / 2) * Math.PI) / 180)) / h;
     this.camera.updateMatrixWorld();
     const right = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();

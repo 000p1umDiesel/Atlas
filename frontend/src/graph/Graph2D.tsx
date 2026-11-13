@@ -472,7 +472,15 @@ export function Graph2D({
     );
     sigmaRef.current = sigma;
 
+    // Касание — не наведение: у пальца нет «ухода» с узла, а после перелёта камеры Sigma
+    // заново «наводит» на то, что оказалось под местом последнего касания.
+    let touch = false;
+    const onPointerType = (e: PointerEvent) => {
+      touch = e.pointerType === "touch";
+    };
+    container.addEventListener("pointerdown", onPointerType, true);
     sigma.on("enterNode", ({ node, event }) => {
+      if (touch) return;
       hoveredRef.current = node;
       const original = event.original;
       if ("clientX" in original) pointerRef.current = { x: original.clientX, y: original.clientY };
@@ -513,6 +521,7 @@ export function Graph2D({
     });
 
     const onPointerMove = (e: PointerEvent) => {
+      touch = e.pointerType === "touch";
       pointerRef.current = { x: e.clientX, y: e.clientY };
       if (hoveredRef.current !== null) placeTooltip(tooltipRef.current, container, e.clientX, e.clientY);
     };
@@ -536,6 +545,7 @@ export function Graph2D({
       cancelAnimationFrame(dragFrame);
       drag = null;
       container.removeEventListener("pointermove", onPointerMove);
+      container.removeEventListener("pointerdown", onPointerType, true);
       observer.disconnect();
       scheme?.removeEventListener("change", bump);
       resizer?.disconnect();
