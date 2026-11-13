@@ -1,0 +1,37 @@
+{
+  "name": "mnogobase-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && node scripts/check-dist.mjs",
+    "build:mock": "VITE_FIXTURES=1 npm run build",
+    "check": "tsc -b && eslint . && vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/golos-text": "5.3.0",
+    "@fontsource-variable/literata": "5.3.0",
+    "@radix-ui/react-tooltip": "1.4.1",
+    "lucide-react": "1.72.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@tailwindcss/vite": "4.3.5",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/three": "0.187.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "jsdom": "31.0.1",
+    "tailwindcss": "4.3.5",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}

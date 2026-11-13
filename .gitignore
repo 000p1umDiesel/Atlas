@@ -24,3 +24,6 @@ AGENTS.md
 docs/*md
 hybrid_rag_notebooks/
 
+frontend/node_modules/
+src/mnogobase/web/dist/
+frontend/*.tsbuildinfo
