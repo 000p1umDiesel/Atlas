@@ -380,3 +380,16 @@ progress::-moz-progress-bar { background: var(--pen); }
 @media (max-width: 760px) { .chunk-mark { display: none; } }
 .doc-chunk.hit .chunk-mark { color: var(--pen); }
 .pager { margin: 8px 0 18px; }
+
+/* ---- wiki ---- */
+.search { max-width: 420px; margin: 6px 0 18px; }
+.wiki-groups { columns: 3 260px; column-gap: 40px; }
+.wiki-group { break-inside: avoid; margin-bottom: 22px; }
+.wiki-group h2 { font: 500 13px/1.4 var(--sans); color: var(--muted); margin: 0 0 6px; }
+.wiki-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.wiki-group a { text-decoration: none; color: var(--ink); }
+.wiki-group a:hover { color: var(--pen); text-decoration: underline; }
+.wiki-page { min-height: 100vh; }
+.wiki-column { max-width: 860px; padding: 32px 40px 64px 96px; }
+@media (max-width: 760px) { .wiki-column { padding: 18px 16px 40px 30px; } }
+.sources-title { font-size: 17px; margin-top: 28px; }

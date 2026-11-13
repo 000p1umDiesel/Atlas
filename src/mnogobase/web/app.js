@@ -9,6 +9,7 @@ import { DocumentCard } from "./views/document.js";
 import { Documents } from "./views/documents.js";
 import { DocumentView } from "./views/docview.js";
 import { Login } from "./views/login.js";
+import { Wiki } from "./views/wiki.js";
 
 const NAV = [
   ["chat", "Чат"],
@@ -33,6 +34,8 @@ function Page({ route, user, chats, reloadChats }) {
       if (id && route.parts[2] === "view") return html`<${DocumentView} id=${id} query=${route.query} />`;
       if (id) return html`<${DocumentCard} id=${id} />`;
       return html`<${Documents} />`;
+    case "wiki":
+      return html`<${Wiki} parts=${route.parts} />`;
     default:
       return html`<${Placeholder} title=${(NAV.find(([id]) => id === section) || NAV[0])[1]} />`;
   }
