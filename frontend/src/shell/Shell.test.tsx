@@ -32,7 +32,7 @@ test("после перехода в DOM только новая страниц�
   expect(screen.queryByRole("heading", { name: "Граф" })).toBeNull();
 });
 
-test("«Сущности» не подсвечиваются на /entities-x", async () => {
+test("на /chat активен только «Чат»", async () => {
   await renderAt("/chat");
   expect((await screen.findByRole("link", { name: "Чат" })).getAttribute("aria-current")).toBe("page");
 });
