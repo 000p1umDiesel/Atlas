@@ -39,15 +39,19 @@ function hexToRgb(value: string): string | null {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 }
 
+/** Нейтральный `--t0` светлой темы: запасной цвет, если canvas недоступен. */
+const FALLBACK_RGB = "rgb(201, 195, 182)";
+
 /**
  * Любой CSS-цвет → `rgb(r, g, b)`, который понимают WebGL-рендереры.
  * Hex разбираем сами; остальное (`color(srgb …)`, `oklab(…)`, `color-mix(…)`)
- * рисуем в пиксель 1×1 и читаем обратно.
+ * рисуем в пиксель 1×1 и читаем обратно. Без canvas — готовый `rgb()` как есть,
+ * иначе нейтральный цвет (никогда не строка, которую WebGL не разберёт).
  */
 export function normalizeColor(value: string, ctx: ColorContext | null): string {
   const hex = hexToRgb(value);
   if (hex) return hex;
-  if (!ctx) return value;
+  if (!ctx) return /^rgb\(\s*\d+,\s*\d+,\s*\d+\s*\)$/.test(value.trim()) ? value.trim() : FALLBACK_RGB;
   ctx.clearRect(0, 0, 1, 1);
   ctx.fillStyle = "#000000";
   ctx.fillStyle = value;

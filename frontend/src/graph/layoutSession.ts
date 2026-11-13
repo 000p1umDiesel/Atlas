@@ -32,7 +32,7 @@ export function createLayoutSession(
       y = Math.sin(i) * (1 + i * 0.1);
     }
     seen.add(`${x}:${y}`);
-    g.mergeNode(n.id, { x, y, size: n.size });
+    g.mergeNode(n.id, { x, y, size: n.size, fixed: n.fixed === true });
   });
   for (const [src, dst, weight] of req.edges) {
     if (src !== dst && g.hasNode(src) && g.hasNode(dst)) g.addEdge(src, dst, { weight });

@@ -114,3 +114,11 @@ test("communityColorVar: детерминированно, в пределах -
   // числовые id сообществ (из URL) окрашиваются так же, как строковые
   expect(communityColorVar("12")).toMatch(/^var\(--t[1-8]\)$/);
 });
+
+test("без canvas cssColor всё равно отдаёт rgb(): запасной нейтральный --t0", () => {
+  document.documentElement.style.setProperty("--e", "color-mix(in oklab, #bdb0d8 80%, black)");
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  expect(cssColor("--e")).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
+  expect(normalizeColor("oklab(0.5 0.1 0.1)", null)).toBe("rgb(201, 195, 182)");
+  expect(normalizeColor("rgb(1, 2, 3)", null)).toBe("rgb(1, 2, 3)");
+});

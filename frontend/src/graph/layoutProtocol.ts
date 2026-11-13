@@ -6,6 +6,8 @@ export interface LayoutNode {
   x: number;
   y: number;
   size: number;
+  /** Закреплён пользователем (перетащен): ForceAtlas2 его не двигает. */
+  fixed?: boolean;
 }
 
 export type LayoutStartRequest = {
@@ -32,16 +34,22 @@ function finite(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 
-/** Запрос на раскладку только видимой части графа; координаты — текущие атрибуты x/y. */
+/**
+ * Запрос на раскладку только видимой части графа; координаты — текущие атрибуты x/y.
+ * Узлы из `fixed` (перетащенные пользователем) помечаются закреплёнными.
+ */
 export function encodeLayoutRequest(
   graph: AbstractGraph<Attributes, Attributes>,
   visible: { nodes: Set<string>; edges: Set<string> },
   iterations: number = LAYOUT_ITERATIONS,
+  fixed: ReadonlySet<string> = new Set(),
 ): LayoutStartRequest {
   const nodes: LayoutNode[] = [];
   graph.forEachNode((id, a) => {
     if (!visible.nodes.has(id)) return;
-    nodes.push({ id, x: finite(a.x, 0), y: finite(a.y, 0), size: finite(a.size, 1) });
+    const node: LayoutNode = { id, x: finite(a.x, 0), y: finite(a.y, 0), size: finite(a.size, 1) };
+    if (fixed.has(id)) node.fixed = true;
+    nodes.push(node);
   });
   const edges: [string, string, number][] = [];
   graph.forEachEdge((key, a, src, dst) => {
@@ -144,5 +152,46 @@ export class LayoutController {
     this.worker.onerror = null;
     this.worker.terminate();
     this.worker = null;
+  }
+}
+
+/** Сдвиг указателя (px), после которого нажатие на узел считается перетаскиванием, а не кликом. */
+export const DRAG_THRESHOLD_PX = 4;
+
+/**
+ * Раскладка и перетаскивание узлов. Sigma начинает перетаскивание с первого же движения
+ * указателя, поэтому раскладка останавливается только после сдвига больше порога
+ * (обычный клик с дрожанием её не трогает). Отпустили узел — раскладка продолжается с
+ * текущих позиций, а перетащенные узлы остаются закреплёнными (`pinned`).
+ */
+export class LayoutDragGuard {
+  readonly pinned = new Set<string>();
+  private origin: { x: number; y: number } | null = null;
+  private dragging = false;
+
+  constructor(
+    private readonly controller: Pick<LayoutController, "start" | "stop">,
+    private readonly encode: (pinned: ReadonlySet<string>) => LayoutStartRequest,
+  ) {}
+
+  start(x: number, y: number): void {
+    this.origin = { x, y };
+    this.dragging = false;
+  }
+
+  move(x: number, y: number): void {
+    if (!this.origin || this.dragging) return;
+    if (Math.hypot(x - this.origin.x, y - this.origin.y) <= DRAG_THRESHOLD_PX) return;
+    this.dragging = true;
+    this.controller.stop();
+  }
+
+  end(nodes: string[]): void {
+    const dragged = this.dragging;
+    this.origin = null;
+    this.dragging = false;
+    if (!dragged) return;
+    for (const n of nodes) this.pinned.add(n);
+    this.controller.start(this.encode(this.pinned));
   }
 }

@@ -3,6 +3,7 @@ import {
   applyFrame,
   encodeLayoutRequest,
   LayoutController,
+  LayoutDragGuard,
   type LayoutFrame,
   type LayoutRequest,
   type LayoutStartRequest,
@@ -53,6 +54,22 @@ describe("encodeLayoutRequest", () => {
     const req = encodeLayoutRequest(sample(), { nodes: new Set(), edges: new Set() });
     expect(req.nodes).toEqual([]);
     expect(req.edges).toEqual([]);
+  });
+});
+
+describe("encodeLayoutRequest: закреплённые узлы", () => {
+  it("помечает fixed только узлы из набора", () => {
+    const req = encodeLayoutRequest(
+      sample(),
+      { nodes: new Set(["a", "b"]), edges: new Set() },
+      50,
+      new Set(["b", "gone"]),
+    );
+    expect(req.nodes).toEqual([
+      { id: "a", x: 1, y: 2, size: 5 },
+      { id: "b", x: 3, y: 4, size: 6, fixed: true },
+    ]);
+    expect(req.iterations).toBe(50);
   });
 });
 
@@ -165,6 +182,58 @@ describe("LayoutController", () => {
   });
 });
 
+describe("LayoutDragGuard", () => {
+  beforeEach(() => {
+    FakeWorker.all = [];
+  });
+  const visible = { nodes: new Set(["a", "b", "c"]), edges: new Set(["a|r|b", "b|r|c"]) };
+  const setup = () => {
+    const g = sample();
+    const controller = new LayoutController(() => new FakeWorker(), () => {});
+    const guard = new LayoutDragGuard(controller, (pinned) => encodeLayoutRequest(g, visible, 100, pinned));
+    controller.start(encodeLayoutRequest(g, visible, 100, guard.pinned));
+    return { g, controller, guard };
+  };
+  const alive = () => FakeWorker.all.filter((w) => !w.terminated);
+
+  it("начало и конец перетаскивания возобновляют раскладку: новый воркер с текущих позиций, узел закреплён", () => {
+    const { g, controller, guard } = setup();
+    guard.start(100, 100);
+    guard.move(130, 120);
+    expect(FakeWorker.all[0].sent.at(-1)).toEqual({ kind: "stop" });
+    expect(controller.running).toBe(false);
+    g.mergeNodeAttributes("a", { x: 42, y: -7 }); // так Sigma двигает узел при перетаскивании
+    guard.end(["a"]);
+    expect(FakeWorker.all).toHaveLength(2);
+    expect(alive()).toEqual([FakeWorker.all[1]]);
+    expect(controller.running).toBe(true);
+    const req = FakeWorker.all[1].sent[0];
+    expect(req.kind).toBe("start");
+    if (req.kind !== "start") return;
+    expect(req.nodes.find((n) => n.id === "a")).toEqual({ id: "a", x: 42, y: -7, size: 5, fixed: true });
+    expect(req.nodes.find((n) => n.id === "b")?.fixed).toBeUndefined();
+    expect(guard.pinned.has("a")).toBe(true);
+  });
+
+  it("клик с дрожанием в пару пикселей не останавливает раскладку", () => {
+    const { controller, guard } = setup();
+    guard.start(100, 100);
+    guard.move(101, 102);
+    guard.end(["a"]);
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(FakeWorker.all[0].sent).toHaveLength(1);
+    expect(controller.running).toBe(true);
+    expect(guard.pinned.size).toBe(0);
+  });
+
+  it("конец без начала ничего не делает", () => {
+    const { guard } = setup();
+    guard.move(500, 500);
+    guard.end(["a"]);
+    expect(FakeWorker.all).toHaveLength(1);
+  });
+});
+
 describe("createLayoutSession (ядро воркера)", () => {
   const start = (n: number, iterations = 100): LayoutStartRequest => ({
     kind: "start",
@@ -198,6 +267,15 @@ describe("createLayoutSession (ядро воркера)", () => {
     expect(s.step().done).toBe(false);
     t = 4001;
     expect(s.step().done).toBe(true);
+  });
+
+  it("закреплённый узел не двигается", () => {
+    const req = start(12);
+    req.nodes[3].fixed = true;
+    const { positions } = createLayoutSession(req).step();
+    expect(positions[6]).toBeCloseTo(req.nodes[3].x, 5);
+    expect(positions[7]).toBeCloseTo(req.nodes[3].y, 5);
+    expect(positions[0]).not.toBeCloseTo(req.nodes[0].x, 5);
   });
 
   it("пустой граф сразу завершён; совпадающие позиции не дают NaN", () => {

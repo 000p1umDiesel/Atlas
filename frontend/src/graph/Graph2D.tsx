@@ -7,7 +7,9 @@ import { communityColorVar, cssColor, typeColorVar, withAlpha } from "../lib/ent
 import {
   applyFrame,
   encodeLayoutRequest,
+  LAYOUT_ITERATIONS,
   LayoutController,
+  LayoutDragGuard,
   type LayoutFrame,
   type WorkerLike,
 } from "./layoutProtocol";
@@ -131,6 +133,7 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
   const sigmaRef = useRef<Renderer | null>(null);
   const renderGraphRef = useRef<RenderGraph | null>(null);
   const controllerRef = useRef<LayoutController | null>(null);
+  const dragGuardRef = useRef<LayoutDragGuard | null>(null);
   const paletteRef = useRef<Palette | null>(null);
   const visibleRef = useRef<{ nodes: Set<string>; edges: Set<string> }>({
     nodes: new Set(),
@@ -300,9 +303,6 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     sigma.on("enterNode", ({ node }) => setHover(node));
     sigma.on("leaveNode", () => setHover(null));
     sigma.on("clickNode", ({ node }) => onSelectRef.current(node));
-    // Перетаскивание (встроенное в Sigma 4: камера не двигается, отпускание — mouseup):
-    // раскладка останавливается, чтобы не тянуть узел обратно.
-    sigma.on("nodeDragStart", () => controllerRef.current?.stop());
 
     const controller = new LayoutController(createLayoutWorker, (ids, frame: LayoutFrame) => {
       // При prefers-reduced-motion узлы не «плывут»: применяется только итоговый кадр.
@@ -310,6 +310,16 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
       applyFrame(rg, ids, frame);
     });
     controllerRef.current = controller;
+    // Перетаскивание встроено в Sigma 4 (камера не двигается, отпускание — pointerup).
+    // Сдвиг больше порога останавливает раскладку; отпустили узел — она продолжается
+    // с текущих позиций, перетащенные узлы закреплены. Клик с дрожанием её не трогает.
+    const dragGuard = new LayoutDragGuard(controller, (pinned) =>
+      encodeLayoutRequest(rg, visibleRef.current, LAYOUT_ITERATIONS, pinned),
+    );
+    dragGuardRef.current = dragGuard;
+    sigma.on("nodeDragStart", ({ event }) => dragGuard.start(event.x, event.y));
+    sigma.on("nodeDrag", ({ event }) => dragGuard.move(event.x, event.y));
+    sigma.on("nodeDragEnd", ({ allDraggedNodes }) => dragGuard.end(allDraggedNodes));
 
     // Смена темы: data-theme на <html> или системная схема.
     const bump = () => setThemeVersion((v) => v + 1);
@@ -333,6 +343,7 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
       sigma.kill();
       if (sigmaRef.current === sigma) sigmaRef.current = null;
       if (controllerRef.current === controller) controllerRef.current = null;
+      if (dragGuardRef.current === dragGuard) dragGuardRef.current = null;
       if (renderGraphRef.current === rg) renderGraphRef.current = null;
       activeRef.current = { nodes: [], edges: [] };
       hoveredRef.current = null;
@@ -368,9 +379,8 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
           reject(new Error("Граф уже закрыт"));
           return;
         }
-        const timer = setTimeout(() => reject(new Error("Граф не отрисовался")), EXPORT_TIMEOUT_MS);
         // WebGL-буфер (preserveDrawingBuffer: false) читается в том же кадре, что и отрисовка.
-        sigma.once("afterRender", () => {
+        const capture = () => {
           clearTimeout(timer);
           const stage = sigma.getStageCanvas();
           const out = document.createElement("canvas");
@@ -385,7 +395,12 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
           ctx.fillRect(0, 0, out.width, out.height);
           ctx.drawImage(stage, 0, 0);
           out.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Не удалось получить PNG"))), "image/png");
-        });
+        };
+        const timer = setTimeout(() => {
+          sigma.off("afterRender", capture);
+          reject(new Error("Граф не отрисовался"));
+        }, EXPORT_TIMEOUT_MS);
+        sigma.once("afterRender", capture);
         sigma.scheduleRender();
       });
 
@@ -420,7 +435,9 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     sigma.setEdgesState(shownEdges, { isHidden: false });
     sigma.setEdgesState(hiddenEdges, { isHidden: true });
     setHover(hoveredRef.current);
-    controllerRef.current?.start(encodeLayoutRequest(rg, visible));
+    controllerRef.current?.start(
+      encodeLayoutRequest(rg, visible, LAYOUT_ITERATIONS, dragGuardRef.current?.pinned),
+    );
     // Цвет, размер и подсветка в зависимости не входят: они не перезапускают раскладку.
   }, [graph, setHover, typesKey, community, minWeight, minMentions, hideIsolated]);
 
