@@ -1,0 +1,106 @@
+/* Шрифты: только кириллица и латиница. Файлы лежат в сборке отдельно (assetsInlineLimit: 0). */
+@font-face {
+  font-family: "Golos Text Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 900;
+  src: url("../../node_modules/@fontsource-variable/golos-text/files/golos-text-cyrillic-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Golos Text Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 900;
+  src: url("../../node_modules/@fontsource-variable/golos-text/files/golos-text-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Literata Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 900;
+  src: url("../../node_modules/@fontsource-variable/literata/files/literata-cyrillic-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Literata Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 900;
+  src: url("../../node_modules/@fontsource-variable/literata/files/literata-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  --bg: #f5efe4;
+  --card: #fffdf8;
+  --ink: #2f3a2f;
+  --muted: #6f776b;
+  --primary: #6e9473;
+  --primary-deep: #41604a;
+  --line: color-mix(in oklab, var(--ink) 12%, transparent);
+  --shadow: 0 1px 2px rgb(47 58 47 / 0.06), 0 8px 24px rgb(47 58 47 / 0.07);
+  --radius: 14px;
+
+  --t0: #c9c3b6;
+  --t1: #d8a48f;
+  --t2: #9fbfd3;
+  --t3: #bdb0d8;
+  --t4: #e5cf85;
+  --t5: #e2b2b4;
+  --t6: #a9d3bc;
+  --t7: #ebc09a;
+  --t8: #b7c08a;
+
+  color-scheme: light;
+}
+
+/* Тёмная тема: системная (если не выбрана светлая вручную) и ручная. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f231e;
+    --card: #272c26;
+    --ink: #e8e4d8;
+    --muted: #9da496;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+    --t0: color-mix(in oklab, #c9c3b6 80%, black);
+    --t1: color-mix(in oklab, #d8a48f 80%, black);
+    --t2: color-mix(in oklab, #9fbfd3 80%, black);
+    --t3: color-mix(in oklab, #bdb0d8 80%, black);
+    --t4: color-mix(in oklab, #e5cf85 80%, black);
+    --t5: color-mix(in oklab, #e2b2b4 80%, black);
+    --t6: color-mix(in oklab, #a9d3bc 80%, black);
+    --t7: color-mix(in oklab, #ebc09a 80%, black);
+    --t8: color-mix(in oklab, #b7c08a 80%, black);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f231e;
+  --card: #272c26;
+  --ink: #e8e4d8;
+  --muted: #9da496;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+  --t0: color-mix(in oklab, #c9c3b6 80%, black);
+  --t1: color-mix(in oklab, #d8a48f 80%, black);
+  --t2: color-mix(in oklab, #9fbfd3 80%, black);
+  --t3: color-mix(in oklab, #bdb0d8 80%, black);
+  --t4: color-mix(in oklab, #e5cf85 80%, black);
+  --t5: color-mix(in oklab, #e2b2b4 80%, black);
+  --t6: color-mix(in oklab, #a9d3bc 80%, black);
+  --t7: color-mix(in oklab, #ebc09a 80%, black);
+  --t8: color-mix(in oklab, #b7c08a 80%, black);
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
