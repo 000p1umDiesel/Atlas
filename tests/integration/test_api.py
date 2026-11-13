@@ -332,3 +332,39 @@ def test_change_password_with_bearer(api):
     )
     assert response.status_code == 200 and "set-cookie" not in response.headers
     assert api.client.get("/api/auth/me", headers=api.headers).status_code == 401
+
+
+PAGE_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+    "form-action 'self'"
+)
+
+
+def test_index_and_static_have_security_headers(api):
+    index = api.client.get("/")
+    assert index.status_code == 200
+    assert index.headers["content-type"].startswith("text/html")
+    script = api.client.get("/static/app.js")
+    assert script.status_code == 200
+    for response in (index, script):
+        assert response.headers["content-security-policy"] == PAGE_CSP
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "no-referrer"
+    for path in ("/static/../pyproject.toml", "/static/%2e%2e/api/app.py", "/static/nope.js"):
+        assert api.client.get(path).status_code == 404
+
+
+def test_api_responses_are_not_cached(api):
+    assert api.client.get("/health").headers["cache-control"] == "no-store"
+    me = api.client.get("/api/auth/me", headers=api.headers)
+    assert me.headers["cache-control"] == "no-store"
+    assert "content-security-policy" not in me.headers
+
+
+def test_index_has_no_inline_script_or_style(api):
+    import re
+
+    html = api.client.get("/").text
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
+    assert " style=" not in html and "<style" not in html

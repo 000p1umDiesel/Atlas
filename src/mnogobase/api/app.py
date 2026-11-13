@@ -5,6 +5,7 @@
 выполняет в пуле потоков, асинхронные работают с ядром через поток `CoreLoop`.
 
 Группы маршрутов:
+- `/` и `/static/*` — веб-интерфейс (`mnogobase/web/`, CSP `PAGE_CSP`, без inline-кода);
 - `/health` — проверка живости без авторизации и без обращения к базам;
 - `/api/auth/login|logout|me|password` — вход, отзыв сессии, текущий пользователь, смена
   своего пароля;
@@ -46,15 +47,17 @@ import os
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.resources import files
 from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mnogobase.core.config import Settings, load_settings
@@ -68,6 +71,19 @@ MAX_JSON_BODY = 64 * 1024
 # cookie веб-сессии (HttpOnly: JS страницы токена не видит)
 SESSION_COOKIE = "mb_session"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# статика веб-интерфейса внутри пакета (index.html, app.js, vendor/, fonts/)
+WEB_DIR = FilePath(str(files("mnogobase") / "web"))
+# CSP страниц: только свои скрипты, стили и шрифты, без inline-кода и CDN (§6.4 аудита)
+PAGE_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+    "form-action 'self'"
+)
+_PAGE_HEADERS = [
+    (b"content-security-policy", PAGE_CSP.encode()),
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"no-referrer"),
+]
 
 
 class Login(BaseModel):
@@ -162,6 +178,38 @@ async def _too_large(send: Send) -> None:
     await send({"type": "http.response.body", "body": response.body})
 
 
+class SecurityHeaders:
+    """ASGI-middleware: заголовки безопасности без буферизации ответа (SSE идёт как есть).
+
+    Страницы и статика (всё, кроме `/api/*` и `/health`) получают CSP `PAGE_CSP`, `nosniff` и
+    `Referrer-Policy: no-referrer`; ответы API — `Cache-Control: no-store`. Заголовки, уже
+    выставленные обработчиком (например, строгий CSP скачиваемого исходника), не
+    перезаписываются."""
+
+    def __init__(self, app: ASGIApp):
+        """`app` — оборачиваемое приложение."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Добавляет заголовки в `http.response.start`."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"]
+        api = path == "/health" or path == "/api" or path.startswith("/api/")
+        extra = [(b"cache-control", b"no-store")] if api else _PAGE_HEADERS
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {name.lower() for name, _ in headers}
+                headers += [(name, value) for name, value in extra if name not in present]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 def get_kb(request: Request) -> Any:
     """Единственная зависимость, через которую обработчики получают базу знаний."""
     return request.app.state.kb
@@ -251,6 +299,7 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     )
     app.state.kb = kb
     app.add_middleware(BodyLimit)
+    app.add_middleware(SecurityHeaders)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, exc: ServiceError):
@@ -269,6 +318,14 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         """Любое непойманное исключение → 503 без подробностей (текст может содержать
         секреты); Starlette при этом пишет трассировку в лог сервера."""
         return JSONResponse({"detail": "Сервис временно недоступен"}, status_code=503)
+
+    @app.get("/")
+    def index():
+        """Страница веб-интерфейса; маршруты внутри неё — в `#/...`, сервер их не видит."""
+        return FileResponse(WEB_DIR / "index.html", media_type="text/html")
+
+    # Starlette сама отвергает выход за каталог (`..`, ссылки наружу) ответом 404.
+    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     @app.get("/health")
     def health():
