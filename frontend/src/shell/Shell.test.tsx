@@ -74,3 +74,16 @@ test("на страницах без колонки её нет", async () => {
   expect(screen.queryByRole("complementary", { name: "Контекст раздела" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Меню раздела" })).toBeNull();
 });
+
+test("тема на /_design и кнопка рейки — одно состояние", async () => {
+  await renderAt("/_design");
+  const group = await screen.findByRole("group", { name: "Тема" });
+  fireEvent.click(within(group).getByRole("button", { name: "Тёмная" }));
+  const nav = screen.getByRole("navigation", { name: "Разделы" });
+  expect(within(nav).getByRole("button", { name: "Тема: тёмная" })).toBeTruthy();
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  // и обратно: кнопка рейки переключает выбор на странице
+  fireEvent.click(within(nav).getByRole("button", { name: "Тема: тёмная" }));
+  expect(within(group).getByRole("button", { name: "Как в системе" }).getAttribute("aria-pressed")).toBe("true");
+  expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+});

@@ -1,10 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { applyTheme, loadThemeChoice } from "./lib/theme";
+import { applyTheme, getThemeChoice } from "./lib/theme";
 import "./styles/app.css";
 
-applyTheme(loadThemeChoice());
+// До первого рендера, чтобы не мигала чужая тема; тот же выбор затем читает useTheme.
+applyTheme(getThemeChoice());
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

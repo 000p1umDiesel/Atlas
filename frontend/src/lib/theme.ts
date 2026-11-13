@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 export type ThemeChoice = "system" | "light" | "dark";
 
@@ -36,12 +36,31 @@ export function applyTheme(choice: ThemeChoice): void {
   else root.setAttribute("data-theme", choice);
 }
 
+// Один источник выбора темы на всё приложение: рейка, нижняя панель и /_design видят одно и
+// то же значение (у каждого своего useState иконка устаревала).
+let current: ThemeChoice | null = null;
+const listeners = new Set<() => void>();
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Текущий выбор (при первом обращении — из localStorage). */
+export function getThemeChoice(): ThemeChoice {
+  current ??= loadThemeChoice();
+  return current;
+}
+
+/** Меняет выбор: сохраняет, ставит data-theme и уведомляет всех подписчиков. */
+export function setThemeChoice(next: ThemeChoice): void {
+  saveThemeChoice(next);
+  applyTheme(next);
+  if (current === next) return;
+  current = next;
+  for (const listener of listeners) listener();
+}
+
 export function useTheme(): [ThemeChoice, (choice: ThemeChoice) => void] {
-  const [choice, setChoice] = useState<ThemeChoice>(loadThemeChoice);
-  const update = useCallback((next: ThemeChoice) => {
-    saveThemeChoice(next);
-    applyTheme(next);
-    setChoice(next);
-  }, []);
-  return [choice, update];
+  return [useSyncExternalStore(subscribe, getThemeChoice), setThemeChoice];
 }
