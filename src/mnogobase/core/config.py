@@ -617,6 +617,8 @@ class ServiceSettings(Section):
     api_url: str = "http://127.0.0.1:8080"  # адрес по умолчанию для `mnogobase client`
     uploads_dir: Path = Path("documents/uploads")  # документы, загруженные через API
     session_hours: int = Field(default=24 * 7, ge=1, le=720)  # срок жизни токена сессии
+    # флаг Secure у cookie веб-сессии: за nginx с TLS — true; false только для локального http
+    cookie_secure: bool = True
     max_upload_mb: int = Field(default=50, ge=1)
     max_pending_jobs: int = Field(default=100, ge=1)  # pending + running; при пределе — 429
     history_messages: int = Field(default=12, ge=0, le=100)  # сообщений беседы в промпте

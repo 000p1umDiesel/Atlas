@@ -6,7 +6,8 @@
 
 Группы маршрутов:
 - `/health` — проверка живости без авторизации и без обращения к базам;
-- `/api/auth/login|logout|me` — вход по имени и паролю, отзыв сессии, текущий пользователь;
+- `/api/auth/login|logout|me|password` — вход, отзыв сессии, текущий пользователь, смена
+  своего пароля;
 - `/api/documents` — список, загрузка (202, задача `ingest`), скачивание исходника,
   удаление (задача `remove`);
 - `/api/jobs` — задачи фоновой очереди и их повтор;
@@ -16,10 +17,13 @@
 - `/api/status` — очередь, жив ли worker, расход LLM.
 
 Модель безопасности:
-- Сессии bearer: `Authorization: Bearer <токен>`; в базе хранится только sha256 токена,
-  сессию можно отозвать (`logout`, смена пароля или отключение пользователя из CLI).
-  Учётные записи создаются только из CLI. Все маршруты, кроме `/health` и `/api/auth/login`,
-  требуют сессию. Cookie-сессий, CSRF-защиты и CSP для веб-интерфейса пока нет.
+- Сессии: `Authorization: Bearer <токен>` (CLI-клиент) или cookie `mb_session` (браузер:
+  `HttpOnly; SameSite=Strict; Secure` при `service.cookie_secure`; токен в JS не попадает).
+  В базе хранится только sha256 токена, сессию можно отозвать (`logout`, смена пароля из
+  веба или CLI, отключение пользователя). Учётные записи создаются только из CLI. Все
+  маршруты, кроме `/health` и `/api/auth/login`, требуют сессию.
+- CSRF: для cookie-сессии небезопасные методы и вход с `cookie=true` требуют `Origin`,
+  совпадающий с `Host` (иначе 403); Bearer-запросы не проверяются.
 - `BodyLimit` отвергает тела больше 64 KiB до разбора JSON и до проверки сессии, в том
   числе chunked-тела без `Content-Length`.
 - Загрузка документа — исключение из `BodyLimit`: имя и тип проверяются до чтения тела,
@@ -44,9 +48,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -61,6 +65,9 @@ Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0, le=1_000_000)]
 Mode = Literal["rag", "wiki", "graph", "all"]
 MAX_JSON_BODY = 64 * 1024
+# cookie веб-сессии (HttpOnly: JS страницы токена не видит)
+SESSION_COOKIE = "mb_session"
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 class Login(BaseModel):
@@ -68,6 +75,15 @@ class Login(BaseModel):
 
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=1024)
+    # true — сессия в cookie `mb_session` (браузер), токен в ответе не возвращается
+    cookie: bool = False
+
+
+class PasswordChange(BaseModel):
+    """Тело `/api/auth/password`: текущий и новый пароль."""
+
+    old_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
 
 
 class Question(BaseModel):
@@ -151,20 +167,49 @@ def get_kb(request: Request) -> Any:
     return request.app.state.kb
 
 
-def bearer(authorization: Annotated[str | None, Header()] = None) -> str:
-    """Токен из заголовка `Authorization: Bearer <токен>`; 401, если заголовка нет, схема
-    другая или токен пустой либо содержит пробельные символы. Сессию не проверяет."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise ServiceError(401, "Требуется вход")
-    token = authorization[7:]
+def _valid_token(token: str | None) -> str:
+    """Токен без пробельных символов; 401, если он пустой или содержит пробелы."""
     if not token or any(c.isspace() for c in token):
         raise ServiceError(401, "Требуется вход")
     return token
 
 
-def current_user(request: Request, token: str = Depends(bearer)) -> dict:
+def session_token(request: Request) -> str:
+    """Токен сессии запроса: из `Authorization: Bearer <токен>` (CLI-клиент), а без этого
+    заголовка — из cookie `mb_session` (браузер). Источник запоминается в
+    `request.state.auth` (`bearer` / `cookie`). 401 — токена нет, схема не Bearer или токен
+    пустой либо с пробелами. Сессию не проверяет."""
+    authorization = request.headers.get("authorization")
+    if authorization is not None:
+        if not authorization.startswith("Bearer "):
+            raise ServiceError(401, "Требуется вход")
+        request.state.auth = "bearer"
+        return _valid_token(authorization[7:])
+    request.state.auth = "cookie"
+    return _valid_token(request.cookies.get(SESSION_COOKIE))
+
+
+def check_same_origin(request: Request) -> None:
+    """403, если `Origin` запроса не совпадает с `Host` (host и порт).
+
+    Защита cookie-сессии от CSRF вместе с `SameSite=Strict`: браузер всегда шлёт `Origin` в
+    POST/PATCH/DELETE, а чужой сайт не может подставить наш. Нет `Origin` (или `null`) —
+    тоже отказ."""
+    origin = request.headers.get("origin") or ""
+    host = (request.headers.get("host") or "").lower()
+    if not host or urlsplit(origin).netloc.lower() != host:
+        raise ServiceError(403, "Запрос с чужого сайта отклонён")
+
+
+def current_user(request: Request) -> dict:
     """Пользователь текущей сессии (`id`, `username`); 401, если сессия недействительна.
-    Синхронная зависимость: FastAPI выполняет её в пуле потоков (запрос к PostgreSQL)."""
+
+    Для cookie-сессии небезопасные методы (всё, кроме GET/HEAD/OPTIONS) дополнительно
+    проверяются `check_same_origin`; запросы с Bearer-токеном — нет (у чужого сайта его
+    нет). Синхронная зависимость: FastAPI выполняет её в пуле потоков (запрос к PostgreSQL)."""
+    token = session_token(request)
+    if request.state.auth == "cookie" and request.method not in _SAFE_METHODS:
+        check_same_origin(request)
     return get_kb(request).store.authenticate(token)
 
 
@@ -230,21 +275,60 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         """Проверка живости процесса без авторизации; базы и модели не проверяет."""
         return {"status": "ok"}
 
+    def set_session_cookie(response: Response, token: str) -> None:
+        """Ставит cookie веб-сессии на срок `service.session_hours`."""
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            max_age=settings.service.session_hours * 3600,
+            path="/",
+            secure=settings.service.cookie_secure,
+            httponly=True,
+            samesite="strict",
+        )
+
     @app.post("/api/auth/login")
-    def login(body: Login, kb: KB):
-        """Вход: новая сессия на `service.session_hours`. 401 — неверные данные, 429 — много
-        одновременных проверок пароля."""
-        return {
-            "token": kb.store.login(
-                body.username, body.password, ttl_hours=settings.service.session_hours
-            ),
-            "token_type": "bearer",
-        }
+    def login(body: Login, kb: KB, request: Request, response: Response):
+        """Вход: новая сессия на `service.session_hours`.
+
+        С `cookie=true` (браузер) сессия ставится в cookie `mb_session`, а в ответе только имя
+        пользователя; `Origin` должен совпадать с сайтом (403). Без него — токен для
+        `Authorization: Bearer`. 401 — неверные данные, 429 — много одновременных проверок
+        пароля."""
+        if body.cookie:
+            check_same_origin(request)
+        token = kb.store.login(
+            body.username, body.password, ttl_hours=settings.service.session_hours
+        )
+        if body.cookie:
+            set_session_cookie(response, token)
+            return {"username": body.username.strip()}
+        return {"token": token, "token_type": "bearer"}
 
     @app.post("/api/auth/logout")
-    def logout(kb: KB, user: User, token: str = Depends(bearer)):
-        """Отзывает текущую сессию."""
-        kb.store.logout(token)
+    def logout(kb: KB, user: User, request: Request, response: Response):
+        """Отзывает текущую сессию и стирает cookie."""
+        kb.store.logout(session_token(request))
+        response.delete_cookie(
+            SESSION_COOKIE,
+            path="/",
+            secure=settings.service.cookie_secure,
+            httponly=True,
+            samesite="strict",
+        )
+        return {"status": "ok"}
+
+    @app.post("/api/auth/password")
+    def change_password(
+        body: PasswordChange, kb: KB, user: User, request: Request, response: Response
+    ):
+        """Смена своего пароля: все сессии пользователя отзываются; браузер, из которого
+        сменили пароль, сразу получает новую cookie-сессию. 401 — неверный текущий пароль,
+        400 — новый короче 12 символов, 429 — заняты слоты argon2."""
+        kb.store.change_password(user["id"], body.old_password, body.new_password)
+        if request.state.auth == "cookie":
+            token = kb.store.login_user_id(user["id"], settings.service.session_hours)
+            set_session_cookie(response, token)
         return {"status": "ok"}
 
     @app.get("/api/auth/me")

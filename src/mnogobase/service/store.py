@@ -194,6 +194,34 @@ class ServiceStore:
             conn.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
             conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
+    def change_password(self, user_id: str, old: str, new: str) -> None:
+        """Смена пароля самим пользователем (веб): проверяет старый пароль, ставит новый и
+        отзывает все сессии пользователя (одна транзакция). Новую сессию для текущего
+        браузера создаёт вызывающий (`login_user_id`).
+
+        400 — короткий новый пароль, 401 — неверный старый или пользователь отключён,
+        429 — заняты слоты argon2."""
+        _check_password(new)
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT password_hash FROM users WHERE id=? AND active=1", (user_id,)
+            ).fetchone()
+        if row is None:
+            raise ServiceError(401, "Неверный текущий пароль")
+        try:
+            with self._argon2():
+                self._passwords.verify(row["password_hash"], old)
+        except VerificationError:
+            raise ServiceError(401, "Неверный текущий пароль") from None
+        password_hash = self._hash(new)
+        with self._connection() as conn:
+            if not conn.execute(
+                "SELECT id FROM users WHERE id=? AND active=1 FOR UPDATE", (user_id,)
+            ).fetchone():
+                raise ServiceError(401, "Неверный текущий пароль")
+            conn.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
     def set_active(self, username: str, active: bool) -> None:
         """Включает или отключает пользователя; при отключении все его сессии отзываются.
         404 — нет пользователя."""
@@ -243,18 +271,27 @@ class ServiceStore:
                 user=hashlib.sha256(username.strip().encode()).hexdigest()[:12],
             )
             raise ServiceError(401, "Неверное имя пользователя или пароль") from None
+        return self.login_user_id(user["id"], ttl_hours)
+
+    def login_user_id(self, user_id: str, ttl_hours: int = 24) -> str:
+        """Новая сессия для пользователя, чей пароль уже проверен (`login`, смена пароля);
+        возвращает токен. Попутно удаляет истёкшие сессии всех пользователей.
+
+        400 — неверный `ttl_hours`; 401 — пользователя отключили после проверки пароля."""
+        if not isinstance(ttl_hours, (int, float)) or not 0 < ttl_hours <= 24 * 365:
+            raise ServiceError(400, "Неверный срок действия сессии")
         token = secrets.token_urlsafe(32)
         with self._connection() as conn:
             # Пользователя могли отключить, пока проверялся пароль: тогда тоже отказ.
             if not conn.execute(
                 "SELECT id FROM users WHERE id=? AND active=1 FOR UPDATE",
-                (user["id"],),
+                (user_id,),
             ).fetchone():
                 raise ServiceError(401, "Неверное имя пользователя или пароль")
             conn.execute("DELETE FROM sessions WHERE expires_at<=?", (time.time(),))
             conn.execute(
                 "INSERT INTO sessions(token_hash, user_id, expires_at) VALUES(?, ?, ?)",
-                (_token_hash(token), user["id"], time.time() + ttl_hours * 3600),
+                (_token_hash(token), user_id, time.time() + ttl_hours * 3600),
             )
         return token
 

@@ -223,3 +223,112 @@ def test_password_hashing_is_bounded_and_failures_are_logged(api, monkeypatch):
         assert api.client.post("/api/auth/login", json=body).status_code == 401
     [failed] = [e for e in logs if e["event"] == "login_failed"]
     assert "owner" not in str(failed)
+
+
+ORIGIN = {"Origin": "https://testserver"}
+
+
+def browser(api, settings=None):
+    """Клиент как браузер: https (Secure-cookie уходит только по https) и общий cookie-jar."""
+    app = create_api(settings or api.settings, kb=api.kb)
+    return TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+
+
+def cookie_login(client, password=PASSWORD):
+    body = {"username": "owner", "password": password, "cookie": True}
+    return client.post("/api/auth/login", json=body, headers=ORIGIN)
+
+
+def test_cookie_login_sets_httponly_cookie_without_token(api):
+    client = browser(api)
+    response = cookie_login(client)
+    assert response.status_code == 200
+    assert response.json() == {"username": "owner"}
+    cookie = response.headers["set-cookie"]
+    assert cookie.startswith("mb_session=")
+    lowered = cookie.lower()
+    for part in ("httponly", "samesite=strict", "secure", "path=/", "max-age="):
+        assert part in lowered
+    assert client.get("/api/auth/me").json()["username"] == "owner"
+
+
+def test_cookie_secure_can_be_disabled(api):
+    settings = api.settings.model_copy(
+        update={"service": api.settings.service.model_copy(update={"cookie_secure": False})}
+    )
+    response = cookie_login(browser(api, settings))
+    assert "secure" not in response.headers["set-cookie"].lower()
+
+
+def test_cookie_login_needs_same_origin(api):
+    client = browser(api)
+    body = {"username": "owner", "password": PASSWORD, "cookie": True}
+    assert client.post("/api/auth/login", json=body).status_code == 403
+    evil = {"Origin": "https://evil.example"}
+    assert client.post("/api/auth/login", json=body, headers=evil).status_code == 403
+
+
+def test_cookie_unsafe_methods_need_same_origin(api):
+    client = browser(api)
+    cookie_login(client)
+    assert client.post("/api/conversations", json={}).status_code == 403
+    evil = {"Origin": "https://evil.example"}
+    assert client.post("/api/conversations", json={}, headers=evil).status_code == 403
+    assert client.post("/api/conversations", json={}, headers=ORIGIN).status_code == 201
+    # чтение без Origin разрешено
+    assert client.get("/api/conversations").status_code == 200
+
+
+def test_bearer_requests_skip_origin_check(api):
+    response = api.client.post("/api/conversations", json={}, headers=api.headers)
+    assert response.status_code == 201
+
+
+def test_logout_clears_cookie(api):
+    client = browser(api)
+    cookie_login(client)
+    response = client.post("/api/auth/logout", headers=ORIGIN)
+    assert response.status_code == 200
+    assert 'mb_session=""' in response.headers["set-cookie"] or "max-age=0" in (
+        response.headers["set-cookie"].lower()
+    )
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_change_password(api):
+    client = browser(api)
+    cookie_login(client)
+    new = "another-long-password"
+    wrong = client.post(
+        "/api/auth/password",
+        json={"old_password": "wrong-password-x", "new_password": new},
+        headers=ORIGIN,
+    )
+    assert wrong.status_code == 401
+    short = client.post(
+        "/api/auth/password",
+        json={"old_password": PASSWORD, "new_password": "short"},
+        headers=ORIGIN,
+    )
+    assert short.status_code in (400, 422)
+    done = client.post(
+        "/api/auth/password",
+        json={"old_password": PASSWORD, "new_password": new},
+        headers=ORIGIN,
+    )
+    assert done.status_code == 200
+    # прочие сессии отозваны, а этот браузер получил новую
+    assert api.client.get("/api/auth/me", headers=api.headers).status_code == 401
+    assert client.get("/api/auth/me").status_code == 200
+    assert cookie_login(browser(api), new).status_code == 200
+    assert cookie_login(browser(api)).status_code == 401
+
+
+def test_change_password_with_bearer(api):
+    response = api.client.post(
+        "/api/auth/password",
+        json={"old_password": PASSWORD, "new_password": "another-long-password"},
+        headers=api.headers,
+    )
+    assert response.status_code == 200 and "set-cookie" not in response.headers
+    assert api.client.get("/api/auth/me", headers=api.headers).status_code == 401
