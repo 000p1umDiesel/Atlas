@@ -35,7 +35,7 @@ from functools import lru_cache
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 from mnogobase.core.config import Settings
@@ -57,6 +57,20 @@ class LockBusyError(RuntimeError):
     def __init__(self, key: str):
         super().__init__(f"Lock {key!r} is held by another process")
         self.key = key
+
+
+def connection_lost(exc: BaseException) -> bool:
+    """Временная потеря связи с PostgreSQL, а не ошибка самого SQL.
+
+    Сюда относятся недоступный сервер и оборванная транзакция (`DatabaseError` из
+    `PgConnection`), оборванное соединение (`connection_invalidated`) и `OperationalError`
+    (сервер перезапускается, таймаут соединения или блокировки). Ошибки схемы, прав или
+    режима «только чтение» — не временные: повтор их не исправит."""
+    if isinstance(exc, DatabaseError):
+        return True
+    return isinstance(exc, DBAPIError) and (
+        exc.connection_invalidated or isinstance(exc, OperationalError)
+    )
 
 
 @dataclass(frozen=True)
@@ -486,6 +500,28 @@ class PgLock:
             raise
         self.connection = connection
         return self
+
+    def held(self) -> bool:
+        """Держит ли соединение блокировку прямо сейчас (по `pg_locks` своего backend).
+
+        После обрыва связи сервер снимает session-level lock, а `PgConnection` молча
+        переподключается: новое соединение блокировки не держит, и проверка это видит.
+        В `pg_locks` 64-битный ключ хранится как `classid` (старшие 32 бита) и `objid`
+        (младшие), `objsubid = 1`.
+
+        Raises:
+            DatabaseError, sqlalchemy.exc.DBAPIError: сервер недоступен — ответ неизвестен.
+        """
+        if self.connection is None:
+            return False
+        key = _lock_key(self.target, self.key) & 0xFFFFFFFFFFFFFFFF
+        row = self.connection.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted "
+            "AND pid = pg_backend_pid() AND classid::bigint = ? AND objid::bigint = ? "
+            "AND objsubid = 1)",
+            (key >> 32, key & 0xFFFFFFFF),
+        ).fetchone()
+        return bool(row[0])
 
     def release(self):
         """Не бросает ошибок БД: закрытие соединения само отпускает session-level lock, а

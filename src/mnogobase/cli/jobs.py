@@ -14,8 +14,9 @@ worker запускается только явной командой, при �
 2. **Watcher.** С `--watch` в отдельном потоке-демоне `_watch_loop` раз в `--interval`
    секунд опрашивает каталоги и ставит в очередь новые и изменённые файлы, дождавшись, пока
    файл перестанет меняться (`--settle`). Поток работает со своим соединением к очереди.
-   Если он упал, основной цикл видит это через список `health` и останавливает worker:
-   молча перестать следить за каталогами хуже, чем упасть.
+   Потерю связи с PostgreSQL он пережидает, как и основной цикл (п. 5). Любая другая
+   ошибка останавливает поток, основной цикл видит это через список `health` и
+   останавливает worker: молча перестать следить за каталогами хуже, чем упасть.
 3. **Цикл `dispatch`.** На каждом шаге worker отмечает heartbeat (его показывает
    `/api/status`) и вызывает `process_one`: тот берёт блокировку корпуса (`ingest`) и
    только под ней забирает одну готовую задачу (`claim`). Поэтому worker и CLI-писатели
@@ -32,6 +33,13 @@ worker запускается только явной командой, при �
    расхода попытки (`release`). После ошибки базы соединения `App` могли умереть (рестарт
    PostgreSQL), поэтому `App` помечается устаревшим и пересоздаётся перед следующей задачей.
    Перед каждой задачей сервисы проверяются заново (`services`), и `App` создаётся лениво.
+   Потеря связи с PostgreSQL между задачами (`heartbeat`, блокировка корпуса, `claim`) не
+   останавливает worker: он ждёт от `DB_RETRY_MIN_S` до `DB_RETRY_MAX_S` секунд (пауза
+   удваивается) и пробует снова. Когда связь вернулась, worker проверяет, что блокировка
+   `worker` всё ещё его (`PgLock.held`): если сервер успел её снять, worker завершается
+   с кодом 2, чтобы перезапуститься и взять её заново, а не работать без неё. Затем
+   `recover` возвращает в очередь задачу, которую обрыв оставил `running`. С `--once`
+   worker на такой ошибке завершается сразу, как раньше.
 6. **Остановка.** SIGTERM (`docker stop`, systemd) переназначен на обработчик SIGINT, так что
    и он, и Ctrl+C превращаются в `KeyboardInterrupt` и штатно завершают worker. Прерванная
    задача остаётся `running` и продолжается при следующем запуске (через `recover`). В
@@ -61,6 +69,7 @@ from mnogobase.cli import common, render
 from mnogobase.core.database import (
     DatabaseError,
     LockBusyError,
+    connection_lost,
     database_lock,
     database_target,
     target_exists,
@@ -70,6 +79,20 @@ from mnogobase.core.log import get_logger, new_run_id
 from mnogobase.core.progress import NullProgress
 from mnogobase.ingest.processing import measured_ingest
 from mnogobase.llm.telemetry import job_scope
+
+# Пауза после потери связи с PostgreSQL: от MIN, удваивается до MAX секунд (тесты уменьшают).
+DB_RETRY_MIN_S = 5.0
+DB_RETRY_MAX_S = 60.0
+
+
+def _next_pause(pause: float) -> float:
+    """Следующая пауза после потери связи с базой: удвоение в пределах MIN..MAX."""
+    return min(max(pause * 2, DB_RETRY_MIN_S), DB_RETRY_MAX_S)
+
+
+class WorkerLockLost(RuntimeError):
+    """Пока не было связи с PostgreSQL, сервер снял блокировку `worker`."""
+
 
 jobs_app = typer.Typer(no_args_is_help=True, help="Постоянная локальная очередь загрузки")
 worker_app = typer.Typer(
@@ -222,21 +245,36 @@ def _watch_loop(db, settings, roots, stop, interval, settle, health):
 
     Использует собственное соединение с очередью (`db` — цель базы проекта): соединения не
     делятся между потоками. Опрос раз в `interval` секунд вместо событий файловой системы
-    переживает пропущенные события и не зависит от платформы. Любая ошибка записывается
-    в `health` (только имя типа, без текста) и завершает поток; основной цикл worker'а
-    увидит её и остановится."""
+    переживает пропущенные события и не зависит от платформы. Потерю связи с базой во время
+    опроса поток пережидает (пауза от `DB_RETRY_MIN_S` до `DB_RETRY_MAX_S`). Любая другая
+    ошибка, как и недоступная база при открытии очереди, записывается в `health` (только
+    имя типа, без текста) и завершает поток; основной цикл worker'а увидит её и
+    остановится."""
     q = None
+    log = get_logger(__name__)
     try:
         q = JobQueue(db)
         watcher = Watcher(
             q, roots, settings.parsing.extensions, settle=settle, excluded=_excluded(settings)
         )
+        pause = 0.0
         while not stop.is_set():
-            watcher.scan()
+            try:
+                watcher.scan()
+            except Exception as exc:
+                if not connection_lost(exc):
+                    raise
+                pause = _next_pause(pause)
+                log.warning(
+                    "watcher_db_unavailable", error_type=type(exc).__name__, retry_in_s=pause
+                )
+                stop.wait(pause)
+                continue
+            pause = 0.0
             stop.wait(interval)
     except Exception as exc:
         health.append(type(exc).__name__)
-        get_logger(__name__).error("watcher_failed", error_type=type(exc).__name__)
+        log.error("watcher_failed", error_type=type(exc).__name__)
     finally:
         if q is not None:
             q.close()
@@ -434,23 +472,65 @@ def run_worker(
             if isinstance(exc, DatabaseError | DBAPIError):
                 stale = True
 
+        def resume():
+            """Первый шаг после потери связи с базой: блокировка `worker` должна остаться
+            нашей, а задача, которую обрыв оставил `running` (не успел `release`), — снова
+            стать `pending`. Других задач в работе нет: worker один и сейчас между задачами.
+
+            Raises:
+                WorkerLockLost: сервер снял блокировку, пока связи не было.
+                DatabaseError: связи всё ещё нет — цикл подождёт и повторит.
+            """
+            if not worker_lock.held():
+                raise WorkerLockLost(
+                    "Worker потерял блокировку проекта из-за обрыва связи с PostgreSQL; "
+                    "перезапустите его."
+                )
+            resumed = q.recover(max_attempts)
+            common.console.print(
+                f"Связь с PostgreSQL восстановлена; возвращено задач в очередь: {resumed}"
+            )
+
         async def dispatch():
             """Основной цикл: heartbeat, проверка watcher'а, одна задача за итерацию.
 
             Если задачи не нашлось (очередь пуста или корпус занят CLI-писателем), worker
-            спит `interval` секунд, а с `--once` выходит из цикла."""
+            спит `interval` секунд, а с `--once` выходит из цикла. Потерю связи с базой
+            (`connection_lost`) он пережидает с растущей паузой и после неё вызывает
+            `resume`; с `--once` и при любой другой ошибке цикл завершается."""
+            nonlocal stale
+            pause = 0.0  # > 0 — связь с базой терялась, перед работой нужен `resume`
             while True:
-                q.heartbeat()
-                if health:
-                    raise RuntimeError(f"Watcher остановился: {health[0]}. Перезапустите worker.")
-                processed = await process_one(
-                    q,
-                    handle,
-                    max_attempts=max_attempts,
-                    delay=retry_delay,
-                    timeout=settings.jobs.timeout_s,
-                    on_transient=reconnect,
-                )
+                try:
+                    if pause:
+                        resume()
+                        pause = 0.0
+                    q.heartbeat()
+                    if health:
+                        raise RuntimeError(
+                            f"Watcher остановился: {health[0]}. Перезапустите worker."
+                        )
+                    processed = await process_one(
+                        q,
+                        handle,
+                        max_attempts=max_attempts,
+                        delay=retry_delay,
+                        timeout=settings.jobs.timeout_s,
+                        on_transient=reconnect,
+                    )
+                except Exception as exc:
+                    if once or not connection_lost(exc):
+                        raise
+                    pause = _next_pause(pause)
+                    stale = True  # соединения App тоже могли оборваться
+                    get_logger(__name__).warning(
+                        "worker_db_unavailable", error_type=type(exc).__name__, retry_in_s=pause
+                    )
+                    common.console.print(
+                        f"PostgreSQL недоступен ({type(exc).__name__}); повтор через {pause:g} с."
+                    )
+                    await asyncio.sleep(pause)
+                    continue
                 if processed:
                     common.console.print(f"Очередь: {q.counts()}")
                 elif once:

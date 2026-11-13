@@ -153,3 +153,5 @@ database:                          # адрес PostgreSQL; пароль — POS
   # все таблицы проекта — в одной схеме <schema_prefix>_project_<project>
   schema_prefix: mnogobase
   project: default
+  # секунд на установку соединения; на медленном VPS 5 (по умолчанию) иногда не хватает
+  connect_timeout: 15

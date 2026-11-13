@@ -519,3 +519,173 @@ def test_worker_missing_source_fails_job_before_constructing_models(project, mon
         assert job.progress == "попытка не удалась"
     finally:
         q.close()
+
+
+def _lock_holder_pid(key: str) -> int | None:
+    """pid сессии, которая держит advisory lock `key` проекта."""
+    from mnogobase.core.database import _lock_key, connect
+
+    target = database_target(Settings())
+    value = _lock_key(target, key) & 0xFFFFFFFFFFFFFFFF
+    db = connect(target)
+    try:
+        row = db.execute(
+            "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
+            "AND classid::bigint = ? AND objid::bigint = ? AND objsubid = 1",
+            (value >> 32, value & 0xFFFFFFFF),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        db.close()
+
+
+@pytest.fixture
+def fast_retries(monkeypatch):
+    monkeypatch.setattr(background_cli, "DB_RETRY_MIN_S", 0.01, raising=False)
+    monkeypatch.setattr(background_cli, "DB_RETRY_MAX_S", 0.02, raising=False)
+
+
+def _outage_queue(monkeypatch, failures, before_failure=None):
+    """JobQueue, у которой `heartbeat` первые `failures` раз видит «PostgreSQL недоступен»."""
+    from mnogobase.core.database import DatabaseError
+
+    queue_type = background_cli.JobQueue
+    state = {"left": failures}
+
+    class OutageQueue(queue_type):
+        def heartbeat(self):
+            if threading.current_thread() is threading.main_thread() and state["left"]:
+                state["left"] -= 1
+                if before_failure is not None:
+                    before_failure()
+                raise DatabaseError("PostgreSQL недоступен: проверьте настройки базы и сервер")
+            super().heartbeat()
+
+    monkeypatch.setattr(background_cli, "JobQueue", OutageQueue)
+    return state
+
+
+def _stop_after_first_job(monkeypatch):
+    process_one = background_cli.process_one
+
+    async def stopping_process_one(*args, **kwargs):
+        if await process_one(*args, **kwargs):
+            raise KeyboardInterrupt
+        return False
+
+    monkeypatch.setattr(background_cli, "process_one", stopping_process_one)
+
+
+def test_worker_waits_out_database_outage_and_requeues_orphaned_job(
+    project, monkeypatch, fast_retries
+):
+    calls = []
+
+    async def ingest(paths, **options):
+        calls.extend(paths)
+        return SimpleNamespace(failed={}, wiki=None, processed=paths, skipped=[])
+
+    def orphan_job():
+        # обрыв во время release: задача осталась running, хотя её никто не выполняет
+        q = JobQueue(database_target(Settings()))
+        try:
+            q.claim(5)
+        finally:
+            q.close()
+
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(
+        cli.common,
+        "build_app",
+        lambda *a: SimpleNamespace(pipeline=SimpleNamespace(ingest=ingest), close=lambda: None),
+    )
+    assert runner.invoke(cli.app, ["jobs", "enqueue", str(project)]).exit_code == 0
+    state = {"orphaned": False}
+
+    def first_failure_orphans():
+        if not state["orphaned"]:
+            state["orphaned"] = True
+            orphan_job()
+
+    outage = _outage_queue(monkeypatch, 3, first_failure_orphans)
+    _stop_after_first_job(monkeypatch)
+
+    result = runner.invoke(cli.app, ["worker", "run", "--interval", "0.1"])
+
+    assert outage["left"] == 0
+    assert result.output.count("PostgreSQL недоступен (DatabaseError); повтор через") == 3
+    assert "Связь с PostgreSQL восстановлена; возвращено задач в очередь: 1" in result.output
+    assert calls == [project]
+    jobs = JobQueue(database_target(Settings()))
+    try:
+        assert [job.status for job in jobs.jobs()] == ["done"]
+    finally:
+        jobs.close()
+    with database_lock(Settings(), "worker"):
+        pass
+
+
+def test_worker_exits_if_its_lock_was_dropped_during_outage(project, monkeypatch, fast_retries):
+    from mnogobase.core.database import connect
+
+    def drop_worker_session():
+        pid = _lock_holder_pid("worker")
+        assert pid is not None
+        db = connect(database_target(Settings()))
+        try:
+            db.execute("SELECT pg_terminate_backend(?)", (pid,))
+        finally:
+            db.close()
+
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
+    _outage_queue(monkeypatch, 1, drop_worker_session)
+
+    result = runner.invoke(cli.app, ["worker", "run", "--interval", "0.1"])
+
+    assert result.exit_code == 2, result.output
+    assert "потерял блокировку проекта" in result.output
+    assert _lock_holder_pid("worker") is None
+    with database_lock(Settings(), "worker"):
+        pass
+
+
+def test_worker_once_still_exits_on_database_outage(project, monkeypatch, fast_retries):
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
+    _outage_queue(monkeypatch, 1)
+
+    result = runner.invoke(cli.app, ["worker", "run", "--once"])
+
+    assert result.exit_code == 2, result.output
+    assert "PostgreSQL недоступен: проверьте настройки базы и сервер" in result.output
+    assert "повтор через" not in result.output
+
+
+def test_watch_loop_waits_out_database_outage(project, monkeypatch, fast_retries):
+    from mnogobase.core.database import DatabaseError
+
+    settings = cli.common.load_settings()
+    watcher_type = background_cli.Watcher
+    scans, enqueued, stop, health = [], threading.Event(), threading.Event(), []
+
+    class FlakyWatcher(watcher_type):
+        def scan(self):
+            scans.append(1)
+            if len(scans) <= 2:
+                raise DatabaseError("PostgreSQL недоступен: проверьте настройки базы и сервер")
+            super().scan()
+            if self.queue.jobs():
+                enqueued.set()
+
+    monkeypatch.setattr(background_cli, "Watcher", FlakyWatcher)
+    thread = threading.Thread(
+        target=background_cli._watch_loop,
+        args=(database_target(settings), settings, [project.parent], stop, 0.05, 0, health),
+    )
+    thread.start()
+    try:
+        assert enqueued.wait(10), "watcher did not recover after the outage"
+    finally:
+        stop.set()
+        thread.join(10)
+    assert health == []
+    assert len(scans) >= 3

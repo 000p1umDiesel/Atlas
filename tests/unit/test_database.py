@@ -79,3 +79,19 @@ def test_url_is_built_from_config_and_password(monkeypatch):
     assert url == "postgresql+psycopg://u:p%40ss%2Fword@postgres:5433/kb"
     monkeypatch.setenv("DATABASE_URL", "postgresql://x:y@h/db")  # явный DSN важнее
     assert database_target(settings).url == "postgresql://x:y@h/db"
+
+
+def test_connection_lost_separates_outages_from_sql_errors():
+    from sqlalchemy.exc import DBAPIError, InternalError, OperationalError, ProgrammingError
+
+    from mnogobase.core.database import DatabaseError, connection_lost
+
+    def wrapped(cls, **kwargs):
+        return cls("SELECT 1", None, Exception("boom"), **kwargs)
+
+    assert connection_lost(DatabaseError("PostgreSQL недоступен"))
+    assert connection_lost(wrapped(OperationalError))
+    assert connection_lost(wrapped(DBAPIError, connection_invalidated=True))
+    assert not connection_lost(wrapped(InternalError))  # e.g. read-only transaction
+    assert not connection_lost(wrapped(ProgrammingError))  # e.g. missing table
+    assert not connection_lost(ValueError("x"))

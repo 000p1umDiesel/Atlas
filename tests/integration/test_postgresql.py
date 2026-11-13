@@ -321,3 +321,22 @@ def test_nested_transaction_block_does_not_commit_the_outer_one(pg_settings):
                 db.execute("INSERT INTO nested VALUES (1)")
             raise RuntimeError("outer fails")
         assert db.execute("SELECT count(*) FROM nested").fetchone()[0] == 0
+
+
+def test_lock_held_detects_a_session_the_server_dropped(pg_settings):
+    from mnogobase.core.database import connect
+
+    lock = database_lock(pg_settings, "worker").acquire()
+    other = connect(database_target(pg_settings))
+    try:
+        assert lock.held()
+        pid = lock.connection.execute("SELECT pg_backend_pid()").fetchone()[0]
+        other.execute("SELECT pg_terminate_backend(?)", (pid,))
+        # PgConnection silently reconnects, but the new session does not hold the lock
+        assert not lock.held()
+        with database_lock(pg_settings, "worker"):
+            pass  # the server released it with the dropped session
+    finally:
+        lock.release()
+        other.close()
+    assert not lock.held()
