@@ -420,3 +420,20 @@ progress::-moz-progress-bar { background: var(--pen); }
   .graph-side, .graph-card { border: 0; }
   .graph-canvas { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 }
+
+/* ---- статус ---- */
+.status-page { max-width: 1100px; }
+.status-block { padding: 6px 0 22px; border-bottom: 1px solid var(--rule); margin-bottom: 22px; }
+.status-block h2 { margin: 0; }
+.status-block > .row { margin-bottom: 6px; }
+.status-block h3 { font: 500 14px/1.4 var(--sans); color: var(--muted); margin: 14px 0 6px; }
+.check-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--muted); flex: none; }
+.ok .check-dot { background: var(--ok); }
+.warn .check-dot { background: var(--warn); }
+.fail .check-dot { background: var(--err); }
+.worker { display: flex; align-items: center; gap: 8px; font-weight: 500; margin: 10px 0 6px; }
+.checks { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 6px; }
+.checks li { display: grid; grid-template-columns: auto minmax(160px, 320px) minmax(0, 1fr); gap: 10px; align-items: center; font-size: 14px; }
+@media (max-width: 760px) { .checks li { grid-template-columns: auto minmax(0, 1fr); } .checks li > .muted { grid-column: 2; } }
+.running { margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+.top-entities { margin: 0; padding-left: 22px; columns: 2 220px; font-size: 14px; }

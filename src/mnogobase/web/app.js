@@ -10,6 +10,7 @@ import { Documents } from "./views/documents.js";
 import { DocumentView } from "./views/docview.js";
 import { Graph } from "./views/graph.js";
 import { Login } from "./views/login.js";
+import { StatusPage } from "./views/status.js";
 import { Wiki } from "./views/wiki.js";
 
 const NAV = [
@@ -19,10 +20,6 @@ const NAV = [
   ["graph", "Граф"],
   ["status", "Статус"],
 ];
-
-function Placeholder({ title }) {
-  return html`<section class="page-narrow"><h1>${title}</h1><p class="muted">Раздел появится в следующей версии.</p></section>`;
-}
 
 function Page({ route, user, chats, reloadChats }) {
   const [section, id] = route.parts;
@@ -39,8 +36,10 @@ function Page({ route, user, chats, reloadChats }) {
       return html`<${Wiki} parts=${route.parts} />`;
     case "graph":
       return html`<${Graph} id=${id} />`;
+    case "status":
+      return html`<${StatusPage} />`;
     default:
-      return html`<${Placeholder} title=${(NAV.find(([id]) => id === section) || NAV[0])[1]} />`;
+      return html`<${Chat} id=${undefined} chats=${chats} reloadChats=${reloadChats} />`;
   }
 }
 
