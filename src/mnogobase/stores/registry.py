@@ -146,6 +146,16 @@ class Registry:
         ).fetchall()
         return [FileRow(*r) for r in rows]
 
+    def recent_files(self, limit: int) -> list[dict]:
+        """До `limit` путей, изменённых последними: `{path, doc_id, status, updated_at}`
+        по `updated_at` убыванию, затем по пути (для сводки на главной странице веба)."""
+        rows = self._db.execute(
+            "SELECT path, doc_id, status, updated_at FROM files "
+            "ORDER BY updated_at DESC NULLS LAST, path LIMIT ?",
+            (max(limit, 0),),
+        ).fetchall()
+        return [{"path": r[0], "doc_id": r[1], "status": r[2], "updated_at": r[3]} for r in rows]
+
     def failed_paths(self) -> list[str]:
         """Пути со статусом `failed` (для `status` и `ingest --retry-failed`)."""
         rows = self._db.execute("SELECT path FROM files WHERE status='failed' ORDER BY path")

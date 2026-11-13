@@ -46,11 +46,13 @@ import json
 import re
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections import Counter
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
 from neo4j.exceptions import ServiceUnavailable, SessionExpired
 from sqlalchemy.exc import DBAPIError
@@ -61,7 +63,7 @@ from mnogobase.background.uploads import Uploads
 from mnogobase.core.config import Settings
 from mnogobase.core.database import DatabaseError, database_target
 from mnogobase.core.log import get_logger
-from mnogobase.core.models import Answer
+from mnogobase.core.models import Answer, EntityRecord
 from mnogobase.ingest.pipeline import EmbedderMismatchError
 from mnogobase.llm.templates import render_messages
 from mnogobase.ops.doctor import run_checks
@@ -72,6 +74,8 @@ from mnogobase.retrieval.translate import QueryTranslator
 from mnogobase.service.errors import MAX_QUESTION_CHARS, ServiceError, check_pagination
 from mnogobase.service.observability import UsageStore
 from mnogobase.service.store import ServiceStore
+from mnogobase.service.views import type_catalog
+from mnogobase.stores.graph_store import EntitySort
 
 _DOC_ID = re.compile(r"[0-9a-f]{16}")
 _CHUNK_ID = re.compile(r"[0-9a-f]{16}:\d{5}")
@@ -90,6 +94,10 @@ HEARTBEAT_STALE_S = 120.0
 # Сколько секунд остановка API ждёт идущие потоковые ответы (столько же uvicorn ждёт
 # открытые соединения, см. `api serve`); `stop_grace_period` контейнера api больше суммы.
 SHUTDOWN_GRACE_S = 20.0
+# Сколько последних документов отдаёт `stats()` в `recent`.
+RECENT_DOCUMENTS = 8
+# Допустимые ключи сортировки каталога сущностей (`GraphStore.list_entities`).
+ENTITY_SORTS = get_args(EntitySort)
 
 
 class CoreLoop:
@@ -169,6 +177,21 @@ def _meta(answer: dict) -> dict:
 def _source_url(doc_id: str) -> str:
     """URL API для скачивания загруженного исходника."""
     return f"/api/documents/{doc_id}/content"
+
+
+def _registered(doc_id: str, path: str, status: str, uploads: dict[str, dict]) -> dict:
+    """Документ из строки registry. Загрузка через API (`uploads`: `doc_id` → запись, путь
+    совпадает) — исходное имя и `url` для скачивания; прочие — имя файла без каталога (полный
+    путь на сервере не раскрывается) и `url = None`."""
+    upload = uploads.get(doc_id)
+    uploaded = upload is not None and upload["path"] == path
+    return {
+        "id": doc_id,
+        "name": upload["name"] if uploaded else Path(path).name,
+        "status": status,
+        "uploaded": uploaded,
+        "url": _source_url(doc_id) if uploaded else None,
+    }
 
 
 class KnowledgeBase:
@@ -423,36 +446,39 @@ class KnowledgeBase:
         check_pagination(limit, offset)
 
         async def run(app: App) -> list[dict]:
-            rows = app.registry.files()
-            known = {row.path for row in rows}
-            # загрузки, которые worker ещё не зарегистрировал: видны сразу после загрузки
-            queued = [
-                {
-                    "id": u["doc_id"],
-                    "name": u["name"],
-                    "status": "queued",
-                    "uploaded": True,
-                    "url": _source_url(u["doc_id"]),
-                }
-                for u in self.uploads.all()
-                if u["path"] not in known
-            ]
-            out = []
-            for row in rows:
-                upload = self.uploads.get(row.doc_id)
-                uploaded = upload is not None and upload["path"] == row.path
-                out.append(
-                    {
-                        "id": row.doc_id,
-                        "name": upload["name"] if uploaded else Path(row.path).name,
-                        "status": row.status,
-                        "uploaded": uploaded,
-                        "url": _source_url(row.doc_id) if uploaded else None,
-                    }
-                )
-            return (queued + out)[offset : offset + limit]
+            queued, registered = self._corpus(app)
+            return (queued + registered)[offset : offset + limit]
 
         return await self._with_app(run, "Список документов недоступен")
+
+    def _uploads_by_id(self) -> dict[str, dict]:
+        """Все загрузки: `doc_id` → запись `{"doc_id", "name", "path"}`, по имени."""
+        return {u["doc_id"]: u for u in self.uploads.all()}
+
+    def _corpus(
+        self, app: App, uploads: dict[str, dict] | None = None
+    ) -> tuple[list[dict], list[dict]]:
+        """Документы корпуса двумя списками: загрузки, которые worker ещё не зарегистрировал
+        (`status="queued"`, по имени), и строки registry (по пути). Поля обоих:
+        `id`, `name`, `status`, `uploaded`, `url`; путей на диске нет. `uploads`
+        (`_uploads_by_id()`) передаёт вызывающий, которому они нужны и дальше."""
+        uploads = self._uploads_by_id() if uploads is None else uploads
+        rows = app.registry.files()
+        known = {row.path for row in rows}
+        # загрузки, которые worker ещё не зарегистрировал: видны сразу после загрузки
+        queued = [
+            {
+                "id": u["doc_id"],
+                "name": u["name"],
+                "status": "queued",
+                "uploaded": True,
+                "url": _source_url(u["doc_id"]),
+            }
+            for u in uploads.values()
+            if u["path"] not in known
+        ]
+        registered = [_registered(row.doc_id, row.path, row.status, uploads) for row in rows]
+        return queued, registered
 
     def _upload_names(self) -> dict[str, str]:
         """`doc_id` → имя, под которым файл загрузили (для подписей задач)."""
@@ -463,11 +489,16 @@ class KnowledgeBase:
         upload = self.uploads.get(job.fingerprint.removeprefix("remove:"))
         return _job(job, {upload["doc_id"]: upload["name"]} if upload else None)
 
-    def _name(self, doc_id: str, path: str | None) -> str:
-        """Имя документа для показа: исходное имя загрузки, иначе имя файла без каталога."""
-        upload = self.uploads.get(doc_id)
-        if upload is not None:
-            return upload["name"]
+    def _name(self, doc_id: str, path: str | None, names: dict[str, str] | None = None) -> str:
+        """Имя документа для показа: исходное имя загрузки, иначе имя файла без каталога.
+        `names` (`_upload_names()`) избавляет от запроса к базе на каждый документ списка."""
+        if names is None:
+            upload = self.uploads.get(doc_id)
+            uploaded = upload["name"] if upload is not None else None
+        else:
+            uploaded = names.get(doc_id)
+        if uploaded is not None:
+            return uploaded
         return Path(path).name if path else doc_id
 
     async def document(self, doc_id: str) -> dict:
@@ -1052,13 +1083,119 @@ class KnowledgeBase:
 
         return await self._with_app(run, "Wiki недоступна")
 
-    async def entity(self, entity_id: str) -> dict:
-        """Карточка сущности: поля узла, PageRank и сообщество актуального анализа графа,
-        есть ли страница wiki (`has_page`, `slug`). 404 — нет сущности."""
+    async def stats(self) -> dict:
+        """Сводка для главной страницы: документы (строки registry и загрузки, которые
+        worker ещё не взял) всего и по статусам, число чанков, сущностей, связей и
+        актуальных страниц wiki, состояние анализа графа и до `RECENT_DOCUMENTS` последних
+        документов (`recent`: сначала загрузки в очереди с `updated_at = None`, затем
+        строки registry, изменённые последними). 503 — ядро недоступно."""
 
         async def run(app: App) -> dict:
-            entity = app.graph.get_entity(entity_id)
-            if entity is None:
+            uploads = self._uploads_by_id()
+            queued, registered = self._corpus(app, uploads)
+            documents = queued + registered
+            recent = [
+                {"id": d["id"], "name": d["name"], "status": d["status"], "updated_at": None}
+                for d in queued[:RECENT_DOCUMENTS]
+            ]
+            rest = RECENT_DOCUMENTS - len(recent)
+            for row in app.registry.recent_files(rest) if rest > 0 else []:
+                doc = _registered(row["doc_id"], row["path"], row["status"], uploads)
+                recent.append(
+                    {
+                        "id": doc["id"],
+                        "name": doc["name"],
+                        "status": doc["status"],
+                        "updated_at": row["updated_at"],
+                    }
+                )
+            counts = app.graph.counts()
+            analysis = app.graph.analysis_status()
+            return {
+                "documents": len(documents),
+                "documents_by_status": dict(Counter(d["status"] for d in documents)),
+                "chunks": counts["Chunk"],
+                "entities": counts["Entity"],
+                "relations": counts["RELATED"],
+                "wiki_pages": len(app.graph.wiki_pages()),
+                "analysis": {
+                    "ready": analysis["ready"],
+                    "completed_at": analysis.get("completed_at"),
+                },
+                "recent": recent,
+            }
+
+        return await self._with_app(run, "Статистика недоступна")
+
+    async def entity_types(self) -> list[dict]:
+        """Каталог типов сущностей (`views.type_catalog`): настроенные типы в порядке
+        конфига с русскими подписями и числом сущностей (0 — сущностей нет), затем
+        встреченные в графе ненастроенные. 503 — ядро недоступно."""
+
+        async def run(app: App) -> list[dict]:
+            return type_catalog(self.settings, app.graph.entity_type_counts())
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def entities(
+        self,
+        q: str | None = None,
+        types: Sequence[str] = (),
+        community: str | None = None,
+        min_mentions: int = 0,
+        sort: str | None = None,
+        order: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Каталог сущностей `{"total", "items"}` (карточки узлов: PageRank и сообщество —
+        только из актуального анализа, иначе `None`).
+
+        Пустой или пробельный `q` — без поиска (весь каталог). `sort` по умолчанию —
+        `relevance` при поиске, иначе `mentions`; `order` по умолчанию — `asc` для `name`,
+        иначе `desc`. 422 — неверные сортировка, порядок, `min_mentions` или пагинация;
+        503 — ядро недоступно."""
+        check_pagination(limit, offset)
+        query = q.strip() if q is not None else ""
+        sort = sort or ("relevance" if query else "mentions")
+        order = order or ("asc" if sort == "name" else "desc")
+        if sort not in ENTITY_SORTS or order not in ("asc", "desc"):
+            raise ServiceError(422, "Неверная сортировка")
+        if type(min_mentions) is not int or min_mentions < 0:
+            raise ServiceError(422, "Неверный фильтр упоминаний")
+
+        async def run(app: App) -> dict:
+            total, items = app.graph.list_entities(
+                q=query or None,
+                types=list(types),
+                community=community,
+                min_mentions=min_mentions,
+                sort=sort,
+                descending=order == "desc",
+                limit=limit,
+                offset=offset,
+            )
+            return {"total": total, "items": items}
+
+        return await self._with_app(run, "Граф недоступен")
+
+    @staticmethod
+    def _require_entity(app: App, entity_id: str) -> EntityRecord:
+        """Сущность графа или 404 (в том числе удалённая между запросами)."""
+        entity = app.graph.get_entity(entity_id)
+        if entity is None:
+            raise ServiceError(404, "Сущность не найдена")
+        return entity
+
+    async def entity(self, entity_id: str) -> dict:
+        """Карточка сущности: поля узла, PageRank и сообщество актуального анализа графа,
+        есть ли страница wiki (`has_page`, `slug`), `degree` — число связей RELATED в обе
+        стороны, `documents_count` — сколько документов её упоминают. 404 — нет сущности."""
+
+        async def run(app: App) -> dict:
+            entity = self._require_entity(app, entity_id)
+            views = app.graph.node_views([entity_id])
+            if not views:  # удалена между запросами
                 raise ServiceError(404, "Сущность не найдена")
             page = app.graph.wiki_page(entity_id)
             has_page = page is not None and not page.stale
@@ -1067,7 +1204,82 @@ class KnowledgeBase:
                 **app.graph.entity_analysis(entity_id),
                 "has_page": has_page,
                 "slug": page.slug if has_page else None,
+                "degree": views[0]["degree"],
+                "documents_count": app.graph.entity_document_count(entity_id),
             }
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def entity_relations(
+        self,
+        entity_id: str,
+        direction: str = "both",
+        predicate: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Связи сущности `{"total", "predicates", "items"}`: `direction` — `out`, `in` или
+        `both`, `predicate` — фильтр по предикату (фасет `predicates` его не учитывает).
+        404 — нет сущности, 422 — неверные направление или пагинация, 503 — ядро недоступно."""
+        check_pagination(limit, offset)
+        if direction not in ("out", "in", "both"):
+            raise ServiceError(422, "Неверное направление связей")
+
+        async def run(app: App) -> dict:
+            self._require_entity(app, entity_id)
+            return app.graph.entity_relations(
+                entity_id, direction=direction, predicate=predicate, limit=limit, offset=offset
+            )
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def entity_mentions(self, entity_id: str, limit: int = 20, offset: int = 0) -> dict:
+        """Фрагменты, упоминающие сущность, `{"total", "items"}` по документу и порядку
+        чанков; у фрагмента имя документа и `url` исходника (только у загруженных через API),
+        без пути на диске. 404 — нет сущности, 422 — неверная пагинация, 503 — ядро
+        недоступно."""
+        check_pagination(limit, offset)
+
+        async def run(app: App) -> dict:
+            self._require_entity(app, entity_id)
+            total, views = app.graph.entity_mentions(entity_id, limit, offset)
+            names = self._upload_names()
+            return {
+                "total": total,
+                "items": [
+                    {
+                        "chunk_id": v.chunk_id,
+                        "doc_id": v.doc_id,
+                        "name": self._name(v.doc_id, v.path, names),
+                        "text": v.text,
+                        "page": v.page,
+                        "headings": v.headings,
+                        "url": _source_url(v.doc_id) if v.doc_id in names else None,
+                    }
+                    for v in views
+                ],
+            }
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def entity_documents(self, entity_id: str, limit: int = 50) -> list[dict]:
+        """Документы, упоминающие сущность, `[{"doc_id", "name", "mentions", "url"}]` по
+        числу упоминающих фрагментов убыванию; `url` — только у загруженных через API.
+        404 — нет сущности, 422 — неверный `limit`, 503 — ядро недоступно."""
+        check_pagination(limit, 0)
+
+        async def run(app: App) -> list[dict]:
+            self._require_entity(app, entity_id)
+            names = self._upload_names()
+            return [
+                {
+                    "doc_id": row["doc_id"],
+                    "name": self._name(row["doc_id"], row["path"], names),
+                    "mentions": row["mentions"],
+                    "url": _source_url(row["doc_id"]) if row["doc_id"] in names else None,
+                }
+                for row in app.graph.entity_documents(entity_id, limit)
+            ]
 
         return await self._with_app(run, "Граф недоступен")
 

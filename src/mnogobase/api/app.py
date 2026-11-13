@@ -18,6 +18,8 @@
 - `/api/conversations` — личные диалоги (создание, переименование, удаление) и сообщения в
   них (вопрос с учётом истории, в том числе потоком SSE);
 - `/api/wiki`, `/api/graph` — страницы wiki, поиск сущностей и их окрестность в графе;
+- `/api/stats` — сводка для главной; `/api/entities` — типы, каталог сущностей и
+  страница сущности (связи, упоминания, документы);
 - `/api/status` — очередь, жив ли worker, расход LLM.
 
 Модель безопасности:
@@ -657,6 +659,80 @@ def create_api(
     ):
         """Окрестность сущности глубиной 1–3; 404 — нет сущности."""
         return await kb.graph_neighbors(entity_id, depth=depth, limit=limit)
+
+    @app.get("/api/stats")
+    async def stats(kb: KB, user: User):
+        """Сводка для главной: документы по статусам, размеры графа, анализ, последние
+        документы."""
+        return await kb.stats()
+
+    # `/api/entities/types` — до `/api/entities/{entity_id}`, иначе `types` примут за id
+    @app.get("/api/entities/types")
+    async def entity_types(kb: KB, user: User):
+        """Типы сущностей с русскими подписями и числом сущностей каждого типа."""
+        return await kb.entity_types()
+
+    @app.get("/api/entities")
+    async def entities(
+        kb: KB,
+        user: User,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+        types: Annotated[list[str] | None, Query(alias="type", max_length=50)] = None,
+        community: Annotated[str | None, Query(max_length=200)] = None,
+        min_mentions: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+        sort: Literal["relevance", "mentions", "pagerank", "degree", "name"] | None = None,
+        order: Literal["asc", "desc"] | None = None,
+        limit: Limit = 50,
+        offset: Offset = 0,
+    ):
+        """Каталог сущностей: поиск `q`, фильтры `type` (несколько), `community`,
+        `min_mentions`, сортировка и пагинация; ответ `{"total", "items"}`."""
+        return await kb.entities(
+            q=q,
+            types=types or [],
+            community=community,
+            min_mentions=min_mentions,
+            sort=sort,
+            order=order,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/entities/{entity_id}")
+    async def entity_page(entity_id: str, kb: KB, user: User):
+        """Карточка сущности со степенью и числом документов; 404 — нет."""
+        return await kb.entity(entity_id)
+
+    @app.get("/api/entities/{entity_id}/relations")
+    async def entity_relations(
+        entity_id: str,
+        kb: KB,
+        user: User,
+        direction: Literal["out", "in", "both"] = "both",
+        predicate: Annotated[str | None, Query(max_length=200)] = None,
+        limit: Limit = 50,
+        offset: Offset = 0,
+    ):
+        """Связи сущности с фасетом предикатов; 404 — нет сущности."""
+        return await kb.entity_relations(
+            entity_id, direction=direction, predicate=predicate, limit=limit, offset=offset
+        )
+
+    @app.get("/api/entities/{entity_id}/mentions")
+    async def entity_mentions(
+        entity_id: str,
+        kb: KB,
+        user: User,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+        offset: Offset = 0,
+    ):
+        """Фрагменты, упоминающие сущность; 404 — нет сущности."""
+        return await kb.entity_mentions(entity_id, limit=limit, offset=offset)
+
+    @app.get("/api/entities/{entity_id}/documents")
+    async def entity_documents(entity_id: str, kb: KB, user: User, limit: Limit = 50):
+        """Документы, упоминающие сущность, по числу упоминаний; 404 — нет сущности."""
+        return await kb.entity_documents(entity_id, limit=limit)
 
     @app.get("/api/status/checks")
     def service_checks(kb: KB, user: User):

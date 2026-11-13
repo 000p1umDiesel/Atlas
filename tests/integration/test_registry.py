@@ -47,6 +47,19 @@ def test_files_and_paths(reg):
     assert reg.failed_paths() == []
 
 
+def test_recent_files_newest_first(reg):
+    for path in ("a.md", "b.md", "c.md"):
+        reg.upsert_file(path, path[0] * 16, 1, 1.0, "pending")
+    for path, status in (("a.md", "done"), ("b.md", "failed"), ("c.md", "done")):
+        reg.set_file_status(path, status)  # по очереди: updated_at растёт
+    rows = reg.recent_files(2)
+    assert [r["path"] for r in rows] == ["c.md", "b.md"]
+    assert set(rows[0]) == {"path", "doc_id", "status", "updated_at"}
+    assert (rows[1]["doc_id"], rows[1]["status"]) == ("b" * 16, "failed")
+    assert rows[0]["updated_at"] > rows[1]["updated_at"]
+    assert [r["path"] for r in reg.recent_files(10)] == ["c.md", "b.md", "a.md"]
+
+
 def test_clear_doc_removes_stage_and_chunk_rows(reg):
     reg.set_stage("d1", "parse", "done")
     reg.put_extraction("d1:00000", "v1", "m", "{}")

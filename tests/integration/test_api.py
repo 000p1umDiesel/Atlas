@@ -585,6 +585,109 @@ def test_wiki_and_graph_card_routes(api):
         assert api.client.get(path).status_code == 401
 
 
+def test_entity_routes(api):
+    h = api.headers
+    seen = {}
+
+    async def stats():
+        return {"documents": 0}
+
+    async def entity_types():
+        return [{"type": "Person"}]
+
+    async def entities(**kwargs):
+        seen["entities"] = kwargs
+        return {"total": 0, "items": []}
+
+    async def entity(entity_id):
+        return {"entity_id": entity_id}
+
+    async def entity_relations(entity_id, direction="both", predicate=None, limit=50, offset=0):
+        return {"args": [entity_id, direction, predicate, limit, offset]}
+
+    async def entity_mentions(entity_id, limit=20, offset=0):
+        return {"args": [entity_id, limit, offset]}
+
+    async def entity_documents(entity_id, limit=50):
+        return [{"args": [entity_id, limit]}]
+
+    api.kb.stats, api.kb.entity_types, api.kb.entities = stats, entity_types, entities
+    api.kb.entity, api.kb.entity_relations = entity, entity_relations
+    api.kb.entity_mentions, api.kb.entity_documents = entity_mentions, entity_documents
+
+    def get(path):
+        response = api.client.get(path, headers=h)
+        assert response.status_code == 200, (path, response.status_code)
+        return response.json()
+
+    def status(path):
+        return api.client.get(path, headers=h).status_code
+
+    assert get("/api/stats") == {"documents": 0}
+    assert get("/api/entities/types") == [{"type": "Person"}]  # не попадает в /{entity_id}
+    get("/api/entities?q=ada&type=Person&type=Work&sort=degree&order=asc&limit=10&offset=5")
+    assert seen["entities"] == dict(
+        q="ada",
+        types=["Person", "Work"],
+        community=None,
+        min_mentions=0,
+        sort="degree",
+        order="asc",
+        limit=10,
+        offset=5,
+    )
+    get("/api/entities")
+    assert seen["entities"] == dict(
+        q=None,
+        types=[],
+        community=None,
+        min_mentions=0,
+        sort=None,
+        order=None,
+        limit=50,
+        offset=0,
+    )
+    get("/api/entities?community=c1&min_mentions=2")
+    assert (seen["entities"]["community"], seen["entities"]["min_mentions"]) == ("c1", 2)
+    too_many = "&".join(["type=Person"] * 51)
+    for bad in (
+        "limit=0",
+        "limit=201",
+        "offset=-1",
+        "sort=size",
+        "order=up",
+        "min_mentions=-1",
+        "q=" + "x" * 201,
+        too_many,
+    ):
+        assert status(f"/api/entities?{bad}") == 422, bad
+    assert get("/api/entities/e1") == {"entity_id": "e1"}
+    assert status("/api/entities/e1/relations?direction=sideways") == 422
+    assert status("/api/entities/e1/relations?limit=201") == 422
+    assert status("/api/entities/e1/mentions?limit=101") == 422
+    assert status("/api/entities/e1/documents?limit=201") == 422
+    assert get("/api/entities/e1/relations?direction=in&predicate=wrote")["args"] == [
+        "e1",
+        "in",
+        "wrote",
+        50,
+        0,
+    ]
+    assert get("/api/entities/e1/relations")["args"] == ["e1", "both", None, 50, 0]
+    assert get("/api/entities/e1/mentions?offset=3")["args"] == ["e1", 20, 3]
+    assert get("/api/entities/e1/documents")[0]["args"] == ["e1", 50]
+    for path in (
+        "/api/stats",
+        "/api/entities",
+        "/api/entities/types",
+        "/api/entities/e1",
+        "/api/entities/e1/relations",
+        "/api/entities/e1/mentions",
+        "/api/entities/e1/documents",
+    ):
+        assert api.client.get(path).status_code == 401, path
+
+
 def test_stream_route_emits_server_sent_events(api):
     import json
 
