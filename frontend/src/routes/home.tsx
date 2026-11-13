@@ -8,7 +8,8 @@ import { buildGraph, DEFAULT_FILTERS } from "../graph/model";
 import { serializeGraphSearch } from "../graph/search";
 import { StatTile } from "../home/StatTile";
 import { TypeBars } from "../home/TypeBars";
-import { communityColorVar, typeColorVar } from "../lib/entityColors";
+import { communityColors, themedCss } from "../lib/communityPalette";
+import { typeColorVar } from "../lib/entityColors";
 import { countOf, formatDay, formatDayTime } from "../lib/format";
 
 const TOP_ENTITIES = 8;
@@ -170,6 +171,7 @@ function AnalysisCard({
   communities: CommunitySummary[];
 }) {
   const largest = communities.slice(0, 4);
+  const colors = communityColors(communities.map((c) => c.id));
   return (
     <div className="flex h-full flex-col rounded-[14px] border border-primary/25 bg-primary/10 p-6">
       <div className="flex items-start gap-4">
@@ -205,7 +207,7 @@ function AnalysisCard({
                 search={serializeGraphSearch({ ...DEFAULT_FILTERS, community: c.id, view: "2d" })}
                 className="flex items-center gap-2.5 rounded-lg underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary"
               >
-                <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: communityColorVar(c.id) }} aria-hidden="true" />
+                <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: themedCss(colors.get(c.id)) }} aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate">{communityLabel(c)}</span>
                 <span className="shrink-0 text-xs text-muted tabular-nums">{c.size}</span>
               </Link>

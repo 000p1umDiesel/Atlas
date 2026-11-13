@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, ExternalLink, Users } from "lucide-react";
 import { useId, useMemo, type ReactNode } from "react";
-import { communityColorVar, typeColorVar } from "../lib/entityColors";
+import { communityColors, themedCss } from "../lib/communityPalette";
+import { typeColorVar } from "../lib/entityColors";
 import { formatInt, formatScore } from "../lib/format";
 import { communityLabel, topRelations, type CommunitySummary } from "./insights";
 import type { Graph } from "./model";
@@ -54,7 +55,7 @@ export function EntityPeek({ graph, entityId, entityTypes, communities, rank, on
         <Fact label="Сообщество">
           {community ? (
             <span className="inline-flex max-w-full items-center gap-1.5">
-              <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: communityColorVar(community.id) }} aria-hidden="true" />
+              <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: themedCss(communityColors(communities.map((c) => c.id)).get(community.id)) }} aria-hidden="true" />
               <span className="truncate">{formatInt(community.size)} участников</span>
             </span>
           ) : (

@@ -1,9 +1,9 @@
 import { afterEach, expect, test, vi } from "vitest";
 import {
   clearCssColorCache,
-  communityColorVar,
   cssColor,
   normalizeColor,
+  schemeColor,
   typeColorVar,
   withAlpha,
 } from "./entityColors";
@@ -101,18 +101,14 @@ test("withAlpha добавляет прозрачность к rgb()", () => {
   expect(withAlpha("rgb(1, 2, 3)", 0.25)).toBe("rgba(1, 2, 3, 0.25)");
 });
 
-test("communityColorVar: детерминированно, в пределах --t1..--t8, null → --t0", () => {
-  expect(communityColorVar(null)).toBe("var(--t0)");
-  expect(communityColorVar("c3")).toBe(communityColorVar("c3"));
-  const seen = new Set<string>();
-  for (let i = 0; i < 64; i++) {
-    const v = communityColorVar(`c${i}`);
-    expect(v).toMatch(/^var\(--t[1-8]\)$/);
-    seen.add(v);
-  }
-  expect(seen.size).toBeGreaterThan(4);
-  // числовые id сообществ (из URL) окрашиваются так же, как строковые
-  expect(communityColorVar("12")).toMatch(/^var\(--t[1-8]\)$/);
+test("schemeColor берёт вариант текущей темы, без цвета — --t0", () => {
+  const pair = { light: "#e08a6c", dark: "#d77755" };
+  expect(schemeColor(pair)).toBe("rgb(224, 138, 108)");
+  document.documentElement.setAttribute("data-theme", "dark");
+  expect(schemeColor(pair)).toBe("rgb(215, 119, 85)");
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.style.setProperty("--t0", "#bdb6a8");
+  expect(schemeColor(undefined)).toBe("rgb(189, 182, 168)");
 });
 
 test("без canvas cssColor всё равно отдаёт rgb(): запасной нейтральный --t0", () => {

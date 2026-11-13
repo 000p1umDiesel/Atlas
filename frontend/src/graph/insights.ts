@@ -1,3 +1,4 @@
+import { communityColors, type ThemedColor } from "../lib/communityPalette";
 import { visibleSubgraph, type Graph, type GraphFilters } from "./model";
 
 export interface CommunitySummary {
@@ -25,6 +26,14 @@ export function communitySummaries(g: Graph): CommunitySummary[] {
       top: list.sort((x, y) => y.score - x.score).slice(0, 3).map((x) => x.name),
     }))
     .sort((x, y) => y.size - x.size || x.id.localeCompare(y.id));
+}
+
+/**
+ * Цвета всех сообществ графа: по порядку `communitySummaries` (крупнейшие — первыми),
+ * поэтому фильтры цвет сообщества не меняют.
+ */
+export function communityColorMap(g: Graph): Map<string, ThemedColor> {
+  return communityColors(communitySummaries(g).map((c) => c.id));
 }
 
 /** Имя сообщества для людей: два самых важных участника и сколько ещё. */

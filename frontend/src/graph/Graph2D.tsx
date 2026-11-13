@@ -3,7 +3,8 @@ import type { Attributes } from "graphology-types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Sigma from "sigma";
 import type { NodeView } from "../api/types";
-import { communityColorVar, cssColor, typeColorVar, withAlpha } from "../lib/entityColors";
+import { cssColor, schemeColor, typeColorVar, withAlpha } from "../lib/entityColors";
+import { communityColorMap } from "./insights";
 import {
   applyFrame,
   encodeLayoutRequest,
@@ -470,6 +471,7 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
       typesOrder !== ""
         ? typesOrder.split("\u0000")
         : [...new Set(graph.mapNodes((_, a) => a.type))].sort();
+    const communities = colorBy === "community" ? communityColorMap(graph) : null;
     const metric = sizeMetric(graph, sizeBy);
     const range = sizeRange(graph, sizeBy);
     // Без подсказки `{ attributes: [...] }`: с ней Sigma 4 пропускает переиндексацию и
@@ -480,7 +482,9 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
     rg.updateEachNodeAttributes((_, a) => ({
       ...a,
       size: nodeSize(a, metric, range),
-      color: cssColor(colorBy === "community" ? communityColorVar(a.community) : typeColorVar(a.type, configured)),
+      color: communities
+        ? schemeColor(a.community === null ? undefined : communities.get(a.community))
+        : cssColor(typeColorVar(a.type, configured)),
     }));
     sigma.refresh();
   }, [graph, colorBy, sizeBy, typesOrder, themeVersion]);

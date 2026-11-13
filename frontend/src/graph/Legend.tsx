@@ -1,7 +1,8 @@
 import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useId, useState } from "react";
-import { communityColorVar, typeColorVar } from "../lib/entityColors";
+import { useId, useMemo, useState } from "react";
+import { communityColors, themedCss } from "../lib/communityPalette";
+import { typeColorVar } from "../lib/entityColors";
 import { communityLabel, type CommunitySummary } from "./insights";
 import type { ColorBy, SizeBy } from "./model";
 
@@ -11,6 +12,9 @@ const SIZE_LABEL: Record<SizeBy, string> = {
   degree: "число связей",
 };
 
+/** Пункт легенды, на который навели или нажали: тип или сообщество. */
+export type LegendTarget = { kind: "type" | "community"; value: string };
+
 type Props = {
   colorBy: ColorBy;
   /** Метрика, которая реально задаёт размер (pagerank без анализа → упоминания). */
@@ -18,37 +22,57 @@ type Props = {
   types: string[];
   /** Выбранные в фильтре типы (пусто — все): остальные в легенде приглушены. */
   activeTypes?: string[];
+  /** Выбранное сообщество фильтра (null — все). */
+  activeCommunity?: string | null;
   communities: CommunitySummary[];
+  /** Клик по пункту: включить/выключить фильтр. Без обработчика пункты — просто текст. */
+  onToggle?(target: LegendTarget): void;
+  /** Наведение на пункт: подсветить его узлы на холсте (null — снять). */
+  onHover?(target: LegendTarget | null): void;
 };
-
-const MAX_COMMUNITIES = 8;
 
 function wideScreen(): boolean {
   return typeof matchMedia !== "function" || matchMedia("(min-width: 640px)").matches;
 }
 
-/** Легенда в углу холста: цвета (типы или сообщества) и смысл размера. */
-export function Legend({ colorBy, sizeBy, types, activeTypes = [], communities }: Props) {
+/**
+ * Легенда в углу холста: все цвета (типы или каждое сообщество — со своей прокруткой)
+ * и смысл размера. Пункты — кнопки-фильтры, как чипы в колонке.
+ */
+export function Legend({
+  colorBy,
+  sizeBy,
+  types,
+  activeTypes = [],
+  activeCommunity = null,
+  communities,
+  onToggle,
+  onHover,
+}: Props) {
   const [open, setOpen] = useState(wideScreen);
   const bodyId = useId();
+  const palette = useMemo(() => communityColors(communities.map((c) => c.id)), [communities]);
   const items =
     colorBy === "type"
       ? types.map((t) => ({
           key: t,
+          target: { kind: "type", value: t } as LegendTarget,
           label: t,
           color: typeColorVar(t, types),
+          pressed: activeTypes.includes(t),
           dim: activeTypes.length > 0 && !activeTypes.includes(t),
         }))
-      : communities.slice(0, MAX_COMMUNITIES).map((c) => ({
+      : communities.map((c) => ({
           key: c.id,
+          target: { kind: "community", value: c.id } as LegendTarget,
           label: communityLabel(c),
-          color: communityColorVar(c.id),
-          dim: false,
+          color: themedCss(palette.get(c.id)),
+          pressed: activeCommunity === c.id,
+          dim: activeCommunity !== null && activeCommunity !== c.id,
         }));
-  const hidden = colorBy === "community" ? Math.max(0, communities.length - MAX_COMMUNITIES) : 0;
 
   return (
-    <div className="pointer-events-auto w-60 max-w-[calc(100vw-3rem)] rounded-2xl border border-line bg-card/85 shadow-card backdrop-blur-md">
+    <div className="pointer-events-auto w-64 max-w-[calc(100vw-3rem)] rounded-2xl border border-line bg-card/85 shadow-card backdrop-blur-md">
       <button
         type="button"
         aria-expanded={open}
@@ -56,7 +80,12 @@ export function Legend({ colorBy, sizeBy, types, activeTypes = [], communities }
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between gap-2 rounded-2xl px-3.5 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-primary"
       >
-        Легенда
+        <span>
+          Легенда
+          {colorBy === "community" && (
+            <span className="ml-1.5 font-normal text-muted tabular-nums">{communities.length}</span>
+          )}
+        </span>
         <ChevronDown size={15} className={`text-muted transition-transform ${open ? "" : "-rotate-180"}`} />
       </button>
       <AnimatePresence initial={false}>
@@ -70,14 +99,41 @@ export function Legend({ colorBy, sizeBy, types, activeTypes = [], communities }
             transition={{ duration: 0.18 }}
             className="overflow-hidden"
           >
-            <ul className="space-y-1 px-3.5 pb-1 text-[13px]" aria-label={colorBy === "type" ? "Цвета типов" : "Цвета сообществ"}>
-              {items.map((item) => (
-                <li key={item.key} className={`flex items-center gap-2 transition-opacity ${item.dim ? "opacity-40" : ""}`}>
-                  <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} aria-hidden="true" />
-                  <span className="truncate">{item.label}</span>
-                </li>
-              ))}
-              {hidden > 0 && <li className="text-muted">и ещё {hidden}</li>}
+            <ul
+              className="legend-scroll max-h-[min(36vh,18rem)] space-y-px overflow-y-auto px-1.5 pb-1 text-[13px]"
+              aria-label={colorBy === "type" ? "Цвета типов" : "Цвета сообществ"}
+              onPointerLeave={() => onHover?.(null)}
+            >
+              {items.map((item) => {
+                const body = (
+                  <>
+                    <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} aria-hidden="true" />
+                    <span className="truncate">{item.label}</span>
+                  </>
+                );
+                return (
+                  <li key={item.key} className={`transition-opacity ${item.dim ? "opacity-45" : ""}`}>
+                    {onToggle ? (
+                      <button
+                        type="button"
+                        aria-pressed={item.pressed}
+                        title={item.label}
+                        onClick={() => onToggle(item.target)}
+                        onPointerEnter={() => onHover?.(item.target)}
+                        onFocus={() => onHover?.(item.target)}
+                        onBlur={() => onHover?.(null)}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-primary ${
+                          item.pressed ? "bg-ink/[0.07] font-medium" : ""
+                        }`}
+                      >
+                        {body}
+                      </button>
+                    ) : (
+                      <span className="flex items-center gap-2 px-2 py-1">{body}</span>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
             <p className="flex items-center gap-2 border-t border-line px-3.5 py-2 text-xs text-muted">
               <span className="flex items-end gap-0.5" aria-hidden="true">

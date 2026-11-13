@@ -1,3 +1,5 @@
+import type { ThemedColor } from "./communityPalette";
+
 const PALETTE_SIZE = 8;
 
 /** CSS-переменная цвета типа: по индексу в списке настроенных типов, циклически по 8. */
@@ -5,22 +7,6 @@ export function typeColorVar(type: string, configured: string[]): string {
   const index = configured.indexOf(type);
   if (index < 0) return "var(--t0)";
   return `var(--t${(index % PALETTE_SIZE) + 1})`;
-}
-
-/** FNV-1a (32 бита): быстрый детерминированный хеш строки. */
-function hashString(value: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-/** CSS-переменная цвета сообщества: `--t((hash % 8) + 1)`; без сообщества — нейтральный `--t0`. */
-export function communityColorVar(community: string | null): string {
-  if (community === null) return "var(--t0)";
-  return `var(--t${(hashString(community) % PALETTE_SIZE) + 1})`;
 }
 
 /** Минимум 2D-контекста, нужный для нормализации (его подменяют в тестах: в jsdom нет canvas). */
@@ -88,6 +74,18 @@ function themeSignature(): string {
   if (manual) return manual;
   const dark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
   return dark ? "system-dark" : "system-light";
+}
+
+/** Сейчас действует тёмная тема (ручной выбор или системная настройка). */
+export function isDarkScheme(): boolean {
+  const theme = themeSignature();
+  return theme === "dark" || theme === "system-dark";
+}
+
+/** Цвет из пары «светлая/тёмная» для WebGL: `rgb(r, g, b)` текущей темы; нет цвета — `--t0`. */
+export function schemeColor(color: ThemedColor | undefined): string {
+  if (!color) return cssColor("--t0");
+  return hexToRgb(isDarkScheme() ? color.dark : color.light) ?? FALLBACK_RGB;
 }
 
 /** Сброс кэша (смена темы; тесты). */

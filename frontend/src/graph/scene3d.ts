@@ -1,6 +1,7 @@
 // Чистая часть 3D-графа: данные для three-forcegraph, подписи, кадрирование.
 // Здесь нет three.js — модуль проверяется в jsdom без WebGL.
-import { communityColorVar, cssColor, typeColorVar } from "../lib/entityColors";
+import { cssColor, schemeColor, typeColorVar } from "../lib/entityColors";
+import { communityColorMap } from "./insights";
 import { nodeSize, sizeMetric, sizeRange, type Graph, type GraphFilters } from "./model";
 
 /** Узел для three-forcegraph; x/y/z/v* дописывает и двигает симуляция d3-force-3d. */
@@ -52,11 +53,14 @@ export function toForceData(
   const metric = sizeMetric(graph, filters.sizeBy);
   const range = sizeRange(graph, filters.sizeBy);
   const types = typeOrder(graph, entityTypes);
+  const communities = filters.colorBy === "community" ? communityColorMap(graph) : null;
   const nodes: ForceNode[] = [];
   graph.forEachNode((id, a) => {
     if (!visible.nodes.has(id)) return;
-    const colorVar = filters.colorBy === "community" ? communityColorVar(a.community) : typeColorVar(a.type, types);
-    nodes.push({ id, name: a.name, color: cssColor(colorVar), val: nodeSize(a, metric, range) });
+    const color = communities
+      ? schemeColor(a.community === null ? undefined : communities.get(a.community))
+      : cssColor(typeColorVar(a.type, types));
+    nodes.push({ id, name: a.name, color, val: nodeSize(a, metric, range) });
   });
   const pairs = new Map<string, ForceLink>();
   graph.forEachEdge((key, a, src, dst) => {

@@ -92,3 +92,9 @@
   outline-offset: 2px;
   border-radius: 999px;
 }
+
+/* Тонкая прокрутка списков в плавающих панелях (легенда, карточка сущности). */
+.legend-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--ink) 22%, transparent) transparent;
+}
