@@ -538,6 +538,14 @@ def create_api(
         """Поиск фрагментов без генерации ответа."""
         return await kb.search(body.question, mode=body.mode, k=body.k)
 
+    @app.get("/api/search/quick")
+    async def quick_search(
+        kb: KB, user: User, q: Annotated[str, Query(min_length=1, max_length=200)]
+    ):
+        """Быстрый поиск (Ctrl+K): сущности, страницы wiki, документы и свои диалоги, до 5 в
+        каждой группе."""
+        return await kb.quick_search(user["id"], q)
+
     @app.post("/api/ask")
     async def ask(body: Question, kb: KB, user: User):
         """Ответ на вопрос с источниками (без истории диалога)."""
@@ -643,6 +651,54 @@ def create_api(
     async def graph_analysis(kb: KB, user: User):
         """Состояние анализа графа (PageRank + Leiden) и топ сущностей."""
         return await kb.graph_analysis()
+
+    # обзор, путь и сообщества — до `/api/graph/{entity_id}`, иначе их примут за id
+    @app.get("/api/graph/overview")
+    async def graph_overview(
+        kb: KB,
+        user: User,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 300,
+        types: Annotated[list[str] | None, Query(alias="type", max_length=50)] = None,
+        community: Annotated[str | None, Query(max_length=200)] = None,
+        min_weight: Annotated[float, Query(ge=0, allow_inf_nan=False)] = 0.0,
+        min_mentions: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+    ):
+        """Обзор графа: топ узлов по PageRank (без анализа — по упоминаниям) и связи между
+        ними; фильтры `type` (несколько), `community`, `min_weight`, `min_mentions`."""
+        return await kb.graph_overview(
+            limit=limit,
+            types=types or [],
+            community=community,
+            min_weight=min_weight,
+            min_mentions=min_mentions,
+        )
+
+    @app.get("/api/graph/path")
+    async def graph_path(
+        kb: KB,
+        user: User,
+        source: Annotated[str, Query(min_length=1, max_length=200)],
+        target: Annotated[str, Query(min_length=1, max_length=200)],
+        max_hops: Annotated[int, Query(ge=1, le=5)] = 4,
+        limit: Annotated[int, Query(ge=1, le=5)] = 3,
+    ):
+        """Кратчайшие пути между двумя сущностями; 422 — одна и та же, 404 — нет сущности."""
+        return await kb.graph_path(source, target, max_hops=max_hops, limit=limit)
+
+    @app.get("/api/graph/communities")
+    async def graph_communities(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
+        """Сообщества актуального анализа графа по размеру (`ready: false` — анализа нет)."""
+        return await kb.graph_communities(limit=limit, offset=offset)
+
+    @app.get("/api/graph/communities/{community}")
+    async def graph_community(
+        community: str,
+        kb: KB,
+        user: User,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 300,
+    ):
+        """Подграф сообщества: участники по PageRank и связи между ними; 404 — нет."""
+        return await kb.graph_community(community, limit=limit)
 
     @app.get("/api/graph/{entity_id}")
     async def entity(entity_id: str, kb: KB, user: User):

@@ -230,6 +230,23 @@ def test_conversations_are_private(api):
     assert api.client.get("/api/conversations", headers=other).json() == []
 
 
+def test_search_conversations_is_private_and_literal(api):
+    s, me, them = api.store, api.owner["id"], api.other["id"]
+    for title in ("План 100%", "plan_a", "planXa"):
+        s.create_conversation(me, title)
+    s.create_conversation(them, "Чужой план")
+    assert [c["title"] for c in s.search_conversations(me, "100%")] == ["План 100%"]
+    assert [c["title"] for c in s.search_conversations(me, "_a")] == ["plan_a"]
+    assert {c["title"] for c in s.search_conversations(me, "ПЛАН")} == {"План 100%"}
+    assert [c["title"] for c in s.search_conversations(them, "план")] == ["Чужой план"]
+    # `\` — тоже буквально; новые первыми, не больше `limit`
+    s.create_conversation(me, "a\\b")
+    assert [c["title"] for c in s.search_conversations(me, "\\")] == ["a\\b"]
+    assert [c["title"] for c in s.search_conversations(me, "plan")] == ["planXa", "plan_a"]
+    assert len(s.search_conversations(me, "a", limit=2)) == 2
+    assert s.search_conversations(me, "a\x00") == []
+
+
 def test_password_hashing_is_bounded_and_failures_are_logged(api, monkeypatch):
     import threading
 
@@ -684,6 +701,96 @@ def test_entity_routes(api):
         "/api/entities/e1/relations",
         "/api/entities/e1/mentions",
         "/api/entities/e1/documents",
+    ):
+        assert api.client.get(path).status_code == 401, path
+
+
+def test_graph_overview_path_community_and_quick_routes(api):
+    h = api.headers
+    seen = {}
+
+    async def graph_overview(**kwargs):
+        seen["overview"] = kwargs
+        return {"args": kwargs}
+
+    async def graph_path(source, target, max_hops=4, limit=3):
+        seen["path"] = (source, target, max_hops, limit)
+        return {"paths": [], "timed_out": False}
+
+    async def graph_communities(limit=50, offset=0):
+        seen["communities"] = (limit, offset)
+        return {"ready": False, "total": 0, "items": []}
+
+    async def graph_community(community, limit=300):
+        return {"community": community, "limit": limit}
+
+    async def quick_search(user_id, q):
+        return {"user_id": user_id, "q": q}
+
+    async def entity(entity_id):
+        seen["entity"] = entity_id
+        return {"entity_id": entity_id}
+
+    api.kb.graph_overview, api.kb.graph_path = graph_overview, graph_path
+    api.kb.graph_communities, api.kb.graph_community = graph_communities, graph_community
+    api.kb.quick_search, api.kb.entity = quick_search, entity
+
+    def get(path):
+        response = api.client.get(path, headers=h)
+        assert response.status_code == 200, (path, response.status_code)
+        return response.json()
+
+    def status(path):
+        return api.client.get(path, headers=h).status_code
+
+    assert get("/api/graph/overview?limit=1000&type=Person&min_weight=2.5")["args"] == dict(
+        limit=1000, types=["Person"], community=None, min_weight=2.5, min_mentions=0
+    )
+    assert get("/api/graph/overview")["args"] == dict(
+        limit=300, types=[], community=None, min_weight=0.0, min_mentions=0
+    )
+    get("/api/graph/overview?type=Person&type=Work&community=c1&min_mentions=2")
+    assert seen["overview"] == dict(
+        limit=300, types=["Person", "Work"], community="c1", min_weight=0.0, min_mentions=2
+    )
+    too_many = "&".join(["type=Person"] * 51)
+    for bad in (
+        "/api/graph/overview?limit=0",
+        "/api/graph/overview?limit=1001",
+        "/api/graph/overview?min_weight=-1",
+        "/api/graph/overview?min_weight=nan",
+        "/api/graph/overview?min_mentions=-1",
+        "/api/graph/overview?" + too_many,
+        "/api/graph/path?source=a&target=b&max_hops=6",
+        "/api/graph/path?source=a&target=b&max_hops=0",
+        "/api/graph/path?source=a&target=b&limit=6",
+        "/api/graph/path?source=a",
+        "/api/graph/communities?limit=201",
+        "/api/graph/communities?offset=-1",
+        "/api/graph/communities/c1?limit=1001",
+        "/api/search/quick",
+        "/api/search/quick?q=",
+        "/api/search/quick?q=" + "x" * 201,
+    ):
+        assert status(bad) == 422, bad
+    assert get("/api/graph/communities/community:abc")["community"] == "community:abc"
+    assert get("/api/graph/communities/c1?limit=1000")["limit"] == 1000
+    get("/api/graph/path?source=a&target=b")
+    assert seen["path"] == ("a", "b", 4, 3)
+    get("/api/graph/path?source=a&target=b&max_hops=5&limit=5")
+    assert seen["path"] == ("a", "b", 5, 5)
+    get("/api/graph/communities")
+    assert seen["communities"] == (50, 0)
+    get("/api/graph/communities?limit=200&offset=10")
+    assert seen["communities"] == (200, 10)
+    assert "entity" not in seen  # /api/graph/{entity_id} ни разу не перехватил новые пути
+    assert get("/api/search/quick?q=ada") == {"user_id": api.owner["id"], "q": "ada"}
+    for path in (
+        "/api/graph/overview",
+        "/api/graph/path?source=a&target=b",
+        "/api/graph/communities",
+        "/api/graph/communities/c1",
+        "/api/search/quick?q=ada",
     ):
         assert api.client.get(path).status_code == 401, path
 

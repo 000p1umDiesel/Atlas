@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -81,6 +82,8 @@ _MIGRATIONS = (
     "ALTER TABLE messages ADD COLUMN IF NOT EXISTS meta TEXT",
 )
 MAX_TITLE = 200
+# символы шаблона LIKE, которые в поиске по заголовку экранируются (`ESCAPE '\'`)
+_LIKE_SPECIAL = re.compile(r"[\\%_]")
 
 
 def _record(row) -> dict:
@@ -353,6 +356,23 @@ class ServiceStore:
                     "SELECT * FROM conversations WHERE user_id=? "
                     "ORDER BY created_at DESC, seq DESC LIMIT ? OFFSET ?",
                     (user_id, limit, offset),
+                )
+            ]
+
+    def search_conversations(self, user_id: str, q: str, limit: int = 5) -> list[dict]:
+        """До `limit` своих диалогов, в заголовке которых есть подстрока `q` (без учёта
+        регистра, буквально: `\\`, `%`, `_` экранируются), новые первыми."""
+        check_pagination(limit, 0)
+        if "\x00" in q:  # NUL не бывает в тексте PostgreSQL: такой заголовок не найдётся
+            return []
+        pattern = "%" + _LIKE_SPECIAL.sub(r"\\\g<0>", q) + "%"
+        with self._connection() as conn:
+            return [
+                _record(row)
+                for row in conn.execute(
+                    "SELECT * FROM conversations WHERE user_id=? AND title ILIKE ? ESCAPE '\\' "
+                    "ORDER BY created_at DESC, seq DESC LIMIT ?",
+                    (user_id, pattern, limit),
                 )
             ]
 

@@ -63,7 +63,7 @@ from mnogobase.background.uploads import Uploads
 from mnogobase.core.config import Settings
 from mnogobase.core.database import DatabaseError, database_target
 from mnogobase.core.log import get_logger
-from mnogobase.core.models import Answer, EntityRecord
+from mnogobase.core.models import Answer, EntityRecord, PageIndexRow
 from mnogobase.ingest.pipeline import EmbedderMismatchError
 from mnogobase.llm.templates import render_messages
 from mnogobase.ops.doctor import run_checks
@@ -96,6 +96,8 @@ HEARTBEAT_STALE_S = 120.0
 SHUTDOWN_GRACE_S = 20.0
 # Сколько последних документов отдаёт `stats()` в `recent`.
 RECENT_DOCUMENTS = 8
+# Сколько результатов в каждой группе отдаёт быстрый поиск (`quick_search`).
+QUICK_SEARCH_LIMIT = 5
 # Допустимые ключи сортировки каталога сущностей (`GraphStore.list_entities`).
 ENTITY_SORTS = get_args(EntitySort)
 
@@ -177,6 +179,15 @@ def _meta(answer: dict) -> dict:
 def _source_url(doc_id: str) -> str:
     """URL API для скачивания загруженного исходника."""
     return f"/api/documents/{doc_id}/content"
+
+
+def _matching_pages(rows: list[PageIndexRow], q: str | None) -> list[PageIndexRow]:
+    """Страницы wiki, в заголовке, slug или псевдонимах которых есть подстрока `q` (без
+    учёта регистра); пустой или пробельный `q` — все страницы."""
+    needle = (q or "").strip().lower()
+    if not needle:
+        return rows
+    return [r for r in rows if needle in " ".join([r.title, r.slug, *r.aliases]).lower()]
 
 
 def _registered(doc_id: str, path: str, status: str, uploads: dict[str, dict]) -> dict:
@@ -1025,14 +1036,9 @@ class KnowledgeBase:
         диске. `q` — подстрока заголовка, slug или псевдонима без учёта регистра.
         422 — неверная пагинация, 503 — ядро недоступно."""
         check_pagination(limit, offset)
-        needle = (q or "").strip().lower()
 
         async def run(app: App) -> list[dict]:
-            rows = app.graph.wiki_pages()
-            if needle:
-                rows = [
-                    r for r in rows if needle in " ".join([r.title, r.slug, *r.aliases]).lower()
-                ]
+            rows = _matching_pages(app.graph.wiki_pages(), q)
             return [
                 {k: v for k, v in row.model_dump().items() if k != "path"}
                 for row in rows[offset : offset + limit]
@@ -1327,12 +1333,129 @@ class KnowledgeBase:
             if entity is None:
                 raise ServiceError(404, "Сущность не найдена")
             relations = app.graph.neighborhood([entity_id], depth, limit)
-            ids = {entity_id} | {r.src_id for r in relations} | {r.dst_id for r in relations}
-            found = (app.graph.get_entity(eid) for eid in sorted(ids))
-            nodes = [node.model_dump() for node in found if node is not None]
+            ids = sorted(
+                {entity_id} | {r.src_id for r in relations} | {r.dst_id for r in relations}
+            )
+            views = {view["entity_id"]: view for view in app.graph.node_views(ids)}
+            found = (app.graph.get_entity(eid) for eid in ids)
+            # поля узла как раньше плюс карточка NodeView (степень, PageRank, сообщество, wiki)
+            nodes = [
+                {**views.get(node.entity_id, {}), **node.model_dump()}
+                for node in found
+                if node is not None
+            ]
             return {"nodes": nodes, "relations": [r.model_dump() for r in relations]}
 
         return await self._with_app(run, "Граф недоступен")
+
+    async def graph_overview(
+        self,
+        limit: int = 300,
+        types: Sequence[str] = (),
+        community: str | None = None,
+        min_weight: float = 0.0,
+        min_mentions: int = 0,
+    ) -> dict:
+        """Обзор графа (`GraphStore.overview`): топ-`limit` узлов по актуальному PageRank
+        (без анализа — по упоминаниям, `ranked_by`) и связи между ними с весом не меньше
+        `min_weight`. Пустой или пробельный `community` — без фильтра.
+        422 — неверные `limit`, `min_weight` или `min_mentions`; 503 — ядро недоступно."""
+        check_pagination(limit, 0)
+        if type(min_mentions) is not int or min_mentions < 0:
+            raise ServiceError(422, "Неверный фильтр упоминаний")
+        if not 0 <= min_weight < float("inf"):  # NaN тоже не проходит
+            raise ServiceError(422, "Неверный фильтр веса связей")
+        community = (community or "").strip() or None
+
+        async def run(app: App) -> dict:
+            return app.graph.overview(
+                limit=limit,
+                types=list(types),
+                community=community,
+                min_weight=min_weight,
+                min_mentions=min_mentions,
+            )
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def graph_path(self, source: str, target: str, max_hops: int = 4, limit: int = 3) -> dict:
+        """До `limit` кратчайших путей между двумя сущностями не длиннее `max_hops` (1–5)
+        `{"paths": [{"nodes", "relations"}], "timed_out"}`; путь, упёршийся в таймаут, —
+        пустой список и `timed_out: true`. 422 — одна и та же сущность или неверные
+        `max_hops` / `limit`, 404 — нет любого из концов, 503 — ядро недоступно."""
+        if source == target:
+            raise ServiceError(422, "Выберите две разные сущности")
+        if type(max_hops) is not int or not 1 <= max_hops <= 5:
+            raise ServiceError(422, "Длина пути должна быть от 1 до 5")
+        if type(limit) is not int or not 1 <= limit <= 5:
+            raise ServiceError(422, "Число путей должно быть от 1 до 5")
+
+        async def run(app: App) -> dict:
+            self._require_entity(app, source)
+            self._require_entity(app, target)
+            paths, timed_out = app.graph.shortest_paths(
+                source, target, max_hops=max_hops, limit=limit
+            )
+            return {"paths": paths, "timed_out": timed_out}
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def graph_communities(self, limit: int = 50, offset: int = 0) -> dict:
+        """Страница сообществ актуального анализа `{"ready", "total", "items"}` по размеру;
+        без анализа — `ready: false` и пустой список. 422 — неверная пагинация, 503 — ядро
+        недоступно."""
+        check_pagination(limit, offset)
+
+        async def run(app: App) -> dict:
+            return app.graph.communities(limit, offset)
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def graph_community(self, community: str, limit: int = 300) -> dict:
+        """Подграф сообщества: топ-`limit` участников по PageRank и связи между ними.
+        404 — нет такого сообщества в актуальном анализе (или анализа нет), 422 — неверный
+        `limit`, 503 — ядро недоступно."""
+        check_pagination(limit, 0)
+
+        async def run(app: App) -> dict:
+            found = app.graph.community_subgraph(community, limit)
+            if found is None:
+                raise ServiceError(404, "Сообщество не найдено")
+            return found
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def quick_search(self, user_id: str, q: str) -> dict:
+        """Быстрый поиск (Ctrl+K): до `QUICK_SEARCH_LIMIT` результатов в каждой группе.
+
+        `entities` — карточки узлов по префиксному полнотекстовому поиску, лучшие первыми;
+        `wiki` — страницы `{page_id, slug, title}`, как фильтр `q` списка wiki; `documents`
+        — `{id, name, status}` документов корпуса (и загрузок в очереди), в имени которых
+        есть подстрока `q` без учёта регистра; `conversations` — `{id, title}` своих
+        диалогов по заголовку, новые первыми. Пустой или пробельный `q` — пустые группы.
+        503 — ядро недоступно."""
+        query = q.strip()
+        needle = query.lower()
+        n = QUICK_SEARCH_LIMIT
+
+        async def run(app: App) -> dict:
+            if not query:
+                return {"entities": [], "wiki": [], "documents": [], "conversations": []}
+            ids = [eid for eid, _ in app.graph.fulltext_entities(query, n, prefix=True)]
+            pages = _matching_pages(app.graph.wiki_pages(), query)[:n]
+            queued, registered = self._corpus(app)
+            documents = [d for d in queued + registered if needle in d["name"].lower()][:n]
+            chats = self.store.search_conversations(user_id, query, n)
+            return {
+                "entities": app.graph.node_views(ids),
+                "wiki": [{"page_id": p.page_id, "slug": p.slug, "title": p.title} for p in pages],
+                "documents": [
+                    {"id": d["id"], "name": d["name"], "status": d["status"]} for d in documents
+                ],
+                "conversations": [{"id": c["id"], "title": c["title"]} for c in chats],
+            }
+
+        return await self._with_app(run, "Поиск недоступен")
 
     # ---- состояние ----
     def service_checks(self) -> list[dict]:

@@ -163,3 +163,86 @@ async def test_unknown_entity_is_404(kbv, call):
     with pytest.raises(ServiceError) as err:
         await getattr(kbv, call)("missing")
     assert err.value.status == 404 and err.value.detail == "Сущность не найдена"
+
+
+@pytest.fixture
+def owner(kbv):
+    return kbv.store.create_user("owner", "long-enough-password")
+
+
+async def test_overview_path_communities(kbv):
+    overview = await kbv.graph_overview(limit=3)
+    assert overview["ranked_by"] == "pagerank"
+    assert [n["entity_id"] for n in overview["nodes"]] == ["ada", "babbage", "engine"]
+    # пробельное сообщество — без фильтра, как пустой `q` каталога
+    assert await kbv.graph_overview(community="  ") == await kbv.graph_overview()
+    only_x = await kbv.graph_overview(community="community:x", types=["Person"])
+    assert {n["entity_id"] for n in only_x["nodes"]} == {"ada", "babbage"}
+    path = await kbv.graph_path("notes", "loom")
+    assert path["timed_out"] is False
+    assert [n["entity_id"] for n in path["paths"][0]["nodes"]][-1] == "loom"
+    assert (await kbv.graph_path("notes", "lonely")) == {"paths": [], "timed_out": False}
+    for args, code, detail in (
+        (("ada", "ada"), 422, "Выберите две разные сущности"),
+        (("ada", "missing"), 404, "Сущность не найдена"),
+        (("missing", "ada"), 404, "Сущность не найдена"),
+    ):
+        with pytest.raises(ServiceError) as err:
+            await kbv.graph_path(*args)
+        assert (err.value.status, err.value.detail) == (code, detail)
+    communities = await kbv.graph_communities()
+    assert communities["ready"] is True and communities["total"] == 3
+    assert communities["items"][0]["community"] == "community:x"
+    members = await kbv.graph_community("community:y")
+    assert {n["entity_id"] for n in members["nodes"]} == {"engine", "loom"}
+    with pytest.raises(ServiceError) as err:
+        await kbv.graph_community("community:nope")
+    assert (err.value.status, err.value.detail) == (404, "Сообщество не найдено")
+
+
+async def test_neighbors_carry_node_view_fields(kbv):
+    nb = await kbv.graph_neighbors("ada")
+    assert set(nb) == {"nodes", "relations"}
+    ada = next(n for n in nb["nodes"] if n["entity_id"] == "ada")
+    assert ada["degree"] == 3 and ada["pagerank"] == 0.30 and "aliases" in ada
+    assert "description" in ada and ada["community"] == "community:x"
+    assert ada["has_page"] is True and ada["slug"] == "ada-lovelace"
+    assert {n["entity_id"] for n in nb["nodes"]} == {"ada", "babbage", "engine", "notes"}
+
+
+async def test_quick_search(kbv, owner):
+    kbv.store.create_conversation(owner["id"], "Про Аду")
+    kbv.store.create_conversation(owner["id"], "Другое")
+    found = await kbv.quick_search(owner["id"], "ada")
+    assert set(found) == {"entities", "wiki", "documents", "conversations"}
+    assert [e["entity_id"] for e in found["entities"]] == ["ada"]
+    assert found["entities"][0]["pagerank"] == 0.30
+    assert found["wiki"] == [{"page_id": "ada", "slug": "ada-lovelace", "title": "Ada Lovelace"}]
+    assert found["documents"] == []
+    russian = await kbv.quick_search(owner["id"], "отч")
+    assert russian["documents"] == [{"id": VIEW_DOC_A, "name": "Отчёт.pdf", "status": "queued"}]
+    assert [c["title"] for c in (await kbv.quick_search(owner["id"], "аду"))["conversations"]] == [
+        "Про Аду"
+    ]
+    assert set((await kbv.quick_search(owner["id"], "ду"))["conversations"][0]) == {"id", "title"}
+    for q in ("%", '"', "\\", "(*", "_", "   "):
+        result = await kbv.quick_search(owner["id"], q)  # без исключений
+        assert result["conversations"] == [] and result["documents"] == []
+
+
+async def test_quick_search_caps_each_group(kbv, owner):
+    for n in range(7):
+        kbv.store.create_conversation(owner["id"], f"engine {n}")
+        kbv.uploads.add(f"{n:x}" * 16, f"engine-{n}.md", kbv.uploads.root / f"{n}.md")
+    found = await kbv.quick_search(owner["id"], "engine")
+    assert len(found["conversations"]) == 5 and len(found["documents"]) == 5
+    assert found["conversations"][0]["title"] == "engine 6"  # новые первыми
+
+
+async def test_overview_and_communities_on_empty_graph(kb_empty):
+    overview = await kb_empty.graph_overview()
+    assert overview["nodes"] == [] and overview["ranked_by"] == "mentions"
+    assert (await kb_empty.graph_communities()) == {"ready": False, "total": 0, "items": []}
+    with pytest.raises(ServiceError) as err:
+        await kb_empty.graph_community("community:x")
+    assert err.value.status == 404

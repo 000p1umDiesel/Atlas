@@ -47,6 +47,10 @@ class _Graph:
             return None
         return EntityRecord(entity_id=entity_id, name="Alive", type="Concept")
 
+    def node_views(self, ids):
+        # как `GraphStore.node_views`: отсутствующие (удалённые) id молча пропускаются
+        return [{"entity_id": eid, "degree": 1, "pagerank": None} for eid in ids if eid != "gone"]
+
     def neighborhood(self, seeds, depth, limit):
         from mnogobase.core.models import RelationView
 
@@ -77,5 +81,6 @@ async def test_graph_endpoints_skip_entities_removed_meanwhile():
         assert [e["entity_id"] for e in await kb.graph_search("alive")] == ["alive"]
         neighbors = await kb.graph_neighbors("alive")
         assert [n["entity_id"] for n in neighbors["nodes"]] == ["alive"]
+        assert neighbors["nodes"][0]["degree"] == 1 and neighbors["nodes"][0]["name"] == "Alive"
     finally:
         kb._core.close()
