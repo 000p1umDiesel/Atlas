@@ -61,6 +61,7 @@ export function ago(seconds) {
 }
 
 export function seconds(ms) {
+  if (ms < 100) return "<0,1 с";
   return (ms / 1000).toLocaleString("ru", { maximumFractionDigits: 1 }) + " с";
 }
 

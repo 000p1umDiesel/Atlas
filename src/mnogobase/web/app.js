@@ -4,6 +4,7 @@ import { api, onUnauthorized } from "./lib/api.js";
 import { link, useRoute } from "./lib/router.js";
 import { Loading } from "./lib/ui.js";
 import { Account } from "./views/account.js";
+import { Chat, ConversationList } from "./views/chat.js";
 import { Login } from "./views/login.js";
 
 const NAV = [
@@ -18,11 +19,13 @@ function Placeholder({ title }) {
   return html`<section class="page-narrow"><h1>${title}</h1><p class="muted">Раздел появится в следующей версии.</p></section>`;
 }
 
-function Page({ route, user, chats }) {
-  const [section] = route.parts;
+function Page({ route, user, chats, reloadChats }) {
+  const [section, id] = route.parts;
   switch (section) {
     case "account":
       return html`<${Account} user=${user} />`;
+    case "chat":
+      return html`<${Chat} id=${id} chats=${chats} reloadChats=${reloadChats} />`;
     default:
       return html`<${Placeholder} title=${(NAV.find(([id]) => id === section) || NAV[0])[1]} />`;
   }
@@ -52,17 +55,28 @@ function Sidebar({ route, user, onLogout, open, onClose, children }) {
 function Shell({ user, onLogout }) {
   const route = useRoute();
   const [menu, setMenu] = useState(false);
+  const [chats, setChats] = useState(null);
+  const reloadChats = () =>
+    api("/api/conversations?limit=200")
+      .then(setChats)
+      .catch(() => setChats((c) => c || []));
+  useEffect(() => {
+    reloadChats();
+  }, []);
   useEffect(() => setMenu(false), [route]);
+  const [section, id] = route.parts;
   return html`
     <div class="shell">
       <header class="topbar only-mobile">
         <button class="ghost" onClick=${() => setMenu(true)} aria-label="Открыть меню">☰</button>
         <a class="brand-mark" href="#/chat">mnogobase</a>
       </header>
-      <${Sidebar} route=${route} user=${user} onLogout=${onLogout} open=${menu} onClose=${() => setMenu(false)} />
+      <${Sidebar} route=${route} user=${user} onLogout=${onLogout} open=${menu} onClose=${() => setMenu(false)}>
+        ${section === "chat" && html`<${ConversationList} chats=${chats} activeId=${id} />`}
+      <//>
       ${menu && html`<div class="scrim only-mobile" onClick=${() => setMenu(false)}></div>`}
       <main class="page" id="main">
-        <${Page} route=${route} user=${user} />
+        <${Page} route=${route} user=${user} chats=${chats} reloadChats=${reloadChats} />
       </main>
     </div>`;
 }
