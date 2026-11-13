@@ -116,7 +116,7 @@ async def test_upload_ingest_answer_and_remove(env):
         await kb.send_message(user["id"], chat["id"], "And its attention?")  # с историей
         assert reply["role"] == "assistant" and reply["sources"]
         assert "Attention paper.md" in {s.get("path") for s in reply["sources"]}
-        history = kb.history(user["id"], chat["id"])
+        history = await kb.history(user["id"], chat["id"])
         assert [m["role"] for m in history] == ["user", "assistant"] * 2
         assert any(s.get("available") for s in history[1]["sources"])
 
@@ -387,7 +387,7 @@ async def test_stream_message_events_and_history(env):
         done = seen[-1]["data"]
         assert done["content"].strip() == text.strip() and done["role"] == "assistant"
         assert any(s["cited"] for s in done["sources"]) and done["meta"]["latency_ms"] >= 0
-        history = kb.history(user["id"], chat["id"])
+        history = await kb.history(user["id"], chat["id"])
         assert [(m["role"], m["status"]) for m in history] == [
             ("user", "done"),
             ("assistant", "done"),
@@ -405,7 +405,7 @@ async def test_stream_answer_is_saved_after_the_client_leaves(env):
         assert first["event"] == "sources"
         await events.aclose()
         for _ in range(50):
-            history = kb.history(user["id"], chat["id"])
+            history = await kb.history(user["id"], chat["id"])
             if len(history) == 2:
                 break
             await asyncio.sleep(0.1)
@@ -428,7 +428,7 @@ async def test_stream_reports_llm_failure(env, monkeypatch):
         seen = [e async for e in events]
         assert seen[-1]["event"] == "error" and seen[-1]["data"]["status"] == 503
         assert "secret" not in str(seen)
-        assert kb.history(user["id"], chat["id"])[-1]["status"] == "error"
+        assert (await kb.history(user["id"], chat["id"]))[-1]["status"] == "error"
         with pytest.raises(ServiceError) as missing:
             await kb.send_message_stream(user["id"], "nope", "Q?")
         assert missing.value.status == 404
@@ -510,5 +510,60 @@ async def test_unexpected_job_errors_keep_only_the_type(env, monkeypatch):
         job = await asyncio.to_thread(kb.enqueue_analyze)
         await asyncio.to_thread(runner.invoke, cli.app, ["worker", "run", "--once"])
         assert _job(kb, job["id"])["error"] == "RuntimeError"
+    finally:
+        await kb.close()
+
+
+async def test_stream_always_ends_with_a_terminal_event(env, monkeypatch):
+    kb, user, chat = await _ready_kb(env)
+    try:
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("provider down")
+            yield ""
+
+        app = await kb._core.run(kb._ensure_app())
+        monkeypatch.setattr(app.llm, "stream", broken)
+        events = await kb.send_message_stream(user["id"], chat["id"], "What is the Transformer?")
+
+        def database_down(*args, **kwargs):
+            raise RuntimeError("database down")
+
+        # вопрос уже сохранён; дальше база «падает» — и для ответа, и для записи ошибки
+        monkeypatch.setattr(kb.store, "append_message", database_down)
+        seen = await asyncio.wait_for(_collect(events), timeout=10)
+        assert seen[-1]["event"] == "error" and seen[-1]["data"]["status"] == 503
+    finally:
+        await kb.close()
+
+
+async def _collect(events):
+    return [e async for e in events]
+
+
+async def test_history_marks_cli_ingested_sources_available_until_removed(env):
+    settings, factory, root = env
+    shutil.copy(FIXTURES / "attention_en.md", root / "local.md")
+    result = await asyncio.to_thread(runner.invoke, cli.app, ["jobs", "enqueue", "local.md"])
+    assert result.exit_code == 0, result.output
+    await work_once()
+    kb = KnowledgeBase(settings, app_factory=factory)
+    user = kb.store.create_user("owner", "long-enough-password")
+    try:
+        chat = kb.store.create_conversation(user["id"])
+        await kb.send_message(user["id"], chat["id"], "What is the Transformer?")
+        await kb.send_message(user["id"], chat["id"], "And its attention?")
+        history = await kb.history(user["id"], chat["id"])
+        chunks = [s for s in history[1]["sources"] if s.get("kind") == "chunk"]
+        assert chunks and all(s["available"] for s in chunks)
+        newest = await kb.history(user["id"], chat["id"], limit=2, newest=True)
+        assert [m["content"] for m in newest] == [history[2]["content"], history[3]["content"]]
+
+        [doc] = await kb.documents()
+        await kb.remove_document(doc["id"])
+        await work_once()
+        history = await kb.history(user["id"], chat["id"])
+        chunks = [s for s in history[1]["sources"] if s.get("kind") == "chunk"]
+        assert chunks and not any(s["available"] for s in chunks)
     finally:
         await kb.close()

@@ -4,7 +4,7 @@ import { html, useEffect, useState } from "/static/vendor/htm-preact-standalone.
 import { api } from "../lib/api.js";
 import { Markdown } from "../lib/markdown.js";
 import { link } from "../lib/router.js";
-import { Empty, ErrorNote, Loading, plural, useLoad } from "../lib/ui.js";
+import { Empty, ErrorNote, fetchPages, Loading, plural, useLoad } from "../lib/ui.js";
 import { SourcePanel } from "./sources.js";
 
 const FOOTNOTE = /\[\^([0-9a-f]{16}:\d{5})\]/g;
@@ -24,14 +24,19 @@ export function prepareWikiPage(content) {
 function WikiIndex() {
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
+  const [count, setCount] = useState(200);
   useEffect(() => {
-    const t = setTimeout(() => setQuery(q.trim()), 250);
+    const t = setTimeout(() => {
+      setQuery(q.trim());
+      setCount(200);
+    }, 250);
     return () => clearTimeout(t);
   }, [q]);
-  const { data, error, loading } = useLoad(
-    () => api("/api/wiki?limit=200" + (query ? "&q=" + encodeURIComponent(query) : "")),
-    [query],
+  const { data: page, error, loading } = useLoad(
+    () => fetchPages("/api/wiki" + (query ? "?q=" + encodeURIComponent(query) : ""), count),
+    [query, count],
   );
+  const data = page && page.items;
   const groups = {};
   for (const p of data || []) (groups[p.entity_type] = groups[p.entity_type] || []).push(p);
   return html`
@@ -45,7 +50,7 @@ function WikiIndex() {
       ${data && data.length === 0 &&
       html`<${Empty}>${query ? "Ничего не нашлось. Попробуйте другое слово или псевдоним." : "Wiki пока пуста: страницы появятся после обработки документов."}<//>`}
       ${data && data.length > 0 &&
-      html`<p class="muted small">${plural(data.length, ["страница", "страницы", "страниц"])}</p>
+      html`<p class="muted small">${page.more ? "Показаны первые " : ""}${plural(data.length, ["страница", "страницы", "страниц"])}</p>
         <div class="wiki-groups">
           ${Object.keys(groups)
             .sort()
@@ -55,7 +60,8 @@ function WikiIndex() {
                 <ul>${groups[type].map((p) => html`<li key=${p.page_id}><a href=${link("wiki", p.slug)}>${p.title}</a></li>`)}</ul>
               </div>`,
             )}
-        </div>`}
+        </div>
+        ${page.more && html`<button onClick=${() => setCount(count + 200)} disabled=${loading}>Показать ещё</button>`}`}
     </section>`;
 }
 

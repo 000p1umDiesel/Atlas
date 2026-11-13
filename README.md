@@ -2323,7 +2323,7 @@ uv run mnogobase client logout
 | `POST /api/ask` | `{"question", "mode"}` → ответ с источниками |
 | `POST /api/conversations`, `GET /api/conversations` | создать диалог (`{"title"}`) / список своих диалогов |
 | `PATCH` / `DELETE /api/conversations/{id}` | переименовать (`{"title"}`) / удалить диалог со всеми сообщениями |
-| `GET` / `POST /api/conversations/{id}/messages` | история диалога / новый вопрос `{"question", "mode"}` с ответом; у ответов есть `meta` (`latency_ms`, `tokens_in`, `tokens_out`, `alt_queries`), первый вопрос становится заголовком диалога |
+| `GET` / `POST /api/conversations/{id}/messages` | история диалога (`newest=true` — последние `limit` сообщений; у фрагментов-источников `available` — есть ли фрагмент в базе) / новый вопрос `{"question", "mode"}` с ответом; у ответов есть `meta` (`latency_ms`, `tokens_in`, `tokens_out`, `alt_queries`), первый вопрос становится заголовком диалога |
 | `POST /api/conversations/{id}/messages/stream` | то же потоком SSE: события `sources`, `delta` (`{"text"}`), затем `done` (сохранённое сообщение) или `error` (`{"detail", "status"}`); если клиент ушёл, ответ всё равно дописывается и сохраняется |
 | `GET /api/wiki?q=...`, `GET /api/wiki/{page_id}`, `GET /api/wiki/by-slug/{slug}` | страницы wiki (поиск по заголовку, slug и алиасам) / Markdown страницы с `sources` — `chunk_id` → имя документа для сносок |
 | `GET /api/graph/search?q=...`, `GET /api/graph/{entity_id}/neighbors?depth=1..3` | поиск сущностей по началу слов имени и алиасов / окрестность сущности |

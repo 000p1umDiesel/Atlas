@@ -540,9 +540,19 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/api/conversations/{conversation_id}/messages")
-    def history(conversation_id: str, kb: KB, user: User, limit: Limit = 100, offset: Offset = 0):
-        """Сообщения диалога с пометкой доступности источников; 404 — чужой или нет."""
-        return kb.history(user["id"], conversation_id, limit=limit, offset=offset)
+    async def history(
+        conversation_id: str,
+        kb: KB,
+        user: User,
+        limit: Limit = 100,
+        offset: Offset = 0,
+        newest: bool = False,
+    ):
+        """Сообщения диалога с пометкой доступности источников; `newest=true` — последние
+        `limit` сообщений. 404 — чужой или нет."""
+        return await kb.history(
+            user["id"], conversation_id, limit=limit, offset=offset, newest=newest
+        )
 
     @app.post("/api/conversations/{conversation_id}/messages")
     async def send_message(conversation_id: str, body: Question, kb: KB, user: User):

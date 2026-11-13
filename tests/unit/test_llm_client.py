@@ -262,3 +262,26 @@ async def test_stream_records_telemetry():
     await _collect(llm)
     assert [e.status for e in events] == ["started", "response"]
     assert (events[-1].tokens_in, events[-1].tokens_out) == (3, 5)
+
+
+async def test_stream_retries_without_usage_option_when_provider_rejects_it():
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unknown parameter"}})
+        return httpx.Response(
+            200, content=_sse(["ok"], usage=None), headers={"content-type": "text/event-stream"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm = OpenAICompatLLM(
+        LLMSettings(base_url="http://test/v1", model="base"),
+        http_client=client,
+        retry_wait=wait_none(),
+    )
+    assert await _collect(llm) == ["ok"]
+    assert await _collect(llm) == ["ok"]  # второй раз сразу без опции
+    assert ["stream_options" in r for r in requests] == [True, False, False]

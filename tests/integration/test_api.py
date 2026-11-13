@@ -141,7 +141,11 @@ def test_all_routes(api, tmp_path):
     kb.read_source = lambda doc_id: (b"<script>", "отчёт.html")
     kb.jobs = lambda limit=50, offset=0: [{"id": 1}]
     kb.retry_job = lambda job_id: {"id": job_id, "status": "pending"}
-    kb.history = lambda user_id, cid, limit=100, offset=0: kb.store.messages(user_id, cid)
+
+    async def history(user_id, cid, limit=100, offset=0, newest=False):
+        return kb.store.messages(user_id, cid)
+
+    kb.history = history
     kb.status = lambda: {"queue": {}}
 
     assert api.client.get("/health").json() == {"status": "ok"}
@@ -197,9 +201,11 @@ def test_all_routes(api, tmp_path):
 def test_conversations_are_private(api):
     other = {"Authorization": "Bearer " + api.store.login("other", PASSWORD)}
     cid = api.client.post("/api/conversations", headers=api.headers, json={}).json()["id"]
-    api.kb.history = lambda user_id, conversation_id, limit=100, offset=0: api.store.messages(
-        user_id, conversation_id
-    )
+
+    async def history(user_id, conversation_id, limit=100, offset=0, newest=False):
+        return api.store.messages(user_id, conversation_id)
+
+    api.kb.history = history
     assert api.client.get(f"/api/conversations/{cid}/messages", headers=other).status_code == 404
     assert api.client.get("/api/conversations", headers=other).json() == []
 

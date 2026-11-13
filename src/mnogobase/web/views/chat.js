@@ -7,6 +7,9 @@ import { ErrorNote, Loading, MODES, number, remember, seconds } from "../lib/ui.
 import { Compare } from "./compare.js";
 import { SourceList, SourcePanel, sourceTarget } from "./sources.js";
 
+const HISTORY = 200;
+let sendSeq = 0;
+
 export function ConversationList({ chats, activeId }) {
   return html`
     <div class="chat-list">
@@ -133,13 +136,17 @@ export function Chat({ id, chats, reloadChats }) {
     if (owner.current === id) return; // только что создан этим же экраном
     owner.current = id;
     setMessages(null);
-    api(`/api/conversations/${id}/messages?limit=200`)
-      .then((items) => owner.current === id && setMessages(items))
+    loadMessages(id);
+  }, [id]);
+
+  // Длинный диалог открывается с конца: последние HISTORY сообщений.
+  const loadMessages = (cid) =>
+    api(`/api/conversations/${cid}/messages?limit=${HISTORY}&newest=true`)
+      .then((items) => owner.current === cid && setMessages(items))
       .catch((err) => {
         setError(err);
         setMessages([]);
       });
-  }, [id]);
 
   useEffect(() => {
     if (bottom.current) bottom.current.scrollIntoView({ block: "end" });
@@ -166,19 +173,33 @@ export function Chat({ id, chats, reloadChats }) {
         navigate(link("chat", cid));
       }
       setQuestion("");
-      const pending = { id: "pending", role: "assistant", content: "", streaming: true, sources: [] };
-      setMessages((list) => [...(list || []), { id: "asked", role: "user", content: text, mode }, pending]);
+      const key = ++sendSeq;
+      const pendingId = `pending-${key}`;
+      const pending = { id: pendingId, role: "assistant", content: "", streaming: true, sources: [] };
+      setMessages((list) => [...(list || []), { id: `asked-${key}`, role: "user", content: text, mode }, pending]);
+      // События, пришедшие после перехода в другой диалог, не трогают его сообщения;
+      // ответ всё равно сохранится на сервере.
       const update = (patch) =>
-        setMessages((list) => list.map((m) => (m.id === "pending" ? { ...m, ...patch(m) } : m)));
+        owner.current === cid &&
+        setMessages((list) => (list || []).map((m) => (m.id === pendingId ? { ...m, ...patch(m) } : m)));
+      let finished = false;
       await streamSse(`/api/conversations/${cid}/messages/stream`, { question: text, mode }, (name, data) => {
         if (name === "sources") update(() => ({ sources: data }));
         else if (name === "delta") update((m) => ({ content: m.content + data.text }));
-        else if (name === "done") update(() => ({ ...data, streaming: false }));
-        else if (name === "error") update(() => ({ status: "error", streaming: false, content: data.detail }));
+        else if (name === "done") {
+          finished = true;
+          update(() => ({ ...data, streaming: false }));
+        } else if (name === "error") {
+          finished = true;
+          update(() => ({ id: `failed-${key}`, status: "error", streaming: false, content: data.detail }));
+        }
       });
+      // Поток оборвался без итога (сеть, перезапуск сервера): ответ мог сохраниться —
+      // перечитываем диалог с сервера.
+      if (!finished && owner.current === cid) loadMessages(cid);
     } catch (err) {
       setError(err);
-      setMessages((list) => (list || []).filter((m) => m.id !== "pending"));
+      if (owner.current === cid) loadMessages(cid);
     } finally {
       setBusy(false);
       reloadChats();
@@ -196,6 +217,7 @@ export function Chat({ id, chats, reloadChats }) {
           <${ChatHeader} chat=${chat} onRenamed=${reloadChats}
             onDeleted=${() => { reloadChats(); navigate("#/chat"); }} />
           ${messages === null && html`<${Loading} />`}
+          ${messages && messages.length >= HISTORY && html`<p class="muted small">Показаны последние ${HISTORY} сообщений диалога.</p>`}
           ${messages && messages.length === 0 && !compare &&
           html`<div class="chat-intro">
             <h1>О чём спросить?</h1>

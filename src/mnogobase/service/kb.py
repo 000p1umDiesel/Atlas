@@ -860,6 +860,12 @@ class KnowledgeBase:
             loop.call_soon_threadsafe(events.put_nowait, {"event": event, "data": data})
 
         async def produce() -> None:
+            # Ровно одно финальное событие при любом исходе (в том числе при отмене и при
+            # недоступной базе), иначе браузер ждал бы конца потока до таймаута nginx.
+            final: tuple[str, dict] = (
+                "error",
+                {"detail": "Сервис временно недоступен", "status": 503},
+            )
             try:
                 async with self._asks:
                     answer = await self._with_app(
@@ -873,15 +879,22 @@ class KnowledgeBase:
                         ),
                         "Модель или база знаний недоступны",
                     )
-                saved = await self._save_answer(user_id, conversation_id, question, mode, answer)
+                final = (
+                    "done",
+                    await self._save_answer(user_id, conversation_id, question, mode, answer),
+                )
             except ServiceError as exc:
-                await self._save_failure(user_id, conversation_id, mode)
-                put("error", {"detail": exc.detail, "status": exc.status})
+                final = ("error", {"detail": exc.detail, "status": exc.status})
+                try:
+                    await self._save_failure(user_id, conversation_id, mode)
+                except Exception as save_exc:
+                    self._log.warning(
+                        "stream_failure_not_saved", error_type=type(save_exc).__name__
+                    )
             except Exception as exc:
                 self._log.warning("stream_answer_failed", error_type=type(exc).__name__)
-                put("error", {"detail": "Не удалось сохранить ответ", "status": 503})
-            else:
-                put("done", saved)
+            finally:
+                put(*final)
 
         task = asyncio.create_task(produce())
         self._background.add(task)
@@ -896,24 +909,55 @@ class KnowledgeBase:
 
         return stream()
 
-    def history(
-        self, user_id: str, conversation_id: str, limit: int = 100, offset: int = 0
+    async def history(
+        self,
+        user_id: str,
+        conversation_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        newest: bool = False,
     ) -> list[dict]:
-        """Страница сообщений диалога; у каждого источника добавляется `available` — есть ли
-        ещё загруженный файл или страница wiki (документ могли удалить после ответа).
-        404 — нет диалога, 422 — неверная пагинация."""
+        """Страница сообщений диалога по порядку; `newest` — последние `limit` сообщений
+        (длинный диалог открывается с конца, `offset` тогда не используется).
+
+        У каждого источника добавляется `available`: у фрагмента документа — есть ли он
+        ещё в графе (документ могли удалить после ответа; так видны и документы,
+        добавленные из CLI или папки), у страницы wiki — есть ли её файл. Если граф
+        недоступен, `available` у фрагментов не ставится. 404 — нет диалога, 422 — неверная
+        пагинация."""
         check_pagination(limit, offset)
-        messages = self.store.messages(user_id, conversation_id, limit=limit, offset=offset)
+        if newest:
+            messages = await asyncio.to_thread(
+                self.store.recent_messages, user_id, conversation_id, limit
+            )
+        else:
+            messages = await asyncio.to_thread(
+                self.store.messages, user_id, conversation_id, limit=limit, offset=offset
+            )
+        refs = sorted(
+            {
+                str(source.get("ref"))
+                for message in messages
+                for source in message["sources"]
+                if source.get("kind") == "chunk" and source.get("ref")
+            }
+        )
+        alive: set[str] | None = set()
+        if refs:
+
+            async def run(app: App) -> set[str]:
+                return {view.chunk_id for view in app.graph.chunks_by_ids(refs)}
+
+            try:
+                alive = await self._with_app(run, "Граф недоступен")
+            except ServiceError:
+                alive = None
         wiki_root = self.settings.wiki.dir.resolve()
         for message in messages:
             for source in message["sources"]:
-                if "doc_id" in source:
-                    try:
-                        self._upload_path(source["doc_id"])
-                    except ServiceError:
-                        source["available"] = False
-                    else:
-                        source["available"] = True
+                if source.get("kind") == "chunk" and source.get("ref"):
+                    if alive is not None:
+                        source["available"] = str(source["ref"]) in alive
                 elif source.get("kind") == "wiki" and source.get("path"):
                     path = (self.settings.wiki.dir / "entities" / source["path"]).resolve()
                     source["available"] = path.is_relative_to(wiki_root) and path.is_file()

@@ -286,6 +286,8 @@ class OpenAICompatLLM:
             http_client=http_client,
         )
         self._sem = asyncio.Semaphore(settings.concurrency)
+        # False после 400 на `stream_options`: такой сервер не принимает запрос токенов в потоке
+        self._stream_usage = True
         self._retry_wait = retry_wait
         self.usage = Usage()
         self._log = get_logger(__name__)
@@ -398,8 +400,9 @@ class OpenAICompatLLM:
             "messages": messages,
             "temperature": self._settings.temperature,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
+        if self._stream_usage:
+            kwargs["stream_options"] = {"include_usage": True}
         start = time.perf_counter()
         attempts = 0
         event: CallEvent | None = None
@@ -421,7 +424,18 @@ class OpenAICompatLLM:
                 event = new_call(model, task, external=self._settings.serve == "api")
                 await self._record(event)
                 try:
-                    response = await self._client.chat.completions.create(**kwargs)
+                    try:
+                        response = await self._client.chat.completions.create(**kwargs)
+                    except openai.BadRequestError:
+                        # Часть OpenAI-совместимых прокси отвергает незнакомый параметр:
+                        # повторяем без него (токены потока тогда не учитываются) и больше
+                        # его не шлём.
+                        if "stream_options" not in kwargs:
+                            raise
+                        kwargs.pop("stream_options")
+                        self._stream_usage = False
+                        self._log.warning("llm_stream_usage_unsupported", model=model)
+                        response = await self._client.chat.completions.create(**kwargs)
                 except BaseException:
                     self._sem.release()
                     if event is not None:

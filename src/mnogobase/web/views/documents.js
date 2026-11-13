@@ -2,7 +2,7 @@
 import { html, useEffect, useRef, useState } from "/static/vendor/htm-preact-standalone.mjs";
 import { api, uploadFile } from "../lib/api.js";
 import { link } from "../lib/router.js";
-import { ago, Empty, ErrorNote, Loading, Status, usePoll } from "../lib/ui.js";
+import { ago, Empty, ErrorNote, fetchPages, Loading, Status, usePoll } from "../lib/ui.js";
 
 const KIND_LABELS = { ingest: "загрузка", remove: "удаление", analyze: "анализ графа" };
 let uploadKey = 0;
@@ -81,12 +81,15 @@ function JobsTable({ jobs, onRetry }) {
 
 export function Documents() {
   const [docs, setDocs] = useState(null);
+  const [more, setMore] = useState(false);
+  const [count, setCount] = useState(200);
   const [jobs, setJobs] = useState([]);
   const [error, setError] = useState(null);
   const load = async () => {
     try {
-      const [d, j] = await Promise.all([api("/api/documents?limit=200"), api("/api/jobs?limit=30")]);
-      setDocs(d);
+      const [d, j] = await Promise.all([fetchPages("/api/documents", count), api("/api/jobs?limit=30")]);
+      setDocs(d.items);
+      setMore(d.more);
       setJobs(j);
       setError(null);
     } catch (err) {
@@ -95,7 +98,7 @@ export function Documents() {
   };
   useEffect(() => {
     load();
-  }, []);
+  }, [count]);
   const busy = jobs.some((j) => j.status === "pending" || j.status === "running");
   usePoll(load, 3000, busy);
 
@@ -140,7 +143,8 @@ export function Documents() {
                       </tr>`,
                     )}
                   </tbody>
-                </table>`}
+                </table>
+                ${more && html`<button onClick=${() => setCount(count + 200)}>Показать ещё</button>`}`}
         </div>
         <div>
           <h2>Очередь${busy ? html` <span class="muted small">обновляется</span>` : ""}</h2>

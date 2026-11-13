@@ -1,5 +1,6 @@
 // Мелкие общие компоненты и форматирование.
 import { html, useEffect, useRef, useState } from "/static/vendor/htm-preact-standalone.mjs";
+import { api } from "./api.js";
 
 export function ErrorNote({ error }) {
   if (!error) return null;
@@ -106,4 +107,19 @@ export function plural(n, [one, few, many]) {
   const mod100 = n % 100;
   const word = mod10 === 1 && mod100 !== 11 ? one : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? few : many;
   return `${number(n)} ${word}`;
+}
+
+// Первые `count` элементов списка API постранично (API отдаёт не больше 200 за раз).
+// Возвращает { items, more }: `more` — на сервере есть ещё.
+export async function fetchPages(path, count, page = 200) {
+  const items = [];
+  const join = path.includes("?") ? "&" : "?";
+  while (items.length < count) {
+    const limit = Math.min(page, count - items.length);
+    const batch = await api(`${path}${join}limit=${limit}&offset=${items.length}`);
+    items.push(...batch);
+    if (batch.length < limit) return { items, more: false };
+  }
+  const probe = await api(`${path}${join}limit=1&offset=${items.length}`);
+  return { items, more: probe.length > 0 };
 }
