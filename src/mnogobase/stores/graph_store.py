@@ -395,6 +395,11 @@ class GraphStore:
         ]
         return doc, chunks
 
+    def count_doc_chunks(self, doc_id: str) -> int:
+        """Число чанков документа (0, если документа нет)."""
+        rows = self._run("MATCH (c:Chunk {doc_id: $doc_id}) RETURN count(c) AS n", doc_id=doc_id)
+        return rows[0]["n"] if rows else 0
+
     def chunk_entity_ids(self, doc_id: str) -> dict[str, list[str]]:
         """`{chunk_id: [entity_id, ...]}` для всех чанков документа (у чанка без упоминаний —
         пустой список). Используется, чтобы восстановить `entity_ids` в Qdrant при `reindex`."""

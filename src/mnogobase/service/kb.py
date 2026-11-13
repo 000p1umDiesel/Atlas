@@ -73,6 +73,7 @@ from mnogobase.service.observability import UsageStore
 from mnogobase.service.store import ServiceStore
 
 _DOC_ID = re.compile(r"[0-9a-f]{16}")
+_CHUNK_ID = re.compile(r"[0-9a-f]{16}:\d{5}")
 # Обрыв соединения с PostgreSQL или Neo4j: App пересоздаётся при следующем обращении.
 _CONNECTION_ERRORS = (DatabaseError, DBAPIError, ServiceUnavailable, SessionExpired)
 # Worker считается живым, если отмечался в очереди не позже этого числа секунд назад.
@@ -124,9 +125,19 @@ def _question(question: str) -> str:
     return question.strip()
 
 
-def _job(job) -> dict:
-    """Задача очереди в виде ответа API, без внутренних полей."""
+def _job(job, names: dict[str, str] | None = None) -> dict:
+    """Задача очереди в виде ответа API, без внутренних полей.
+
+    Добавляются `doc_id` (из версии `<doc_id>` или `remove:<doc_id>`, иначе `None`) и `name`:
+    имя загрузки из `names` (`doc_id` → имя), иначе имя файла без каталога; у задачи анализа
+    графа — «Анализ графа»."""
     data = asdict(job)
+    doc_id = job.fingerprint.removeprefix("remove:")
+    data["doc_id"] = doc_id if _DOC_ID.fullmatch(doc_id) else None
+    if job.kind == "analyze":
+        data["name"] = "Анализ графа"
+    else:
+        data["name"] = (names or {}).get(data["doc_id"] or "") or Path(job.path).name
     # Пути, fingerprints и JSON внутренних операций не являются публичным контрактом.
     for field in ("path", "fingerprint", "payload_json"):
         data.pop(field, None)
@@ -340,12 +351,12 @@ class KnowledgeBase:
                 and queue.is_current(existing)
                 and path.is_file()
             ):
-                return _job(existing)
+                return self._job(existing)
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
             # Файл кладётся под блокировкой пути: идущая remove-задача не удалит его следом.
             job_id = queue.enqueue(path, doc_id, force=True, on_locked=lambda: staged.replace(path))
-            return _job(queue.get(job_id))
+            return self._job(queue.get(job_id))
 
     def _upload_path(self, doc_id: str) -> Path:
         """Путь существующего файла загрузки `doc_id` внутри каталога загрузок.
@@ -386,8 +397,22 @@ class KnowledgeBase:
         check_pagination(limit, offset)
 
         async def run(app: App) -> list[dict]:
+            rows = app.registry.files()
+            known = {row.path for row in rows}
+            # загрузки, которые worker ещё не зарегистрировал: видны сразу после загрузки
+            queued = [
+                {
+                    "id": u["doc_id"],
+                    "name": u["name"],
+                    "status": "queued",
+                    "uploaded": True,
+                    "url": _source_url(u["doc_id"]),
+                }
+                for u in self.uploads.all()
+                if u["path"] not in known
+            ]
             out = []
-            for row in app.registry.files()[offset : offset + limit]:
+            for row in rows:
                 upload = self.uploads.get(row.doc_id)
                 uploaded = upload is not None and upload["path"] == row.path
                 out.append(
@@ -399,15 +424,145 @@ class KnowledgeBase:
                         "url": _source_url(row.doc_id) if uploaded else None,
                     }
                 )
-            return out
+            return (queued + out)[offset : offset + limit]
 
         return await self._with_app(run, "Список документов недоступен")
+
+    def _upload_names(self) -> dict[str, str]:
+        """`doc_id` → имя, под которым файл загрузили (для подписей задач)."""
+        return {u["doc_id"]: u["name"] for u in self.uploads.all()}
+
+    def _job(self, job) -> dict:
+        """`_job` для одной задачи: имя загрузки берётся одним запросом."""
+        upload = self.uploads.get(job.fingerprint.removeprefix("remove:"))
+        return _job(job, {upload["doc_id"]: upload["name"]} if upload else None)
+
+    def _name(self, doc_id: str, path: str | None) -> str:
+        """Имя документа для показа: исходное имя загрузки, иначе имя файла без каталога."""
+        upload = self.uploads.get(doc_id)
+        if upload is not None:
+            return upload["name"]
+        return Path(path).name if path else doc_id
+
+    async def document(self, doc_id: str) -> dict:
+        """Карточка документа: имя, статус, стадии с ошибками, число чанков и сущности.
+
+        Загрузка, которую worker ещё не взял, — `status="queued"` без стадий и сущностей.
+        У сущности `has_page` — есть ли актуальная страница wiki, `slug` — её адрес.
+        404 — неверный id или документ неизвестен; 503 — ядро недоступно."""
+        if not _DOC_ID.fullmatch(doc_id):
+            raise ServiceError(404, "Документ не найден")
+
+        async def run(app: App) -> dict:
+            upload = self.uploads.get(doc_id)
+            rows = {r.path: r for r in app.registry.files() if r.doc_id == doc_id}
+            base = {
+                "id": doc_id,
+                "uploaded": upload is not None,
+                "url": _source_url(doc_id) if upload is not None else None,
+            }
+            if not rows:
+                if upload is None:
+                    raise ServiceError(404, "Документ не найден")
+                return {
+                    **base,
+                    "name": upload["name"],
+                    "status": "queued",
+                    "stages": [],
+                    "chunks": 0,
+                    "entities": [],
+                }
+            path = upload["path"] if upload is not None and upload["path"] in rows else min(rows)
+            pages = {p.page_id: p.slug for p in app.graph.wiki_pages()}
+            entities = sorted(
+                app.graph.get_entities(app.registry.doc_entities(doc_id)),
+                key=lambda e: e.name.lower(),
+            )
+            return {
+                **base,
+                "name": self._name(doc_id, path),
+                "status": rows[path].status,
+                "stages": app.registry.stages(doc_id),
+                "chunks": app.graph.count_doc_chunks(doc_id),
+                "entities": [
+                    {
+                        "entity_id": e.entity_id,
+                        "name": e.name,
+                        "type": e.type,
+                        "has_page": e.entity_id in pages,
+                        "slug": pages.get(e.entity_id),
+                    }
+                    for e in entities
+                ],
+            }
+
+        return await self._with_app(run, "Документ недоступен")
+
+    async def document_chunks(self, doc_id: str, limit: int = 50, offset: int = 0) -> dict:
+        """Страница чанков документа по порядку (для просмотра в браузере) и их общее число.
+        404 — документа нет в графе; 422 — неверная пагинация; 503 — ядро недоступно."""
+        check_pagination(limit, offset)
+        if not _DOC_ID.fullmatch(doc_id):
+            raise ServiceError(404, "Документ не найден")
+
+        async def run(app: App) -> dict:
+            found = app.graph.doc_chunks(doc_id)
+            if found is None:
+                raise ServiceError(404, "Документ не найден")
+            doc, chunks = found
+            return {
+                "document": {
+                    "id": doc_id,
+                    "name": self._name(doc_id, doc.path),
+                    "title": doc.title,
+                    "n_pages": doc.n_pages,
+                },
+                "total": len(chunks),
+                "chunks": [
+                    {
+                        "chunk_id": c.chunk_id,
+                        "idx": c.idx,
+                        "text": c.text,
+                        "headings": c.headings,
+                        "page_start": c.page_start,
+                        "page_end": c.page_end,
+                    }
+                    for c in chunks[offset : offset + limit]
+                ],
+            }
+
+        return await self._with_app(run, "Документ недоступен")
+
+    async def chunk(self, chunk_id: str) -> dict:
+        """Полный текст одного фрагмента (по клику на цитату) с именем документа и ссылкой
+        на исходник, если он загружен через API. 404 — неверный id или фрагмента уже нет."""
+        if not _CHUNK_ID.fullmatch(chunk_id):
+            raise ServiceError(404, "Фрагмент не найден")
+
+        async def run(app: App) -> dict:
+            found = app.graph.chunks_by_ids([chunk_id])
+            if not found:
+                raise ServiceError(404, "Фрагмент не найден")
+            view = found[0]
+            uploaded = self.uploads.get(view.doc_id) is not None
+            return {
+                "chunk_id": view.chunk_id,
+                "doc_id": view.doc_id,
+                "name": self._name(view.doc_id, view.path),
+                "text": view.text,
+                "headings": view.headings,
+                "page": view.page,
+                "url": _source_url(view.doc_id) if uploaded else None,
+            }
+
+        return await self._with_app(run, "Фрагмент недоступен")
 
     def jobs(self, limit: int = 50, offset: int = 0) -> list[dict]:
         """Страница задач очереди, новые первыми; 422 — неверная пагинация."""
         check_pagination(limit, offset)
         with self._queue() as queue:
-            return [_job(j) for j in queue.jobs(limit, offset)]
+            names = self._upload_names()
+            return [_job(j, names) for j in queue.jobs(limit, offset)]
 
     def retry_job(self, job_id: int) -> dict:
         """Перезапускает задачу, если она `failed` (иначе ничего не меняет), и возвращает её
@@ -416,7 +571,7 @@ class KnowledgeBase:
             if queue.get(job_id) is None:
                 raise ServiceError(404, "Задача не найдена")
             queue.retry(job_id)
-            return _job(queue.get(job_id))
+            return self._job(queue.get(job_id))
 
     async def remove_document(self, doc_id: str) -> dict:
         """Ставит удаление документа из корпуса и возвращает задачу `remove`.
@@ -450,7 +605,7 @@ class KnowledgeBase:
                 )
                 for path in known
             ]
-            return _job(queue.get(job_ids[-1]))
+            return self._job(queue.get(job_ids[-1]))
 
     # ---- чтение корпуса ----
     @staticmethod
@@ -723,7 +878,8 @@ class KnowledgeBase:
         with self._queue() as queue:
             counts = queue.counts()
             heartbeat = queue.last_heartbeat()
-            running = [_job(j) for j in queue.running()]
+            names = self._upload_names()
+            running = [_job(j, names) for j in queue.running()]
         day = _day_start(now)
         month = datetime.fromtimestamp(day, UTC).replace(day=1).timestamp()
         return {

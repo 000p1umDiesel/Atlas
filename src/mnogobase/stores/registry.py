@@ -198,6 +198,28 @@ class Registry:
         cur = self._db.execute("UPDATE stages SET status='pending' WHERE status='running'")
         return cur.rowcount
 
+    def stages(self, doc_id: str) -> list[dict]:
+        """Все стадии документа в порядке `STAGES` для карточки документа в вебе:
+        `stage`, `status`, `attempts`, `error`, `updated_at`; стадия без строки — `pending`."""
+        rows = self._db.execute(
+            "SELECT stage, status, attempts, error, updated_at FROM stages WHERE doc_id=?",
+            (doc_id,),
+        ).fetchall()
+        found = {r[0]: r for r in rows}
+        out = []
+        for stage in STAGES:
+            row = found.get(stage)
+            out.append(
+                {
+                    "stage": stage,
+                    "status": row[1] if row else "pending",
+                    "attempts": row[2] if row else 0,
+                    "error": row[3] if row else None,
+                    "updated_at": row[4] if row else None,
+                }
+            )
+        return out
+
     def stage_errors(self) -> list[tuple[str, str, str]]:
         """Тройки (`doc_id`, стадия, ошибка) для всех стадий `failed`."""
         rows = self._db.execute(

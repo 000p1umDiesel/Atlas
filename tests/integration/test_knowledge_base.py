@@ -279,3 +279,49 @@ async def test_messages_keep_metrics_and_first_question_titles_the_chat(env):
         assert kb.store.conversation(user["id"], chat["id"])["title"] == question[:60]
     finally:
         await kb.close()
+
+
+async def test_document_card_chunks_and_named_jobs(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = upload(kb, "Attention paper.md", (FIXTURES / "attention_en.md").read_bytes())
+        [queued] = await kb.documents()
+        assert queued["status"] == "queued" and queued["name"] == "Attention paper.md"
+        [listed] = kb.jobs()
+        assert listed["id"] == job["id"] and listed["name"] == "Attention paper.md"
+        assert listed["doc_id"] == queued["id"] and "path" not in listed
+        early = await kb.document(queued["id"])
+        assert early["status"] == "queued" and early["chunks"] == 0 and early["stages"] == []
+        await work_once()
+
+        [doc] = await kb.documents()
+        card = await kb.document(doc["id"])
+        assert card["name"] == "Attention paper.md" and card["status"] == "done"
+        assert [s["status"] for s in card["stages"]] == ["done"] * 5
+        assert card["chunks"] > 0 and card["entities"]
+        assert all(isinstance(e["has_page"], bool) for e in card["entities"])
+        assert {"entity_id", "name", "type"} <= set(card["entities"][0])
+
+        page = await kb.document_chunks(doc["id"], limit=2, offset=1)
+        assert page["total"] == card["chunks"] and page["document"]["name"] == "Attention paper.md"
+        assert [c["idx"] for c in page["chunks"]] == [1, 2]
+        first = await kb.chunk(f"{doc['id']}:00000")
+        assert first["name"] == "Attention paper.md" and first["text"]
+        assert first["url"] == doc["url"] and "path" not in first
+
+        for bad in ("nope", f"{doc['id']}:99999"):
+            with pytest.raises(ServiceError) as missing:
+                await kb.chunk(bad)
+            assert missing.value.status == 404
+        with pytest.raises(ServiceError) as unknown:
+            await kb.document("0" * 16)
+        assert unknown.value.status == 404
+
+        await kb.remove_document(doc["id"])
+        await work_once()
+        with pytest.raises(ServiceError) as removed:
+            await kb.chunk(f"{doc['id']}:00000")
+        assert removed.value.status == 404
+    finally:
+        await kb.close()

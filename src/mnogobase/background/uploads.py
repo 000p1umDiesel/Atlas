@@ -57,6 +57,12 @@ class Uploads:
             row = db.execute("SELECT * FROM uploads WHERE doc_id=?", (doc_id,)).fetchone()
         return dict(row) if row else None
 
+    def all(self) -> list[dict]:
+        """Все записи загрузок `{"doc_id", "name", "path"}`, по имени."""
+        with connection(self._target) as db:
+            rows = db.execute("SELECT * FROM uploads ORDER BY name, doc_id").fetchall()
+        return [dict(r) for r in rows]
+
     def add(self, doc_id: str, name: str, path: Path) -> None:
         """Записывает загрузку. Уже известный `doc_id` не перезаписывается: то же содержимое
         под другим именем остаётся под первым именем и в прежнем файле."""

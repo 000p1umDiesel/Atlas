@@ -456,6 +456,23 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
             },
         )
 
+    @app.get("/api/documents/{doc_id}")
+    async def document(doc_id: str, kb: KB, user: User):
+        """Карточка документа: стадии, ошибки, число чанков, сущности; 404 — нет."""
+        return await kb.document(doc_id)
+
+    @app.get("/api/documents/{doc_id}/chunks")
+    async def document_chunks(
+        doc_id: str, kb: KB, user: User, limit: Limit = 50, offset: Offset = 0
+    ):
+        """Страница чанков документа по порядку и их общее число; 404 — нет документа."""
+        return await kb.document_chunks(doc_id, limit=limit, offset=offset)
+
+    @app.get("/api/chunks/{chunk_id}")
+    async def chunk(chunk_id: str, kb: KB, user: User):
+        """Полный текст фрагмента для цитаты; 404 — нет (например, документ удалён)."""
+        return await kb.chunk(chunk_id)
+
     @app.delete("/api/documents/{doc_id}")
     async def delete_document(doc_id: str, kb: KB, user: User):
         """Ставит удаление документа из корпуса (задача `remove`); 404 — документ неизвестен."""

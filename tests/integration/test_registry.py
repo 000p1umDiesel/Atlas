@@ -114,3 +114,21 @@ def test_pending_removal_journal(reg):
     assert reg.pending_removals() == [("d2", '{"x": 2}')]
     reg.wipe()
     assert reg.pending_removals() == []
+
+
+def test_stages_of_one_document(reg):
+    reg.set_stage("d" * 16, "parse", "done")
+    reg.set_stage("d" * 16, "chunk", "running")
+    reg.set_stage("d" * 16, "chunk", "failed", "ValueError: битый файл")
+    stages = reg.stages("d" * 16)
+    assert [s["stage"] for s in stages] == list(STAGES)
+    assert stages[0]["status"] == "done" and stages[0]["updated_at"]
+    assert stages[1] == {**stages[1], "status": "failed", "attempts": 1}
+    assert stages[1]["error"] == "ValueError: битый файл"
+    assert stages[2] == {
+        "stage": "embed",
+        "status": "pending",
+        "attempts": 0,
+        "error": None,
+        "updated_at": None,
+    }

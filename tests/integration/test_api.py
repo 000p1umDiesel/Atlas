@@ -415,3 +415,25 @@ def test_conversation_routes(api):
     assert api.client.delete(f"/api/conversations/{cid}", headers=h).status_code == 404
     assert api.client.patch(f"/api/conversations/{cid}", json={"title": "x"}).status_code == 401
     assert api.client.delete(f"/api/conversations/{cid}").status_code == 401
+
+
+def test_document_and_chunk_routes(api):
+    h, doc = api.headers, "d" * 16
+
+    async def document(doc_id):
+        return {"id": doc_id, "stages": []}
+
+    async def document_chunks(doc_id, limit=50, offset=0):
+        return {"chunks": [], "total": 0, "limit": limit, "offset": offset}
+
+    async def chunk(chunk_id):
+        return {"chunk_id": chunk_id}
+
+    api.kb.document, api.kb.document_chunks, api.kb.chunk = document, document_chunks, chunk
+    assert api.client.get(f"/api/documents/{doc}", headers=h).json()["id"] == doc
+    page = api.client.get(f"/api/documents/{doc}/chunks?limit=5&offset=10", headers=h).json()
+    assert (page["limit"], page["offset"]) == (5, 10)
+    assert api.client.get(f"/api/documents/{doc}/chunks?limit=500", headers=h).status_code == 422
+    assert api.client.get(f"/api/chunks/{doc}:00001", headers=h).json()["chunk_id"].endswith("1")
+    for path in (f"/api/documents/{doc}", f"/api/documents/{doc}/chunks", f"/api/chunks/{doc}:1"):
+        assert api.client.get(path).status_code == 401

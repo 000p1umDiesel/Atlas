@@ -303,3 +303,9 @@ def test_chunks_mentioning_keeps_existing_mentioning_chunks_in_order(graph):
     assert [v.chunk_id for v in views] == [chunks[2].chunk_id, chunks[0].chunk_id]
     assert views[0].path == f"/{'d' * 16}.md" and views[0].page == 3
     assert graph.chunks_mentioning("e1", []) == []
+
+
+def test_count_doc_chunks(graph):
+    make_doc(graph, "e" * 16, n=4)
+    assert graph.count_doc_chunks("e" * 16) == 4
+    assert graph.count_doc_chunks("f" * 16) == 0
