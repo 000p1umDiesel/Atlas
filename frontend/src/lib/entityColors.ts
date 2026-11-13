@@ -1,5 +1,5 @@
 import type { ThemedColor } from "./communityPalette";
-import { typeColorAt } from "./typePalette";
+import { typeColorAt, typeColorIndex } from "./typePalette";
 
 /** Минимум 2D-контекста, нужный для нормализации (его подменяют в тестах: в jsdom нет canvas). */
 export interface ColorContext {
@@ -93,11 +93,11 @@ export function schemeColor(color: ThemedColor | undefined): string {
 
 /**
  * Цвет типа для WebGL: `rgb(r, g, b)` текущей темы по позиции типа в списке настроенных
- * (тот же цвет, что `TypeCatalog.typeColor` в DOM); тип вне списка — нейтральный `--t0`.
+ * (тот же цвет, что `TypeCatalog.typeColor` в DOM); тип вне списка и «Другое» — нейтральный `--t0`.
  */
 export function typeColorRgb(type: string, configured: readonly string[]): string {
-  const index = configured.indexOf(type);
-  return schemeColor(index < 0 ? undefined : typeColorAt(index));
+  const slot = typeColorIndex(type, configured);
+  return schemeColor(slot < 0 ? undefined : typeColorAt(slot));
 }
 
 /** Сброс кэша (смена темы; тесты). */

@@ -18,7 +18,8 @@ export function Sheet({ open, onClose, title, children }: Props) {
     if (!open) return;
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCloseRef.current();
+      // Esc, который уже обработан (закрыта подсказка внутри панели), панель не закрывает.
+      if (event.key === "Escape" && !event.defaultPrevented) onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     ref.current?.focus();

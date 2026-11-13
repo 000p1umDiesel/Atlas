@@ -109,18 +109,22 @@ export function TypeHint({ info, color, placement = "bottom", toggleOnClick = fa
     if (open) place();
   }, [open, place]);
 
-  // Esc закрывает; прокрутка (фокус с клавиатуры сам прокручивает список) и смена размера
-  // окна — переставляют подсказку следом за кнопкой.
+  // Esc закрывает только подсказку: слушатель на фазе перехвата, раньше страничных, и
+  // `preventDefault()` — горячие клавиши графа и панели такой Esc пропускают (не снимают
+  // выделение, не закрывают карточку). Прокрутка (фокус с клавиатуры сам прокручивает список)
+  // и смена размера окна — переставляют подсказку следом за кнопкой.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") hide();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      hide();
     };
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
     return () => {
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };

@@ -1,7 +1,8 @@
 import type { GraphPayload, NodeView, RecentDocument, RelationView, Stats, TypeCount } from "../api/types";
 
 /**
- * Типы сущностей — те же 15, что в `extract.entity_types` config.yaml, в его порядке.
+ * Типы сущностей — те же 18, что в `extract.entity_types` config.yaml, в его порядке
+ * (`Other` последний).
  * Русская подпись и определение — форма будущего `GET /api/entities/types` (этап 2).
  */
 const ENTITY_TYPES: { type: string; label: string; description: string }[] = [
@@ -20,6 +21,9 @@ const ENTITY_TYPES: { type: string; label: string; description: string }[] = [
   { type: "Metric", label: "Метрика", description: "Мера, показатель или единица измерения (например, точность, BLEU, ВВП)." },
   { type: "Regulation", label: "Нормативный акт", description: "Закон, регламент, политика, договор или иной правовой акт." },
   { type: "Substance", label: "Вещество", description: "Химическое вещество, материал, лекарство, пищевой ингредиент или биомолекула (белок, гормон)." },
+  { type: "Condition", label: "Состояние", description: "Болезнь, расстройство, симптом или иное медицинское либо психологическое состояние." },
+  { type: "Organism", label: "Организм", description: "Вид, организм, тип клеток, орган или иное живое существо либо его часть." },
+  { type: "Other", label: "Другое", description: "Всё значимое, что не подходит ни под один тип выше." },
 ];
 const PREDICATES = [
   "uses",
@@ -53,10 +57,11 @@ interface Pool {
 }
 
 // Число узлов по типам: в сумме 300 (как stats.entities). Понятий, людей, организаций,
-// методов и произведений больше; нормативных актов, веществ и оборудования — единицы.
+// методов и произведений больше; нормативных актов, веществ, оборудования, состояний,
+// организмов и «другого» — единицы.
 const POOLS: Record<string, Pool> = {
   Person: {
-    count: 38,
+    count: 35,
     bases: [
       "Иван Петров", "Анна Смирнова", "Дмитрий Волков", "Елена Кузнецова", "Алексей Морозов",
       "Ольга Новикова", "Сергей Соколов", "Мария Попова", "Andrew Ng", "Geoffrey Hinton",
@@ -66,7 +71,7 @@ const POOLS: Record<string, Pool> = {
     mods: ["мл.", "Jr.", "(автор)", "(редактор)"],
   },
   Organization: {
-    count: 30,
+    count: 28,
     bases: [
       "Яндекс", "Сбер", "МГУ", "ВШЭ", "Сколтех", "Neo4j Inc.", "OpenAI", "Google Research",
       "Qdrant Solutions", "Hugging Face", "Anthropic", "Mail.ru Group", "ИТМО", "Институт системного анализа",
@@ -108,7 +113,7 @@ const POOLS: Record<string, Pool> = {
     mods: ["(стенд)", "кластер"],
   },
   Software: {
-    count: 24,
+    count: 23,
     bases: [
       "Qwen3-Embedding", "llama.cpp", "Docling", "RuBERT", "Neo4j", "Qdrant", "Ragas", "FastAPI",
       "PyTorch", "GPT-4", "Python", "Obsidian",
@@ -124,7 +129,7 @@ const POOLS: Record<string, Pool> = {
     mods: ["(стандарт)", "в России", "нового поколения"],
   },
   Method: {
-    count: 30,
+    count: 28,
     bases: [
       "Leiden algorithm", "PageRank", "BM25", "Louvain method", "Reciprocal rank fusion", "Градиентный спуск",
       "Кросс-энкодер", "Dense retrieval", "Метод опорных векторов", "Chunking по смыслу", "Beam search", "LoRA",
@@ -133,7 +138,7 @@ const POOLS: Record<string, Pool> = {
     mods: ["v2", "(вариант)", "с весами", "optimized", "для графов"],
   },
   Concept: {
-    count: 45,
+    count: 41,
     bases: [
       "Трансформер", "Векторный поиск", "Граф знаний", "Внимание", "Эмбеддинг", "Retrieval-augmented generation",
       "Entity resolution", "Семантическая близость", "Токенизация", "Fine-tuning", "Контекстное окно",
@@ -142,7 +147,7 @@ const POOLS: Record<string, Pool> = {
     mods: ["(обзор)", "в продакшене", "и качество", "for search", "в русском языке"],
   },
   Work: {
-    count: 30,
+    count: 28,
     bases: [
       "Attention Is All You Need", "MS MARCO", "Natural Questions", "SQuAD", "RuBQ", "HotpotQA", "MTEB",
       "Книга «Глубокое обучение»", "Отчёт State of AI", "Журнал «Наука и жизнь»", "Обзор RAG", "Фильм «Она»",
@@ -163,6 +168,21 @@ const POOLS: Record<string, Pool> = {
     count: 6,
     bases: ["Кофеин", "Инсулин", "Графен", "Литий", "Гемоглобин"],
     mods: ["(образец)", "синтетический"],
+  },
+  Condition: {
+    count: 5,
+    bases: ["Диабет 2 типа", "Депрессия", "Мигрень", "COVID-19", "Бессонница", "Гипертония"],
+    mods: ["(хроническая форма)"],
+  },
+  Organism: {
+    count: 4,
+    bases: ["Escherichia coli", "Дрозофила", "Нейрон", "Arabidopsis thaliana", "Homo sapiens"],
+    mods: ["(линия)"],
+  },
+  Other: {
+    count: 5,
+    bases: ["Таблица 3", "Приложение Б", "Глоссарий проекта", "Слайд 12", "Сноска 4"],
+    mods: ["(черновик)"],
   },
 };
 

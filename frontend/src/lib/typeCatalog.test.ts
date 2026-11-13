@@ -36,3 +36,16 @@ test("цвет типа — по позиции в списке, light-dark() д
   const second = typeColorAt(1);
   expect(c.typeColor("Organization")).toBe(`light-dark(${second.light}, ${second.dark})`);
 });
+
+test("«Другое» (Other) — с подписью и определением, но нейтрального цвета; следующий тип не сдвигается", () => {
+  const c = createTypeCatalog([
+    { type: "Person", label: "Человек", description: "Человек.", count: 1 },
+    { type: "Other", label: "Другое", description: "Всё прочее.", count: 1 },
+    { type: "Work", label: "Произведение", description: "Книга.", count: 1 },
+  ]);
+  expect(c.typeLabel("Other")).toBe("Другое");
+  expect(c.typeInfo("Other").known).toBe(true);
+  expect(c.typeColor("Other")).toBe("var(--t0)");
+  const second = typeColorAt(1);
+  expect(c.typeColor("Work")).toBe(`light-dark(${second.light}, ${second.dark})`);
+});

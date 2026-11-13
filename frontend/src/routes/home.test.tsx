@@ -38,11 +38,11 @@ test("числа в плитках — в русской записи", async ()
   expect(tile.textContent).toContain(`${stats.chunks.toLocaleString("ru-RU")} фрагментов`);
 });
 
-test("полос по типам — 15, строка «Человек» с числом из фикстуры", async () => {
+test("полос по типам — 18, строка «Человек» с числом из фикстуры", async () => {
   const { types } = generateFixtures();
   await renderHome();
   const bars = screen.getByRole("list", { name: "Сущности по типам" });
-  expect(within(bars).getAllByRole("listitem")).toHaveLength(15);
+  expect(within(bars).getAllByRole("listitem")).toHaveLength(18);
   expect(within(bars).queryByText("Person")).toBeNull();
   const person = within(bars).getByRole("link", { name: /^Человек/ });
   expect(person.textContent).toContain(String(types.find((t) => t.type === "Person")!.count));

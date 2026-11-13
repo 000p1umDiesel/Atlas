@@ -40,9 +40,10 @@ test("typeColorRgb: 15 типов — 15 разных цветов, без по�
   expect(new Set(types.map((t) => typeColorRgb(t, types))).size).toBe(15);
 });
 
-test("неизвестный тип получает нейтральный --t0", () => {
+test("неизвестный тип и «Другое» получают нейтральный --t0", () => {
   document.documentElement.style.setProperty("--t0", "#bdb6a8");
   expect(typeColorRgb("Nope", ["Person"])).toBe("rgb(189, 182, 168)");
+  expect(typeColorRgb("Other", ["Person", "Other"])).toBe("rgb(189, 182, 168)");
 });
 
 test("cssColor разворачивает вложенные var() и отдаёт rgb()", () => {

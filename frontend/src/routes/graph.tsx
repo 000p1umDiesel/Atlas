@@ -108,10 +108,27 @@ export function GraphPage() {
   const onReady2d = useCallback((next: Graph2DApi) => setRenderer({ view: "2d", api: next }), []);
   const onReady3d = useCallback((next: Graph2DApi) => setRenderer({ view: "3d", api: next }), []);
 
+  const selectedRef = useRef(selected);
+  useLayoutEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  const visibleRef = useRef(visible);
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
+  // Наведение на выбранный узел (задаётся ниже, когда известна ширина под карточку).
+  const focusRef = useRef<((id: string) => void) | null>(null);
+
+  // Через паузу после смены состава или вида: выбранный узел остался видимым — камера снова
+  // на нём (его окрестность могла измениться), иначе — вписать видимые узлы.
   const fitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const scheduleFit = useCallback(() => {
     clearTimeout(fitTimer.current);
-    fitTimer.current = setTimeout(() => apiRef.current?.fit(), FIT_DELAY_MS);
+    fitTimer.current = setTimeout(() => {
+      const id = selectedRef.current;
+      if (id !== null && visibleRef.current?.nodes.has(id) && focusRef.current) focusRef.current(id);
+      else apiRef.current?.fit();
+    }, FIT_DELAY_MS);
   }, []);
   useEffect(() => () => clearTimeout(fitTimer.current), []);
 
@@ -128,11 +145,6 @@ export function GraphPage() {
     }
     scheduleFit();
   }, [compositionKey, scheduleFit]);
-
-  const selectedRef = useRef(selected);
-  useLayoutEffect(() => {
-    selectedRef.current = selected;
-  }, [selected]);
 
   // Новый рендерер (смена вида) — вписать после первых кадров. С выбранным узлом — нет:
   // камера сразу встаёт на него (ниже), без промежуточного кадра «весь граф».
@@ -152,6 +164,9 @@ export function GraphPage() {
     },
     [wide],
   );
+  useLayoutEffect(() => {
+    focusRef.current = focusOn;
+  }, [focusOn]);
   useEffect(() => {
     if (api && selected !== null) focusOn(selected);
   }, [api, selected, focusOn]);
@@ -185,10 +200,6 @@ export function GraphPage() {
   );
 
   // Enter в поле подсветки: самое важное видимое совпадение — выбрать и перелететь к нему.
-  const visibleRef = useRef(visible);
-  useEffect(() => {
-    visibleRef.current = visible;
-  }, [visible]);
   useEffect(
     () =>
       onFlyToMatch((query) => {

@@ -16,6 +16,9 @@ const CONFIG_TYPES = [
   "Metric",
   "Regulation",
   "Substance",
+  "Condition",
+  "Organism",
+  "Other",
 ];
 
 describe("generateFixtures", () => {
@@ -33,13 +36,14 @@ describe("generateFixtures", () => {
       expect(set.has(r.dst_id)).toBe(true);
     }
   });
-  it("типы — реальные 15 из config.yaml в его порядке, у каждого есть узлы; 12 сообществ", () => {
+  it("типы — все 18 из config.yaml в его порядке, у каждого есть узлы; 12 сообществ", () => {
     expect(f.types.map((t) => t.type)).toEqual(CONFIG_TYPES);
     for (const t of f.types) {
       expect(t.count).toBeGreaterThanOrEqual(1);
       expect(f.graph.nodes.filter((n) => n.type === t.type)).toHaveLength(t.count);
     }
-    expect(new Set(f.graph.nodes.map((n) => n.type)).size).toBe(15);
+    expect(f.types).toHaveLength(18);
+    expect(new Set(f.graph.nodes.map((n) => n.type)).size).toBe(18);
     expect(new Set(f.graph.nodes.map((n) => n.community)).size).toBe(12);
   });
   it("у типа русская подпись и определение (форма API этапа 2)", () => {
@@ -48,6 +52,18 @@ describe("generateFixtures", () => {
     expect(person.description).toBe("Реальный или вымышленный человек, названный по имени или однозначно узнаваемый.");
     expect(f.types.find((t) => t.type === "Software")!.label).toBe("ПО");
     expect(f.types.find((t) => t.type === "Regulation")!.label).toBe("Нормативный акт");
+    expect(f.types.find((t) => t.type === "Condition")).toMatchObject({
+      label: "Состояние",
+      description: "Болезнь, расстройство, симптом или иное медицинское либо психологическое состояние.",
+    });
+    expect(f.types.find((t) => t.type === "Organism")).toMatchObject({
+      label: "Организм",
+      description: "Вид, организм, тип клеток, орган или иное живое существо либо его часть.",
+    });
+    expect(f.types.find((t) => t.type === "Other")).toMatchObject({
+      label: "Другое",
+      description: "Всё значимое, что не подходит ни под один тип выше.",
+    });
     for (const t of f.types) {
       expect(t.label).toMatch(/^[А-ЯЁ]/);
       expect(t.description.length).toBeGreaterThan(20);
@@ -56,7 +72,8 @@ describe("generateFixtures", () => {
   it("распределение правдоподобное: понятий больше, чем веществ", () => {
     const count = (type: string) => f.types.find((t) => t.type === type)!.count;
     for (const big of ["Concept", "Person", "Organization", "Method", "Work"])
-      for (const small of ["Regulation", "Substance", "Equipment"]) expect(count(big)).toBeGreaterThan(count(small));
+      for (const small of ["Regulation", "Substance", "Equipment", "Condition", "Organism", "Other"])
+        expect(count(big)).toBeGreaterThan(count(small));
   });
   it("статистика согласована с графом (ruling E)", () => {
     expect(f.stats.entities).toBe(300);

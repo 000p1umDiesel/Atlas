@@ -1,6 +1,6 @@
 import { useTypeCatalog } from "../api/queries";
 import { useTheme, type ThemeChoice } from "../lib/theme";
-import { typeColorAt } from "../lib/typePalette";
+import { typeColorAt, typeColorIndex } from "../lib/typePalette";
 
 const THEMES: [ThemeChoice, string][] = [
   ["system", "Как в системе"],
@@ -56,19 +56,20 @@ export function DesignPage() {
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">Цвета типов сущностей</h2>
         <p className="text-sm text-muted">
-          Цвет даёт различимый генератор по порядку типов в config.yaml, своя пара для каждой темы. Тип вне
-          списка — нейтральный.
+          Цвет даёт различимый генератор по порядку типов в config.yaml, своя пара для каждой темы.
+          «Другое» и тип вне списка — нейтральные.
         </p>
         <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {catalog.order.map((type, i) => {
-            const c = typeColorAt(i);
+          {catalog.order.map((type) => {
+            const slot = typeColorIndex(type, catalog.order);
+            const c = slot < 0 ? null : typeColorAt(slot);
             return (
               <li key={type} className="flex items-center gap-3 rounded-card bg-card p-3 shadow-card">
                 <span className="size-10 shrink-0 rounded-xl" style={{ backgroundColor: catalog.typeColor(type) }} />
                 <span className="min-w-0 leading-tight">
                   <span className="block truncate font-medium">{catalog.typeLabel(type)}</span>
                   <span className="block text-sm text-muted tabular-nums">
-                    {c.light} / {c.dark}
+                    {c ? `${c.light} / ${c.dark}` : "--t0, нейтральный"}
                   </span>
                 </span>
               </li>

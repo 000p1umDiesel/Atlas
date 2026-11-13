@@ -119,7 +119,7 @@ export function HomePage() {
             {/* Справочник — во всю ширину сетки сразу под первым рядом (на узком экране — под полосами). */}
             <TypeGlossary id={glossaryId} open={glossaryOpen} catalog={catalog} className="lg:order-1 lg:col-span-12" />
 
-            {/* 15 полос выше карточки анализа: она не растягивается на всю высоту ряда. */}
+            {/* 18 полос выше карточки анализа: она не растягивается на всю высоту ряда. */}
             <section className="lg:col-span-5 lg:self-start 2xl:col-span-4" aria-labelledby="home-analysis">
               <AnalysisCard
                 ready={s?.analysis.ready ?? null}

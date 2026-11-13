@@ -355,3 +355,44 @@ describe("выбранный узел живёт в URL (focus) и пережи�
     expect(fake2d.last?.selected).toBeNull();
   });
 });
+
+test("Esc на открытой подсказке «i» закрывает только её: карточка, focus и фокус кнопки остаются", async () => {
+  const { graph, types } = generateFixtures();
+  const node = graph.nodes[0]!;
+  const info = types.find((t) => t.type === node.type)!;
+  const router = await renderAt(`/graph?focus=${node.entity_id}`);
+  const card = await screen.findByRole("dialog", { name: node.name });
+  const button = within(card).getByRole("button", { name: `Что такое «${info.label}»` });
+  act(() => button.focus()); // в jsdom Tab не переводит фокус: фокус с клавиатуры — focus()
+  // Подсказка с определением (у панели режимов своя постоянная подсказка role="tooltip").
+  const hint = () => screen.queryAllByRole("tooltip").find((t) => t.classList.contains("type-hint")) ?? null;
+  expect(hint()?.textContent).toContain(info.description);
+  await act(async () => {
+    fireEvent.keyDown(button, { key: "Escape", code: "Escape" });
+    await new Promise((r) => setTimeout(r, 50));
+  });
+  expect(hint()).toBeNull();
+  expect(screen.getByRole("dialog", { name: node.name })).toBeTruthy();
+  expect(new URLSearchParams(searchStr(router)).get("focus")).toBe(node.entity_id);
+  expect(document.activeElement).toBe(button);
+  // Второй Esc — уже обычный: снимает выделение.
+  await act(async () => {
+    fireEvent.keyDown(button, { key: "Escape", code: "Escape" });
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await vi.waitFor(() => expect(new URLSearchParams(searchStr(router)).get("focus")).toBeNull());
+});
+
+test("смена фильтров при выбранном узле, который остаётся видимым, — камера снова на нём, без «вписать»", async () => {
+  const { graph } = generateFixtures();
+  const node = graph.nodes.find((n) => n.community !== null)!;
+  await renderAt(`/graph?focus=${node.entity_id}`);
+  const card = await screen.findByRole("dialog", { name: node.name });
+  await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalled());
+  fake2d.api.fit.mockClear();
+  fake2d.api.focusNode.mockClear();
+  await click(within(card).getByRole("button", { name: "Показать сообщество" }));
+  await act(async () => new Promise((r) => setTimeout(r, 400)));
+  expect(fake2d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything());
+  expect(fake2d.api.fit).not.toHaveBeenCalled();
+});
