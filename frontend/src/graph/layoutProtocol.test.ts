@@ -291,6 +291,57 @@ describe("LayoutDragGuard: живая раскладка во время пер�
     expect(req.kind === "start" && req.nodes.find((n) => n.id === "b")?.fixed).toBe(true);
   });
 
+  it("отпускание закрепляет узел в цели отпускания и ведёт его, пока догоняет курсор", () => {
+    const { guard } = setup();
+    const worker = FakeWorker.all[0];
+    guard.start(100, 100, "a");
+    guard.move(160, 100);
+    guard.follow("a", 10, 10); // сглаженная позиция отстаёт от курсора
+    guard.end(["a"], { a: { x: 50, y: 60 } });
+    // Сразу после отпускания воркер держит узел в цели, а не в отставшей позиции.
+    expect(worker.sent.at(-1)).toEqual({ kind: "pin", id: "a", x: 50, y: 60 });
+    // Догоняющее сглаживание после отпускания продолжает вести узел…
+    guard.follow("a", 40, 48);
+    expect(worker.sent.at(-1)).toEqual({ kind: "pin", id: "a", x: 40, y: 48 });
+    // …и, догнав, закрепляет ровно в цели; дальше follow ничего не шлёт.
+    guard.settle("a", 50, 60);
+    expect(worker.sent.at(-1)).toEqual({ kind: "pin", id: "a", x: 50, y: 60 });
+    const count = worker.sent.length;
+    guard.follow("a", 1, 1);
+    expect(worker.sent).toHaveLength(count);
+  });
+
+  it("после отпускания кадр раскладки не возвращает узел назад", () => {
+    const g = sample();
+    const sent: LayoutRequest[] = [];
+    // Воркер «по-настоящему»: сессия раскладки, запросы применяются сразу.
+    let session: ReturnType<typeof createLayoutSession> | null = null;
+    const controller = new LayoutController(
+      () => ({
+        onmessage: null,
+        onerror: null,
+        terminate() {},
+        postMessage(msg: LayoutRequest) {
+          sent.push(msg);
+          if (msg.kind === "start") session = createLayoutSession(msg);
+          if (msg.kind === "pin") session?.pin(msg.id, msg.x, msg.y);
+        },
+      }),
+      () => {},
+    );
+    const guard = new LayoutDragGuard(controller, (pinned) => encodeLayoutRequest(g, visible, 100, pinned));
+    controller.start(encodeLayoutRequest(g, visible, 100, guard.pinned));
+    guard.start(0, 0, "a");
+    guard.move(50, 0);
+    guard.follow("a", 5, 5);
+    guard.end(["a"], { a: { x: 50, y: 60 } });
+    const frame = (session as unknown as ReturnType<typeof createLayoutSession>).step();
+    const ids = ["a", "b", "c"];
+    const i = ids.indexOf("a");
+    expect(frame.positions[2 * i]).toBeCloseTo(50, 4);
+    expect(frame.positions[2 * i + 1]).toBeCloseTo(60, 4);
+  });
+
   it("клик с дрожанием ничего не закрепляет и не шлёт pin", () => {
     const { guard } = setup();
     guard.start(100, 100, "a");

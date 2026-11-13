@@ -185,6 +185,8 @@ export class LayoutDragGuard {
   private origin: { x: number; y: number } | null = null;
   private node: string | null = null;
   private active = false;
+  /** Отпущенные узлы, которые ещё плавно догоняют точку отпускания. */
+  private readonly releasing = new Set<string>();
   private readonly live: boolean;
 
   constructor(
@@ -218,19 +220,40 @@ export class LayoutDragGuard {
     if (!this.controller.running) this.controller.start(this.encode(this.pinned));
   }
 
-  /** Текущая (сглаженная) позиция перетаскиваемого узла — в идущую раскладку. */
+  /**
+   * Текущая (сглаженная) позиция перетаскиваемого узла — в идущую раскладку. Работает и после
+   * отпускания, пока узел догоняет точку отпускания (до `settle`).
+   */
   follow(node: string, x: number, y: number): void {
-    if (!this.active || !this.live) return;
+    if (!this.live || !(this.active || this.releasing.has(node))) return;
     if (!this.controller.pin(node, x, y)) this.controller.start(this.encode(this.pinned));
   }
 
-  end(nodes: string[]): void {
+  /**
+   * Конец перетаскивания. `targets` — где узлы должны остановиться (точка отпускания):
+   * воркер сразу закрепляет их там, иначе он держал бы узел в отставшей сглаженной позиции,
+   * и следующий кадр раскладки отбросил бы узел назад.
+   */
+  end(nodes: string[], targets: Record<string, { x: number; y: number }> = {}): void {
     const dragged = this.active;
     this.origin = null;
     this.node = null;
     this.active = false;
     if (!dragged) return;
     for (const n of nodes) this.pinned.add(n);
-    if (!this.live) this.controller.start(this.encode(this.pinned));
+    if (!this.live) {
+      this.controller.start(this.encode(this.pinned));
+      return;
+    }
+    for (const [n, t] of Object.entries(targets)) {
+      this.releasing.add(n);
+      if (!this.controller.pin(n, t.x, t.y)) this.controller.start(this.encode(this.pinned));
+    }
+  }
+
+  /** Узел догнал точку отпускания: закрепить ровно в ней и больше не вести. */
+  settle(node: string, x: number, y: number): void {
+    if (!this.releasing.delete(node)) return;
+    if (!this.controller.pin(node, x, y)) this.controller.start(this.encode(this.pinned));
   }
 }

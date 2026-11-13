@@ -135,13 +135,38 @@ export function GraphPage() {
   }, [api, scheduleFit]);
 
   // Выбранный узел — в центр свободной части холста, не под карточкой.
+  const focusOn = useCallback(
+    (id: string) => {
+      const current = apiRef.current;
+      if (!current) return;
+      clearTimeout(fitTimer.current);
+      const height = canvasRef.current?.clientHeight ?? 0;
+      const offset = wide ? { x: (ENTITY_CARD_WIDTH + 12) / 2, y: 0 } : { x: 0, y: (height * ENTITY_SHEET_SHARE) / 2 };
+      current.focusNode?.(id, offset);
+    },
+    [wide],
+  );
   useEffect(() => {
-    if (!api || selected === null) return;
-    clearTimeout(fitTimer.current);
-    const height = canvasRef.current?.clientHeight ?? 0;
-    const offset = wide ? { x: (ENTITY_CARD_WIDTH + 12) / 2, y: 0 } : { x: 0, y: (height * ENTITY_SHEET_SHARE) / 2 };
-    api.focusNode?.(selected, offset);
-  }, [api, selected, wide]);
+    if (api && selected !== null) focusOn(selected);
+  }, [api, selected, focusOn]);
+  const selectedRef = useRef(selected);
+  useLayoutEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
+  // Карточка — под панелью инструментов, даже когда та переносится на вторую строку.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [cardTop, setCardTop] = useState(60);
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const measure = () => setCardTop(Math.round(el.offsetTop + el.offsetHeight + 8));
+    measure();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const switchView = useCallback(
     (view: GraphView) => {
@@ -163,10 +188,12 @@ export function GraphPage() {
         const nodes = visibleRef.current?.nodes;
         if (!graph || !nodes) return;
         const id = firstMatch(graph, nodes, query);
-        if (id) setSelected(id);
-        else setNotice("Совпадений среди видимых сущностей нет.");
+        if (!id) setNotice("Совпадений среди видимых сущностей нет.");
+        // Уже выбран — выбор не меняется, но перелететь к нему всё равно нужно.
+        else if (id === selectedRef.current) focusOn(id);
+        else setSelected(id);
       }),
-    [graph],
+    [graph, focusOn],
   );
 
   // Горячие клавиши страницы графа.
@@ -368,7 +395,10 @@ export function GraphPage() {
         </CanvasMessage>
       )}
 
-      <div className="pointer-events-none absolute inset-x-2.5 top-2.5 z-20 flex flex-wrap items-start justify-between gap-2 sm:inset-x-3 sm:top-3">
+      <div
+        ref={toolbarRef}
+        className="pointer-events-none absolute inset-x-2.5 top-2.5 z-20 flex flex-wrap items-start justify-between gap-2 sm:inset-x-3 sm:top-3"
+      >
         <div className="group/modes pointer-events-auto relative">
           <div role="group" aria-label="Режим графа" className={`${GLASS} flex p-1`}>
             {MODES.map((mode, i) =>
@@ -524,6 +554,7 @@ export function GraphPage() {
         {showCard && graph && selected && (
           <EntityCard
             key={wide ? "card" : "sheet"}
+            offsetTop={cardTop}
             graph={graph}
             entityId={selected}
             entityTypes={configured}

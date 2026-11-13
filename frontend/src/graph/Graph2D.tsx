@@ -309,6 +309,9 @@ export function Graph2D({
       rg.mergeNodeAttributes(d.node, next);
       dragGuardRef.current?.follow(d.node, next.x, next.y);
       if (d.released && Math.hypot(d.target.x - next.x, d.target.y - next.y) < 1e-3) {
+        // Догнал: ровно в точку отпускания, и раскладка держит его там же.
+        rg.mergeNodeAttributes(d.node, d.target);
+        dragGuardRef.current?.settle(d.node, d.target.x, d.target.y);
         drag = null;
         return;
       }
@@ -516,7 +519,8 @@ export function Graph2D({
     });
     sigma.on("nodeDrag", ({ event }) => dragGuard.move(event.x, event.y));
     sigma.on("nodeDragEnd", ({ allDraggedNodes }) => {
-      dragGuard.end(allDraggedNodes);
+      // Воркер сразу получает точку отпускания: узел ещё догоняет её, но назад его не отбросит.
+      dragGuard.end(allDraggedNodes, drag ? { [drag.node]: drag.target } : {});
       if (drag) drag.released = true;
     });
 

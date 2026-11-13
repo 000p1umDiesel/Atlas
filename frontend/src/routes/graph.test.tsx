@@ -232,6 +232,25 @@ test("Enter в поле подсветки выбирает самое важн�
   expect(chosen.name.toLowerCase()).toContain(target.name.toLowerCase());
 });
 
+test("Enter по уже выбранному совпадению снова наводит камеру на него", async () => {
+  const { graph } = generateFixtures();
+  const target = graph.nodes[0]!;
+  await renderAt("/graph");
+  const field = within(filters()).getByLabelText("Подсветить по имени");
+  fireEvent.change(field, { target: { value: target.name } });
+  const enter = async () =>
+    act(async () => {
+      fireEvent.keyDown(field, { key: "Enter", code: "Enter" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  await enter();
+  await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalled());
+  const calls = fake2d.api.focusNode.mock.calls.length;
+  await enter();
+  await vi.waitFor(() => expect(fake2d.api.focusNode.mock.calls.length).toBeGreaterThan(calls));
+  expect(fake2d.api.focusNode.mock.calls.at(-1)?.[0]).toBe(fake2d.last?.selected);
+});
+
 test("чипы типов показывают число видимых сущностей", async () => {
   const { types } = generateFixtures();
   await renderAt("/graph");

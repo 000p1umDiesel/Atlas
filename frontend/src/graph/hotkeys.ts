@@ -12,6 +12,18 @@ export interface KeyLike {
   metaKey: boolean;
   altKey: boolean;
   target: EventTarget | null;
+  /** Событие уже обработал кто-то другой (Radix-список, меню). */
+  defaultPrevented?: boolean;
+}
+
+/** Атрибут карточки сущности графа: это наш немодальный диалог, клавиши в нём работают. */
+export const GRAPH_CARD_ATTR = "data-graph-card";
+
+/** Внутри всплывающего списка, меню или чужого диалога клавиши принадлежат им. */
+function insidePopup(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const popup = target.closest('[role="listbox"],[role="menu"],[role="dialog"]');
+  return popup !== null && !popup.hasAttribute(GRAPH_CARD_ATTR);
 }
 
 /** Поля, где клавиши заняты вводом: текст, список, ползунок. */
@@ -24,10 +36,12 @@ function typing(target: EventTarget | null): boolean {
 /**
  * Действие для нажатия или null. Клавиши — по физическому коду (`KeyF`, `Digit2`, `Slash`),
  * поэтому работают и в русской раскладке. С Ctrl/Cmd/Alt не срабатывают; при вводе текста —
- * только Esc.
+ * только Esc; во всплывающих списках, меню и чужих диалогах и для уже обработанных событий —
+ * никакие.
  */
 export function graphHotkey(e: KeyLike): GraphAction | null {
-  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (insidePopup(e.target)) return null;
   if (e.code === "Escape" || e.key === "Escape") return "escape";
   if (typing(e.target)) return null;
   if (e.key === "?") return "help";

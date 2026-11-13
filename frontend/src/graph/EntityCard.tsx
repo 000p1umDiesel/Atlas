@@ -4,6 +4,7 @@ import { useId, useMemo, useState } from "react";
 import { communityColors, themedCss } from "../lib/communityPalette";
 import { typeColorVar } from "../lib/entityColors";
 import { countOf, formatInt, formatScore } from "../lib/format";
+import { GRAPH_CARD_ATTR } from "./hotkeys";
 import { communityLabel, topRelations, type CommunitySummary, type RelationRow } from "./insights";
 import type { Graph } from "./model";
 
@@ -21,6 +22,8 @@ type Props = {
   rank: Map<string, number>;
   /** Узкий экран: нижняя выезжающая карточка вместо плавающей справа. */
   compact: boolean;
+  /** Отступ сверху (под панелью инструментов холста), px; только для плавающей карточки. */
+  offsetTop?: number;
   onSelect(entityId: string): void;
   onShowCommunity(community: string): void;
   onClose(): void;
@@ -69,6 +72,7 @@ export function EntityCard({
   communities,
   rank,
   compact,
+  offsetTop = 60,
   onSelect,
   onShowCommunity,
   onClose,
@@ -99,13 +103,15 @@ export function EntityCard({
       role="dialog"
       aria-modal="false"
       aria-label={a.name}
+      {...{ [GRAPH_CARD_ATTR]: "" }}
       {...motionProps}
       transition={{ type: "spring", stiffness: 420, damping: 38 }}
       className={
         compact
           ? "pointer-events-auto absolute inset-x-0 bottom-0 z-30 flex h-[45%] flex-col rounded-t-2xl border-t border-line bg-card/95 shadow-card backdrop-blur-md"
-          : "pointer-events-auto absolute top-[60px] right-3 z-30 flex max-h-[calc(100%-120px)] w-[320px] flex-col rounded-2xl border border-line bg-card/90 shadow-card backdrop-blur-md"
+          : "pointer-events-auto absolute right-3 z-30 flex w-[320px] flex-col rounded-2xl border border-line bg-card/90 shadow-card backdrop-blur-md"
       }
+      style={compact ? undefined : { top: offsetTop, maxHeight: `calc(100% - ${offsetTop + 60}px)` }}
     >
       {compact && <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-ink/15" aria-hidden="true" />}
       <header className="flex items-start gap-2 px-4 pt-3">

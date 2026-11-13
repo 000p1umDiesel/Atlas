@@ -1,5 +1,5 @@
 import { MultiDirectedGraph } from "graphology";
-import { firstMatch, graphHotkey, type KeyLike } from "./hotkeys";
+import { firstMatch, GRAPH_CARD_ATTR, graphHotkey, type KeyLike } from "./hotkeys";
 
 /** Клавиша по физическому коду (раскладка не важна) и печатаемому символу. */
 const key = (code: string, over: Partial<KeyLike> = {}): KeyLike => ({
@@ -55,6 +55,34 @@ describe("graphHotkey", () => {
     range.type = "range";
     expect(graphHotkey(key("Digit2", { target: range }))).toBeNull();
     expect(graphHotkey(key("Digit2", { target: document.createElement("select") }))).toBeNull();
+  });
+});
+
+describe("graphHotkey: всплывающие списки и меню", () => {
+  it("событие, уже обработанное другим (defaultPrevented), не трогаем", () => {
+    expect(graphHotkey(key("KeyF", { defaultPrevented: true }))).toBeNull();
+    expect(graphHotkey(key("Escape", { key: "Escape", defaultPrevented: true }))).toBeNull();
+  });
+
+  it("внутри списка, меню или чужого диалога клавиши не наши — и Esc тоже", () => {
+    for (const role of ["listbox", "menu", "dialog"]) {
+      const popup = document.createElement("div");
+      popup.setAttribute("role", role);
+      const item = document.createElement("div");
+      popup.append(item);
+      expect(graphHotkey(key("KeyF", { target: item }))).toBeNull();
+      expect(graphHotkey(key("Escape", { key: "Escape", target: item }))).toBeNull();
+    }
+  });
+
+  it("в карточке сущности графа (свой немодальный диалог) клавиши работают", () => {
+    const card = document.createElement("section");
+    card.setAttribute("role", "dialog");
+    card.setAttribute(GRAPH_CARD_ATTR, "");
+    const button = document.createElement("button");
+    card.append(button);
+    expect(graphHotkey(key("Escape", { key: "Escape", target: button }))).toBe("escape");
+    expect(graphHotkey(key("KeyF", { target: button }))).toBe("fit");
   });
 });
 
