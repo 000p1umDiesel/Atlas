@@ -1,12 +1,15 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from mnogobase.core.config import (
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_TYPE_LABELS,
     EmbedderSettings,
     ExtractSettings,
     LLMSettings,
+    Settings,
     VisionSettings,
     load_settings,
 )
@@ -262,3 +265,23 @@ def test_invalid_config_is_rejected(tmp_path, clean_env, text):
 def test_repo_config_is_valid(clean_env):
     clean_env.chdir(Path(__file__).resolve().parents[2])
     load_settings()
+
+
+def test_web_entity_types_default_to_russian_labels():
+    s = Settings()
+    assert s.web.entity_types["Software"].label == "Программа"
+    assert s.web.entity_types["Work"].label == "Публикация"
+    assert len(DEFAULT_TYPE_LABELS) == 18 and set(DEFAULT_TYPE_LABELS) == set(DEFAULT_ENTITY_TYPES)
+
+
+def test_web_entity_types_override_merges_over_defaults():
+    s = Settings(web={"entity_types": {"Work": {"label": "Работа"}}})
+    assert s.web.entity_types["Work"].label == "Работа"
+    assert s.web.entity_types["Work"].description == ""
+    assert s.web.entity_types["Person"].label == "Человек"
+
+
+@pytest.mark.parametrize("bad", [{"label": ""}, {"label": "x" * 41}, {"label": "a", "extra": 1}])
+def test_web_entity_type_label_is_validated(bad):
+    with pytest.raises(ValidationError):
+        Settings(web={"entity_types": {"Work": bad}})

@@ -125,6 +125,141 @@ class Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EntityTypeLabel(Section):
+    """Подпись типа сущности в веб-интерфейсе (только отображение, ключ типа не меняется)."""
+
+    label: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=300)
+
+    @field_validator("label", "description", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+# Русские подписи и описания типов для веб-интерфейса; ключи те же, что в DEFAULT_ENTITY_TYPES.
+DEFAULT_TYPE_LABELS: dict[str, EntityTypeLabel] = {
+    "Person": EntityTypeLabel(
+        label="Человек",
+        description=(
+            "Конкретный человек, реальный или вымышленный, — названный по имени или узнаваемый без него."
+        ),
+    ),
+    "Organization": EntityTypeLabel(
+        label="Организация",
+        description=(
+            "Компания, университет, институт, ведомство, команда или сообщество. Город, где она находится, — это уже «Место»."
+        ),
+    ),
+    "Location": EntityTypeLabel(
+        label="Место",
+        description=(
+            "Страна, город, регион, природный объект, здание — или объект в космосе: планета, звезда, галактика."
+        ),
+    ),
+    "Event": EntityTypeLabel(
+        label="Событие",
+        description=(
+            "То, что произошло в определённое время: конференция, авария, сражение, выборы, выход релиза. Сюда же относятся исторические эпохи."
+        ),
+    ),
+    "Project": EntityTypeLabel(
+        label="Проект",
+        description=(
+            "Начинание с названием и целью: программа, миссия, инициатива. В отличие от события, оно длится, а не случается однажды."
+        ),
+    ),
+    "Product": EntityTypeLabel(
+        label="Продукт",
+        description=(
+            "Товар, услуга или бренд. Программы относятся к «Программам», приборы и машины — к «Оборудованию»."
+        ),
+    ),
+    "Equipment": EntityTypeLabel(
+        label="Оборудование",
+        description=(
+            "Конкретный прибор, машина или аппарат для работы и исследований — например, телескоп «Джеймс Уэбб» или «Вояджер-1»."
+        ),
+    ),
+    "Software": EntityTypeLabel(
+        label="Программа",
+        description=(
+            "Приложение, библиотека, фреймворк, язык программирования, платформа или обученная нейросеть — например, PyTorch или GPT-4."
+        ),
+    ),
+    "Technology": EntityTypeLabel(
+        label="Технология",
+        description=(
+            "Технология, стандарт или протокол в целом, а не конкретный продукт: 5G, блокчейн, литий-ионные аккумуляторы."
+        ),
+    ),
+    "Method": EntityTypeLabel(
+        label="Метод",
+        description=(
+            "Способ, алгоритм или процедура, которые применяют на практике: градиентный спуск, ПЦР."
+        ),
+    ),
+    "Concept": EntityTypeLabel(
+        label="Понятие",
+        description=(
+            "Идея, теория, принцип или термин, природное явление или целая область знаний: инфляция, фотосинтез, машинное обучение."
+        ),
+    ),
+    "Work": EntityTypeLabel(
+        label="Публикация",
+        description=(
+            "Книга, статья, отчёт или журнал, а также фильм, песня, датасет или бенчмарк — любая созданная работа с названием."
+        ),
+    ),
+    "Metric": EntityTypeLabel(
+        label="Показатель",
+        description=(
+            "Величина, индикатор или единица измерения: точность, BLEU, ВВП, уровень инфляции. Бенчмарк — это «Публикация»."
+        ),
+    ),
+    "Regulation": EntityTypeLabel(
+        label="Закон",
+        description=("Закон, постановление, политика, договор или другой правовой документ."),
+    ),
+    "Substance": EntityTypeLabel(
+        label="Вещество",
+        description=(
+            "Химическое соединение, материал, лекарство, пищевой ингредиент или молекула живого — например, белок или гормон."
+        ),
+    ),
+    "Condition": EntityTypeLabel(
+        label="Болезнь",
+        description=(
+            "Заболевание, расстройство, симптом или иное медицинское либо психологическое состояние."
+        ),
+    ),
+    "Organism": EntityTypeLabel(
+        label="Организм",
+        description=("Вид, организм, клетка, орган — любое живое существо или его часть."),
+    ),
+    "Other": EntityTypeLabel(
+        label="Прочее",
+        description=("Всё значимое, что не подошло ни к одному типу выше."),
+    ),
+}
+
+
+class WebSettings(Section):
+    """Настройки веб-интерфейса: только отображение, на извлечение не влияют."""
+
+    # тип -> подпись и описание; значение из конфига сливается поверх русских умолчаний
+    entity_types: dict[str, EntityTypeLabel] = Field(
+        default_factory=lambda: dict(DEFAULT_TYPE_LABELS)
+    )
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def _merge_defaults(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value  # о неверном типе сообщит pydantic
+        return {**DEFAULT_TYPE_LABELS, **value}
+
+
 class ServerSettings(Section):
     """Как `mnogobase models up` запускает llama-server роли (при `serve: llamacpp`).
 
@@ -654,6 +789,7 @@ class Settings(BaseSettings):
     extract: ExtractSettings = Field(default_factory=ExtractSettings)
     resolve: ResolveSettings = Field(default_factory=ResolveSettings)
     wiki: WikiSettings = Field(default_factory=WikiSettings)
+    web: WebSettings = Field(default_factory=WebSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
