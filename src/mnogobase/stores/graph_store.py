@@ -64,6 +64,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
+from typing import Literal
 
 from neo4j import (
     Driver,
@@ -119,6 +120,39 @@ _REL_MAP = (
     "dst_id: endNode(r).entity_id, dst_name: endNode(r).name, description: r.description, "
     "weight: r.weight, evidence: r.evidence}"
 )
+# Актуальный запуск аналитики как переменная `run` (null — анализа нет или он устарел);
+# ставится в начало запроса перед проекциями `_NODE_VIEW` / `_NODE_CARD`.
+_CURRENT_RUN = "OPTIONAL MATCH (s:AnalysisState {key: 'graph'}) WITH s.run_id AS run"
+# PageRank и сообщество сущности `e` только из актуального запуска `run`, иначе null.
+_FRESH = "run IS NOT NULL AND e.analytics_run_id = run"
+_NODE_FIELDS = (
+    "entity_id: e.entity_id, name: e.name, type: e.type, "
+    "mention_count: coalesce(e.mention_count, 0), "
+    f"pagerank: CASE WHEN {_FRESH} THEN e.analytics_pagerank END, "
+    f"community: CASE WHEN {_FRESH} THEN e.analytics_community END, "
+    "degree: COUNT { (e)-[:RELATED]-(:Entity) }"
+)
+# Проекция узла `NodeView` для веба (карточки, каталог, обзор, пути, сообщества): нужны
+# переменные `e` (Entity) и `run` (`_CURRENT_RUN`). `degree` — связи RELATED в обе стороны.
+_NODE_VIEW = "{" + _NODE_FIELDS + "}"
+# `NodeView` плюс алиасы и wiki-страница: `has_page` / `slug` — только не устаревшая
+# страница с `page_id = entity_id` (каталог сущностей и `node_views`).
+_NODE_CARD = (
+    "{" + _NODE_FIELDS + ", aliases: coalesce(e.aliases, []), "
+    "has_page: EXISTS { MATCH (p:WikiPage {page_id: e.entity_id}) "
+    "WHERE NOT coalesce(p.stale, false) }, "
+    "slug: head(COLLECT { MATCH (p:WikiPage {page_id: e.entity_id}) "
+    "WHERE NOT coalesce(p.stale, false) RETURN p.slug })}"
+)
+# Ключ сортировки каталога сущностей (`list_entities`); null — в конце в обе стороны.
+_ENTITY_SORT_KEYS = {
+    "relevance": "score",
+    "mentions": "coalesce(e.mention_count, 0)",
+    "pagerank": f"CASE WHEN {_FRESH} THEN e.analytics_pagerank END",
+    "degree": "COUNT { (e)-[:RELATED]-(:Entity) }",
+    "name": "e.name",
+}
+EntitySort = Literal["relevance", "mentions", "pagerank", "degree", "name"]
 # Помечает аналитику устаревшей: новая ревизия графа, опубликованного запуска больше нет.
 # Выполняется первым в каждой транзакции, которая меняет исходные данные графа.
 _INVALIDATE_ANALYSIS = (
@@ -545,18 +579,94 @@ class GraphStore:
 
         `prefix` — слова ищутся как начала слов (`soft` находит Softmax): поиск по мере
         набора в веб-интерфейсе."""
-        # простые словесные токены в нижнем регистре: операторы Lucene и спецсимволы не проходят
-        tokens = list(dict.fromkeys(t.casefold() for t in _WORD.findall(query)))
-        tokens = tokens[:FULLTEXT_MAX_TOKENS]
-        if not tokens:
+        terms = _fulltext_terms(query, prefix=prefix)
+        if not terms:
             return []
         rows = self._run(
             "CALL db.index.fulltext.queryNodes('entity_names', $q) YIELD node, score "
             "RETURN node.entity_id AS id, score LIMIT $k",
-            q=" ".join(t + "*" if prefix else t for t in tokens),
+            q=terms,
             k=k,
         )
         return [(r["id"], r["score"]) for r in rows]
+
+    # ---- представления узлов для веба (только чтение) ----
+    def node_views(self, entity_ids: list[str]) -> list[dict]:
+        """Карточки сущностей (`_NODE_CARD`: NodeView + `aliases`, `has_page`, `slug`) в
+        порядке `entity_ids`; отсутствующие id (например, удалённые параллельно) молча
+        пропускаются."""
+        if not entity_ids:
+            return []
+        rows = self._run(
+            f"{_CURRENT_RUN} UNWIND $ids AS id MATCH (e:Entity {{entity_id: id}}) "
+            f"RETURN {_NODE_CARD} AS node",
+            ids=list(dict.fromkeys(entity_ids)),
+        )
+        found = {r["node"]["entity_id"]: r["node"] for r in rows}
+        return [found[eid] for eid in dict.fromkeys(entity_ids) if eid in found]
+
+    def entity_type_counts(self) -> dict[str, int]:
+        """Число сущностей каждого типа (типы без сущностей отсутствуют)."""
+        rows = self._run(
+            "MATCH (e:Entity) RETURN e.type AS type, count(*) AS n ORDER BY n DESC, type"
+        )
+        return {r["type"]: r["n"] for r in rows}
+
+    def list_entities(
+        self,
+        *,
+        q: str | None = None,
+        types: Sequence[str] = (),
+        community: str | None = None,
+        min_mentions: int = 0,
+        sort: EntitySort = "mentions",
+        descending: bool = True,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, list[dict]]:
+        """Каталог сущностей: `(всего до пагинации, страница карточек _NODE_CARD)`.
+
+        `q` — поиск по имени и алиасам в индексе `entity_names` теми же токенами, что
+        `fulltext_entities(prefix=True)`, но без предела `k`; `q` без словесных токенов
+        ничего не находит. Фильтры: `types` (любой из), `community` (только в актуальном
+        запуске аналитики, без него — пусто), `min_mentions`. `sort` — основной ключ
+        (`relevance` — score Lucene, без `q` равен `mentions`; PageRank без актуального
+        запуска — null), `descending` относится только к нему; null-значения ключа всегда
+        в конце, затем `mention_count DESC`, `name`, `entity_id`."""
+        if q is not None:
+            terms = _fulltext_terms(q, prefix=True)
+            if not terms:
+                return 0, []
+            source = "CALL db.index.fulltext.queryNodes('entity_names', $q) YIELD node AS e, score "
+        else:
+            terms = None
+            source = "MATCH (e:Entity) WITH run, e, null AS score "
+            if sort == "relevance":
+                sort = "mentions"
+        direction = "DESC" if descending else ""
+        rows = self._run(
+            f"{_CURRENT_RUN} {source}"
+            "WHERE (size($types) = 0 OR e.type IN $types) "
+            "AND coalesce(e.mention_count, 0) >= $min_mentions "
+            f"AND ($community IS NULL OR ({_FRESH} AND e.analytics_community = $community)) "
+            f"WITH run, e, {_ENTITY_SORT_KEYS[sort]} AS key "
+            f"ORDER BY key IS NULL, key {direction}, coalesce(e.mention_count, 0) DESC, "
+            "e.name, e.entity_id "
+            "WITH run, collect(e) AS found "
+            "WITH run, size(found) AS total, found[$offset..$offset + $limit] AS page "
+            "CALL (run, page) { UNWIND page AS e "
+            f"RETURN collect({_NODE_CARD}) AS nodes }} "
+            "RETURN total, nodes",
+            q=terms,
+            types=list(types),
+            community=community,
+            min_mentions=min_mentions,
+            offset=max(offset, 0),
+            limit=max(limit, 0),
+        )
+        if not rows:  # ни одной подходящей сущности: группировка по run не дала строк
+            return 0, []
+        return rows[0]["total"], rows[0]["nodes"]
 
     def neighborhood(self, seed_ids: list[str], hops: int, limit: int) -> list[RelationView]:
         """Связи RELATED в пределах `hops` (1..3) шагов от начальных сущностей, на чистом
@@ -1041,6 +1151,14 @@ class GraphStore:
             include_stale=include_stale,
         )
         return [PageIndexRow(**r) for r in rows]
+
+
+def _fulltext_terms(query: str, *, prefix: bool) -> str:
+    """Запрос Lucene для индекса `entity_names`: до `FULLTEXT_MAX_TOKENS` различных
+    словесных токенов в нижнем регистре через пробел (OR), с `prefix` — с `*` на конце.
+    Операторы Lucene и спецсимволы не проходят; пустая строка — словесных токенов нет."""
+    tokens = list(dict.fromkeys(t.casefold() for t in _WORD.findall(query)))
+    return " ".join(t + "*" if prefix else t for t in tokens[:FULLTEXT_MAX_TOKENS])
 
 
 def _delete_document_tx(
