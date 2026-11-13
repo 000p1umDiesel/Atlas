@@ -659,18 +659,20 @@ class GraphStore:
         self, entity_id: str, limit: int = 20, offset: int = 0
     ) -> tuple[int, list[ChunkView]]:
         """Чанки, упоминающие сущность: `(всего, страница)` по `doc_id`, `idx`."""
-        rows = self._run(
+        match = (
             "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(:Entity {entity_id: $id}) "
-            "WITH d, c ORDER BY c.doc_id, c.idx, c.chunk_id "
-            "WITH collect({d: d, c: c}) AS found "
-            "RETURN size(found) AS total, [x IN found[$offset..$offset + $limit] | "
-            "{chunk_id: x.c.chunk_id, doc_id: x.c.doc_id, text: x.c.text, path: x.d.path, "
-            "page: x.c.page_start, headings: coalesce(x.c.headings, [])}] AS page",
+        )
+        total = self._run(match + "RETURN count(c) AS n", id=entity_id)[0]["n"]
+        rows = self._run(
+            match + "WITH d, c ORDER BY c.doc_id, c.idx, c.chunk_id SKIP $offset LIMIT $limit "
+            "RETURN c.chunk_id AS chunk_id, c.doc_id AS doc_id, c.text AS text, d.path AS path, "
+            "c.page_start AS page, coalesce(c.headings, []) AS headings "
+            "ORDER BY c.doc_id, c.idx, c.chunk_id",
             id=entity_id,
             offset=max(offset, 0),
             limit=max(limit, 0),
         )
-        return rows[0]["total"], [ChunkView(**r) for r in rows[0]["page"]]
+        return total, [ChunkView(**r) for r in rows]
 
     def entity_documents(self, entity_id: str, limit: int = 50) -> list[dict]:
         """Документы, чьи чанки упоминают сущность: `{doc_id, path, title, mentions}`
