@@ -410,3 +410,13 @@ test("ползунок веса связи — в единицах веса, д�
   await vi.waitFor(() => expect(new URLSearchParams(searchStr(router)).get("minWeight")).toBe(String(maxWeight)));
   expect(fake2d.last?.filters.minWeight).toBe(maxWeight);
 });
+
+test("карточка узла: размер сообщества с согласованным существительным", async () => {
+  const { graph } = generateFixtures();
+  const node = graph.nodes.find((n) => n.community !== null)!;
+  const size = graph.nodes.filter((n) => n.community === node.community).length;
+  const word = size % 10 === 1 && size % 100 !== 11 ? "участника" : "участников";
+  await renderAt(`/graph?focus=${node.entity_id}`);
+  const card = await screen.findByRole("dialog", { name: node.name });
+  expect(within(card).getByText(`сообщество из ${size} ${word}`)).toBeTruthy();
+});

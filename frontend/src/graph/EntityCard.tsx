@@ -9,6 +9,9 @@ import { GRAPH_CARD_ATTR } from "./hotkeys";
 import { communityLabel, topRelations, type CommunitySummary, type RelationRow } from "./insights";
 import type { Graph } from "./model";
 
+/** После «из» — родительный падеж: из 1 участника, из 2 / 5 участников, из 21 участника. */
+const MEMBERS_GENITIVE: [string, string, string] = ["участника", "участников", "участников"];
+
 /** Ширина карточки на широком экране (страница сдвигает под неё камеру). */
 export const ENTITY_CARD_WIDTH = 320;
 /** Доля высоты холста под нижнюю карточку на узком экране. */
@@ -149,7 +152,7 @@ export function EntityCard({
                   style={{ backgroundColor: themedCss(palette.get(community.id)) }}
                   aria-hidden="true"
                 />
-                <span className="truncate">сообщество из {formatInt(community.size)}</span>
+                <span className="truncate">сообщество из {countOf(community.size, MEMBERS_GENITIVE)}</span>
               </span>
             )}
           </p>
