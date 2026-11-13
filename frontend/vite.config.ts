@@ -22,5 +22,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    // Иначе Vitest отдаёт пустую строку и для `tokens.css?raw` (тест палитры читает токены).
+    css: { include: [/tokens\.css/] },
   },
 });

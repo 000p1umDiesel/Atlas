@@ -1,15 +1,16 @@
 import { useTheme, type ThemeChoice } from "../lib/theme";
 
+/** [токен, название, hex светлой темы, hex тёмной темы, класс] — те же значения, что в tokens.css. */
 const TYPES = [
-  ["t0", "нейтральный", "#C9C3B6", "bg-t0"],
-  ["t1", "глина", "#D8A48F", "bg-t1"],
-  ["t2", "небо", "#9FBFD3", "bg-t2"],
-  ["t3", "лаванда", "#BDB0D8", "bg-t3"],
-  ["t4", "масло", "#E5CF85", "bg-t4"],
-  ["t5", "роза", "#E2B2B4", "bg-t5"],
-  ["t6", "мята", "#A9D3BC", "bg-t6"],
-  ["t7", "персик", "#EBC09A", "bg-t7"],
-  ["t8", "олива", "#B7C08A", "bg-t8"],
+  ["t0", "нейтральный", "#BDB6A8", "#7E7B70", "bg-t0"],
+  ["t1", "глина", "#E08A6C", "#D77755", "bg-t1"],
+  ["t2", "небо", "#6DBBE8", "#3AA0D4", "bg-t2"],
+  ["t3", "лаванда", "#987ACA", "#8766BB", "bg-t3"],
+  ["t4", "горчица", "#CFAD4E", "#B2912E", "bg-t4"],
+  ["t5", "роза", "#C46E83", "#B05C71", "bg-t5"],
+  ["t6", "мята", "#5BC99E", "#3AAC83", "bg-t6"],
+  ["t7", "карамель", "#BF7A35", "#B0660C", "bg-t7"],
+  ["t8", "олива", "#A7BC61", "#8BA03A", "bg-t8"],
 ] as const;
 
 const THEMES: [ThemeChoice, string][] = [
@@ -63,13 +64,13 @@ export function DesignPage() {
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">Цвета типов сущностей</h2>
         <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {TYPES.map(([name, label, hex, cls]) => (
+          {TYPES.map(([name, label, light, dark, cls]) => (
             <li key={name} className="flex items-center gap-3 rounded-card bg-card p-3 shadow-card">
               <span className={`size-10 shrink-0 rounded-xl ${cls}`} />
               <span className="leading-tight">
                 <span className="block font-medium">{label}</span>
-                <span className="block text-sm text-muted">
-                  --{name} {hex}
+                <span className="block text-sm text-muted tabular-nums">
+                  --{name} {light} / {dark}
                 </span>
               </span>
             </li>

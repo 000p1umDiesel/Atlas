@@ -32,11 +32,18 @@
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/*
+ * Палитра. Цвета типов --t1..--t8 — «насыщенная пастель» (решение владельца, задача 11):
+ * подобраны в OKLCH и проверены валидатором dataviz (полоса светлоты, порог хромы,
+ * различимость соседних слотов при протанопии/дейтеранопии ≥ 8 и в норме ≥ 15).
+ * Тёмная тема — собственные шаги тех же оттенков, а не затемнение светлых.
+ */
 :root {
   --bg: #f5efe4;
   --card: #fffdf8;
-  --ink: #2f3a2f;
-  --muted: #6f776b;
+  --ink: #2a352a;
+  /* 4.8:1 к --bg и 5.4:1 к --card (WCAG AA для обычного текста). */
+  --muted: #5f675b;
   --primary: #6e9473;
   --primary-deep: #41604a;
   /* Текст на заливке primary-deep и акцентный «шалфейный» текст: читаемы в обеих темах. */
@@ -46,15 +53,15 @@
   --shadow: 0 1px 2px rgb(47 58 47 / 0.06), 0 8px 24px rgb(47 58 47 / 0.07);
   --radius: 14px;
 
-  --t0: #c9c3b6;
-  --t1: #d8a48f;
-  --t2: #9fbfd3;
-  --t3: #bdb0d8;
-  --t4: #e5cf85;
-  --t5: #e2b2b4;
-  --t6: #a9d3bc;
-  --t7: #ebc09a;
-  --t8: #b7c08a;
+  --t0: #bdb6a8;
+  --t1: #e08a6c;
+  --t2: #6dbbe8;
+  --t3: #987aca;
+  --t4: #cfad4e;
+  --t5: #c46e83;
+  --t6: #5bc99e;
+  --t7: #bf7a35;
+  --t8: #a7bc61;
 
   color-scheme: light;
 }
@@ -64,40 +71,40 @@
   :root:not([data-theme="light"]) {
     --bg: #1f231e;
     --card: #272c26;
-    --ink: #e8e4d8;
-    --muted: #9da496;
+    --ink: #ece8dc;
+    --muted: #a3aa9c;
     --on-primary: #f1efe6;
     --primary-ink: #a8c6ad;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
-    --t0: color-mix(in oklab, #c9c3b6 80%, black);
-    --t1: color-mix(in oklab, #d8a48f 80%, black);
-    --t2: color-mix(in oklab, #9fbfd3 80%, black);
-    --t3: color-mix(in oklab, #bdb0d8 80%, black);
-    --t4: color-mix(in oklab, #e5cf85 80%, black);
-    --t5: color-mix(in oklab, #e2b2b4 80%, black);
-    --t6: color-mix(in oklab, #a9d3bc 80%, black);
-    --t7: color-mix(in oklab, #ebc09a 80%, black);
-    --t8: color-mix(in oklab, #b7c08a 80%, black);
+    --t0: #7e7b70;
+    --t1: #d77755;
+    --t2: #3aa0d4;
+    --t3: #8766bb;
+    --t4: #b2912e;
+    --t5: #b05c71;
+    --t6: #3aac83;
+    --t7: #b0660c;
+    --t8: #8ba03a;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #1f231e;
   --card: #272c26;
-  --ink: #e8e4d8;
-  --muted: #9da496;
+  --ink: #ece8dc;
+  --muted: #a3aa9c;
   --on-primary: #f1efe6;
   --primary-ink: #a8c6ad;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
-  --t0: color-mix(in oklab, #c9c3b6 80%, black);
-  --t1: color-mix(in oklab, #d8a48f 80%, black);
-  --t2: color-mix(in oklab, #9fbfd3 80%, black);
-  --t3: color-mix(in oklab, #bdb0d8 80%, black);
-  --t4: color-mix(in oklab, #e5cf85 80%, black);
-  --t5: color-mix(in oklab, #e2b2b4 80%, black);
-  --t6: color-mix(in oklab, #a9d3bc 80%, black);
-  --t7: color-mix(in oklab, #ebc09a 80%, black);
-  --t8: color-mix(in oklab, #b7c08a 80%, black);
+  --t0: #7e7b70;
+  --t1: #d77755;
+  --t2: #3aa0d4;
+  --t3: #8766bb;
+  --t4: #b2912e;
+  --t5: #b05c71;
+  --t6: #3aac83;
+  --t7: #b0660c;
+  --t8: #8ba03a;
   color-scheme: dark;
 }
 

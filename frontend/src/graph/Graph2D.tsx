@@ -101,7 +101,7 @@ function toRenderGraph(graph: Graph): RenderGraph {
       x: r * Math.cos(angle),
       y: r * Math.sin(angle),
       size: 8,
-      color: "rgb(201, 195, 182)",
+      color: "rgb(189, 182, 168)",
       label: a.name,
     });
     i++;

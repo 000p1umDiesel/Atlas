@@ -40,7 +40,7 @@ function hexToRgb(value: string): string | null {
 }
 
 /** Нейтральный `--t0` светлой темы: запасной цвет, если canvas недоступен. */
-const FALLBACK_RGB = "rgb(201, 195, 182)";
+const FALLBACK_RGB = "rgb(189, 182, 168)";
 
 /**
  * Любой CSS-цвет → `rgb(r, g, b)`, который понимают WebGL-рендереры.

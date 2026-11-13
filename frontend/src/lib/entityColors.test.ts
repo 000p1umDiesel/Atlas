@@ -119,6 +119,6 @@ test("без canvas cssColor всё равно отдаёт rgb(): запасн�
   document.documentElement.style.setProperty("--e", "color-mix(in oklab, #bdb0d8 80%, black)");
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   expect(cssColor("--e")).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
-  expect(normalizeColor("oklab(0.5 0.1 0.1)", null)).toBe("rgb(201, 195, 182)");
+  expect(normalizeColor("oklab(0.5 0.1 0.1)", null)).toBe("rgb(189, 182, 168)");
   expect(normalizeColor("rgb(1, 2, 3)", null)).toBe("rgb(1, 2, 3)");
 });
