@@ -36,7 +36,8 @@ export function FakeGraph2D(props: Graph2DProps) {
   const { graph, onReady } = props;
   useEffect(() => {
     onReady?.(fake2d.api);
-    // как настоящий Graph2D: onReady один раз на граф
+    // Осознанно: как настоящий Graph2D, onReady один раз на граф, а не на каждый новый колбэк.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
   const first = graph.nodes()[0] ?? "";
   return (
@@ -54,6 +55,8 @@ export function FakeGraph3D(props: Graph3DProps) {
   const { graph, onReady } = props;
   useEffect(() => {
     if (fake3d.ready) onReady?.(fake3d.api);
+    // Осознанно: onReady один раз на граф, как у настоящего Graph3D.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
   return <div data-testid="graph3d" />;
 }

@@ -12,7 +12,12 @@ export function Sheet({ open, onClose, title, children }: Props) {
   const ref = useRef<HTMLElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+
+  // Свежий onClose для обработчика Esc — после коммита, а не во время рендера (рендер
+  // должен быть чистым: в StrictMode и при прерванном рендере запись в ref была бы лишней).
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
