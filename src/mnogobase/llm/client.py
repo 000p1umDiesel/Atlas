@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -154,10 +154,68 @@ class LLMClient(Protocol):
         исправления — `StructuredOutputError`."""
         ...
 
+    def stream(self, messages: list[Message], *, task: str) -> AsyncIterator[str]:
+        """Текстовый ответ кусками по мере генерации, без блоков `<think>` (склеенные куски
+        после `strip_think` совпадают с `complete`). Токены учитываются в конце потока."""
+        ...
+
 
 def strip_think(text: str) -> str:
     """Убирает блоки `<think>…</think>` и пробелы по краям."""
     return _THINK.sub("", text).strip()
+
+
+class ThinkFilter:
+    """Потоковый аналог `strip_think`: убирает `<think>…</think>` из текста, приходящего
+    кусками, и пробелы в начале ответа.
+
+    Хвост куска, который может оказаться началом тега (`<thi`), придерживается до
+    следующего куска, поэтому тег, разрезанный между кусками, тоже распознаётся."""
+
+    _OPEN, _CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self._buffer, self._inside, self._started = "", False, False
+
+    def feed(self, text: str) -> str:
+        """Принимает очередной кусок и возвращает то, что уже можно показать."""
+        self._buffer += text
+        out: list[str] = []
+        while True:
+            lowered = self._buffer.lower()
+            if self._inside:
+                end = lowered.find(self._CLOSE)
+                if end < 0:
+                    self._buffer = self._buffer[-(len(self._CLOSE) - 1) :]
+                    break
+                self._buffer, self._inside = self._buffer[end + len(self._CLOSE) :], False
+                continue
+            start = lowered.find(self._OPEN)
+            if start >= 0:
+                out.append(self._buffer[:start])
+                self._buffer, self._inside = self._buffer[start + len(self._OPEN) :], True
+                continue
+            keep = next(
+                (n for n in range(len(self._OPEN) - 1, 0, -1) if lowered.endswith(self._OPEN[:n])),
+                0,
+            )
+            out.append(self._buffer[: len(self._buffer) - keep])
+            self._buffer = self._buffer[len(self._buffer) - keep :]
+            break
+        return self._visible("".join(out))
+
+    def flush(self) -> str:
+        """Остаток после конца потока (незакрытый `<think>` отбрасывается)."""
+        rest = "" if self._inside else self._buffer
+        self._buffer = ""
+        return self._visible(rest)
+
+    def _visible(self, text: str) -> str:
+        """Срезает пробелы до первого видимого символа ответа."""
+        if not self._started:
+            text = text.lstrip()
+            self._started = bool(text)
+        return text
 
 
 def clean_json(text: str) -> str:
@@ -325,6 +383,92 @@ class OpenAICompatLLM:
     async def complete(self, messages: list[Message], *, task: str) -> str:
         """Текстовый ответ модели для задачи `task` без блоков `<think>`."""
         return strip_think(await self._chat(messages, task=task))
+
+    async def stream(self, messages: list[Message], *, task: str) -> AsyncIterator[str]:
+        """Ответ кусками (`stream=True`) без блоков `<think>`.
+
+        Повторы (как у `_chat`) возможны только до первого куска: оборванный посреди ответ
+        не повторяется, ошибка пробрасывается. Слот конкурентности держится от успешного
+        открытия потока до его конца, но не на паузах между попытками. Токены приходят
+        последним куском (`stream_options.include_usage`); сервер без него даёт 0. Если
+        потребитель бросил поток (закрыл генератор), попытка записывается как `error`."""
+        model = self.model_for(task)
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": self._settings.temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        start = time.perf_counter()
+        attempts = 0
+        event: CallEvent | None = None
+
+        def wait(state: RetryCallState) -> float:
+            backoff = self._retry_wait(state)
+            hint = _retry_after(state.outcome.exception() if state.outcome else None)
+            return max(backoff, hint) if hint is not None else backoff
+
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type(_RETRYABLE),
+            stop=stop_after_attempt(5) | stop_after_delay(self._settings.retry_deadline_s),
+            wait=wait,
+            reraise=True,
+        ):
+            with attempt:
+                await self._sem.acquire()
+                attempts += 1
+                event = new_call(model, task, external=self._settings.serve == "api")
+                await self._record(event)
+                try:
+                    response = await self._client.chat.completions.create(**kwargs)
+                except BaseException:
+                    self._sem.release()
+                    if event is not None:
+                        await self._record(replace(event, status="error"))
+                    raise
+        usage = None
+        thinking = ThinkFilter()
+        try:
+            async for chunk in response:
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                if chunk.choices and chunk.choices[0].delta.content:
+                    visible = thinking.feed(chunk.choices[0].delta.content)
+                    if visible:
+                        yield visible
+            tail = thinking.flush()
+            if tail:
+                yield tail
+        except BaseException:
+            if event is not None:
+                await self._record(replace(event, status="error"))
+            raise
+        finally:
+            self._sem.release()
+            await response.close()
+        tokens_in = usage.prompt_tokens if usage else 0
+        tokens_out = usage.completion_tokens if usage else 0
+        if event is not None:
+            await self._record(
+                replace(
+                    event,
+                    status="response",
+                    tokens_in=usage.prompt_tokens if usage else None,
+                    tokens_out=usage.completion_tokens if usage else None,
+                )
+            )
+        count_usage(self.usage, tokens_in, tokens_out)
+        self._log.info(
+            "llm_call",
+            task=task,
+            model=model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            retries=attempts - 1,
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            stream=True,
+        )
 
     async def structured(
         self, messages: list[Message], schema: type[T], *, task: str, max_repairs: int = 2

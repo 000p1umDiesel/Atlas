@@ -391,3 +391,43 @@ async def test_concurrent_answers_count_only_their_own_tokens():
     )
     assert first.tokens_in < second.tokens_in
     assert first.tokens_in + second.tokens_in == llm.usage.tokens_in
+
+
+async def test_answerer_streams_with_callbacks():
+    llm = FakeLLM(lambda task, prompt: "Because of X [2] and more words here.")
+    order, deltas = [], []
+
+    def on_sources(sources):
+        order.append(("sources", [s.n for s in sources]))
+
+    def on_delta(text):
+        order.append(("delta", text))
+        deltas.append(text)
+
+    answer = await Answerer(llm, 1000).answer(
+        "Why?",
+        "rag",
+        [item("chunk", "c1"), item("chunk", "c2")],
+        on_sources=on_sources,
+        on_delta=on_delta,
+    )
+    assert order[0] == ("sources", [1, 2]) and len(deltas) > 1
+    assert "".join(deltas) == answer.text == "Because of X [2] and more words here."
+    assert [s.cited for s in answer.sources] == [False, True]
+    assert answer.tokens_in > 0 and answer.tokens_out > 0
+
+
+async def test_run_mode_passes_stream_callbacks():
+    from mnogobase.retrieval.compare import run_mode
+
+    deltas, seen = [], []
+    answer = await run_mode(
+        "Q?",
+        "rag",
+        Stub([item("chunk", "c1")]),
+        Answerer(FakeLLM(scripted_llm_handler), 1000),
+        3,
+        on_sources=seen.append,
+        on_delta=deltas.append,
+    )
+    assert seen and "".join(deltas) == answer.text

@@ -168,3 +168,97 @@ async def test_semaphore_is_free_while_waiting_between_retries(monkeypatch):
     monkeypatch.setattr("asyncio.sleep", fake_sleep)
     await llm.complete([{"role": "user", "content": "go"}], task="answer")
     assert seen == [False]
+
+
+def _sse(deltas: list[str], usage: tuple[int, int] | None = (3, 5)) -> bytes:
+    """Поток `/chat/completions` с `stream=True`: дельты, затем чанк с usage и `[DONE]`."""
+    events = []
+    for text in deltas:
+        chunk = {
+            "id": "c1",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "m",
+            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+        }
+        events.append(chunk)
+    if usage is not None:
+        events.append(
+            {
+                "id": "c1",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "m",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": usage[0],
+                    "completion_tokens": usage[1],
+                    "total_tokens": sum(usage),
+                },
+            }
+        )
+    body = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+    return body.encode()
+
+
+def make_streaming_llm(replies, settings: LLMSettings | None = None, **kwargs):
+    requests: list[dict] = []
+    queue = list(replies)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        reply = queue.pop(0)
+        if isinstance(reply, int):
+            return httpx.Response(reply, json={"error": {"message": "server error"}})
+        return httpx.Response(
+            200, content=_sse(reply), headers={"content-type": "text/event-stream"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm = OpenAICompatLLM(
+        settings or LLMSettings(base_url="http://test/v1", model="base"),
+        http_client=client,
+        retry_wait=wait_none(),
+        **kwargs,
+    )
+    return llm, requests
+
+
+async def _collect(llm) -> list[str]:
+    return [d async for d in llm.stream([{"role": "user", "content": "go"}], task="answer")]
+
+
+async def test_stream_yields_deltas_and_counts_usage():
+    from mnogobase.llm.client import Usage, usage_scope
+
+    llm, requests = make_streaming_llm([["Hel", "lo [1]"]])
+    with usage_scope() as used:
+        parts = await _collect(llm)
+    assert "".join(parts) == "Hello [1]"
+    assert llm.usage == Usage(3, 5) and used == Usage(3, 5)
+    assert requests[0]["stream"] is True
+    assert requests[0]["stream_options"] == {"include_usage": True}
+
+
+async def test_stream_hides_think_blocks_and_leading_space():
+    llm, _ = make_streaming_llm([["<thi", "nk>x</think>", "\n Answer", " here"]])
+    assert "".join(await _collect(llm)) == "Answer here"
+
+
+async def test_stream_keeps_text_that_only_looks_like_think():
+    llm, _ = make_streaming_llm([["a <", "b> c"]])
+    assert "".join(await _collect(llm)) == "a <b> c"
+
+
+async def test_stream_retries_before_first_token():
+    llm, requests = make_streaming_llm([503, ["ok"]])
+    assert await _collect(llm) == ["ok"]
+    assert len(requests) == 2
+
+
+async def test_stream_records_telemetry():
+    events = []
+    llm, _ = make_streaming_llm([["ok"]], usage_recorder=events.append)
+    await _collect(llm)
+    assert [e.status for e in events] == ["started", "response"]
+    assert (events[-1].tokens_in, events[-1].tokens_out) == (3, 5)

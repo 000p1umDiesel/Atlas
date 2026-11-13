@@ -60,6 +60,13 @@ class FakeLLM:
     async def structured(self, messages, schema, *, task: str, max_repairs: int = 2):
         return schema.model_validate_json(self._reply(task, messages))
 
+    async def stream(self, messages, *, task: str):
+        """Ответ тремя-четырьмя кусками; токены считаются один раз, как у `complete`."""
+        reply = self._reply(task, messages)
+        step = max(1, len(reply) // 3)
+        for i in range(0, len(reply), step):
+            yield reply[i : i + step]
+
 
 def scripted_llm_handler(task: str, prompt: str) -> str:
     """Фейк на ключевых словах для тестов pipeline/wiki/retrieval."""

@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from mnogobase.core.config import LANGUAGE_NAMES
 from mnogobase.core.models import Answer, ContextItem, Source
-from mnogobase.llm.client import LLMClient, usage_scope
+from mnogobase.llm.client import LLMClient, strip_think, usage_scope
 from mnogobase.llm.templates import render_messages
 from mnogobase.retrieval.base import estimate_tokens
 
@@ -87,13 +88,25 @@ class Answerer:
             else LANGUAGE_NAMES.get(language, language)
         )
 
-    async def answer(self, question: str, mode: str, items: list[ContextItem]) -> Answer:
+    async def answer(
+        self,
+        question: str,
+        mode: str,
+        items: list[ContextItem],
+        *,
+        on_sources: Callable[[list[Source]], None] | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> Answer:
         """Строит контекст из `items`, вызывает LLM и возвращает `Answer`.
 
         В `Answer` попадают текст, источники с флагом `cited`, сами блоки контекста (`contexts`,
         нужны для оценки Ragas), токены этого вызова и `latency_ms` только генерации (поиск и
         перевод сюда не входят; полное время считает `compare.run_mode`). Ошибки LLM
         пробрасываются как есть.
+
+        Потоковый режим (веб-чат): `on_sources(sources)` вызывается до генерации (флаги
+        `cited` ещё не выставлены), `on_delta(text)` — на каждый кусок ответа; без контекста
+        ни один из них не вызывается.
         """
         start = time.perf_counter()
         blocks, sources, context_tokens = _context_blocks(items, self._max)
@@ -110,8 +123,17 @@ class Answerer:
         )
         # usage_scope считает токены только этого вызова, а не параллельных вопросов
         # на том же клиенте
+        if on_sources is not None:
+            on_sources(sources)
         with usage_scope() as used:
-            text = await self._llm.complete(messages, task="answer")
+            if on_delta is None:
+                text = await self._llm.complete(messages, task="answer")
+            else:
+                parts = []
+                async for part in self._llm.stream(messages, task="answer"):
+                    parts.append(part)
+                    on_delta(part)
+                text = strip_think("".join(parts))
         cited = {int(n) for n in _CITED.findall(text)}
         for source in sources:
             source.cited = source.n in cited

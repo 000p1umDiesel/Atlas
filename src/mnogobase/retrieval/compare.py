@@ -11,12 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from mnogobase.core.config import Settings
 from mnogobase.core.files import rotate_if_large
-from mnogobase.core.models import Answer
+from mnogobase.core.models import Answer, Source
 from mnogobase.retrieval.answer import Answerer
 from mnogobase.retrieval.base import Retriever
 from mnogobase.retrieval.translate import QueryTranslator
@@ -41,16 +42,19 @@ async def run_mode(
     answerer: Answerer,
     k: int,
     translator: QueryTranslator | None = None,
+    *,
+    on_sources: Callable[[list[Source]], None] | None = None,
+    on_delta: Callable[[str], None] | None = None,
 ) -> Answer:
     """Поиск и ответ в одном режиме; `latency_ms` включает перевод + поиск + генерацию.
 
     С `translator` неанглийский вопрос дополнительно ищется на английском; использованные
     формулировки сохраняются в `answer.alt_queries`. Поиск синхронный и выполняется прямо в
-    event loop."""
+    event loop. `on_sources` / `on_delta` — потоковый режим `Answerer.answer`."""
     start = time.perf_counter()
     alt = await translator.alt_queries(question) if translator else []
     items = retriever.retrieve(question, k, alt)
-    answer = await answerer.answer(question, mode, items)
+    answer = await answerer.answer(question, mode, items, on_sources=on_sources, on_delta=on_delta)
     answer.alt_queries = alt
     answer.latency_ms = int((time.perf_counter() - start) * 1000)
     return answer
