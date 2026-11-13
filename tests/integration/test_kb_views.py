@@ -246,3 +246,26 @@ async def test_overview_and_communities_on_empty_graph(kb_empty):
     with pytest.raises(ServiceError) as err:
         await kb_empty.graph_community("community:x")
     assert err.value.status == 404
+
+
+async def test_quick_search_blank_does_not_touch_app(kb_empty, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("ядро не должно создаваться")
+
+    monkeypatch.setattr(kb_empty, "_ensure_app", boom, raising=False)
+    for q in ("", "   "):
+        assert await kb_empty.quick_search("u", q) == {
+            "entities": [],
+            "wiki": [],
+            "documents": [],
+            "conversations": [],
+        }
+
+
+async def test_blank_community_and_predicate_mean_no_filter(kbv):
+    everything = await kbv.entities()
+    for blank in ("", "  "):
+        assert await kbv.entities(community=blank) == everything
+    unfiltered = await kbv.entity_relations("ada")
+    for blank in ("", "  "):
+        assert await kbv.entity_relations("ada", predicate=blank) == unfiltered

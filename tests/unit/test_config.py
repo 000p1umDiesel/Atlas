@@ -285,3 +285,20 @@ def test_web_entity_types_override_merges_over_defaults():
 def test_web_entity_type_label_is_validated(bad):
     with pytest.raises(ValidationError):
         Settings(web={"entity_types": {"Work": bad}})
+
+
+def test_commented_web_example_in_config_yaml_is_valid():
+    """Закомментированный пример `web:` из config.yaml после раскомментирования проходит strict."""
+    import yaml
+
+    lines = Path("config.yaml").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("# web:"))
+    block = []
+    for line in lines[start:]:
+        if not line.startswith("#"):
+            break
+        block.append(line[2:])
+    data = yaml.safe_load("\n".join(block))
+    web = Settings(web=data["web"]).web
+    assert web.entity_types["Work"].label == "Работа"
+    assert web.entity_types["Work"].description.startswith("Книга, статья, фильм")

@@ -692,7 +692,7 @@ def create_api(
 
     @app.get("/api/graph/communities/{community}")
     async def graph_community(
-        community: str,
+        community: Annotated[str, Path(max_length=200)],
         kb: KB,
         user: User,
         limit: Annotated[int, Query(ge=1, le=1000)] = 300,

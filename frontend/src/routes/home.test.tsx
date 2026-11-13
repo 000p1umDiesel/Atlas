@@ -1,8 +1,9 @@
-import { createMemoryHistory } from "@tanstack/react-router";
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { App, createQueryClient } from "../App";
 import { generateFixtures } from "../fixtures/generate";
 import { createAppRouter } from "../router";
+import { AnalysisCard } from "./home";
 
 vi.mock("../graph/Graph2D", async () => ({ Graph2D: (await import("../test/fakeGraph")).FakeGraph2D }));
 vi.mock("../graph/Graph3D", async () => ({ default: (await import("../test/fakeGraph")).FakeGraph3D }));
@@ -126,4 +127,32 @@ test("без сессии — сообщение и подсказка о вхо
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+/** Карточка отдельно от страницы: ей нужен только роутер для ссылок. */
+async function renderCard(completedAt: string | null) {
+  const root = createRootRoute({
+    component: () => <AnalysisCard ready={false} completedAt={completedAt} communities={[]} />,
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([createRoute({ getParentRoute: () => root, path: "/graph" })]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  render(<RouterProvider router={router} />);
+}
+
+test("анализ устарел: дата последнего запуска, не «Не запускался»", async () => {
+  await renderCard("2026-11-12T21:40:00.000Z");
+  expect(screen.getByText("Устарел — граф изменился после анализа")).toBeTruthy();
+  expect(screen.getByText(/Последний запуск/)).toBeTruthy();
+  expect(screen.queryByText("Не запускался")).toBeNull();
+  expect(screen.queryByText(/ещё не посчитаны/)).toBeNull();
+});
+
+test("анализ не запускался: completed_at пуст", async () => {
+  await renderCard(null);
+  expect(screen.getByText("Не запускался")).toBeTruthy();
+  expect(screen.getByText(/ещё не посчитаны/)).toBeTruthy();
+  expect(screen.queryByText(/Последний запуск/)).toBeNull();
 });

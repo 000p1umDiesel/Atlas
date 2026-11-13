@@ -175,7 +175,7 @@ export function HomePage() {
   );
 }
 
-function AnalysisCard({
+export function AnalysisCard({
   ready,
   completedAt,
   communities,
@@ -186,6 +186,8 @@ function AnalysisCard({
 }) {
   const largest = communities.slice(0, 4);
   const colors = communityColors(communities.map((c) => c.id));
+  // Не готов, но запуск был — результат устарел (граф изменился после анализа).
+  const stale = ready === false && completedAt !== null;
   return (
     <div className="flex h-full flex-col rounded-[14px] border border-primary/25 bg-primary/10 p-6">
       <div className="flex items-start gap-4">
@@ -201,16 +203,20 @@ function AnalysisCard({
           ) : (
             <p className="mt-1 flex items-center gap-1.5 text-sm">
               {ready ? <CheckCircle2 size={15} className="text-primary-ink" /> : <Clock3 size={15} className="text-muted" />}
-              <span className="font-medium">{ready ? "Готов" : "Не запускался"}</span>
+              <span className="font-medium">{ready ? "Готов" : stale ? "Устарел — граф изменился после анализа" : "Не запускался"}</span>
             </p>
           )}
-          {ready && completedAt && <p className="mt-0.5 text-xs text-muted">Посчитан {formatDayTime(completedAt)}</p>}
+          {completedAt && (ready || stale) && (
+            <p className="mt-0.5 text-xs text-muted">{ready ? "Посчитан" : "Последний запуск"} {formatDayTime(completedAt)}</p>
+          )}
         </div>
       </div>
       <p className="mt-5 max-w-prose text-sm leading-relaxed text-muted">
         {ready
           ? `PageRank показывает, какие сущности держат граф, а ${communities.length > 0 ? countOf(communities.length, ["сообщество", "сообщества", "сообществ"]) : "сообщества"} собирают тесно связанные темы. По ним граф раскрашен и упорядочен.`
-          : "PageRank и сообщества ещё не посчитаны: граф упорядочен по числу упоминаний."}
+          : stale
+            ? "Результаты анализа устарели: граф упорядочен по числу упоминаний, пока анализ не будет запущен заново."
+            : "PageRank и сообщества ещё не посчитаны: граф упорядочен по числу упоминаний."}
       </p>
       {ready && largest.length > 0 && (
         <ul aria-label="Крупнейшие сообщества" className="mt-5 space-y-2 text-sm">

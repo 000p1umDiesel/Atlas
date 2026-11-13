@@ -768,6 +768,7 @@ def test_graph_overview_path_community_and_quick_routes(api):
         "/api/graph/communities?limit=201",
         "/api/graph/communities?offset=-1",
         "/api/graph/communities/c1?limit=1001",
+        "/api/graph/communities/" + "x" * 201,
         "/api/search/quick",
         "/api/search/quick?q=",
         "/api/search/quick?q=" + "x" * 201,

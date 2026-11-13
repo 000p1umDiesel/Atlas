@@ -1163,6 +1163,7 @@ class KnowledgeBase:
         503 — ядро недоступно."""
         check_pagination(limit, offset)
         query = q.strip() if q is not None else ""
+        community = (community or "").strip() or None
         sort = sort or ("relevance" if query else "mentions")
         order = order or ("asc" if sort == "name" else "desc")
         if sort not in ENTITY_SORTS or order not in ("asc", "desc"):
@@ -1230,6 +1231,7 @@ class KnowledgeBase:
         check_pagination(limit, offset)
         if direction not in ("out", "in", "both"):
             raise ServiceError(422, "Неверное направление связей")
+        predicate = (predicate or "").strip() or None
 
         async def run(app: App) -> dict:
             self._require_entity(app, entity_id)
@@ -1437,25 +1439,26 @@ class KnowledgeBase:
         query = q.strip()
         needle = query.lower()
         n = QUICK_SEARCH_LIMIT
+        if not query:
+            return {"entities": [], "wiki": [], "documents": [], "conversations": []}
 
         async def run(app: App) -> dict:
-            if not query:
-                return {"entities": [], "wiki": [], "documents": [], "conversations": []}
             ids = [eid for eid, _ in app.graph.fulltext_entities(query, n, prefix=True)]
             pages = _matching_pages(app.graph.wiki_pages(), query)[:n]
             queued, registered = self._corpus(app)
             documents = [d for d in queued + registered if needle in d["name"].lower()][:n]
-            chats = self.store.search_conversations(user_id, query, n)
             return {
                 "entities": app.graph.node_views(ids),
                 "wiki": [{"page_id": p.page_id, "slug": p.slug, "title": p.title} for p in pages],
                 "documents": [
                     {"id": d["id"], "name": d["name"], "status": d["status"]} for d in documents
                 ],
-                "conversations": [{"id": c["id"], "title": c["title"]} for c in chats],
             }
 
-        return await self._with_app(run, "Поиск недоступен")
+        found = await self._with_app(run, "Поиск недоступен")
+        # Диалоги лежат в PostgreSQL, не в ядре: читаем вне `_with_app`, как прочие вызовы store.
+        chats = await asyncio.to_thread(self.store.search_conversations, user_id, query, n)
+        return {**found, "conversations": [{"id": c["id"], "title": c["title"]} for c in chats]}
 
     # ---- состояние ----
     def service_checks(self) -> list[dict]:
