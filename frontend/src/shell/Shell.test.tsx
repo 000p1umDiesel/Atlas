@@ -1,12 +1,16 @@
-import { RouterProvider } from "@tanstack/react-router";
 import { createMemoryHistory } from "@tanstack/react-router";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { App, createQueryClient } from "../App";
 import { createAppRouter } from "../router";
+
+// Страница графа тянет sigma/three, а в jsdom нет WebGL.
+vi.mock("../graph/Graph2D", async () => ({ Graph2D: (await import("../test/fakeGraph")).FakeGraph2D }));
+vi.mock("../graph/Graph3D", async () => ({ default: (await import("../test/fakeGraph")).FakeGraph3D }));
 
 async function renderAt(path: string) {
   const router = createAppRouter({ history: createMemoryHistory({ initialEntries: [path] }) });
   await router.load();
-  render(<RouterProvider router={router} />);
+  render(<App router={router} client={createQueryClient()} />);
   return router;
 }
 
@@ -44,4 +48,29 @@ test("оболочка показывает бренд", async () => {
 
 beforeAll(() => {
   window.scrollTo = vi.fn(); // jsdom не реализует scrollTo, роутер его зовёт
+});
+
+test("на графе есть колонка фильтров, её можно свернуть", async () => {
+  await renderAt("/graph");
+  const column = await screen.findByRole("complementary", { name: "Контекст раздела" });
+  expect(within(column).getByRole("heading", { name: "Фильтры" })).toBeTruthy();
+  fireEvent.click(within(column).getByRole("button", { name: "Свернуть фильтры" }));
+  await vi.waitFor(() => expect(screen.queryByRole("complementary", { name: "Контекст раздела" })).toBeNull());
+});
+
+test("мобильное меню раздела закрывается по Escape, клик по фильтру его не закрывает", async () => {
+  await renderAt("/graph");
+  fireEvent.click(await screen.findByRole("button", { name: "Меню раздела" }));
+  const menu = await screen.findByRole("complementary", { name: "Меню раздела" });
+  fireEvent.click(within(menu).getByRole("switch", { name: "Скрыть одиночные" }));
+  expect(screen.getByRole("complementary", { name: "Меню раздела" })).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await vi.waitFor(() => expect(screen.queryByRole("complementary", { name: "Меню раздела" })).toBeNull());
+});
+
+test("на страницах без колонки её нет", async () => {
+  await renderAt("/chat");
+  await screen.findByRole("heading", { name: "Чат" });
+  expect(screen.queryByRole("complementary", { name: "Контекст раздела" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Меню раздела" })).toBeNull();
 });

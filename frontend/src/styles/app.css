@@ -8,6 +8,8 @@
   --color-muted: var(--muted);
   --color-primary: var(--primary);
   --color-primary-deep: var(--primary-deep);
+  --color-primary-ink: var(--primary-ink);
+  --color-on-primary: var(--on-primary);
   --color-line: var(--line);
   --color-t0: var(--t0);
   --color-t1: var(--t1);
@@ -35,4 +37,58 @@
   h3 {
     font-family: var(--font-serif);
   }
+}
+
+/* Лист «миллиметровки» под графом: точечная сетка цветом текста, едва заметная. */
+.paper-grid {
+  background-color: var(--card);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in oklab, var(--ink) 10%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
+
+/* Ползунки фильтров: тонкая дорожка, заполненная часть шалфейная (--fill ставит компонент). */
+.range {
+  --fill: 0%;
+  --track: color-mix(in oklab, var(--ink) 14%, transparent);
+  appearance: none;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--primary) var(--fill), var(--track) var(--fill));
+}
+.range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--primary) var(--fill), var(--track) var(--fill));
+}
+.range::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--primary-deep);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--primary-deep);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.range:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 999px;
 }

@@ -15,7 +15,7 @@ export function TopBar({ onMenu }: Props) {
           <Menu size={20} />
         </button>
       )}
-      <span className="font-serif text-xl font-semibold tracking-tight text-primary-deep">
+      <span className="font-serif text-xl font-semibold tracking-tight text-primary-ink">
         mnogobase
       </span>
       <div className="flex-1" />

@@ -36,7 +36,7 @@ export function DesignPage() {
               aria-pressed={theme === value}
               onClick={() => setTheme(value)}
               className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
-                theme === value ? "bg-primary-deep text-bg" : "text-muted hover:text-ink"
+                theme === value ? "bg-primary-deep text-on-primary" : "text-muted hover:text-ink"
               }`}
             >
               {label}
@@ -80,10 +80,10 @@ export function DesignPage() {
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">Элементы</h2>
         <div className="flex flex-wrap items-center gap-3 rounded-card bg-card p-5 shadow-card">
-          <button type="button" className="rounded-xl bg-primary-deep px-4 py-2 text-bg shadow-card hover:opacity-90">
+          <button type="button" className="rounded-xl bg-primary-deep px-4 py-2 text-on-primary shadow-card hover:opacity-90">
             Главная кнопка
           </button>
-          <button type="button" className="rounded-xl px-4 py-2 text-primary-deep hover:bg-primary/15">
+          <button type="button" className="rounded-xl px-4 py-2 text-primary-ink hover:bg-primary/15">
             Тихая кнопка
           </button>
           <span className="rounded-full bg-t6 px-3 py-1 text-sm text-ink">мята</span>

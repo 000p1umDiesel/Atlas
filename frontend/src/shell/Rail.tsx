@@ -56,7 +56,7 @@ export function Rail({ pathname }: { pathname: string }) {
             to={to}
             aria-label={label}
             title={label}
-            className={`${BUTTON} ${active ? "text-primary-deep" : ""}`}
+            className={`${BUTTON} ${active ? "text-primary-ink" : ""}`}
           >
             {active && (
               <motion.span

@@ -5,7 +5,7 @@ export function ContextColumn({ children }: { children: ReactNode }) {
   return (
     <aside
       aria-label="Контекст раздела"
-      className="hidden w-72 shrink-0 overflow-y-auto border-r border-line bg-bg/60 p-4 md:block"
+      className="hidden h-full w-72 shrink-0 overflow-y-auto border-r border-line bg-bg/60 p-4 md:block"
     >
       {children}
     </aside>

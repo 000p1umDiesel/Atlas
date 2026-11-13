@@ -1,11 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type { GraphPayload, RecentDocument, Stats, TypeCount } from "./types";
 
-const USE_FIXTURES = import.meta.env.VITE_FIXTURES === "1";
-
 // Фикстуры подгружаются динамически и попадают в сборку только при VITE_FIXTURES=1.
+// Флаг читается при вызове (Vite всё равно подставляет его при сборке), чтобы тесты могли его менять.
 async function fixtures() {
-  if (!USE_FIXTURES) throw new Error("API появится на этапе 2");
+  if (import.meta.env.VITE_FIXTURES !== "1") throw new Error("API появится на этапе 2");
   const { generateFixtures } = await import("../fixtures/generate");
   return generateFixtures();
 }

@@ -39,6 +39,9 @@
   --muted: #6f776b;
   --primary: #6e9473;
   --primary-deep: #41604a;
+  /* Текст на заливке primary-deep и акцентный «шалфейный» текст: читаемы в обеих темах. */
+  --on-primary: #fffdf8;
+  --primary-ink: #41604a;
   --line: color-mix(in oklab, var(--ink) 12%, transparent);
   --shadow: 0 1px 2px rgb(47 58 47 / 0.06), 0 8px 24px rgb(47 58 47 / 0.07);
   --radius: 14px;
@@ -63,6 +66,8 @@
     --card: #272c26;
     --ink: #e8e4d8;
     --muted: #9da496;
+    --on-primary: #f1efe6;
+    --primary-ink: #a8c6ad;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
     --t0: color-mix(in oklab, #c9c3b6 80%, black);
     --t1: color-mix(in oklab, #d8a48f 80%, black);
@@ -81,6 +86,8 @@
   --card: #272c26;
   --ink: #e8e4d8;
   --muted: #9da496;
+  --on-primary: #f1efe6;
+  --primary-ink: #a8c6ad;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
   --t0: color-mix(in oklab, #c9c3b6 80%, black);
   --t1: color-mix(in oklab, #d8a48f 80%, black);

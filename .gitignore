@@ -23,6 +23,7 @@ CLAUDE.md
 AGENTS.md
 docs/*md
 hybrid_rag_notebooks/
+.playwright-mcp
 
 frontend/node_modules/
 src/mnogobase/web/dist/
