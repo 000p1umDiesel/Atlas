@@ -130,6 +130,7 @@ def serve(
     import uvicorn  # только для этой команды: остальным CLI веб-сервер не нужен
 
     from mnogobase.api.app import create_api
+    from mnogobase.service.kb import SHUTDOWN_GRACE_S
 
     uvicorn.run(
         create_api(common.get_settings()),
@@ -137,4 +138,6 @@ def serve(
         port=port,
         access_log=False,
         server_header=False,
+        # при остановке открытые соединения (идущий ответ в чате) ждут не дольше этого
+        timeout_graceful_shutdown=int(SHUTDOWN_GRACE_S),
     )

@@ -2312,7 +2312,7 @@ uv run mnogobase client logout
 | `POST /api/auth/logout` / `GET /api/auth/me` | отозвать текущую сессию (и стереть cookie) / `id`, `username` |
 | `POST /api/auth/password` | `{"old_password", "new_password"}`: смена своего пароля, все сессии отзываются; браузер сразу получает новую cookie |
 | `GET /api/documents` | документы корпуса: `id`, `name`, `status`, `uploaded`, `url` |
-| `POST /api/documents?filename=NAME` | загрузка: файл — сырое тело запроса; ответ `202` с заданием очереди |
+| `POST /api/documents?filename=NAME` | загрузка: файл — сырое тело запроса; ответ `202` с заданием очереди и флагом `duplicate` (такое же содержимое уже в очереди или в базе — возвращается его задача) |
 | `GET /api/documents/{doc_id}` | карточка: имя, статус, стадии (`stage`, `status`, `attempts`, `error`, `updated_at`), число чанков, сущности (`has_page`, `slug`) |
 | `GET /api/documents/{doc_id}/chunks` | чанки документа по порядку (`idx`, `text`, `headings`, `page_start`, `page_end`) и `total` |
 | `GET /api/chunks/{chunk_id}` | полный текст фрагмента для цитаты: `name`, `text`, `headings`, `page`, `url` исходника |
@@ -2324,11 +2324,11 @@ uv run mnogobase client logout
 | `POST /api/conversations`, `GET /api/conversations` | создать диалог (`{"title"}`) / список своих диалогов |
 | `PATCH` / `DELETE /api/conversations/{id}` | переименовать (`{"title"}`) / удалить диалог со всеми сообщениями |
 | `GET` / `POST /api/conversations/{id}/messages` | история диалога (`newest=true` — последние `limit` сообщений; у фрагментов-источников `available` — есть ли фрагмент в базе) / новый вопрос `{"question", "mode"}` с ответом; у ответов есть `meta` (`latency_ms`, `tokens_in`, `tokens_out`, `alt_queries`), первый вопрос становится заголовком диалога |
-| `POST /api/conversations/{id}/messages/stream` | то же потоком SSE: события `sources`, `delta` (`{"text"}`), затем `done` (сохранённое сообщение) или `error` (`{"detail", "status"}`); если клиент ушёл, ответ всё равно дописывается и сохраняется |
+| `POST /api/conversations/{id}/messages/stream` | то же потоком SSE: события `sources`, `delta` (`{"text"}`), затем `done` (сохранённое сообщение) или `error` (`{"detail", "status"}`); если клиент ушёл, ответ всё равно дописывается и сохраняется; при остановке API идущие ответы дописываются до 20 с (недописанный сохраняется как ошибка) |
 | `GET /api/wiki?q=...`, `GET /api/wiki/{page_id}`, `GET /api/wiki/by-slug/{slug}` | страницы wiki (поиск по заголовку, slug и алиасам) / Markdown страницы с `sources` — `chunk_id` → имя документа для сносок |
 | `GET /api/graph/search?q=...`, `GET /api/graph/{entity_id}/neighbors?depth=1..3` | поиск сущностей по началу слов имени и алиасов / окрестность сущности |
 | `GET /api/graph/{entity_id}` | карточка сущности: поля узла, `pagerank` и `community` из последнего анализа, `has_page`, `slug` |
-| `GET /api/graph/analysis`, `POST /api/graph/analyze` | состояние анализа графа и топ-20 по PageRank / поставить анализ задачей worker'а (`202`; повторный запрос не плодит задачи) |
+| `GET /api/graph/analysis`, `POST /api/graph/analyze` | состояние анализа графа, топ-20 по PageRank и задача анализа (`job`) / поставить анализ задачей worker'а (`202`; повторный запрос не плодит задачи) |
 | `GET /api/status` | очередь, worker и расход LLM (раздел 16.4) |
 | `GET /api/status/checks` | быстрые проверки PostgreSQL, Qdrant, Neo4j, плагинов графа, серверов моделей и LLM (без генерации); подробности сбоев скрыты, одна проверка за раз (`429`) |
 

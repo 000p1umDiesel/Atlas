@@ -53,6 +53,7 @@ import asyncio
 import json
 import signal
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -91,6 +92,37 @@ ANALYZE_HEARTBEAT_S = 30.0
 def _next_pause(pause: float) -> float:
     """Следующая пауза после потери связи с базой: удвоение в пределах MIN..MAX."""
     return min(max(pause * 2, DB_RETRY_MIN_S), DB_RETRY_MAX_S)
+
+
+def _log_orphan(work: asyncio.Future) -> None:
+    """Исход потока, брошенного после отмены задачи: только тип ошибки (текст может
+    содержать адреса и ключи), без трейсбека asyncio «exception was never retrieved»."""
+    if work.cancelled():
+        return
+    exc = work.exception()
+    get_logger(__name__).warning(
+        "orphan_thread_finished", error_type=type(exc).__name__ if exc else None
+    )
+
+
+async def heartbeat_thread[T](
+    fn: Callable[[], T], tick: Callable[[], None], interval: float = ANALYZE_HEARTBEAT_S
+) -> T:
+    """Выполняет `fn` в потоке и возвращает её результат; `tick()` вызывается сразу и
+    затем раз в `interval` секунд, пока поток работает (прогресс задачи и heartbeat).
+
+    Поток нельзя прервать: при отмене (истёк `jobs.timeout_s`) он дорабатывает сам, а его
+    исход потом пишется в лог событием `orphan_thread_finished`."""
+    work = asyncio.ensure_future(asyncio.to_thread(fn))
+    try:
+        while True:
+            tick()
+            done, _ = await asyncio.wait({work}, timeout=interval)
+            if done:
+                return work.result()
+    except asyncio.CancelledError:
+        work.add_done_callback(_log_orphan)
+        raise
 
 
 class WorkerLockLost(RuntimeError):
@@ -448,14 +480,12 @@ def run_worker(
             зависший worker."""
             app = await services(("neo4j",))
             common.console.print(f"Анализ графа, задача {job.id}")
-            work = asyncio.ensure_future(asyncio.to_thread(run_analysis, app))
-            while True:
+
+            def tick() -> None:
                 q.set_progress(job.id, "анализ графа")
                 q.heartbeat()
-                done, _ = await asyncio.wait({work}, timeout=ANALYZE_HEARTBEAT_S)
-                if done:
-                    work.result()
-                    return
+
+            await heartbeat_thread(lambda: run_analysis(app), tick)
 
         async def handle(job):
             """Обработчик одной задачи для `process_one`: remove или ingest.

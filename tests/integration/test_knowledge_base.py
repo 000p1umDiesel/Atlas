@@ -92,9 +92,13 @@ async def test_upload_ingest_answer_and_remove(env):
     try:
         content = (FIXTURES / "attention_en.md").read_bytes()
         job = upload(kb, "Attention paper.md", content)
-        assert job["status"] == "pending" and "path" not in job
-        assert upload(kb, "Attention paper.md", content)["id"] == job["id"]  # без дубликатов
+        assert job["status"] == "pending" and "path" not in job and not job["duplicate"]
+        same = upload(kb, "Attention paper.md", content)
+        assert same["id"] == job["id"] and same["duplicate"]  # без дубликатов
         await work_once()
+        indexed = upload(kb, "copy.md", content)  # то же содержимое под другим именем
+        assert indexed["id"] == job["id"] and indexed["duplicate"]
+        assert indexed["status"] == "done"
 
         [doc] = await kb.documents()
         assert doc["status"] == "done" and doc["uploaded"]
@@ -414,6 +418,44 @@ async def test_stream_answer_is_saved_after_the_client_leaves(env):
         await kb.close()
 
 
+async def test_close_waits_for_a_running_stream_answer(env, monkeypatch):
+    kb, user, chat = await _ready_kb(env)
+    app = await kb._core.run(kb._ensure_app())
+    original = app.llm.stream
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(0.3)
+        async for piece in original(*args, **kwargs):
+            yield piece
+
+    monkeypatch.setattr(app.llm, "stream", slow)
+    events = await kb.send_message_stream(user["id"], chat["id"], "What is the Transformer?")
+    await events.aclose()
+    await kb.close()
+    last = kb.store.messages(user["id"], chat["id"])[-1]
+    assert (last["role"], last["status"]) == ("assistant", "done")
+
+
+async def test_close_marks_an_unfinished_stream_answer_as_failed(env, monkeypatch):
+    from mnogobase.service import kb as kb_module
+
+    monkeypatch.setattr(kb_module, "SHUTDOWN_GRACE_S", 0.2)
+    kb, user, chat = await _ready_kb(env)
+    app = await kb._core.run(kb._ensure_app())
+
+    async def stuck(*args, **kwargs):
+        await asyncio.sleep(60)
+        yield ""
+
+    monkeypatch.setattr(app.llm, "stream", stuck)
+    events = await kb.send_message_stream(user["id"], chat["id"], "What is the Transformer?")
+    await asyncio.wait_for(kb.close(), 10)
+    seen = [e async for e in events]
+    assert seen[-1]["event"] == "error" and seen[-1]["data"]["status"] == 503
+    last = kb.store.messages(user["id"], chat["id"])[-1]
+    assert (last["role"], last["status"]) == ("assistant", "error")
+
+
 async def test_stream_reports_llm_failure(env, monkeypatch):
     kb, user, chat = await _ready_kb(env)
     try:
@@ -462,6 +504,17 @@ async def test_analyze_job_dedups_and_runs_in_the_worker(env, monkeypatch):
         assert _job(kb, job["id"])["status"] == "done" and len(calls) == 1
         again = await asyncio.to_thread(kb.enqueue_analyze)
         assert again["id"] == job["id"] and again["status"] == "pending"
+        # задача видна в состоянии анализа, сколько бы новых задач ни было в очереди
+        assert (await kb.graph_analysis())["job"]["id"] == job["id"]
+    finally:
+        await kb.close()
+
+
+async def test_graph_analysis_without_a_job(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        assert (await kb.graph_analysis())["job"] is None
     finally:
         await kb.close()
 

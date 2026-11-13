@@ -24,8 +24,10 @@ function Uploader({ onUploaded }) {
     if (!next) return;
     patch(next.key, { status: "uploading" });
     uploadFile(next.file, (progress) => patch(next.key, { progress }))
-      .then(() => {
-        patch(next.key, { status: "done", progress: 1 });
+      .then((job) => {
+        // тот же файл уже загружали: показываем, где он, а не «принят»
+        const note = job && job.duplicate ? (job.status === "done" ? "уже в базе" : "уже в очереди") : "принят";
+        patch(next.key, { status: "done", progress: 1, note });
         onUploaded();
       })
       .catch((error) => patch(next.key, { status: "error", error: error.detail }));
@@ -52,7 +54,7 @@ function Uploader({ onUploaded }) {
             ${i.status === "error"
               ? html`<span class="upload-error">${i.error}</span>`
               : html`<progress max="1" value=${i.progress} aria-label=${"Загрузка " + i.file.name}></progress>`}
-            <span class="small muted">${{ waiting: "ждёт", uploading: Math.round(i.progress * 100) + " %", done: "принят", error: "" }[i.status]}</span>
+            <span class="small muted">${{ waiting: "ждёт", uploading: Math.round(i.progress * 100) + " %", done: i.note, error: "" }[i.status]}</span>
           </li>`,
         )}
       </ul>
@@ -105,7 +107,7 @@ export function Documents() {
   const remove = async (doc) => {
     if (!confirm(`Удалить «${doc.name}» из базы? Ответы перестанут на него ссылаться.`)) return;
     try {
-      await api("/api/documents/" + doc.id, { method: "DELETE" });
+      await api("/api/documents/" + encodeURIComponent(doc.id), { method: "DELETE" });
       load();
     } catch (err) {
       setError(err);
@@ -113,7 +115,7 @@ export function Documents() {
   };
   const retry = async (id) => {
     try {
-      await api(`/api/jobs/${id}/retry`, { method: "POST" });
+      await api(`/api/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
       load();
     } catch (err) {
       setError(err);

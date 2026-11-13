@@ -87,6 +87,11 @@ _CONNECTION_ERRORS = (DatabaseError, DBAPIError, ServiceUnavailable, SessionExpi
 HEARTBEAT_STALE_S = 120.0
 
 
+# Сколько секунд остановка API ждёт идущие потоковые ответы (столько же uvicorn ждёт
+# открытые соединения, см. `api serve`); `stop_grace_period` контейнера api больше суммы.
+SHUTDOWN_GRACE_S = 20.0
+
+
 class CoreLoop:
     """Поток-демон `mnogobase-core` с собственным event loop, в котором живёт `App`.
 
@@ -200,7 +205,18 @@ class KnowledgeBase:
         self._background: set[asyncio.Task] = set()
 
     async def close(self) -> None:
-        """Закрывает `App` (в потоке ядра) и останавливает поток ядра; при остановке API."""
+        """Останавливает базу при остановке API.
+
+        Сначала до `SHUTDOWN_GRACE_S` секунд ждёт идущие потоковые ответы (они
+        сохраняются в диалог, даже если браузер уже ушёл); недождавшиеся отменяются и
+        записываются в диалог как неудачные. Затем закрывает `App` (в потоке ядра) и
+        останавливает поток ядра."""
+        if self._background:
+            _, pending = await asyncio.wait(set(self._background), timeout=SHUTDOWN_GRACE_S)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=5)
         if self._app is not None:
             app, self._app = self._app, None
             await self._core.run(app.aclose())
@@ -320,7 +336,8 @@ class KnowledgeBase:
 
     def upload_file(self, filename: str, staged: Path, sha256: str) -> dict:
         """Ставит в очередь уже записанный во временный файл `staged` документ и возвращает
-        задачу `ingest` (как в `/api/jobs`).
+        задачу `ingest` (как в `/api/jobs`) с флагом `duplicate`: `True`, если такое же
+        содержимое уже в очереди или в базе (тогда возвращается его задача).
 
         `sha256` — хеш содержимого, посчитанный при приёме; `doc_id = sha256[:16]`, как в
         `ids.file_doc_id`. Порядок: проверки (имя, суточный лимит, пустой файл, размер,
@@ -360,12 +377,12 @@ class KnowledgeBase:
                 and queue.is_current(existing)
                 and path.is_file()
             ):
-                return self._job(existing)
+                return {**self._job(existing), "duplicate": True}
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
             # Файл кладётся под блокировкой пути: идущая remove-задача не удалит его следом.
             job_id = queue.enqueue(path, doc_id, force=True, on_locked=lambda: staged.replace(path))
-            return self._job(queue.get(job_id))
+            return {**self._job(queue.get(job_id)), "duplicate": False}
 
     def _upload_path(self, doc_id: str) -> Path:
         """Путь существующего файла загрузки `doc_id` внутри каталога загрузок.
@@ -851,7 +868,8 @@ class KnowledgeBase:
 
         Ответ готовит отдельная задача цикла веб-сервера; ядро шлёт события через
         `call_soon_threadsafe` в её очередь. Если клиент ушёл (итератор закрыт), задача не
-        отменяется: ответ доводится до конца и сохраняется в диалог."""
+        отменяется: ответ доводится до конца и сохраняется в диалог. При остановке API
+        (`close`) недописанный ответ сохраняется как неудачный."""
         question, history = await self._prepare_message(user_id, conversation_id, question, mode)
         loop = asyncio.get_running_loop()
         events: asyncio.Queue[dict] = asyncio.Queue()
@@ -883,14 +901,20 @@ class KnowledgeBase:
                     "done",
                     await self._save_answer(user_id, conversation_id, question, mode, answer),
                 )
-            except ServiceError as exc:
-                final = ("error", {"detail": exc.detail, "status": exc.status})
+            except (ServiceError, asyncio.CancelledError) as exc:
+                # отмена — остановка API (`close`): вопрос не остаётся без ответа в диалоге
+                if isinstance(exc, ServiceError):
+                    final = ("error", {"detail": exc.detail, "status": exc.status})
+                else:
+                    final = ("error", {"detail": "Сервис перезапускается", "status": 503})
                 try:
                     await self._save_failure(user_id, conversation_id, mode)
                 except Exception as save_exc:
                     self._log.warning(
                         "stream_failure_not_saved", error_type=type(save_exc).__name__
                     )
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
             except Exception as exc:
                 self._log.warning("stream_answer_failed", error_type=type(exc).__name__)
             finally:
@@ -1047,14 +1071,22 @@ class KnowledgeBase:
 
         return await self._with_app(run, "Граф недоступен")
 
+    def _analyze_job(self) -> dict | None:
+        """Задача `analyze` проекта (как в `/api/jobs`) или `None`, если её не ставили."""
+        with self._queue() as queue:
+            job = queue.find(ANALYZE_PATH, ANALYZE_VERSION)
+            return self._job(job) if job is not None else None
+
     async def graph_analysis(self) -> dict:
-        """Состояние анализа графа (`graph status`): готов ли снимок, когда сделан, отчёт и
-        топ-20 сущностей по PageRank (`top`)."""
+        """Состояние анализа графа (`graph status`): готов ли снимок, когда сделан, отчёт,
+        топ-20 сущностей по PageRank (`top`) и задача анализа из очереди (`job`, может быть
+        `None`) — отдельно от списка задач, где её вытесняют новые загрузки."""
 
         async def run(app: App) -> dict:
             return {**app.graph.analysis_status(), "top": app.graph.analysis_details(20)}
 
-        return await self._with_app(run, "Граф недоступен")
+        state = await self._with_app(run, "Граф недоступен")
+        return {**state, "job": await asyncio.to_thread(self._analyze_job)}
 
     async def graph_search(self, query: str, limit: int = 20) -> list[dict]:
         """Сущности графа по полнотекстовому поиску в Neo4j, лучшие первыми.

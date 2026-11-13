@@ -109,6 +109,8 @@ services:
     mem_limit: 1536m
     memswap_limit: 1536m
     cpus: 1.0
+    # при остановке API до 2×20 с дописывает идущие ответы чата (service.kb.SHUTDOWN_GRACE_S)
+    stop_grace_period: 60s
     # в slim-образе нет curl, поэтому /health проверяется стандартной библиотекой Python
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]

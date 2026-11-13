@@ -1,5 +1,5 @@
 // Карточка документа: стадии обработки с ошибками, фрагменты, сущности.
-import { html } from "/static/vendor/htm-preact-standalone.mjs";
+import { html, useState } from "/static/vendor/htm-preact-standalone.mjs";
 import { api } from "../lib/api.js";
 import { link, navigate } from "../lib/router.js";
 import { ErrorNote, Loading, plural, Status, useLoad } from "../lib/ui.js";
@@ -13,13 +13,19 @@ const STAGES = {
 };
 
 export function DocumentCard({ id }) {
-  const { data: doc, error, loading } = useLoad(() => api("/api/documents/" + id), [id]);
+  const { data: doc, error, loading } = useLoad(() => api("/api/documents/" + encodeURIComponent(id)), [id]);
+  const [removeError, setRemoveError] = useState(null);
   if (loading && !doc) return html`<section class="page-wide"><${Loading} /></section>`;
   if (error) return html`<section class="page-wide"><${ErrorNote} error=${error} /><a href="#/documents">К списку документов</a></section>`;
   const remove = async () => {
     if (!confirm(`Удалить «${doc.name}» из базы?`)) return;
-    await api("/api/documents/" + doc.id, { method: "DELETE" });
-    navigate("#/documents");
+    setRemoveError(null);
+    try {
+      await api("/api/documents/" + encodeURIComponent(doc.id), { method: "DELETE" });
+      navigate("#/documents");
+    } catch (err) {
+      setRemoveError(err);
+    }
   };
   const byType = {};
   for (const e of doc.entities) (byType[e.type] = byType[e.type] || []).push(e);
@@ -35,6 +41,7 @@ export function DocumentCard({ id }) {
         ${doc.url && html`<a class="button" href=${doc.url} download>Скачать</a>`}
         <button class="danger" onClick=${remove}>Удалить</button>
       </div>
+      <${ErrorNote} error=${removeError} />
       <h2>Обработка</h2>
       ${doc.stages.length === 0
         ? html`<p class="muted">Документ ждёт своей очереди: worker ещё не брал его в работу.</p>`

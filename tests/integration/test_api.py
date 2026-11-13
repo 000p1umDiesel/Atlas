@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import partial
 from types import SimpleNamespace
 
@@ -187,15 +188,27 @@ def test_all_routes(api, tmp_path):
     assert api.client.get("/api/graph/e/neighbors?depth=2", headers=h).json()["depth"] == 2
     assert api.client.get("/api/graph/e/neighbors?depth=4", headers=h).status_code == 422
     assert api.client.get("/api/status", headers=h).json() == {"queue": {}}
-    # без сессии ни один маршрут не отвечает данными
-    for method, path in [
-        ("get", "/api/documents"),
-        ("get", "/api/jobs"),
-        ("post", "/api/ask"),
-        ("get", "/api/wiki"),
-        ("get", "/api/status"),
-    ]:
-        assert getattr(api.client, method)(path).status_code == 401
+
+
+def test_every_api_route_requires_a_session(api):
+    """Без сессии ни один маршрут `/api/*`, кроме входа, не отвечает данными — в том числе
+    маршруты, добавленные позже (список берётся из самого приложения)."""
+    from fastapi.routing import APIRoute
+
+    public = {("POST", "/api/auth/login")}
+    checked = []
+    for route in api.client.app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+            continue
+        path = re.sub(r"\{[^}]+\}", "1", route.path)
+        for method in sorted(route.methods - {"HEAD"}):
+            if (method, route.path) in public:
+                continue
+            response = api.client.request(method, path)
+            assert response.status_code == 401, (method, route.path, response.status_code)
+            checked.append((method, route.path))
+    assert ("POST", "/api/conversations/{conversation_id}/messages/stream") in checked
+    assert ("POST", "/api/graph/analyze") in checked and len(checked) >= 30
 
 
 def test_conversations_are_private(api):

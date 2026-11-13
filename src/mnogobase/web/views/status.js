@@ -70,22 +70,29 @@ function Checks() {
     </section>`;
 }
 
-function Analysis({ jobs, reload }) {
+// Задача анализа приходит вместе со снимком (`job`), а не из списка задач: там её
+// вытесняют новые загрузки. Пока она ждёт или идёт, состояние опрашивается.
+function Analysis({ reload }) {
   const [state, setState] = useState(null);
   const [error, setError] = useState(null);
-  const load = () => api("/api/graph/analysis").then(setState).catch(setError);
+  const load = () =>
+    api("/api/graph/analysis")
+      .then((data) => {
+        setState(data);
+        setError(null);
+      })
+      .catch(setError);
   useEffect(() => {
     load();
   }, []);
-  const job = jobs.find((j) => j.kind === "analyze");
-  const active = job && (job.status === "pending" || job.status === "running");
-  useEffect(() => {
-    if (job && job.status === "done") load();
-  }, [job && job.status]);
+  const job = state && state.job;
+  const active = Boolean(job && (job.status === "pending" || job.status === "running"));
+  usePoll(load, 5000, active);
   const start = async () => {
     setError(null);
     try {
       await api("/api/graph/analyze", { method: "POST" });
+      load();
       reload();
     } catch (err) {
       setError(err);
@@ -112,13 +119,10 @@ function Analysis({ jobs, reload }) {
 
 export function StatusPage() {
   const [status, setStatus] = useState(null);
-  const [jobs, setJobs] = useState([]);
   const [error, setError] = useState(null);
   const load = async () => {
     try {
-      const [s, j] = await Promise.all([api("/api/status"), api("/api/jobs?limit=50")]);
-      setStatus(s);
-      setJobs(j);
+      setStatus(await api("/api/status"));
       setError(null);
     } catch (err) {
       setError(err);
@@ -152,7 +156,7 @@ export function StatusPage() {
           <${Usage} title="Этот месяц" rows=${status.llm_usage.month} />
         </div>
       </section>
-      <${Analysis} jobs=${jobs} reload=${load} />
+      <${Analysis} reload=${load} />
       <${Checks} />
     </section>`;
 }

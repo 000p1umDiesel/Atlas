@@ -19,7 +19,7 @@ export function DocumentView({ id, query }) {
   }, [id, target]);
   useEffect(() => {
     setData(null);
-    api(`/api/documents/${id}/chunks?limit=${PAGE}&offset=${offset}`)
+    api(`/api/documents/${encodeURIComponent(id)}/chunks?limit=${PAGE}&offset=${offset}`)
       .then(setData)
       .catch(setError);
   }, [id, offset]);

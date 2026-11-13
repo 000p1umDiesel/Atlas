@@ -79,7 +79,7 @@ function ChatHeader({ chat, onRenamed, onDeleted }) {
   const save = async (event) => {
     event.preventDefault();
     try {
-      await api("/api/conversations/" + chat.id, { method: "PATCH", json: { title } });
+      await api("/api/conversations/" + encodeURIComponent(chat.id), { method: "PATCH", json: { title } });
       setEditing(false);
       onRenamed();
     } catch (err) {
@@ -89,7 +89,7 @@ function ChatHeader({ chat, onRenamed, onDeleted }) {
   const remove = async () => {
     if (!confirm(`Удалить диалог «${chat.title || "Без названия"}» со всеми сообщениями?`)) return;
     try {
-      await api("/api/conversations/" + chat.id, { method: "DELETE" });
+      await api("/api/conversations/" + encodeURIComponent(chat.id), { method: "DELETE" });
       onDeleted();
     } catch (err) {
       setError(err);
@@ -141,7 +141,7 @@ export function Chat({ id, chats, reloadChats }) {
 
   // Длинный диалог открывается с конца: последние HISTORY сообщений.
   const loadMessages = (cid) =>
-    api(`/api/conversations/${cid}/messages?limit=${HISTORY}&newest=true`)
+    api(`/api/conversations/${encodeURIComponent(cid)}/messages?limit=${HISTORY}&newest=true`)
       .then((items) => owner.current === cid && setMessages(items))
       .catch((err) => {
         setError(err);
@@ -183,7 +183,7 @@ export function Chat({ id, chats, reloadChats }) {
         owner.current === cid &&
         setMessages((list) => (list || []).map((m) => (m.id === pendingId ? { ...m, ...patch(m) } : m)));
       let finished = false;
-      await streamSse(`/api/conversations/${cid}/messages/stream`, { question: text, mode }, (name, data) => {
+      await streamSse(`/api/conversations/${encodeURIComponent(cid)}/messages/stream`, { question: text, mode }, (name, data) => {
         if (name === "sources") update(() => ({ sources: data }));
         else if (name === "delta") update((m) => ({ content: m.content + data.text }));
         else if (name === "done") {
