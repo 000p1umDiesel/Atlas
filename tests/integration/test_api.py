@@ -404,6 +404,20 @@ def test_assets_cached_forever(api):
         assert api.client.get(path).status_code == 404
 
 
+def test_assets_appear_after_late_build(api, tmp_path):
+    """Сервер запущен до сборки: `/assets` смонтирован всегда, до сборки 404, после — 200."""
+    dist = tmp_path / "late"
+    client = TestClient(
+        create_api(api.settings, kb=api.kb, web_dir=dist), raise_server_exceptions=False
+    )
+    assert client.get("/assets/app-new.js").status_code == 404
+    (dist / "assets").mkdir(parents=True)
+    (dist / "assets" / "app-new.js").write_text("console.log(2)")
+    asset = client.get("/assets/app-new.js")
+    assert asset.status_code == 200
+    assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
 def test_unknown_api_is_json_404(api):
     for path in ("/api/nope", "/api"):
         response = api.client.get(path)

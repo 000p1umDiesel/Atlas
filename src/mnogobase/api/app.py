@@ -95,7 +95,19 @@ _PAGE_HEADERS = [
 
 
 class ImmutableStaticFiles(StaticFiles):
-    """Статика с хешами в именах: кэшируется браузером навсегда."""
+    """Статика с хешами в именах: кэшируется браузером навсегда.
+
+    Монтируется всегда, даже до сборки (`check_dir=False`): пока каталога нет — 404, а не
+    500, а собранный после запуска сервера интерфейс раздаётся без перезапуска."""
+
+    async def check_config(self) -> None:
+        """Проверка каталога Starlette, но без ошибки, если сборки ещё нет: тогда поиск
+        файла просто ничего не находит (404)."""
+        try:
+            await super().check_config()
+        except RuntimeError:
+            if self.directory is not None and os.path.exists(self.directory):
+                raise
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         """Ответ `StaticFiles` с `Cache-Control: immutable` для успешных ответов."""
@@ -348,8 +360,11 @@ def create_api(
 
     # Starlette сама отвергает выход за каталог (`..`, ссылки наружу) ответом 404.
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
-    if (web_dir / "assets").is_dir():
-        app.mount("/assets", ImmutableStaticFiles(directory=web_dir / "assets"), name="assets")
+    app.mount(
+        "/assets",
+        ImmutableStaticFiles(directory=web_dir / "assets", check_dir=False),
+        name="assets",
+    )
 
     @app.get("/health")
     def health():
