@@ -492,3 +492,43 @@ def test_wiki_and_graph_card_routes(api):
     assert api.client.get("/api/graph/e1", headers=h).json() == {"entity_id": "e1"}
     for path in ("/api/wiki/by-slug/adam", "/api/graph/analysis", "/api/graph/e1"):
         assert api.client.get(path).status_code == 401
+
+
+def test_stream_route_emits_server_sent_events(api):
+    import json
+
+    async def send_message_stream(user_id, conversation_id, question, mode="rag"):
+        if conversation_id == "missing":
+            raise ServiceError(404, "Диалог не найден")
+
+        async def events():
+            yield {"event": "sources", "data": [{"n": 1}]}
+            yield {"event": "delta", "data": {"text": "При"}}
+            yield {"event": "done", "data": {"content": "Привет [1]"}}
+
+        return events()
+
+    api.kb.send_message_stream = send_message_stream
+    response = api.client.post(
+        "/api/conversations/c1/messages/stream", json={"question": "q"}, headers=api.headers
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-accel-buffering"] == "no"
+    blocks = [b for b in response.text.split("\n\n") if b]
+    parsed = [
+        (b.split("\n")[0].removeprefix("event: "), json.loads(b.split("\n")[1][6:])) for b in blocks
+    ]
+    assert parsed == [
+        ("sources", [{"n": 1}]),
+        ("delta", {"text": "При"}),
+        ("done", {"content": "Привет [1]"}),
+    ]
+    missing = api.client.post(
+        "/api/conversations/missing/messages/stream", json={"question": "q"}, headers=api.headers
+    )
+    assert missing.status_code == 404 and missing.json()["detail"] == "Диалог не найден"
+    client = browser(api)
+    cookie_login(client)
+    no_origin = client.post("/api/conversations/c1/messages/stream", json={"question": "q"})
+    assert no_origin.status_code == 403

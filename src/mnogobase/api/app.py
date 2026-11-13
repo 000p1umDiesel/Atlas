@@ -44,6 +44,7 @@ from __future__ import annotations
 # FastAPI вычисляет эти объявления зависимостей при регистрации маршрутов (поэтому B008).
 # ruff: noqa: B008
 import hashlib
+import json
 import os
 import tempfile
 from collections.abc import AsyncIterator
@@ -55,7 +56,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.staticfiles import StaticFiles
@@ -507,6 +508,25 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     def conversations(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
         """Страница диалогов текущего пользователя, новые первыми."""
         return kb.store.conversations(user["id"], limit=limit, offset=offset)
+
+    @app.post("/api/conversations/{conversation_id}/messages/stream")
+    async def stream_message(conversation_id: str, body: Question, kb: KB, user: User):
+        """Вопрос в диалоге с ответом потоком (SSE): события `sources`, `delta`, затем `done`
+        или `error`. Ошибки проверки (404, 422, 429) — обычным JSON до начала потока."""
+        events = await kb.send_message_stream(
+            user["id"], conversation_id, body.question, mode=body.mode
+        )
+
+        async def encoded() -> AsyncIterator[str]:
+            async for event in events:
+                data = json.dumps(event["data"], ensure_ascii=False)
+                yield f"event: {event['event']}\ndata: {data}\n\n"
+
+        return StreamingResponse(
+            encoded(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.patch("/api/conversations/{conversation_id}")
     def rename_conversation(conversation_id: str, body: Conversation, kb: KB, user: User):

@@ -46,7 +46,7 @@ import json
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -196,6 +196,8 @@ class KnowledgeBase:
         self._core = CoreLoop()
         self._asks = asyncio.Semaphore(settings.service.max_concurrent_asks)
         self._log = get_logger(__name__)
+        # задачи потоковых ответов: ссылка не даёт сборщику мусора прервать их, когда клиент ушёл
+        self._background: set[asyncio.Task] = set()
 
     async def close(self) -> None:
         """Закрывает `App` (в потоке ядра) и останавливает поток ядра; при остановке API."""
@@ -679,7 +681,14 @@ class KnowledgeBase:
             return await self._with_app(run, "Поиск недоступен")
 
     async def _answer(
-        self, app: App, question: str, mode: str, history: list[dict] | None = None
+        self,
+        app: App,
+        question: str,
+        mode: str,
+        history: list[dict] | None = None,
+        *,
+        on_sources: Callable[[list[dict]], None] | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict:
         """Ответ с источниками; выполняется в потоке ядра.
 
@@ -711,7 +720,18 @@ class KnowledgeBase:
         answerer = Answerer(app.llm, settings.context_tokens, settings.answer_language)
         translator = QueryTranslator(app.llm) if settings.translate else None
         answer = await run_mode(
-            query, mode, self._retrievers(app)[mode], answerer, settings.k, translator
+            query,
+            mode,
+            self._retrievers(app)[mode],
+            answerer,
+            settings.k,
+            translator,
+            on_sources=(
+                (lambda found: on_sources(self._items([x.model_dump() for x in found])))
+                if on_sources is not None
+                else None
+            ),
+            on_delta=on_delta,
         )
         out = answer.model_dump(exclude={"contexts"})
         out["question"], out["query"] = question, query
@@ -729,17 +749,16 @@ class KnowledgeBase:
                 "Модель или база знаний недоступны",
             )
 
-    async def send_message(
-        self, user_id: str, conversation_id: str, question: str, mode: str = "rag"
-    ) -> dict:
-        """Вопрос в диалоге: сохраняет вопрос, отвечает с учётом истории, сохраняет ответ и
-        возвращает сообщение ассистента.
+    async def _prepare_message(
+        self, user_id: str, conversation_id: str, question: str, mode: str
+    ) -> tuple[str, list[dict]]:
+        """Общее начало вопроса в диалоге: проверки, история, заголовок, сообщение
+        пользователя.
 
-        История — сообщения со статусом `done` из `service.history_messages` последних
-        (0 — без истории). Если ответить не удалось, в диалог пишется сообщение со статусом
-        `error` и нейтральным текстом, а `ServiceError` пробрасывается. 404 — нет диалога
-        или он чужой; остальные коды как у `ask`. Синхронные обращения к базе сервиса идут
-        через `asyncio.to_thread`, чтобы не блокировать цикл веб-сервера."""
+        Проверяет вопрос, режим, суточный лимит и владельца диалога; берёт историю
+        (сообщения `done` из `service.history_messages` последних), ставит заголовок по
+        первому вопросу и сохраняет вопрос. Возвращает очищенный вопрос и историю.
+        Синхронные обращения к базе сервиса идут через `asyncio.to_thread`."""
         question = _question(question)
         _mode(mode)
         await asyncio.to_thread(self.check_budget)
@@ -756,26 +775,14 @@ class KnowledgeBase:
         await asyncio.to_thread(
             store.append_message, user_id, conversation_id, "user", question, mode=mode
         )
-        try:
-            async with self._asks:
-                answer = await self._with_app(
-                    lambda app: self._answer(app, question, mode, history),
-                    "Модель или база знаний недоступны",
-                )
-        except ServiceError:
-            # Не сохраняем текст исключения провайдера: он может содержать секреты.
-            await asyncio.to_thread(
-                store.append_message,
-                user_id,
-                conversation_id,
-                "assistant",
-                "Не удалось получить ответ. Повторите вопрос.",
-                mode=mode,
-                status="error",
-            )
-            raise
+        return question, history
+
+    async def _save_answer(
+        self, user_id: str, conversation_id: str, question: str, mode: str, answer: dict
+    ) -> dict:
+        """Сохраняет ответ ассистента с источниками и метриками; возвращает сообщение."""
         return await asyncio.to_thread(
-            store.append_message,
+            self.store.append_message,
             user_id,
             conversation_id,
             "assistant",
@@ -785,6 +792,97 @@ class KnowledgeBase:
             query=answer.get("query", question),
             meta=_meta(answer),
         )
+
+    async def _save_failure(self, user_id: str, conversation_id: str, mode: str) -> None:
+        """Записывает в диалог неудачный ответ (`status=error`) с нейтральным текстом: текст
+        исключения провайдера может содержать секреты."""
+        await asyncio.to_thread(
+            self.store.append_message,
+            user_id,
+            conversation_id,
+            "assistant",
+            "Не удалось получить ответ. Повторите вопрос.",
+            mode=mode,
+            status="error",
+        )
+
+    async def send_message(
+        self, user_id: str, conversation_id: str, question: str, mode: str = "rag"
+    ) -> dict:
+        """Вопрос в диалоге: сохраняет вопрос, отвечает с учётом истории, сохраняет ответ и
+        возвращает сообщение ассистента.
+
+        Если ответить не удалось, в диалог пишется сообщение со статусом `error`, а
+        `ServiceError` пробрасывается. 404 — нет диалога или он чужой; остальные коды как
+        у `ask`."""
+        question, history = await self._prepare_message(user_id, conversation_id, question, mode)
+        try:
+            async with self._asks:
+                answer = await self._with_app(
+                    lambda app: self._answer(app, question, mode, history),
+                    "Модель или база знаний недоступны",
+                )
+        except ServiceError:
+            await self._save_failure(user_id, conversation_id, mode)
+            raise
+        return await self._save_answer(user_id, conversation_id, question, mode, answer)
+
+    async def send_message_stream(
+        self, user_id: str, conversation_id: str, question: str, mode: str = "rag"
+    ) -> AsyncIterator[dict]:
+        """Вопрос в диалоге с ответом по мере генерации (для SSE).
+
+        Проверки и сохранение вопроса выполняются сразу (их ошибки — обычные `ServiceError`,
+        до начала потока); возвращается асинхронный итератор событий `{"event", "data"}`:
+        `sources` (источники до генерации), `delta` (`{"text"}`), затем одно из `done`
+        (сохранённое сообщение ассистента) или `error` (`{"detail", "status"}`).
+
+        Ответ готовит отдельная задача цикла веб-сервера; ядро шлёт события через
+        `call_soon_threadsafe` в её очередь. Если клиент ушёл (итератор закрыт), задача не
+        отменяется: ответ доводится до конца и сохраняется в диалог."""
+        question, history = await self._prepare_message(user_id, conversation_id, question, mode)
+        loop = asyncio.get_running_loop()
+        events: asyncio.Queue[dict] = asyncio.Queue()
+
+        def put(event: str, data) -> None:
+            loop.call_soon_threadsafe(events.put_nowait, {"event": event, "data": data})
+
+        async def produce() -> None:
+            try:
+                async with self._asks:
+                    answer = await self._with_app(
+                        lambda app: self._answer(
+                            app,
+                            question,
+                            mode,
+                            history,
+                            on_sources=lambda sources: put("sources", sources),
+                            on_delta=lambda text: put("delta", {"text": text}),
+                        ),
+                        "Модель или база знаний недоступны",
+                    )
+                saved = await self._save_answer(user_id, conversation_id, question, mode, answer)
+            except ServiceError as exc:
+                await self._save_failure(user_id, conversation_id, mode)
+                put("error", {"detail": exc.detail, "status": exc.status})
+            except Exception as exc:
+                self._log.warning("stream_answer_failed", error_type=type(exc).__name__)
+                put("error", {"detail": "Не удалось сохранить ответ", "status": 503})
+            else:
+                put("done", saved)
+
+        task = asyncio.create_task(produce())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+        async def stream() -> AsyncIterator[dict]:
+            while True:
+                event = await events.get()
+                yield event
+                if event["event"] in ("done", "error"):
+                    return
+
+        return stream()
 
     def history(
         self, user_id: str, conversation_id: str, limit: int = 100, offset: int = 0

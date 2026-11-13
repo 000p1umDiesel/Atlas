@@ -363,3 +363,74 @@ async def test_wiki_search_slugs_sources_and_entity_card(env):
         assert analysis["ready"] is False and analysis["top"] == []
     finally:
         await kb.close()
+
+
+async def _ready_kb(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    user = kb.store.create_user("owner", "long-enough-password")
+    upload(kb, "Attention paper.md", (FIXTURES / "attention_en.md").read_bytes())
+    await work_once()
+    return kb, user, kb.store.create_conversation(user["id"])
+
+
+async def test_stream_message_events_and_history(env):
+    kb, user, chat = await _ready_kb(env)
+    try:
+        events = await kb.send_message_stream(user["id"], chat["id"], "What is the Transformer?")
+        seen = [e async for e in events]
+        names = [e["event"] for e in seen]
+        assert names[0] == "sources" and names[-1] == "done" and "delta" in names
+        assert set(names[1:-1]) == {"delta"}
+        assert seen[0]["data"] and "doc_id" in seen[0]["data"][0]
+        text = "".join(e["data"]["text"] for e in seen if e["event"] == "delta")
+        done = seen[-1]["data"]
+        assert done["content"].strip() == text.strip() and done["role"] == "assistant"
+        assert any(s["cited"] for s in done["sources"]) and done["meta"]["latency_ms"] >= 0
+        history = kb.history(user["id"], chat["id"])
+        assert [(m["role"], m["status"]) for m in history] == [
+            ("user", "done"),
+            ("assistant", "done"),
+        ]
+        assert kb.store.conversation(user["id"], chat["id"])["title"]
+    finally:
+        await kb.close()
+
+
+async def test_stream_answer_is_saved_after_the_client_leaves(env):
+    kb, user, chat = await _ready_kb(env)
+    try:
+        events = await kb.send_message_stream(user["id"], chat["id"], "What is the Transformer?")
+        first = await anext(events)
+        assert first["event"] == "sources"
+        await events.aclose()
+        for _ in range(50):
+            history = kb.history(user["id"], chat["id"])
+            if len(history) == 2:
+                break
+            await asyncio.sleep(0.1)
+        assert [(m["role"], m["status"]) for m in history][-1] == ("assistant", "done")
+    finally:
+        await kb.close()
+
+
+async def test_stream_reports_llm_failure(env, monkeypatch):
+    kb, user, chat = await _ready_kb(env)
+    try:
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("provider says http://secret")
+            yield ""
+
+        app = await kb._core.run(kb._ensure_app())
+        monkeypatch.setattr(app.llm, "stream", broken)
+        events = await kb.send_message_stream(user["id"], chat["id"], "What is the Transformer?")
+        seen = [e async for e in events]
+        assert seen[-1]["event"] == "error" and seen[-1]["data"]["status"] == 503
+        assert "secret" not in str(seen)
+        assert kb.history(user["id"], chat["id"])[-1]["status"] == "error"
+        with pytest.raises(ServiceError) as missing:
+            await kb.send_message_stream(user["id"], "nope", "Q?")
+        assert missing.value.status == 404
+    finally:
+        await kb.close()
