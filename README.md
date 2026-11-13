@@ -1940,8 +1940,8 @@ uv run mnogobase client ask "О чём статья?"
 
 | Задача | Команда (на сервере — из `/srv/mnogobase/app` через `sudo`) |
 |---|---|
-| обновить | `deploy/update.sh [ветка] [--no-backup]`: снимок restic, `git pull` ветки (по умолчанию `main`; git — от владельца каталога), сборка `mnogobase:latest` (его поднимает `mnogobase.service`), перезапуск api и worker; ветка и чистота рабочей копии проверяются до снимка, в режиме Minecraft образ только собирается |
-| откатить | `update.sh` оставляет прежний образ как `mnogobase:<прежний коммит>` и печатает команду отката (`git checkout`, `docker tag … mnogobase:latest`, `docker compose up -d --wait`); миграции базы назад не откатываются — тогда восстановление из restic |
+| обновить | `deploy/update.sh [ветка] [--no-backup]`: `git pull` ветки (по умолчанию `main`; git — от владельца каталога) и сборка `mnogobase:latest` (его поднимает `mnogobase.service`), пока сайт работает; затем одна остановка — снимок restic и запуск с новым образом; при ошибке проверки или сборки стек не трогается, при неизменном образе снимка и перезапуска нет, в режиме Minecraft стек не запускается |
+| откатить | `update.sh` оставляет заменяемый образ как `mnogobase:<его коммит>` и печатает команду отката (`git checkout`, `docker tag … mnogobase:latest`, `docker compose up -d --wait`); миграции базы назад не откатываются — тогда восстановление из restic |
 | состояние | `docker compose ps`, `mnogobase client status` (раздел 16) |
 | логи | `docker compose logs -f api worker`, `journalctl -u mnogobase` |
 | пользователь | `docker compose exec api mnogobase user passwd owner` / `user disable NAME` |

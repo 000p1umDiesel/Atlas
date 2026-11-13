@@ -45,3 +45,7 @@ RUN --mount=type=cache,target=/home/app/.cache/uv,uid=10001,gid=10001 \
 WORKDIR /data
 # Команду задаёт compose.yaml (api serve или worker run); по умолчанию — только справка.
 CMD ["mnogobase", "--help"]
+# Коммит, из которого собран образ (передаёт deploy/update.sh): по нему заменяемый образ
+# получает тег mnogobase:<коммит> для отката. В конце файла, чтобы не сбивать кэш слоёв.
+ARG MB_REVISION=unknown
+LABEL org.opencontainers.image.revision=$MB_REVISION

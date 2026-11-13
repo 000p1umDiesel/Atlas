@@ -33,7 +33,10 @@ x-logging: &logging
 # Общая часть api и worker: один образ из Dockerfile, один config.yaml и один каталог данных.
 x-app: &app
   image: mnogobase:${MB_TAG:-latest}
-  build: .
+  build:
+    context: .
+    args:
+      MB_REVISION: ${MB_REVISION:-unknown}   # коммит образа для отката (deploy/update.sh)
   pull_policy: never   # образ только локальный: нет — собрать, есть — взять, не ходить в Docker Hub
   env_file: .env       # секреты: LLM_API_KEY, POSTGRES_PASSWORD, NEO4J_PASSWORD, QDRANT_API_KEY
   environment:

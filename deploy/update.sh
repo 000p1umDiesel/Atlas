@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Обновление mnogobase на сервере одной командой: снимок restic → git pull → пересборка образа →
-# перезапуск api и worker.
+# Обновление mnogobase на сервере одной командой: git pull → сборка образа → снимок restic →
+# перезапуск api и worker с новым образом.
 #   sudo deploy/update.sh                  # ветка main
 #   sudo deploy/update.sh feature/x        # другая ветка с origin
 #   sudo deploy/update.sh --no-backup      # без снимка (правки без изменений схемы и данных)
-# Перед снимком проверяется, что ветка есть на origin, обновляется перемоткой (fast-forward)
-# и что в рабочей копии нет локальных правок: так скрипт не останавливает стек ради
-# обновления, которое всё равно не получится.
+# Пока идут проверки, pull и сборка, сайт работает: если ветки нет, она не перематывается
+# (fast-forward), в рабочей копии есть локальные правки или сборка упала, стек не трогается.
+# Если образ не изменился, снимок и перезапуск не нужны. Иначе стек останавливается один раз:
+# снимок restic (до миграций — они идут при старте новых контейнеров) и сразу запуск с новым
+# образом.
 # git работает от имени владельца каталога (admin), а не root: иначе новые файлы стали бы
 # принадлежать root и следующий `git pull` споткнулся бы о права.
 # Образ собирается как mnogobase:latest — его поднимает mnogobase.service после перезагрузки.
 # Прежний образ сохраняется под тегом mnogobase:<прежний коммит> для быстрого отката.
-# Если стек остановлен (режим Minecraft в host-mode), образ только собирается, а запустится
-# при следующем `host-mode mnogobase`.
+# Если стек остановлен (режим Minecraft в host-mode), образ собирается и снимок делается, а
+# запустится стек при следующем `host-mode mnogobase`.
 set -euo pipefail
 
 # Весь код — в функции: `git pull` переписывает и этот файл, а bash читает скрипт по ходу
@@ -52,7 +54,7 @@ main() {
         return 2
     }
 
-    # 1. Проверки до остановки чего-либо.
+    # 1. Проверки.
     if [ -n "$(as_owner git status --porcelain --untracked-files=no)" ]; then
         echo "В $app_dir есть локальные правки отслеживаемых файлов (git status):" >&2
         echo "закоммитьте или отмените их, иначе git pull их перезапишет или упадёт" >&2
@@ -74,37 +76,72 @@ main() {
     local running
     running="$(docker compose ps --status running --services)"
 
-    # 2. Снимок текущего состояния (код и данные до обновления).
-    if [ "$backup" = 1 ]; then
-        echo "==> Снимок restic (api, worker и базы остановятся на несколько минут)"
-        APP_DIR="$app_dir" "$app_dir/deploy/backup.sh"
-    fi
-
-    # 3. Код: переключиться на ветку и перемотать её до origin.
+    # 2. Код: переключиться на ветку и перемотать её до origin.
     echo "==> git: $old → $branch ($new)"
     as_owner git switch --quiet "$branch"
     as_owner git merge --ff-only --quiet "origin/$branch"
-    as_owner git log --oneline --no-decorate "$old..HEAD" | head -30
-
-    # 4. Образ: прежний сохраняется для отката, новый собирается как latest.
-    if docker image inspect mnogobase:latest >/dev/null 2>&1; then
-        docker tag mnogobase:latest "mnogobase:$old"
+    if [ "$old" = "$new" ]; then
+        echo "Новых коммитов нет"
+    else
+        as_owner git log --oneline --no-decorate "$old..HEAD" | head -30
     fi
-    echo "==> Сборка образа"
-    docker compose build api
 
-    # 5. Перезапуск — только если стек работал (в режиме Minecraft он остановлен).
+    # 3. Образ — пока стек работает. Метка MB_REVISION — коммит, из которого он собран.
+    local was_running=0 current="" after prev_rev
     if grep -qx api <<<"$running"; then
-        echo "==> Перезапуск api и worker"
-        docker compose up -d --wait
+        was_running=1
+        # образ, на котором api работает сейчас (может отличаться от latest после сбоя)
+        current="$(docker inspect --format '{{.Image}}' "$(docker compose ps -q api)")"
+    else
+        current="$(docker image inspect --format '{{.Id}}' mnogobase:latest 2>/dev/null || true)"
+    fi
+    echo "==> Сборка образа (сайт пока работает)"
+    if ! MB_REVISION="$(as_owner git rev-parse --short HEAD)" docker compose build api; then
+        echo "Сборка не удалась, стек не тронут. Код уже на $new: исправьте и запустите снова" >&2
+        echo "или верните код: sudo -u $owner git checkout $old" >&2
+        return 1
+    fi
+    after="$(docker image inspect --format '{{.Id}}' mnogobase:latest)"
+    if [ "$current" = "$after" ]; then
+        echo "==> Образ не изменился: снимок и перезапуск не нужны. $branch на $new."
+        return 0
+    fi
+    # Заменяемый образ остаётся под тегом своего коммита (у образов без метки — прежний HEAD).
+    prev_rev="$old"
+    if [ -n "$current" ]; then
+        local label
+        label="$(docker image inspect \
+            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$current")"
+        case "$label" in "" | unknown | "<no value>") ;; *) prev_rev="$label" ;; esac
+        docker tag "$current" "mnogobase:$prev_rev"
+    fi
+
+    # 4. Снимок и перезапуск: стек останавливается один раз.
+    if [ "$backup" = 1 ]; then
+        echo "==> Снимок restic$([ "$was_running" = 1 ] && echo ' (сайт недоступен до конца перезапуска)')"
+        # После удачного снимка backup.sh не поднимает стек сам: это сразу делает шаг ниже,
+        # уже с новым образом. Если снимок упадёт, backup.sh поднимет стек как был.
+        if ! MB_BACKUP_KEEP_STOPPED=1 APP_DIR="$app_dir" "$app_dir/deploy/backup.sh"; then
+            echo "Снимок не удался: стек поднят на прежнем образе, новый уже собран." >&2
+            echo "Разберитесь с restic и запустите снова (или с --no-backup)." >&2
+            return 1
+        fi
+    fi
+    if [ "$was_running" = 1 ]; then
+        echo "==> Запуск с новым образом"
+        if ! docker compose up -d --wait; then
+            echo "Стек не поднялся: sudo docker compose ps; sudo docker compose logs --tail 50 api worker" >&2
+            return 1
+        fi
         docker compose ps --format 'table {{.Service}}\t{{.Status}}'
     else
-        echo "Стек mnogobase не запущен (режим Minecraft?): образ собран, запустится при"
+        echo "Стек mnogobase не был запущен (режим Minecraft?): образ собран, запустится при"
         echo "следующем \`host-mode mnogobase\`"
     fi
     echo "==> Готово: $branch на $(as_owner git rev-parse --short HEAD)."
-    echo "Откат кода и образа: sudo -u $owner git checkout $old &&"
-    echo "  sudo docker tag mnogobase:$old mnogobase:latest && sudo docker compose up -d --wait"
+    echo "Откат кода и образа: sudo -u $owner git checkout $prev_rev &&"
+    echo "  sudo docker tag mnogobase:$prev_rev mnogobase:latest && sudo docker compose up -d --wait"
+    echo "Миграции базы назад не откатываются: если они были, восстановите снимок restic."
 }
 
 main "$@"

@@ -68,8 +68,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 
 | Что | Команда (из `/srv/mnogobase/app`) |
 |---|---|
-| Обновление | `sudo deploy/update.sh` — снимок restic, `git pull` ветки `main`, сборка `mnogobase:latest`, перезапуск api и worker. Другая ветка: `sudo deploy/update.sh <ветка>`, без снимка: `--no-backup`. Ветка, перемотка (fast-forward) и отсутствие локальных правок проверяются до снимка; git работает от владельца каталога, не от root; в режиме Minecraft образ только собирается |
-| Откат | `update.sh` сохраняет прежний образ как `mnogobase:<прежний коммит>` и в конце печатает команду отката: `git checkout <коммит>`, `docker tag mnogobase:<коммит> mnogobase:latest`, `docker compose up -d --wait`. Миграции базы назад не откатываются: если они были, восстановите снимок restic |
+| Обновление | `sudo deploy/update.sh` — `git pull` ветки `main` и сборка `mnogobase:latest`, пока сайт работает; затем одна остановка: снимок restic и сразу запуск api и worker с новым образом. Другая ветка: `sudo deploy/update.sh <ветка>`, без снимка: `--no-backup`. Если ветки нет, она не перематывается (fast-forward), есть локальные правки или сборка упала, стек не трогается; если образ не изменился, снимка и перезапуска нет. git работает от владельца каталога, не от root; в режиме Minecraft стек не запускается |
+| Откат | `update.sh` сохраняет заменяемый образ как `mnogobase:<его коммит>` (метка `org.opencontainers.image.revision`) и в конце печатает команду отката: `git checkout <коммит>`, `docker tag mnogobase:<коммит> mnogobase:latest`, `docker compose up -d --wait`. Миграции базы назад не откатываются: если они были, восстановите снимок restic |
 | Minecraft ↔ mnogobase | `sudo host-mode vanilla` (или `neoforge`) / `sudo host-mode mnogobase`; `sudo host-mode status` |
 | Состояние | `sudo docker compose ps`, `mnogobase client status` |
 | Логи | `sudo docker compose logs -f api worker`, `journalctl -u mnogobase` |

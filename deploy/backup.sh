@@ -4,6 +4,7 @@
 # они скачиваются заново.
 #   APP_DIR=/srv/mnogobase/app deploy/backup.sh    (данные: $APP_DIR/data или MB_DATA)
 # Репозиторий и пароль restic: /root/.restic-repo и /root/.restic-pass (или свои пути в env).
+# MB_BACKUP_KEEP_STOPPED=1 — после удачного снимка не поднимать стек (это делает deploy/update.sh).
 set -euo pipefail
 app_dir="${APP_DIR:-/srv/mnogobase/app}"
 cd "$app_dir"
@@ -13,6 +14,10 @@ export RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-/root/.restic-pass}"
 
 running="$(docker compose ps --status running --services)"
 restart() {
+    local status=$?
+    # MB_BACKUP_KEEP_STOPPED=1 (deploy/update.sh): после удачного снимка стек поднимает
+    # вызывающий, уже с новым образом. После сбоя стек поднимается здесь в любом случае.
+    if [ "$status" = 0 ] && [ "${MB_BACKUP_KEEP_STOPPED:-0}" = 1 ]; then return; fi
     # Поднимаем только то, что работало до бэкапа (в режиме Minecraft стек остановлен).
     # shellcheck disable=SC2086  # список сервисов разбивается на слова намеренно
     if [ -n "$running" ]; then docker compose up -d --no-recreate $running; fi
