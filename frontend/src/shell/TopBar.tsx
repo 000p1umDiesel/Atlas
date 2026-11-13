@@ -1,4 +1,5 @@
 import { Menu, Search } from "lucide-react";
+import { ThemeButton } from "./ThemeButton";
 
 type Props = { onMenu?: () => void };
 
@@ -28,6 +29,8 @@ export function TopBar({ onMenu }: Props) {
         <Search size={16} />
         <span className="truncate">Ctrl+K — скоро</span>
       </button>
+      {/* На телефоне в нижней панели нет места: тема здесь; на широком экране — в рейке. */}
+      <ThemeButton className="grid size-10 shrink-0 place-items-center rounded-full text-muted hover:bg-card hover:text-ink focus-visible:outline-2 focus-visible:outline-primary md:hidden" />
     </header>
   );
 }

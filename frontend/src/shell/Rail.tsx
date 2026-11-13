@@ -1,20 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import {
-  Circle,
-  FileText,
-  Home,
-  MessageCircle,
-  Monitor,
-  Moon,
-  Network,
-  Notebook,
-  Activity,
-  Sun,
-  User,
-  type LucideIcon,
-} from "lucide-react";
+import { Circle, FileText, Home, MessageCircle, Network, Notebook, Activity, User, type LucideIcon } from "lucide-react";
 import { motion } from "motion/react";
-import { useTheme, type ThemeChoice } from "../lib/theme";
+import { ThemeButton } from "./ThemeButton";
 
 export const NAV_ITEMS: { to: string; label: string; icon: LucideIcon }[] = [
   { to: "/", label: "Главная", icon: Home },
@@ -26,20 +13,11 @@ export const NAV_ITEMS: { to: string; label: string; icon: LucideIcon }[] = [
   { to: "/status", label: "Статус", icon: Activity },
 ];
 
-const THEME_CYCLE: Record<ThemeChoice, { next: ThemeChoice; label: string; icon: LucideIcon }> = {
-  system: { next: "light", label: "Тема: как в системе", icon: Monitor },
-  light: { next: "dark", label: "Тема: светлая", icon: Sun },
-  dark: { next: "system", label: "Тема: тёмная", icon: Moon },
-};
-
 const BUTTON =
   "relative grid size-11 place-items-center rounded-[14px] text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-primary";
 
-/** Иконная рейка слева; на узких экранах — нижняя панель. */
+/** Иконная рейка слева; на узких экранах — нижняя панель (тема там — в верхней панели). */
 export function Rail({ pathname }: { pathname: string }) {
-  const [theme, setTheme] = useTheme();
-  const cycle = THEME_CYCLE[theme];
-  const ThemeIcon = cycle.icon;
   return (
     <nav
       aria-label="Разделы"
@@ -70,15 +48,7 @@ export function Rail({ pathname }: { pathname: string }) {
         );
       })}
       <div className="hidden flex-1 md:block" />
-      <button
-        type="button"
-        className={`${BUTTON} hidden md:grid`}
-        aria-label={cycle.label}
-        title={cycle.label}
-        onClick={() => setTheme(cycle.next)}
-      >
-        <ThemeIcon size={20} strokeWidth={1.8} />
-      </button>
+      <ThemeButton className={`${BUTTON} hidden md:grid`} />
       <button type="button" className={`${BUTTON} hidden md:grid`} aria-label="Аккаунт" title="Аккаунт (скоро)">
         <User size={20} strokeWidth={1.8} />
       </button>

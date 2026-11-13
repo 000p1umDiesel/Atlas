@@ -87,3 +87,18 @@ test("тема на /_design и кнопка рейки — одно состо�
   expect(within(group).getByRole("button", { name: "Как в системе" }).getAttribute("aria-pressed")).toBe("true");
   expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
 });
+
+test("на телефоне тема переключается из верхней панели (кнопка не скрыта без md:)", async () => {
+  await renderAt("/");
+  const bar = (await screen.findByText("mnogobase", { selector: "header span" })).closest("header")!;
+  const mobile = within(bar).getByRole("button", { name: /^Тема:/ });
+  expect(mobile.className.split(/\s+/)).not.toContain("hidden");
+  expect(mobile.className.split(/\s+/)).toContain("md:hidden");
+  const before = mobile.getAttribute("aria-label");
+  fireEvent.click(mobile);
+  const after = within(bar).getByRole("button", { name: /^Тема:/ }).getAttribute("aria-label");
+  expect(after).not.toBe(before);
+  // рейка (на широком экране) показывает тот же выбор
+  const nav = screen.getByRole("navigation", { name: "Разделы" });
+  expect(within(nav).getByRole("button", { name: /^Тема:/ }).getAttribute("aria-label")).toBe(after);
+});
