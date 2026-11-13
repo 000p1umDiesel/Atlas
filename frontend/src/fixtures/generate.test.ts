@@ -49,20 +49,20 @@ describe("generateFixtures", () => {
   it("у типа русская подпись и определение (форма API этапа 2)", () => {
     const person = f.types.find((t) => t.type === "Person")!;
     expect(person.label).toBe("Человек");
-    expect(person.description).toBe("Реальный или вымышленный человек, названный по имени или однозначно узнаваемый.");
-    expect(f.types.find((t) => t.type === "Software")!.label).toBe("ПО");
-    expect(f.types.find((t) => t.type === "Regulation")!.label).toBe("Нормативный акт");
+    expect(person.description).toBe("Конкретный человек, реальный или вымышленный, — названный по имени или узнаваемый без него.");
+    expect(f.types.find((t) => t.type === "Software")!.label).toBe("Программа");
+    expect(f.types.find((t) => t.type === "Regulation")!.label).toBe("Закон");
     expect(f.types.find((t) => t.type === "Condition")).toMatchObject({
-      label: "Состояние",
-      description: "Болезнь, расстройство, симптом или иное медицинское либо психологическое состояние.",
+      label: "Болезнь",
+      description: "Заболевание, расстройство, симптом или иное медицинское либо психологическое состояние.",
     });
     expect(f.types.find((t) => t.type === "Organism")).toMatchObject({
       label: "Организм",
-      description: "Вид, организм, тип клеток, орган или иное живое существо либо его часть.",
+      description: "Вид, организм, клетка, орган — любое живое существо или его часть.",
     });
     expect(f.types.find((t) => t.type === "Other")).toMatchObject({
-      label: "Другое",
-      description: "Всё значимое, что не подходит ни под один тип выше.",
+      label: "Прочее",
+      description: "Всё значимое, что не подошло ни к одному типу выше.",
     });
     for (const t of f.types) {
       expect(t.label).toMatch(/^[А-ЯЁ]/);
