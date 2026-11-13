@@ -672,6 +672,17 @@ class GraphStore:
         )
         return {r["id"]: r["score"] for r in rows}
 
+    def entity_analysis(self, entity_id: str) -> dict:
+        """PageRank и сообщество сущности из актуального запуска аналитики; `None`, если
+        запуска нет, он устарел или сущности нет (для карточки сущности в вебе)."""
+        rows = self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
+            "MATCH (e:Entity {entity_id: $id}) WHERE e.analytics_run_id = s.run_id "
+            "RETURN e.analytics_pagerank AS pagerank, e.analytics_community AS community",
+            id=entity_id,
+        )
+        return rows[0] if rows else {"pagerank": None, "community": None}
+
     def analysis_details(self, limit: int = 20) -> list[dict]:
         """Топ сущностей актуального запуска по PageRank с их сообществом (`graph status`);
         `limit` зажимается в 1..100."""

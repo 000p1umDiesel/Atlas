@@ -64,6 +64,7 @@ from mnogobase.core.log import get_logger
 from mnogobase.core.models import Answer
 from mnogobase.ingest.pipeline import EmbedderMismatchError
 from mnogobase.llm.templates import render_messages
+from mnogobase.ops.doctor import run_checks
 from mnogobase.retrieval import Mode, build_retrievers
 from mnogobase.retrieval.answer import NO_SOURCES, Answerer
 from mnogobase.retrieval.compare import run_mode
@@ -74,6 +75,12 @@ from mnogobase.service.store import ServiceStore
 
 _DOC_ID = re.compile(r"[0-9a-f]{16}")
 _CHUNK_ID = re.compile(r"[0-9a-f]{16}:\d{5}")
+# сноска-цитата страницы wiki `[^<chunk_id>]`
+_FOOTNOTE = re.compile(r"\[\^([0-9a-f]{16}:\d{5})\]")
+# быстрые проверки сервисов для веба: без tokenizer/index/types (дорогие) и без генерации LLM
+SERVICE_CHECKS = ("database", "models", "llm", "qdrant", "neo4j", "graph_plugins")
+# одна проверка сервисов за раз на процесс: каждая открывает свои соединения ко всем базам
+_CHECKS_LOCK = threading.Lock()
 # Обрыв соединения с PostgreSQL или Neo4j: App пересоздаётся при следующем обращении.
 _CONNECTION_ERRORS = (DatabaseError, DBAPIError, ServiceUnavailable, SessionExpired)
 # Worker считается живым, если отмечался в очереди не позже этого числа секунд назад.
@@ -802,39 +809,98 @@ class KnowledgeBase:
                     source["available"] = path.is_relative_to(wiki_root) and path.is_file()
         return messages
 
-    async def wiki_pages(self, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def wiki_pages(
+        self, limit: int = 50, offset: int = 0, q: str | None = None
+    ) -> list[dict]:
         """Страница списка актуальных страниц wiki (устаревшие `stale` скрыты), без путей на
-        диске. 422 — неверная пагинация, 503 — ядро недоступно."""
+        диске. `q` — подстрока заголовка, slug или псевдонима без учёта регистра.
+        422 — неверная пагинация, 503 — ядро недоступно."""
         check_pagination(limit, offset)
+        needle = (q or "").strip().lower()
 
         async def run(app: App) -> list[dict]:
+            rows = app.graph.wiki_pages()
+            if needle:
+                rows = [
+                    r for r in rows if needle in " ".join([r.title, r.slug, *r.aliases]).lower()
+                ]
             return [
                 {k: v for k, v in row.model_dump().items() if k != "path"}
-                for row in app.graph.wiki_pages()[offset : offset + limit]
+                for row in rows[offset : offset + limit]
             ]
 
         return await self._with_app(run, "Wiki недоступна")
 
+    def _wiki_page(self, app: App, page_id: str) -> dict:
+        """Markdown страницы wiki с заголовком, slug и именами источников сносок.
+
+        `sources` — `chunk_id` → имя документа для каждой сноски `[^chunk_id]`: в разделе
+        Sources файлы загрузок записаны как `<doc_id>.ext`, а показать нужно исходное имя.
+        404 — страницы нет, она устарела или её файл отсутствует либо лежит вне `wiki.dir`."""
+        page = app.graph.wiki_page(page_id)
+        if page is None or page.stale:
+            raise ServiceError(404, "Страница wiki не найдена")
+        root = self.settings.wiki.dir.resolve()
+        path = (self.settings.wiki.dir / page.path).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ServiceError(404, "Страница wiki недоступна")
+        content = path.read_text(encoding="utf-8")
+        cited = list(dict.fromkeys(_FOOTNOTE.findall(content)))
+        views = {v.chunk_id: v for v in app.graph.chunks_by_ids(cited)} if cited else {}
+        return {
+            "id": page.page_id,
+            "title": page.title,
+            "slug": page.slug,
+            "content": content,
+            "sources": {cid: self._name(view.doc_id, view.path) for cid, view in views.items()},
+        }
+
     async def wiki_page(self, page_id: str) -> dict:
-        """Markdown страницы wiki с заголовком и slug. 404 — страницы нет, она устарела или
-        её файл отсутствует либо лежит вне `wiki.dir`; 503 — ядро недоступно."""
+        """Страница wiki по id (= `entity_id`), см. `_wiki_page`; 503 — ядро недоступно."""
 
         async def run(app: App) -> dict:
-            page = app.graph.wiki_page(page_id)
-            if page is None or page.stale:
-                raise ServiceError(404, "Страница wiki не найдена")
-            root = self.settings.wiki.dir.resolve()
-            path = (self.settings.wiki.dir / page.path).resolve()
-            if not path.is_relative_to(root) or not path.is_file():
-                raise ServiceError(404, "Страница wiki недоступна")
-            return {
-                "id": page.page_id,
-                "title": page.title,
-                "slug": page.slug,
-                "content": path.read_text(encoding="utf-8"),
-            }
+            return self._wiki_page(app, page_id)
 
         return await self._with_app(run, "Wiki недоступна")
+
+    async def wiki_page_by_slug(self, slug: str) -> dict:
+        """Страница wiki по slug (ссылки `[[slug|текст]]` внутри страниц); 404 — нет."""
+
+        async def run(app: App) -> dict:
+            for row in app.graph.wiki_pages():
+                if row.slug == slug:
+                    return self._wiki_page(app, row.page_id)
+            raise ServiceError(404, "Страница wiki не найдена")
+
+        return await self._with_app(run, "Wiki недоступна")
+
+    async def entity(self, entity_id: str) -> dict:
+        """Карточка сущности: поля узла, PageRank и сообщество актуального анализа графа,
+        есть ли страница wiki (`has_page`, `slug`). 404 — нет сущности."""
+
+        async def run(app: App) -> dict:
+            entity = app.graph.get_entity(entity_id)
+            if entity is None:
+                raise ServiceError(404, "Сущность не найдена")
+            page = app.graph.wiki_page(entity_id)
+            has_page = page is not None and not page.stale
+            return {
+                **entity.model_dump(),
+                **app.graph.entity_analysis(entity_id),
+                "has_page": has_page,
+                "slug": page.slug if has_page else None,
+            }
+
+        return await self._with_app(run, "Граф недоступен")
+
+    async def graph_analysis(self) -> dict:
+        """Состояние анализа графа (`graph status`): готов ли снимок, когда сделан, отчёт и
+        топ-20 сущностей по PageRank (`top`)."""
+
+        async def run(app: App) -> dict:
+            return {**app.graph.analysis_status(), "top": app.graph.analysis_details(20)}
+
+        return await self._with_app(run, "Граф недоступен")
 
     async def graph_search(self, query: str, limit: int = 20) -> list[dict]:
         """Сущности графа по полнотекстовому поиску в Neo4j, лучшие первыми.
@@ -870,6 +936,26 @@ class KnowledgeBase:
         return await self._with_app(run, "Граф недоступен")
 
     # ---- состояние ----
+    def service_checks(self) -> list[dict]:
+        """Быстрые проверки сервисов (`SERVICE_CHECKS`, по 5 с на запрос) для кнопки на
+        странице статуса. Подробности неудачной проверки не отдаются (там бывают адреса
+        серверов) — их показывает `mnogobase doctor` на сервере. 429 — проверка уже идёт."""
+        if not _CHECKS_LOCK.acquire(blocking=False):
+            raise ServiceError(429, "Проверка уже выполняется")
+        try:
+            checks = run_checks(self.settings, timeout=5, only=SERVICE_CHECKS)
+        finally:
+            _CHECKS_LOCK.release()
+        return [
+            {
+                "name": c.name,
+                "ok": c.ok,
+                "detail": c.detail if c.ok else "Недоступно — подробности: mnogobase doctor",
+                "warn": c.warn,
+            }
+            for c in checks
+        ]
+
     def status(self, now: float | None = None) -> dict:
         """Состояние сервиса для `/api/status`: число задач по статусам, выполняемые задачи,
         жив ли worker (отметка свежее `HEARTBEAT_STALE_S`) и расход LLM за сутки и календарный

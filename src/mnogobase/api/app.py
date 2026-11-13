@@ -530,9 +530,20 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         return await kb.send_message(user["id"], conversation_id, body.question, mode=body.mode)
 
     @app.get("/api/wiki")
-    async def wiki_pages(kb: KB, user: User, limit: Limit = 50, offset: Offset = 0):
-        """Страница списка страниц wiki."""
-        return await kb.wiki_pages(limit=limit, offset=offset)
+    async def wiki_pages(
+        kb: KB,
+        user: User,
+        limit: Limit = 50,
+        offset: Offset = 0,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+    ):
+        """Страница списка страниц wiki; `q` — поиск по заголовку, slug и псевдонимам."""
+        return await kb.wiki_pages(limit=limit, offset=offset, q=q)
+
+    @app.get("/api/wiki/by-slug/{slug}")
+    async def wiki_page_by_slug(slug: str, kb: KB, user: User):
+        """Страница wiki по slug (для ссылок `[[slug|текст]]`); 404 — нет."""
+        return await kb.wiki_page_by_slug(slug)
 
     @app.get("/api/wiki/{page_id}")
     async def wiki_page(page_id: str, kb: KB, user: User):
@@ -549,6 +560,16 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         """Полнотекстовый поиск сущностей графа по `q`."""
         return await kb.graph_search(q, limit=limit)
 
+    @app.get("/api/graph/analysis")
+    async def graph_analysis(kb: KB, user: User):
+        """Состояние анализа графа (PageRank + Leiden) и топ сущностей."""
+        return await kb.graph_analysis()
+
+    @app.get("/api/graph/{entity_id}")
+    async def entity(entity_id: str, kb: KB, user: User):
+        """Карточка сущности с PageRank/сообществом и ссылкой на wiki; 404 — нет."""
+        return await kb.entity(entity_id)
+
     @app.get("/api/graph/{entity_id}/neighbors")
     async def graph_neighbors(
         entity_id: str,
@@ -559,6 +580,11 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     ):
         """Окрестность сущности глубиной 1–3; 404 — нет сущности."""
         return await kb.graph_neighbors(entity_id, depth=depth, limit=limit)
+
+    @app.get("/api/status/checks")
+    def service_checks(kb: KB, user: User):
+        """Быстрые проверки баз и серверов моделей; 429 — проверка уже идёт."""
+        return kb.service_checks()
 
     @app.get("/api/status")
     def status(kb: KB, user: User):

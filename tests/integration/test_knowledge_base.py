@@ -325,3 +325,41 @@ async def test_document_card_chunks_and_named_jobs(env):
         assert removed.value.status == 404
     finally:
         await kb.close()
+
+
+async def test_wiki_search_slugs_sources_and_entity_card(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        upload(kb, "Attention paper.md", (FIXTURES / "attention_en.md").read_bytes())
+        await work_once()
+        pages = await kb.wiki_pages(limit=200)
+        assert pages
+        target = pages[0]
+        needle = target["title"][:4].upper()
+        found = await kb.wiki_pages(q=needle, limit=200)
+        assert target["page_id"] in {p["page_id"] for p in found}
+        assert all(
+            needle.lower() in (p["title"] + p["slug"] + " ".join(p["aliases"])).lower()
+            for p in found
+        )
+        assert await kb.wiki_pages(q="no-such-page-zzz") == []
+
+        page = await kb.wiki_page(target["page_id"])
+        by_slug = await kb.wiki_page_by_slug(target["slug"])
+        assert by_slug["id"] == page["id"] and by_slug["content"] == page["content"]
+        cited = [p for p in [await kb.wiki_page(x["page_id"]) for x in pages] if p["sources"]]
+        assert cited and set(cited[0]["sources"].values()) == {"Attention paper.md"}
+        with pytest.raises(ServiceError) as missing:
+            await kb.wiki_page_by_slug("no-such-slug")
+        assert missing.value.status == 404
+
+        entity = await kb.entity(target["page_id"])
+        assert entity["has_page"] is True and entity["slug"] == target["slug"]
+        assert entity["pagerank"] is None and entity["name"]
+        with pytest.raises(ServiceError):
+            await kb.entity("0" * 16)
+        analysis = await kb.graph_analysis()
+        assert analysis["ready"] is False and analysis["top"] == []
+    finally:
+        await kb.close()

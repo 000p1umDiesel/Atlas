@@ -121,7 +121,7 @@ def test_all_routes(api, tmp_path):
         kb.store.append_message(user_id, conversation_id, "user", question)
         return kb.store.append_message(user_id, conversation_id, "assistant", "reply")
 
-    async def wiki_pages(limit=50, offset=0):
+    async def wiki_pages(limit=50, offset=0, q=None):
         return [{"page_id": "p"}]
 
     async def wiki_page(page_id):
@@ -436,4 +436,59 @@ def test_document_and_chunk_routes(api):
     assert api.client.get(f"/api/documents/{doc}/chunks?limit=500", headers=h).status_code == 422
     assert api.client.get(f"/api/chunks/{doc}:00001", headers=h).json()["chunk_id"].endswith("1")
     for path in (f"/api/documents/{doc}", f"/api/documents/{doc}/chunks", f"/api/chunks/{doc}:1"):
+        assert api.client.get(path).status_code == 401
+
+
+def test_service_checks_run_one_at_a_time_and_hide_failure_details(api, monkeypatch):
+    import threading
+
+    from mnogobase.ops.doctor import Check
+    from mnogobase.service import kb as kb_module
+
+    started, release = threading.Event(), threading.Event()
+
+    def checks(settings, timeout=5.0, only=None, **kwargs):
+        assert timeout == 5 and "llm" in only and "types" not in only
+        started.set()
+        release.wait(5)
+        return [Check("database", True, "ok"), Check("llm", False, "http://secret:8000 down")]
+
+    monkeypatch.setattr(kb_module, "run_checks", checks)
+    api.kb.service_checks = partial(KnowledgeBase.service_checks, api.kb)
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(r=api.kb.service_checks()))
+    worker.start()
+    assert started.wait(5)
+    busy = api.client.get("/api/status/checks", headers=api.headers)
+    assert busy.status_code == 429
+    release.set()
+    worker.join(5)
+    by_name = {c["name"]: c for c in result["r"]}
+    assert by_name["database"] == {"name": "database", "ok": True, "detail": "ok", "warn": False}
+    assert by_name["llm"]["ok"] is False and "secret" not in by_name["llm"]["detail"]
+    assert api.client.get("/api/status/checks").status_code == 401
+
+
+def test_wiki_and_graph_card_routes(api):
+    h = api.headers
+
+    async def wiki_pages(limit=50, offset=0, q=None):
+        return [{"q": q}]
+
+    async def by_slug(slug):
+        return {"slug": slug}
+
+    async def entity(entity_id):
+        return {"entity_id": entity_id}
+
+    async def graph_analysis():
+        return {"ready": False}
+
+    api.kb.wiki_pages, api.kb.wiki_page_by_slug = wiki_pages, by_slug
+    api.kb.entity, api.kb.graph_analysis = entity, graph_analysis
+    assert api.client.get("/api/wiki?q=adam", headers=h).json() == [{"q": "adam"}]
+    assert api.client.get("/api/wiki/by-slug/adam", headers=h).json() == {"slug": "adam"}
+    assert api.client.get("/api/graph/analysis", headers=h).json() == {"ready": False}
+    assert api.client.get("/api/graph/e1", headers=h).json() == {"entity_id": "e1"}
+    for path in ("/api/wiki/by-slug/adam", "/api/graph/analysis", "/api/graph/e1"):
         assert api.client.get(path).status_code == 401

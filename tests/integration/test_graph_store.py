@@ -309,3 +309,18 @@ def test_count_doc_chunks(graph):
     make_doc(graph, "e" * 16, n=4)
     assert graph.count_doc_chunks("e" * 16) == 4
     assert graph.count_doc_chunks("f" * 16) == 0
+
+
+def test_entity_analysis_reads_only_the_current_run(graph):
+    make_entity(graph, "a" * 16, "Adam")
+    assert graph.entity_analysis("a" * 16) == {"pagerank": None, "community": None}
+    graph._run(
+        "MATCH (e:Entity {entity_id: $id}) SET e.analytics_run_id = 'old', "
+        "e.analytics_pagerank = 0.5, e.analytics_community = 3",
+        id="a" * 16,
+    )
+    graph._run("MERGE (s:AnalysisState {key: 'graph'}) SET s.run_id = 'new'")
+    assert graph.entity_analysis("a" * 16) == {"pagerank": None, "community": None}
+    graph._run("MATCH (s:AnalysisState {key: 'graph'}) SET s.run_id = 'old'")
+    assert graph.entity_analysis("a" * 16) == {"pagerank": 0.5, "community": 3}
+    assert graph.entity_analysis("missing") == {"pagerank": None, "community": None}
