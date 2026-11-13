@@ -49,7 +49,7 @@ export function Rail({ pathname }: { pathname: string }) {
         m
       </div>
       {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
-        const active = to === "/" ? pathname === "/" : pathname.startsWith(to);
+        const active = to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(to + "/");
         return (
           <Link
             key={to}

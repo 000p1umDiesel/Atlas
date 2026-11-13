@@ -49,3 +49,24 @@ test("кнопка закрытия вызывает onClose", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Закрыть" }));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+test("перерисовка родителя с inline onClose не крадёт фокус", async () => {
+  function Parent() {
+    const [open, setOpen] = useState(true);
+    const [n, setN] = useState(0);
+    return (
+      <>
+        <button onClick={() => setN(n + 1)}>тик {n}</button>
+        <Sheet open={open} title="Форма" onClose={() => setOpen(false)}>
+          <input aria-label="поле" />
+        </Sheet>
+      </>
+    );
+  }
+  render(<Parent />);
+  const input = await screen.findByLabelText("поле");
+  input.focus();
+  fireEvent.click(screen.getByText(/тик/));
+  expect(screen.getByText("тик 1")).toBeTruthy();
+  expect(document.activeElement).toBe(input);
+});

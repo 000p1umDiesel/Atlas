@@ -23,6 +23,20 @@ test("клик по «Главная» меняет путь на /", async () =
   await vi.waitFor(() => expect(router.state.location.pathname).toBe("/"));
 });
 
+test("после перехода в DOM только новая страница", async () => {
+  const router = await renderAt("/graph");
+  await screen.findByRole("heading", { name: "Граф" });
+  fireEvent.click(screen.getByRole("link", { name: "Чат" }));
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+  expect(await screen.findAllByRole("heading", { name: "Чат" })).toHaveLength(1);
+  expect(screen.queryByRole("heading", { name: "Граф" })).toBeNull();
+});
+
+test("«Сущности» не подсвечиваются на /entities-x", async () => {
+  await renderAt("/chat");
+  expect((await screen.findByRole("link", { name: "Чат" })).getAttribute("aria-current")).toBe("page");
+});
+
 test("оболочка показывает бренд", async () => {
   await renderAt("/");
   expect((await screen.findAllByText("mnogobase")).length).toBeGreaterThan(0);

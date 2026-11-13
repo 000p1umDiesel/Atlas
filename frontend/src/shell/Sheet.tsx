@@ -11,12 +11,14 @@ type Props = { open: boolean; onClose: () => void; title: string; children: Reac
 export function Sheet({ open, onClose, title, children }: Props) {
   const ref = useRef<HTMLElement>(null);
   const opener = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     ref.current?.focus();
@@ -26,10 +28,10 @@ export function Sheet({ open, onClose, title, children }: Props) {
       opener.current = null;
       if (target?.isConnected) target.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence>
       {open && (
         <motion.aside
           ref={ref}

@@ -17,7 +17,7 @@ export function Shell({ pathname, column = null, children }: Props) {
     <div className="flex h-dvh bg-bg text-ink">
       <Rail pathname={pathname} />
       {column && <ContextColumn>{column}</ContextColumn>}
-      <AnimatePresence mode="wait">
+      <AnimatePresence>
         {column && menuOpen && (
           <motion.aside
             key="menu"
@@ -36,17 +36,15 @@ export function Shell({ pathname, column = null, children }: Props) {
       <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
         <TopBar onMenu={column ? () => setMenuOpen(true) : undefined} />
         <main className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 md:px-8">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={pathname}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.16 }}
-            >
-              {children}
-            </motion.div>
-          </AnimatePresence>
+          {/* Только вход: выходящий поддерев рендерил бы живой <Outlet/> уже нового маршрута. */}
+          <motion.div
+            key={pathname}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.16 }}
+          >
+            {children}
+          </motion.div>
         </main>
       </div>
     </div>
