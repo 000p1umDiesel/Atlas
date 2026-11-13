@@ -171,6 +171,8 @@ function createLabel(name: string, palette: Palette, strong: boolean): Label {
     map: texture,
     transparent: true,
     depthWrite: false,
+    // Подпись поверх шаров: иначе её закрывает ближний (часто приглушённый) узел.
+    depthTest: false,
     sizeAttenuation: false,
   });
   const sprite = new Sprite(material);
