@@ -353,7 +353,8 @@ def create_api(
         секреты); Starlette при этом пишет трассировку в лог сервера."""
         return JSONResponse({"detail": "Сервис временно недоступен"}, status_code=503)
 
-    @app.get("/legacy", include_in_schema=False)
+    # HEAD на страницах — 200, как у GET (проверки доступности, curl -I)
+    @app.api_route("/legacy", methods=["GET", "HEAD"], include_in_schema=False)
     def legacy():
         """Прежний интерфейс (Preact без сборки); ссылается на `/static/...`."""
         return FileResponse(WEB_DIR / "index.html", media_type="text/html")
@@ -663,7 +664,7 @@ def create_api(
         """Состояние очереди, worker'а и расход LLM."""
         return kb.status()
 
-    @app.get("/{path:path}", include_in_schema=False)
+    @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def spa(path: str):
         """History fallback: любой неизвестный путь отдаёт `index.html` SPA. Пути API, статики
         и `/health` сюда не попадают: для них 404 в JSON."""

@@ -395,6 +395,15 @@ def test_spa_index_and_fallback(api):
         assert response.headers["referrer-policy"] == "no-referrer"
 
 
+def test_spa_pages_answer_head(api):
+    for path in ("/", "/graph", "/legacy"):
+        response = api.client.head(path)
+        assert response.status_code == 200, path
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.content == b""
+    assert api.client.head("/api/nope").status_code == 404
+
+
 def test_assets_cached_forever(api):
     asset = api.client.get("/assets/app-abc.js")
     assert asset.status_code == 200
