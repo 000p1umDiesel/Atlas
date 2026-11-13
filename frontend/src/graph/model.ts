@@ -82,19 +82,45 @@ export function visibleSubgraph(
 const SIZE_MIN = 4;
 const SIZE_MAX = 22;
 
-/** Радиус узла: sqrt-шкала по диапазону значений; pagerank=null → по mentions. */
-export function nodeSize(
-  attrs: Pick<NodeView, "mention_count" | "pagerank" | "degree">,
-  sizeBy: SizeBy,
-  range: { min: number; max: number },
-): number {
-  const value =
-    sizeBy === "pagerank" && attrs.pagerank !== null
-      ? attrs.pagerank
-      : sizeBy === "degree"
-        ? attrs.degree
-        : attrs.mention_count;
-  if (range.max <= range.min) return (SIZE_MIN + SIZE_MAX) / 2;
+type SizeAttrs = Pick<NodeView, "mention_count" | "pagerank" | "degree">;
+
+function metricValue(attrs: SizeAttrs, metric: SizeBy): number {
+  if (metric === "pagerank" && attrs.pagerank !== null) return attrs.pagerank;
+  if (metric === "degree") return attrs.degree;
+  return attrs.mention_count;
+}
+
+/**
+ * Метрика размера, которая реально применяется ко всему графу: если хоть у одного
+ * узла нет pagerank (анализ не запускался или устарел), весь граф меряется по mentions —
+ * иначе шкалы pagerank и mentions смешались бы.
+ */
+export function sizeMetric(g: Graph, sizeBy: SizeBy): SizeBy {
+  if (sizeBy !== "pagerank") return sizeBy;
+  return g.someNode((_, a) => a.pagerank === null) ? "mentions" : "pagerank";
+}
+
+/** Диапазон метрики по ВСЕМ узлам (размеры не прыгают при фильтрации); пустой граф → {0, 0}. */
+export function sizeRange(g: Graph, sizeBy: SizeBy): { min: number; max: number } {
+  const metric = sizeMetric(g, sizeBy);
+  let min = Infinity;
+  let max = -Infinity;
+  g.forEachNode((_, a) => {
+    const v = metricValue(a, metric);
+    if (!Number.isFinite(v)) return;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  });
+  return min <= max ? { min, max } : { min: 0, max: 0 };
+}
+
+/**
+ * Радиус узла: sqrt-шкала по диапазону значений. `sizeBy` — результат `sizeMetric(g, …)`,
+ * `range` — `sizeRange(g, …)`; pagerank=null у отдельного узла → по mentions.
+ */
+export function nodeSize(attrs: SizeAttrs, sizeBy: SizeBy, range: { min: number; max: number }): number {
+  const value = metricValue(attrs, sizeBy);
+  if (!Number.isFinite(value) || !(range.max > range.min)) return (SIZE_MIN + SIZE_MAX) / 2;
   const t = Math.min(1, Math.max(0, (value - range.min) / (range.max - range.min)));
   return SIZE_MIN + Math.sqrt(t) * (SIZE_MAX - SIZE_MIN);
 }

@@ -5,8 +5,11 @@ export type GraphSearch = GraphFilters & { view: GraphView };
 
 const D = DEFAULT_FILTERS;
 
+/** Строка из URL. Парсер TanStack превращает «числовые» строки в числа (`highlight=123`). */
 function str(v: unknown): string | undefined {
-  return typeof v === "string" ? v : undefined;
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return undefined;
 }
 
 function num(v: unknown, fallback: number): number {

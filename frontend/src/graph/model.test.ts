@@ -1,5 +1,13 @@
 import { generateFixtures } from "../fixtures/generate";
-import { buildGraph, DEFAULT_FILTERS, nodeSize, visibleSubgraph } from "./model";
+import type { GraphPayload, NodeView } from "../api/types";
+import {
+  buildGraph,
+  DEFAULT_FILTERS,
+  nodeSize,
+  sizeMetric,
+  sizeRange,
+  visibleSubgraph,
+} from "./model";
 
 const g = buildGraph(generateFixtures(7).graph);
 
@@ -52,5 +60,52 @@ describe("nodeSize", () => {
   });
   it("pagerank null откатывается на mentions", () => {
     expect(nodeSize(a(100, null), "pagerank", range)).toBe(22);
+  });
+});
+
+describe("sizeRange", () => {
+  const node = (id: string, m: number, p: number | null, d = 1): NodeView => ({
+    entity_id: id,
+    name: id,
+    type: "Person",
+    mention_count: m,
+    pagerank: p,
+    community: null,
+    degree: d,
+  });
+  const payload = (nodes: NodeView[]): GraphPayload => ({
+    nodes,
+    relations: [],
+    ranked_by: "pagerank",
+    truncated: false,
+  });
+
+  it("считается по всем узлам, а не по видимым", () => {
+    const small = buildGraph(payload([node("a", 2, 0.1, 3), node("b", 50, 0.9, 7), node("c", 9, 0.4, 1)]));
+    expect(sizeRange(small, "mentions")).toEqual({ min: 2, max: 50 });
+    expect(sizeRange(small, "degree")).toEqual({ min: 1, max: 7 });
+    expect(sizeRange(small, "pagerank")).toEqual({ min: 0.1, max: 0.9 });
+    expect(sizeMetric(small, "pagerank")).toBe("pagerank");
+  });
+
+  it("хотя бы один pagerank=null → весь граф по mentions", () => {
+    const mixed = buildGraph(payload([node("a", 2, 0.5), node("b", 40, null), node("c", 10, 0.01)]));
+    expect(sizeMetric(mixed, "pagerank")).toBe("mentions");
+    expect(sizeRange(mixed, "pagerank")).toEqual({ min: 2, max: 40 });
+    const range = sizeRange(mixed, "pagerank");
+    const metric = sizeMetric(mixed, "pagerank");
+    // узел с pagerank тоже меряется по mentions: 40 → максимум, 2 → минимум
+    expect(nodeSize(mixed.getNodeAttributes("b"), metric, range)).toBe(22);
+    expect(nodeSize(mixed.getNodeAttributes("a"), metric, range)).toBe(4);
+  });
+
+  it("пустой граф → {0, 0}, nodeSize без NaN", () => {
+    const empty = buildGraph(payload([]));
+    const range = sizeRange(empty, "pagerank");
+    expect(range).toEqual({ min: 0, max: 0 });
+    const s = nodeSize({ mention_count: 3, pagerank: null, degree: 0 }, "mentions", range);
+    expect(Number.isNaN(s)).toBe(false);
+    expect(s).toBeGreaterThanOrEqual(4);
+    expect(s).toBeLessThanOrEqual(22);
   });
 });

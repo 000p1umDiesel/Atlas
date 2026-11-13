@@ -32,3 +32,17 @@ describe("graph search", () => {
     expect(parseGraphSearch(s)).toEqual(f);
   });
 });
+
+describe("graph search: числа из парсера TanStack", () => {
+  it("числовые highlight и community превращаются в строки", () => {
+    const p = parseGraphSearch({ highlight: 123, community: 7 });
+    expect(p.highlight).toBe("123");
+    expect(p.community).toBe("7");
+  });
+  it("нечисловой мусор отбрасывается", () => {
+    expect(parseGraphSearch({ highlight: Number.NaN, community: {} })).toMatchObject({
+      highlight: "",
+      community: null,
+    });
+  });
+});
