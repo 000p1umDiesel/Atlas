@@ -197,8 +197,9 @@ def fail(exc: Exception) -> None:
 @contextmanager
 def graph_writer(settings: Settings) -> Iterator[None]:
     """Блокировки для записи аналитики графа: сначала глобальная `graph-analysis`, затем
-    блокировка корпуса. Порядок graph-analysis → worker → corpus общий для всего проекта;
-    обратный порядок где-либо ещё привёл бы к взаимной блокировке."""
+    блокировка корпуса (порядок graph-analysis → worker → corpus). Все блокировки — try-lock
+    без ожидания, поэтому задача `analyze` worker'а, берущая graph-analysis последней, не
+    приводит к взаимной блокировке: кто не успел, получает «занято» и откладывает работу."""
     try:
         with database_lock(settings, "graph-analysis"):
             lock = corpus_lock(settings)

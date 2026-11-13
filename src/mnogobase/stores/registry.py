@@ -408,8 +408,9 @@ class Registry:
 def ingest_lock(target: DatabaseTarget) -> PgLock:
     """Advisory-lock `ingest` PostgreSQL: единственный писатель корпуса.
 
-    Его берут ingest / remove / wiki / reindex / reset / worker. Порядок захвата
-    advisory-locks: graph-analysis → worker → корпус (`ingest`); обратный порядок приведёт
-    к взаимной блокировке. Чтения (ask, API) lock не берут. Возвращает ещё не захваченный
+    Его берут ingest / remove / wiki / reindex / reset / worker. CLI берёт advisory-locks в
+    порядке graph-analysis → worker → корпус (`ingest`); задача `analyze` worker'а берёт
+    graph-analysis последней, что безопасно, потому что все захваты — try-lock без
+    ожидания (занято — работа откладывается). Чтения (ask, API) lock не берут. Возвращает ещё не захваченный
     `PgLock` (использовать как контекстный менеджер)."""
     return PgLock(target, "ingest")

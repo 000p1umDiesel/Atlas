@@ -580,6 +580,11 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         """Полнотекстовый поиск сущностей графа по `q`."""
         return await kb.graph_search(q, limit=limit)
 
+    @app.post("/api/graph/analyze", status_code=202)
+    def graph_analyze(kb: KB, user: User):
+        """Ставит анализ графа задачей worker'а (202); повторное нажатие не плодит задачи."""
+        return kb.enqueue_analyze()
+
     @app.get("/api/graph/analysis")
     async def graph_analysis(kb: KB, user: User):
         """Состояние анализа графа (PageRank + Leiden) и топ сущностей."""

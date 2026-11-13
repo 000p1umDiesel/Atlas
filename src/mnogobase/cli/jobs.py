@@ -79,10 +79,13 @@ from mnogobase.core.log import get_logger, new_run_id
 from mnogobase.core.progress import NullProgress
 from mnogobase.ingest.processing import measured_ingest
 from mnogobase.llm.telemetry import job_scope
+from mnogobase.ops.graph_analysis import analyze
 
 # Пауза после потери связи с PostgreSQL: от MIN, удваивается до MAX секунд (тесты уменьшают).
 DB_RETRY_MIN_S = 5.0
 DB_RETRY_MAX_S = 60.0
+# как часто задача analyze отмечается в очереди, пока анализ идёт в отдельном потоке
+ANALYZE_HEARTBEAT_S = 30.0
 
 
 def _next_pause(pause: float) -> float:
@@ -367,14 +370,14 @@ def run_worker(
         # True после ошибки базы: соединения App могли умереть, его надо создать заново
         stale = False
 
-        async def services():
+        async def services(checks=common.INGEST_CHECKS):
             """Проверяет сервисы и возвращает рабочий `App`, создавая его при необходимости.
 
-            Проверка идёт перед каждой задачей: если что-то недоступно,
+            Проверка идёт перед каждой задачей: если что-то из `checks` недоступно,
             `ServicesUnavailable` откладывает задачу без расхода попытки. Устаревший после
             ошибки базы `App` закрывается и строится заново."""
             nonlocal application, stale
-            failed = [c for c in common.run_checks(settings, only=common.INGEST_CHECKS) if not c.ok]
+            failed = [c for c in common.run_checks(settings, only=checks) if not c.ok]
             if failed:
                 raise ServicesUnavailable(", ".join(c.name for c in failed))
             if application is not None and stale:
@@ -417,6 +420,43 @@ def run_worker(
                 if doc_id:
                     uploads.delete(doc_id)
 
+        def run_analysis(app) -> None:
+            """Анализ графа в потоке: блокировка `graph-analysis` берётся и отпускается здесь
+            же, поэтому поток, переживший `jobs.timeout_s`, не пишет в граф без неё. Занятая
+            блокировка (идёт `mnogobase graph analyze`) — `ServicesUnavailable`: задача
+            подождёт без расхода попытки."""
+            lock = database_lock(settings, "graph-analysis")
+            try:
+                lock.acquire()
+            except LockBusyError:
+                raise ServicesUnavailable("graph-analysis") from None
+            try:
+                app.graph.ensure_schema()
+                # без GDS чистить нечего; понятную ошибку об этом даст сам analyze
+                if app.graph.plugin_status()["gds"]:
+                    for name in app.graph.owned_projections():
+                        app.graph.drop_projection(name)
+                analyze(app.graph, settings.graph.analysis)
+            finally:
+                lock.release()
+
+        async def analyze_graph(job):
+            """Задача analyze (кнопка в вебе): PageRank + Leiden в GDS, как `graph analyze`.
+
+            Нужен только Neo4j. Пока анализ идёт в отдельном потоке, раз в 30 секунд
+            обновляются прогресс задачи и heartbeat worker'а, иначе статус показал бы
+            зависший worker."""
+            app = await services(("neo4j",))
+            common.console.print(f"Анализ графа, задача {job.id}")
+            work = asyncio.ensure_future(asyncio.to_thread(run_analysis, app))
+            while True:
+                q.set_progress(job.id, "анализ графа")
+                q.heartbeat()
+                done, _ = await asyncio.wait({work}, timeout=ANALYZE_HEARTBEAT_S)
+                if done:
+                    work.result()
+                    return
+
         async def handle(job):
             """Обработчик одной задачи для `process_one`: remove или ingest.
 
@@ -431,6 +471,9 @@ def run_worker(
             if job.kind == "remove":
                 with job_scope(job.id):
                     await remove(job)
+                return
+            if job.kind == "analyze":
+                await analyze_graph(job)
                 return
             if job.kind != "ingest":
                 raise ValueError("Неподдерживаемый тип задачи")

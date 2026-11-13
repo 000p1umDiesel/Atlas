@@ -532,3 +532,10 @@ def test_stream_route_emits_server_sent_events(api):
     cookie_login(client)
     no_origin = client.post("/api/conversations/c1/messages/stream", json={"question": "q"})
     assert no_origin.status_code == 403
+
+
+def test_analyze_route(api):
+    api.kb.enqueue_analyze = lambda: {"id": 9, "kind": "analyze"}
+    response = api.client.post("/api/graph/analyze", headers=api.headers)
+    assert response.status_code == 202 and response.json()["id"] == 9
+    assert api.client.post("/api/graph/analyze").status_code == 401

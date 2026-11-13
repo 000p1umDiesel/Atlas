@@ -26,6 +26,7 @@ from sqlalchemy.exc import DBAPIError
 
 from mnogobase.core.database import DatabaseError, LockBusyError
 from mnogobase.core.log import get_logger
+from mnogobase.ops.graph_analysis import AnalysisError
 from mnogobase.stores.registry import ingest_lock
 
 from .queue import JobQueue
@@ -33,6 +34,11 @@ from .queue import JobQueue
 
 class ServicesUnavailable(RuntimeError):
     """Недоступна база или сервер моделей: задача ждёт, попытка не засчитывается."""
+
+
+# Исключения, чей текст написан для пользователя и не содержит секретов: очередь хранит
+# его целиком (иначе только имя типа), а задача сразу становится failed.
+SAFE_MESSAGE_ERRORS: tuple[type[BaseException], ...] = (AnalysisError,)
 
 
 # Сбои инфраструктуры, а не документа: задача возвращается в очередь без расхода попытки.
@@ -90,6 +96,11 @@ async def process_one(
             error = "JobTimeout" if deadline.expired() else type(exc).__name__
             queue.fail(job.id, error, max_attempts=max_attempts, delay=delay)
             log.error("job_timeout" if deadline.expired() else "job_failed", job_id=job.id)
+        except SAFE_MESSAGE_ERRORS as exc:
+            # Текст написан для пользователя, а повтор даст тот же результат: задача сразу
+            # failed, повторить её можно вручную (например, после установки GDS).
+            queue.fail(job.id, f"{type(exc).__name__}: {exc}", max_attempts=1, delay=delay)
+            log.warning("job_failed", job_id=job.id, error_type=type(exc).__name__)
         except Exception as exc:
             # Текст ошибки провайдера может содержать ключи и URL: сохраняем только тип.
             queue.fail(job.id, type(exc).__name__, max_attempts=max_attempts, delay=delay)

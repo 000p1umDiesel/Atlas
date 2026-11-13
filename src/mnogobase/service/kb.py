@@ -56,7 +56,7 @@ from neo4j.exceptions import ServiceUnavailable, SessionExpired
 from sqlalchemy.exc import DBAPIError
 
 from mnogobase.app import App, build_app
-from mnogobase.background.queue import JobQueue
+from mnogobase.background.queue import ANALYZE_PATH, ANALYZE_VERSION, JobQueue
 from mnogobase.background.uploads import Uploads
 from mnogobase.core.config import Settings
 from mnogobase.core.database import DatabaseError, database_target
@@ -615,6 +615,18 @@ class KnowledgeBase:
                 for path in known
             ]
             return self._job(queue.get(job_ids[-1]))
+
+    def enqueue_analyze(self) -> dict:
+        """Ставит анализ графа (PageRank + Leiden) задачей `analyze` для worker'а.
+
+        Одна такая задача на проект: ожидающая или идущая возвращается как есть,
+        выполненная или упавшая перезапускается. 429 — очередь переполнена."""
+        with self._queue() as queue:
+            existing = queue.find(ANALYZE_PATH, ANALYZE_VERSION)
+            if existing is None or existing.status not in ("pending", "running"):
+                self._queue_has_room(queue)
+            job_id = queue.enqueue(ANALYZE_PATH, ANALYZE_VERSION, force=True, kind="analyze")
+            return self._job(queue.get(job_id))
 
     # ---- чтение корпуса ----
     @staticmethod

@@ -59,6 +59,12 @@ from pathlib import Path
 
 from mnogobase.core.database import DatabaseTarget, connect, initialize, transaction_lock
 
+# Задача анализа графа (`kind='analyze'`) не связана с файлом: постоянный путь и версия
+# дают одну задачу на проект — повторная постановка возвращает ту же (pending/running) или
+# перезапускает выполненную.
+ANALYZE_PATH = Path("/mnogobase/graph-analysis")
+ANALYZE_VERSION = "analyze"
+
 
 @dataclass(frozen=True)
 class Job:
@@ -67,8 +73,8 @@ class Job:
     `path` — абсолютный путь источника, `fingerprint` — версия (`doc_id` или
     `remove:<doc_id>`), `status` — `pending` / `running` / `done` / `failed` / `superseded`,
     `attempts` — сколько раз задачу брали в работу, `available_at` — unix-время, раньше
-    которого её не берут, `error` — только имя типа исключения (текст может содержать
-    секреты), `progress` — короткое описание текущего шага. Метки времени — unix-секунды."""
+    которого её не берут, `error` — имя типа исключения (текст может содержать секреты);
+    только у исключений из `worker.SAFE_MESSAGE_ERRORS` — ещё и их текст, `progress` — короткое описание текущего шага. Метки времени — unix-секунды."""
 
     id: int
     path: str

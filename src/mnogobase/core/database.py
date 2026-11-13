@@ -14,8 +14,10 @@ sqlite3; `bind_sql` превращает их в именованные bind-п�
 Блокировки — session-level advisory locks PostgreSQL (`PgLock`) на отдельном соединении
 без пула с TCP keepalive: блокировка живёт ровно столько, сколько соединение владельца,
 и сама снимается при падении процесса. Ключи блокировок: `ingest` (единственный писатель
-корпуса, `stores/registry.py:ingest_lock`), `worker`, `graph-analysis`; порядок захвата
-graph-analysis → worker → ingest, обратный порядок грозит взаимной блокировкой.
+корпуса, `stores/registry.py:ingest_lock`), `worker`, `graph-analysis`. CLI-команды берут их
+в порядке graph-analysis → worker → ingest. Задача `analyze` в worker'е берёт graph-analysis
+последней (worker → ingest → graph-analysis), но все блокировки — try-lock без ожидания:
+взаимной блокировки нет, занятая блокировка просто откладывает задачу.
 
 `mark_project` / `project_exists` связывают каталог проекта (`data_dir`) со схемой:
 команды только для чтения вне проекта не должны создавать таблицы.

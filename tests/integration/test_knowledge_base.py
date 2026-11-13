@@ -434,3 +434,81 @@ async def test_stream_reports_llm_failure(env, monkeypatch):
         assert missing.value.status == 404
     finally:
         await kb.close()
+
+
+def _job(kb, job_id):
+    return next(j for j in kb.jobs(limit=200) if j["id"] == job_id)
+
+
+async def test_analyze_job_dedups_and_runs_in_the_worker(env, monkeypatch):
+    from mnogobase.cli import jobs as jobs_cli
+    from mnogobase.ops.doctor import Check
+
+    settings, factory, root = env
+    calls = []
+    monkeypatch.setattr(jobs_cli, "analyze", lambda graph, cfg: calls.append(cfg) or {})
+    # для анализа нужен только Neo4j: недоступные модели задачу не откладывают
+    monkeypatch.setattr(
+        cli.common,
+        "run_checks",
+        lambda settings, only=None, **kw: [Check(n, n == "neo4j", "x") for n in only or ()],
+    )
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = await asyncio.to_thread(kb.enqueue_analyze)
+        assert job["kind"] == "analyze" and job["name"] == "Анализ графа"
+        assert (await asyncio.to_thread(kb.enqueue_analyze))["id"] == job["id"]
+        await work_once()
+        assert _job(kb, job["id"])["status"] == "done" and len(calls) == 1
+        again = await asyncio.to_thread(kb.enqueue_analyze)
+        assert again["id"] == job["id"] and again["status"] == "pending"
+    finally:
+        await kb.close()
+
+
+async def test_analyze_without_gds_fails_once_with_its_message(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = await asyncio.to_thread(kb.enqueue_analyze)
+        # --once выходит с кодом 1, когда в очереди остались упавшие задачи
+        await asyncio.to_thread(runner.invoke, cli.app, ["worker", "run", "--once"])
+        done = _job(kb, job["id"])
+        assert done["status"] == "failed" and done["attempts"] == 1
+        assert done["error"].startswith("AnalysisError: ") and "GDS" in done["error"]
+    finally:
+        await kb.close()
+
+
+async def test_analyze_waits_while_another_analysis_runs(env, monkeypatch):
+    from mnogobase.cli import jobs as jobs_cli
+    from mnogobase.core.database import database_lock
+
+    settings, factory, root = env
+    monkeypatch.setattr(jobs_cli, "analyze", lambda graph, cfg: {})
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = await asyncio.to_thread(kb.enqueue_analyze)
+        with database_lock(settings, "graph-analysis"):
+            await asyncio.to_thread(runner.invoke, cli.app, ["worker", "run", "--once"])
+        waiting = _job(kb, job["id"])
+        assert waiting["status"] == "pending" and waiting["attempts"] == 0
+    finally:
+        await kb.close()
+
+
+async def test_unexpected_job_errors_keep_only_the_type(env, monkeypatch):
+    from mnogobase.cli import jobs as jobs_cli
+
+    def broken(graph, cfg):
+        raise RuntimeError("bolt://user:secret@host")
+
+    settings, factory, root = env
+    monkeypatch.setattr(jobs_cli, "analyze", broken)
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = await asyncio.to_thread(kb.enqueue_analyze)
+        await asyncio.to_thread(runner.invoke, cli.app, ["worker", "run", "--once"])
+        assert _job(kb, job["id"])["error"] == "RuntimeError"
+    finally:
+        await kb.close()
