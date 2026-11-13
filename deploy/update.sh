@@ -87,13 +87,27 @@ main() {
     fi
 
     # 3. Образ — пока стек работает. Метка MB_REVISION — коммит, из которого он собран.
-    local was_running=0 current="" after prev_rev
+    local was_running=0 current="" after prev_rev="$old" rollback_tag="" label
     if grep -qx api <<<"$running"; then
         was_running=1
         # образ, на котором api работает сейчас (может отличаться от latest после сбоя)
         current="$(docker inspect --format '{{.Image}}' "$(docker compose ps -q api)")"
     else
         current="$(docker image inspect --format '{{.Id}}' mnogobase:latest 2>/dev/null || true)"
+    fi
+    # Заменяемый образ получает тег своего коммита (без метки — прежний HEAD) ДО сборки:
+    # в хранилище образов containerd образ, с которого сборка сняла latest, остаётся без
+    # имени, и по ID его уже не найти. Не вышло — откат через git и пересборку.
+    if [ -n "$current" ]; then
+        label="$(docker image inspect \
+            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+            "$current" 2>/dev/null || true)"
+        case "$label" in "" | unknown | "<no value>") ;; *) prev_rev="$label" ;; esac
+        if docker tag "$current" "mnogobase:$prev_rev" 2>/dev/null; then
+            rollback_tag="mnogobase:$prev_rev"
+        else
+            echo "Прежний образ не найден: тега для отката не будет (откат — git и пересборка)" >&2
+        fi
     fi
     echo "==> Сборка образа (сайт пока работает)"
     if ! MB_REVISION="$(as_owner git rev-parse --short HEAD)" docker compose build api; then
@@ -103,17 +117,10 @@ main() {
     fi
     after="$(docker image inspect --format '{{.Id}}' mnogobase:latest)"
     if [ "$current" = "$after" ]; then
+        # тег отката указывает на тот же образ, что и latest: он не нужен
+        if [ -n "$rollback_tag" ]; then docker image rm "$rollback_tag" >/dev/null; fi
         echo "==> Образ не изменился: снимок и перезапуск не нужны. $branch на $new."
         return 0
-    fi
-    # Заменяемый образ остаётся под тегом своего коммита (у образов без метки — прежний HEAD).
-    prev_rev="$old"
-    if [ -n "$current" ]; then
-        local label
-        label="$(docker image inspect \
-            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$current")"
-        case "$label" in "" | unknown | "<no value>") ;; *) prev_rev="$label" ;; esac
-        docker tag "$current" "mnogobase:$prev_rev"
     fi
 
     # 4. Снимок и перезапуск: стек останавливается один раз.
@@ -139,8 +146,12 @@ main() {
         echo "следующем \`host-mode mnogobase\`"
     fi
     echo "==> Готово: $branch на $(as_owner git rev-parse --short HEAD)."
-    echo "Откат кода и образа: sudo -u $owner git checkout $prev_rev &&"
-    echo "  sudo docker tag mnogobase:$prev_rev mnogobase:latest && sudo docker compose up -d --wait"
+    if [ -n "$rollback_tag" ]; then
+        echo "Откат кода и образа: sudo -u $owner git checkout $prev_rev &&"
+        echo "  sudo docker tag $rollback_tag mnogobase:latest && sudo docker compose up -d --wait"
+    else
+        echo "Откат: sudo -u $owner git checkout $prev_rev && sudo docker compose up -d --build --wait"
+    fi
     echo "Миграции базы назад не откатываются: если они были, восстановите снимок restic."
 }
 
