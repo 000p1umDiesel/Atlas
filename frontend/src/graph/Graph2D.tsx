@@ -472,14 +472,16 @@ export function Graph2D({ graph, filters, entityTypes, selected = null, onSelect
         : [...new Set(graph.mapNodes((_, a) => a.type))].sort();
     const metric = sizeMetric(graph, sizeBy);
     const range = sizeRange(graph, sizeBy);
-    rg.updateEachNodeAttributes(
-      (_, a) => ({
-        ...a,
-        size: nodeSize(a, metric, range),
-        color: cssColor(colorBy === "community" ? communityColorVar(a.community) : typeColorVar(a.type, configured)),
-      }),
-      { attributes: ["size", "color"] },
-    );
+    // Без подсказки `{ attributes: [...] }`: с ней Sigma 4 пропускает переиндексацию и
+    // ищет узлы в своём индексе программ, а он пуст, пока ждёт полная переобработка
+    // (`window.resize` → `scheduleRefresh()` до следующего кадра, потерянный WebGL-контекст).
+    // Тогда Sigma бросает «node … can't be repaint». Полный refresh ниже всё равно
+    // переиндексирует граф, так что подсказка ничего не экономила.
+    rg.updateEachNodeAttributes((_, a) => ({
+      ...a,
+      size: nodeSize(a, metric, range),
+      color: cssColor(colorBy === "community" ? communityColorVar(a.community) : typeColorVar(a.type, configured)),
+    }));
     sigma.refresh();
   }, [graph, colorBy, sizeBy, typesOrder, themeVersion]);
 
