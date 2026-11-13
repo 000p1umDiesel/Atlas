@@ -78,6 +78,29 @@ def test_community_query_timeout_keeps_normal_retrieval_available():
         store.community_chunks(["seed"], 2)
 
 
+def fail_with(code):
+    """Функция вместо `GraphStore._run`, бросающая ошибку Neo4j с кодом `code`."""
+    from neo4j.exceptions import Neo4jError
+
+    def fail(*args, **kwargs):
+        raise Neo4jError._hydrate_neo4j(code=code, message="x")
+
+    return fail
+
+
+def test_shortest_paths_timeout_is_reported_not_raised():
+    from neo4j.exceptions import Neo4jError
+
+    from mnogobase.stores.graph_store import GraphStore
+
+    store = GraphStore(None)
+    store._run = fail_with("Neo.ClientError.Transaction.TransactionTimedOut")
+    assert store.shortest_paths("a", "b") == ([], True)
+    store._run = fail_with("Neo.ClientError.Security.Unauthorized")
+    with pytest.raises(Neo4jError):
+        store.shortest_paths("a", "b")
+
+
 def test_apoc_traversal_timeout_falls_back_to_one_hop_cypher():
     """Таймаут обхода APOC не роняет ответ в режимах graph/all: берётся сосед в один шаг."""
     from neo4j.exceptions import Neo4jError

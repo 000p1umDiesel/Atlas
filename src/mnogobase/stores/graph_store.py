@@ -112,6 +112,11 @@ _WORD = re.compile(r"\w+", re.UNICODE)
 # Каждое слово запроса — клауза по двум полям индекса `entity_names`; без предела вопрос
 # в несколько сотен слов превысил бы лимит клауз Lucene (1024) и уронил бы поиск по графу.
 FULLTEXT_MAX_TOKENS = 64
+# Обзор графа (`overview`): больше связей между выбранными узлами не отдаётся (`truncated`);
+# тот же предел у подграфа сообщества.
+OVERVIEW_MAX_RELATIONS = 5000
+# Серверный таймаут поиска кратчайших путей (`shortest_paths`): хаб не должен держать запрос.
+PATH_TIMEOUT_S = 5.0
 # Проекция узла WikiPage в `WikiPageRecord`; отсутствующий `stale` считается false.
 _PAGE_FIELDS = "p {.page_id, .slug, .title, .path, .content_hash, .version, stale: coalesce(p.stale, false)} AS page"
 # Проекция связи RELATED в `RelationView` (концы, предикат, описание, вес, подтверждения).
@@ -134,10 +139,18 @@ _REL_PATTERNS = {
 _CURRENT_RUN = "OPTIONAL MATCH (s:AnalysisState {key: 'graph'}) WITH s.run_id AS run"
 # PageRank и сообщество сущности `e` только из актуального запуска `run`, иначе null.
 _FRESH = "run IS NOT NULL AND e.analytics_run_id = run"
+# PageRank сущности `e` из актуального запуска `run`, иначе null.
+_PAGERANK = f"CASE WHEN {_FRESH} THEN e.analytics_pagerank END"
+# Порядок сущностей `e` по актуальному PageRank (null — в конце, то есть без актуального
+# анализа — по упоминаниям), затем стабильный порядок; нужны переменные `e` и `run`.
+_BY_PAGERANK = (
+    f"ORDER BY {_PAGERANK} IS NULL, {_PAGERANK} DESC, coalesce(e.mention_count, 0) DESC, "
+    "e.name, e.entity_id"
+)
 _NODE_FIELDS = (
     "entity_id: e.entity_id, name: e.name, type: e.type, "
     "mention_count: coalesce(e.mention_count, 0), "
-    f"pagerank: CASE WHEN {_FRESH} THEN e.analytics_pagerank END, "
+    f"pagerank: {_PAGERANK}, "
     f"community: CASE WHEN {_FRESH} THEN e.analytics_community END, "
     "degree: COUNT { (e)-[:RELATED]-(:Entity) }"
 )
@@ -157,11 +170,29 @@ _NODE_CARD = (
 _ENTITY_SORT_KEYS = {
     "relevance": "score",
     "mentions": "coalesce(e.mention_count, 0)",
-    "pagerank": f"CASE WHEN {_FRESH} THEN e.analytics_pagerank END",
+    "pagerank": _PAGERANK,
     "degree": "COUNT { (e)-[:RELATED]-(:Entity) }",
     "name": "e.name",
 }
 EntitySort = Literal["relevance", "mentions", "pagerank", "degree", "name"]
+# Фильтры сущности `e` в каталоге и обзоре (параметры `$types`, `$min_mentions`,
+# `$community`); сообщество — только из актуального запуска, без него фильтр пуст.
+_ENTITY_FILTER = (
+    "(size($types) = 0 OR e.type IN $types) "
+    "AND coalesce(e.mention_count, 0) >= $min_mentions "
+    f"AND ($community IS NULL OR ({_FRESH} AND e.analytics_community = $community))"
+)
+# Связи RELATED между узлами списка `top` (каждая один раз, в хранимом направлении) с
+# `weight >= $min_weight`, по весу убыванию, затем предикат и id концов. Сортируются и
+# считаются ссылки на связи, проекция `_REL_VIEW` строится только для первых
+# `$max_relations`: даёт `relation_total` (все подходящие) и `relations`.
+_RELATIONS_AMONG = (
+    "CALL (top) { UNWIND top AS a MATCH (a)-[r:RELATED]->(b:Entity) "
+    "WHERE b IN top AND coalesce(r.weight, 0.0) >= $min_weight "
+    "WITH r, a, b ORDER BY coalesce(r.weight, 0.0) DESC, r.predicate, a.entity_id, b.entity_id "
+    "WITH collect(r) AS found RETURN size(found) AS relation_total, "
+    f"[r IN found[0..$max_relations] | {_REL_VIEW}] AS relations }} "
+)
 # Помечает аналитику устаревшей: новая ревизия графа, опубликованного запуска больше нет.
 # Выполняется первым в каждой транзакции, которая меняет исходные данные графа.
 _INVALIDATE_ANALYSIS = (
@@ -728,9 +759,7 @@ class GraphStore:
         direction = "DESC" if descending else ""
         rows = self._run(
             f"{_CURRENT_RUN} {source}"
-            "WHERE (size($types) = 0 OR e.type IN $types) "
-            "AND coalesce(e.mention_count, 0) >= $min_mentions "
-            f"AND ($community IS NULL OR ({_FRESH} AND e.analytics_community = $community)) "
+            f"WHERE {_ENTITY_FILTER} "
             f"WITH run, e, {_ENTITY_SORT_KEYS[sort]} AS key "
             f"ORDER BY key IS NULL, key {direction}, coalesce(e.mention_count, 0) DESC, "
             "e.name, e.entity_id "
@@ -749,6 +778,172 @@ class GraphStore:
         if not rows:  # ни одной подходящей сущности: группировка по run не дала строк
             return 0, []
         return rows[0]["total"], rows[0]["nodes"]
+
+    # ---- обзор графа, пути и сообщества для веба (только чтение) ----
+    def overview(
+        self,
+        *,
+        limit: int = 300,
+        types: Sequence[str] = (),
+        community: str | None = None,
+        min_weight: float = 0.0,
+        min_mentions: int = 0,
+        max_relations: int = OVERVIEW_MAX_RELATIONS,
+    ) -> dict:
+        """Обзор графа: топ-`limit` узлов и связи RELATED между ними.
+
+        Узлы (`_NODE_VIEW`) отбираются фильтрами `types`, `community`, `min_mentions` (как в
+        `list_entities`) и ранжируются по актуальному PageRank (`ranked_by="pagerank"`), а
+        без актуального анализа — по `mention_count` (`"mentions"`); затем стабильный
+        порядок. Связи (`_REL_VIEW`) с `weight >= min_weight` — по весу убыванию, не больше
+        `max_relations`. `total_nodes` — число узлов, прошедших фильтры; `truncated` —
+        узлов больше `limit` или связей больше `max_relations`."""
+        rows = self._run(
+            f"{_CURRENT_RUN} "
+            f"CALL (run) {{ MATCH (e:Entity) WHERE {_ENTITY_FILTER} RETURN count(e) AS total }} "
+            f"CALL (run) {{ MATCH (e:Entity) WHERE {_ENTITY_FILTER} "
+            f"WITH run, e {_BY_PAGERANK} LIMIT $limit RETURN collect(e) AS top }} "
+            f"CALL (run, top) {{ UNWIND top AS e RETURN collect({_NODE_VIEW}) AS nodes }} "
+            f"{_RELATIONS_AMONG}"
+            "RETURN run IS NOT NULL AS ranked, total, nodes, relation_total, relations",
+            types=list(types),
+            community=community,
+            min_mentions=min_mentions,
+            min_weight=float(min_weight),
+            limit=max(int(limit), 0),
+            max_relations=max(int(max_relations), 0),
+        )
+        row = rows[0]
+        return {
+            "nodes": row["nodes"],
+            "relations": row["relations"],
+            "ranked_by": "pagerank" if row["ranked"] else "mentions",
+            "truncated": row["total"] > len(row["nodes"])
+            or row["relation_total"] > len(row["relations"]),
+            "total_nodes": row["total"],
+        }
+
+    def shortest_paths(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        max_hops: int = 4,
+        limit: int = 3,
+        timeout: float = PATH_TIMEOUT_S,
+    ) -> tuple[list[dict], bool]:
+        """Кратчайшие пути между двумя сущностями: `([{"nodes", "relations"}], timed_out)`.
+
+        `allShortestPaths` по RELATED без учёта направления, не длиннее `max_hops`
+        (зажимается в 1..5); не больше `limit` путей, сначала с большим суммарным весом,
+        затем по id узлов. `nodes` (`_NODE_VIEW`) — по порядку от `source_id`, `relations`
+        (`_REL_VIEW`) — по порядку пути, каждая в хранимом направлении. Нет пути, нет
+        сущности или `source_id == target_id` — `([], False)`. Таймаут `timeout` секунд
+        (узел-хаб) — `([], True)`, прочие ошибки Neo4j пробрасываются."""
+        if source_id == target_id:  # allShortestPaths не ищет путь от узла к нему самому
+            return [], False
+        hops = max(1, min(int(max_hops), 5))  # границы переменной длины не могут быть параметрами
+        try:
+            rows = self._run(
+                f"{_CURRENT_RUN} "
+                "MATCH (s:Entity {entity_id: $source}) MATCH (t:Entity {entity_id: $target}) "
+                f"MATCH p = allShortestPaths((s)-[:RELATED*1..{hops}]-(t)) "
+                "WITH run, p, [n IN nodes(p) | n.entity_id] AS ids, "
+                "reduce(w = 0.0, r IN relationships(p) | w + coalesce(r.weight, 0.0)) AS weight "
+                "ORDER BY weight DESC, ids LIMIT $limit "
+                f"RETURN [e IN nodes(p) | {_NODE_VIEW}] AS nodes, "
+                f"[r IN relationships(p) | {_REL_VIEW}] AS relations",
+                source=source_id,
+                target=target_id,
+                limit=max(int(limit), 0),
+                _timeout=timeout,
+            )
+        except Neo4jError as exc:
+            if "TransactionTimedOut" not in (exc.code or ""):
+                raise
+            get_logger(__name__).warning("shortest_paths_timeout")
+            return [], True
+        return rows, False
+
+    def communities(self, limit: int = 50, offset: int = 0) -> dict:
+        """Сообщества Leiden актуального запуска: `{"ready", "total", "items"}`.
+
+        `items` — страница `{community, size, top, types}` по `size DESC, community`:
+        `top` — до 5 узлов (`_NODE_VIEW`) с наибольшим PageRank, `types` — число участников
+        каждого типа. Без актуального анализа — `{"ready": False, "total": 0, "items": []}`."""
+        rows = self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
+            "WITH s.run_id AS run "
+            "CALL (run) { MATCH (e:Entity) WHERE e.analytics_run_id = run "
+            "AND e.analytics_community IS NOT NULL "
+            "WITH e.analytics_community AS community, count(e) AS size "
+            "ORDER BY size DESC, community "
+            "RETURN collect({community: community, size: size}) AS found } "
+            "WITH run, size(found) AS total, found[$offset..$offset + $limit] AS page "
+            "CALL (run, page) { UNWIND page AS c "
+            "  CALL (run, c) { MATCH (e:Entity) WHERE e.analytics_run_id = run "
+            "  AND e.analytics_community = c.community "
+            f"  WITH run, e {_BY_PAGERANK} LIMIT 5 RETURN collect({_NODE_VIEW}) AS top }} "
+            "  CALL (run, c) { MATCH (e:Entity) WHERE e.analytics_run_id = run "
+            "  AND e.analytics_community = c.community "
+            "  WITH e.type AS type, count(e) AS n ORDER BY n DESC, type "
+            "  RETURN collect({type: type, n: n}) AS types } "
+            "  RETURN collect({community: c.community, size: c.size, top: top, types: types}) "
+            "  AS items } "
+            "RETURN total, items",
+            offset=max(int(offset), 0),
+            limit=max(int(limit), 0),
+        )
+        if not rows:
+            return {"ready": False, "total": 0, "items": []}
+        items = [
+            {**item, "types": {t["type"]: t["n"] for t in item["types"]}}
+            for item in rows[0]["items"]
+        ]
+        return {"ready": True, "total": rows[0]["total"], "items": items}
+
+    def community_subgraph(
+        self,
+        community: str,
+        limit: int = 300,
+        *,
+        max_relations: int = OVERVIEW_MAX_RELATIONS,
+    ) -> dict | None:
+        """Подграф одного сообщества актуального запуска: `{community, size, nodes,
+        relations, truncated}`.
+
+        `nodes` — топ-`limit` участников по PageRank (`_NODE_VIEW`), `relations` — связи
+        RELATED между ними (`_REL_VIEW`, по весу, не больше `max_relations`); `truncated` —
+        участников больше `limit` (или связей больше `max_relations`). `None` — нет
+        актуального анализа или такого сообщества."""
+        rows = self._run(
+            "MATCH (s:AnalysisState {key: 'graph'}) WHERE s.run_id IS NOT NULL "
+            "WITH s.run_id AS run "
+            "CALL (run) { MATCH (e:Entity) WHERE e.analytics_run_id = run "
+            "AND e.analytics_community = $community RETURN count(e) AS size } "
+            "WITH run, size WHERE size > 0 "
+            "CALL (run) { MATCH (e:Entity) WHERE e.analytics_run_id = run "
+            "AND e.analytics_community = $community "
+            f"WITH run, e {_BY_PAGERANK} LIMIT $limit RETURN collect(e) AS top }} "
+            f"CALL (run, top) {{ UNWIND top AS e RETURN collect({_NODE_VIEW}) AS nodes }} "
+            f"{_RELATIONS_AMONG}"
+            "RETURN size, nodes, relation_total, relations",
+            community=community,
+            min_weight=0.0,
+            limit=max(int(limit), 0),
+            max_relations=max(int(max_relations), 0),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "community": community,
+            "size": row["size"],
+            "nodes": row["nodes"],
+            "relations": row["relations"],
+            "truncated": row["size"] > len(row["nodes"])
+            or row["relation_total"] > len(row["relations"]),
+        }
 
     def neighborhood(self, seed_ids: list[str], hops: int, limit: int) -> list[RelationView]:
         """Связи RELATED в пределах `hops` (1..3) шагов от начальных сущностей, на чистом

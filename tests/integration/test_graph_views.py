@@ -150,3 +150,74 @@ def test_entity_mentions_and_documents(views):
     ]
     assert views.entity_document_count("ada") == 2
     assert views.entity_document_count("missing") == 0
+
+
+def test_overview_ranks_by_pagerank_and_truncates(views):
+    ov = views.overview(limit=3)
+    assert ov["ranked_by"] == "pagerank" and ov["truncated"] and ov["total_nodes"] == 6
+    assert ids(ov["nodes"]) == ["ada", "babbage", "engine"]
+    assert [r["predicate"] for r in ov["relations"]] == [
+        "designed",
+        "collaborated_with",
+        "described",
+    ]
+    assert [r["predicate"] for r in views.overview(min_weight=5)["relations"]] == [
+        "designed",
+        "collaborated_with",
+        "wrote",
+    ]
+    eq = views.overview(types=["Equipment"])
+    assert set(ids(eq["nodes"])) == {"engine", "loom"} and not eq["truncated"]
+    assert views.overview(max_relations=2)["truncated"]
+    assert set(ids(views.overview(community="community:y")["nodes"])) == {"engine", "loom"}
+    assert views.overview(min_mentions=2)["total_nodes"] == 3
+
+
+def test_overview_falls_back_to_mentions_when_analysis_is_stale(views):
+    views.upsert_entity(EntityRecord(entity_id="new", name="New", type="Concept"))
+    ov = views.overview(limit=3)
+    assert ov["ranked_by"] == "mentions" and ids(ov["nodes"]) == ["ada", "engine", "babbage"]
+
+
+def test_overview_on_empty_graph(graph):
+    assert graph.overview() == {
+        "nodes": [],
+        "relations": [],
+        "ranked_by": "mentions",
+        "truncated": False,
+        "total_nodes": 0,
+    }
+
+
+def test_shortest_paths(views):
+    paths, timed_out = views.shortest_paths("notes", "loom")
+    assert not timed_out and len(paths) == 1
+    assert ids(paths[0]["nodes"]) == ["notes", "ada", "engine", "loom"]
+    assert [r["predicate"] for r in paths[0]["relations"]] == ["wrote", "described", "inspired_by"]
+    wrote = paths[0]["relations"][0]  # связь в хранимом направлении, не по ходу пути
+    assert (wrote["src_id"], wrote["dst_id"], wrote["dst_type"]) == ("ada", "notes", "Work")
+    assert views.shortest_paths("notes", "loom", max_hops=2) == ([], False)
+    assert views.shortest_paths("ada", "lonely") == ([], False)
+    assert views.shortest_paths("ada", "missing") == ([], False)
+    assert views.shortest_paths("ada", "ada") == ([], False)
+
+
+def test_communities_and_subgraph(views):
+    c = views.communities()
+    assert c["ready"] and c["total"] == 3
+    assert [(i["community"], i["size"]) for i in c["items"]] == [
+        ("community:x", 3),
+        ("community:y", 2),
+        ("community:z", 1),
+    ]
+    assert ids(c["items"][0]["top"]) == ["ada", "babbage", "notes"]
+    assert c["items"][0]["types"] == {"Person": 2, "Work": 1}
+    sub = views.community_subgraph("community:y")
+    assert set(ids(sub["nodes"])) == {"engine", "loom"} and [
+        r["predicate"] for r in sub["relations"]
+    ] == ["inspired_by"]
+    assert views.community_subgraph("community:x", limit=2)["truncated"] is True
+    assert views.community_subgraph("community:nope") is None
+    views.upsert_entity(EntityRecord(entity_id="new", name="New", type="Concept"))
+    assert views.communities() == {"ready": False, "total": 0, "items": []}
+    assert views.community_subgraph("community:y") is None
