@@ -72,7 +72,8 @@ export function HomePage() {
   const leadType = overview.data ? [...overview.data.types].sort((a, b) => b.count - a.count)[0] : undefined;
 
   return (
-    <div className="mx-auto max-w-6xl pt-2 pb-10 md:pt-6">
+    // Во всю ширину до 1800px: на широком экране сводка раскладывается в три колонки.
+    <div className="mx-auto w-full max-w-[1800px] pt-2 pb-10 md:pt-6">
       <header className="max-w-2xl">
         <h1 className="text-[2.25rem] leading-tight font-semibold tracking-tight">Главная</h1>
         {leadType && top[0] && (
@@ -96,8 +97,8 @@ export function HomePage() {
             <StatTile index={3} label="Страницы wiki" value={s?.wiki_pages ?? null} note={s && s.entities > 0 ? `у ${Math.round((s.wiki_pages / s.entities) * 100)}% сущностей` : undefined} />
           </div>
 
-          <div className="mt-12 grid grid-cols-1 gap-x-10 gap-y-12 lg:grid-cols-12">
-            <section className="lg:col-span-7" aria-labelledby="home-types">
+          <div className="mt-12 grid grid-cols-1 gap-x-10 gap-y-12 lg:grid-cols-12 2xl:gap-x-12">
+            <section className="lg:col-span-7 2xl:col-span-5" aria-labelledby="home-types">
               <SectionTitle aside={<Link to="/graph" className={QUIET_LINK}>Открыть граф</Link>}>
                 <span id="home-types">Сущности по типам</span>
               </SectionTitle>
@@ -110,7 +111,7 @@ export function HomePage() {
               </div>
             </section>
 
-            <section className="lg:col-span-5" aria-labelledby="home-analysis">
+            <section className="lg:col-span-5 2xl:col-span-4" aria-labelledby="home-analysis">
               <AnalysisCard
                 ready={s?.analysis.ready ?? null}
                 completedAt={s?.analysis.completed_at ?? null}
@@ -118,11 +119,11 @@ export function HomePage() {
               />
             </section>
 
-            <section className="lg:col-span-7" aria-labelledby="home-top">
+            <section className="lg:col-span-7 2xl:order-last 2xl:col-span-12" aria-labelledby="home-top">
               <SectionTitle>
                 <span id="home-top">Самые важные сущности</span>
               </SectionTitle>
-              <ol aria-label="Самые важные сущности" className="grid gap-x-6 sm:grid-cols-2">
+              <ol aria-label="Самые важные сущности" className="grid gap-x-6 sm:grid-cols-2 2xl:grid-cols-4">
                 {top.map((node, i) => (
                   <li key={node.entity_id} className="border-b border-line">
                     <Link
@@ -148,7 +149,7 @@ export function HomePage() {
               </ol>
             </section>
 
-            <section className="lg:col-span-5" aria-labelledby="home-recent">
+            <section className="lg:col-span-5 2xl:col-span-3" aria-labelledby="home-recent">
               <SectionTitle aside={<Link to="/documents" className={QUIET_LINK}>Все документы</Link>}>
                 <span id="home-recent">Последние документы</span>
               </SectionTitle>
