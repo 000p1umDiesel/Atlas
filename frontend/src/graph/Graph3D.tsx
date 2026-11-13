@@ -22,8 +22,10 @@ import {
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import ThreeForceGraph from "three-forcegraph";
-import { cssColor, withAlpha } from "../lib/entityColors";
-import type { Graph2DApi, Graph2DProps } from "./Graph2D";
+import { cssColor, isDarkScheme, mixRgb, withAlpha } from "../lib/entityColors";
+import { fontsReady, graphFont, loadFonts } from "../lib/fonts";
+import type { FocusOffset, Graph2DApi, Graph2DProps } from "./Graph2D";
+import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { DEFAULT_FILTERS, visibleSubgraph } from "./model";
 import {
   boundingSphere,
@@ -98,11 +100,25 @@ interface Palette {
   bg: string;
   ink: string;
   edge: string;
+  edgeActive: string;
 }
 
 function readPalette(): Palette {
-  return { bg: cssColor("--bg"), ink: cssColor("--ink"), edge: cssColor("--muted") };
+  return {
+    bg: cssColor("--card"),
+    ink: cssColor("--ink"),
+    edge: cssColor("--muted"),
+    edgeActive: isDarkScheme() ? cssColor("--primary-ink") : cssColor("--primary-deep"),
+  };
 }
+
+/** Доля фона в цвете приглушённого узла (при наведении на другой). */
+const DIM_MIX = 0.82;
+/** Шаг приближения кнопками «+ / −». */
+const ZOOM_FACTOR = 1.5;
+const LABEL_FONTS = [graphFont(500, 12), graphFont(650, 12)];
+
+const endId = (end: string | { id?: string }) => (typeof end === "object" ? (end.id ?? "") : end);
 
 function prefersReducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -124,7 +140,7 @@ interface Label {
 /** Подпись-спрайт: текст на canvas (недоверенное имя рисуется как текст, без разметки). */
 function createLabel(name: string, palette: Palette, strong: boolean): Label {
   const text = name.length > LABEL_MAX_CHARS ? `${name.slice(0, LABEL_MAX_CHARS - 1)}…` : name;
-  const fontPx = 12 * LABEL_DENSITY;
+  const fontPx = 12.5 * LABEL_DENSITY;
   const font = `${strong ? 650 : 500} ${fontPx}px "Golos Text Variable", ui-sans-serif, system-ui, sans-serif`;
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -179,7 +195,8 @@ interface Flight {
 
 interface SceneCallbacks {
   onSelect(id: string): void;
-  onHover(node: { id: string; name: string } | null): void;
+  onBackground(): void;
+  onHover(node: ForceNode | null): void;
   tooltip(): HTMLElement | null;
 }
 
@@ -206,6 +223,15 @@ class Scene3D {
   private maxWeight = 0;
   private matches = new Set<string>();
   private hovered: string | null = null;
+  private selected: string | null = null;
+  private highlight = "";
+  private emphasis: ReadonlySet<string> | null = null;
+  /** Соседи каждого видимого узла (связи без направления). */
+  private adjacency = new Map<string, Set<string>>();
+  /** Подсвеченные узлы (окрестность наведения/выбора или пункт легенды); null — всё как есть. */
+  private active: Set<string> | null = null;
+  /** Центр окрестности: его связи выделены. */
+  private center: string | null = null;
   private flight: Flight | null = null;
   /** Камеру трогал пользователь: автокадрирование больше не вмешивается. */
   private userMoved = false;
@@ -213,7 +239,6 @@ class Scene3D {
   private dirty = true;
   private frame = 0;
   private labelUnit = 0;
-  private width = 1;
   private pointer = { x: 0, y: 0, inside: false };
   private press: { x: number; y: number; id: number } | null = null;
   private disposed = false;
@@ -240,7 +265,8 @@ class Scene3D {
 
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = !this.reduced;
-    this.controls.dampingFactor = 0.12;
+    // Малое затухание — мягкое вращение и зум с инерцией после отпускания.
+    this.controls.dampingFactor = 0.055;
     this.controls.autoRotateSpeed = 0.8;
     this.controls.addEventListener("change", this.onControlsChange);
     this.controls.addEventListener("start", this.onControlsStart);
@@ -250,12 +276,12 @@ class Scene3D {
       .nodeRelSize(1)
       // three-forcegraph берёт радиус как cbrt(val) · relSize — передаём куб радиуса.
       .nodeVal((n) => Math.pow(nodeRadius(n), 3))
-      .nodeColor("color")
-      .nodeOpacity(0.95)
+      .nodeColor(this.nodeColorFn())
+      .nodeOpacity(1)
       .nodeResolution(14)
       .linkWidth(0)
       .linkOpacity(1)
-      .linkColor(this.linkColor)
+      .linkColor(this.linkColorFn())
       .warmupTicks(this.reduced ? WARMUP_TICKS : 0)
       .cooldownTicks(this.reduced ? 0 : Infinity)
       .cooldownTime(10000)
@@ -294,38 +320,98 @@ class Scene3D {
     const nodes = reconcileNodes(this.nodes, data.nodes);
     this.nodes = new Map(nodes.map((n) => [n.id, n]));
     this.maxWeight = data.links.reduce((m, l) => Math.max(m, l.weight), 0);
+    this.adjacency = new Map();
+    for (const l of data.links) {
+      const s = endId(l.source);
+      const t = endId(l.target);
+      if (!this.adjacency.has(s)) this.adjacency.set(s, new Set());
+      if (!this.adjacency.has(t)) this.adjacency.set(t, new Set());
+      this.adjacency.get(s)?.add(t);
+      this.adjacency.get(t)?.add(s);
+    }
     if (key !== this.compKey) {
       this.compKey = key;
       this.fg.graphData({ nodes, links: data.links });
     } else {
       // Тот же состав: перекрасить и пересчитать размеры без перезапуска раскладки.
-      this.fg.nodeColor("color").linkColor(this.linkColor);
+      this.fg.nodeColor(this.nodeColorFn()).linkColor(this.linkColorFn());
     }
     this.dirty = true;
+  }
+
+  /** Подсветка: наведённый узел с соседями, иначе пункт легенды, иначе выбранный с соседями. */
+  private computeActive() {
+    const around = (id: string | null) =>
+      id !== null && this.nodes.has(id) ? new Set([id, ...(this.adjacency.get(id) ?? [])]) : null;
+    const hovered = around(this.hovered);
+    if (hovered) {
+      this.active = hovered;
+      this.center = this.hovered;
+    } else if (this.emphasis) {
+      this.active = new Set([...this.emphasis].filter((id) => this.nodes.has(id)));
+      this.center = null;
+    } else {
+      this.active = around(this.selected);
+      this.center = this.active ? this.selected : null;
+    }
+  }
+
+  /** Пересчитать подсветку: цвета узлов и связей, подписи соседей. */
+  private applyActive() {
+    this.computeActive();
+    this.fg.nodeColor(this.nodeColorFn()).linkColor(this.linkColorFn());
+    this.updateLabels();
+  }
+
+  emphasize(ids: ReadonlySet<string> | null) {
+    if (this.disposed) return;
+    this.emphasis = ids;
+    this.applyActive();
+  }
+
+  zoom(dir: 1 | -1) {
+    if (this.disposed) return;
+    const target = this.controls.target.clone();
+    const dist = this.camera.position.distanceTo(target);
+    const next = dir > 0 ? dist / ZOOM_FACTOR : dist * ZOOM_FACTOR;
+    this.userMoved = true;
+    this.flyTo(target, target.clone().add(this.viewDirection().multiplyScalar(next)), FIT_MS);
   }
 
   setPalette(palette: Palette) {
     if (this.disposed) return;
     const changed =
-      palette.bg !== this.palette.bg || palette.ink !== this.palette.ink || palette.edge !== this.palette.edge;
+      palette.bg !== this.palette.bg ||
+      palette.ink !== this.palette.ink ||
+      palette.edge !== this.palette.edge ||
+      palette.edgeActive !== this.palette.edgeActive;
     this.palette = palette;
     if (!changed) return;
     (this.scene.background as Color).setStyle(palette.bg);
-    this.fg.linkColor(this.linkColor);
+    this.fg.nodeColor(this.nodeColorFn()).linkColor(this.linkColorFn());
     this.dirty = true;
   }
 
-  /** Подписи и подсветка: топ по размеру, совпадения поиска и выбранный узел. */
+  /** Подписи и подсветка: топ по размеру, совпадения поиска, выбранный узел и окрестность. */
   setDecorations(highlight: string, selected: string | null) {
     if (this.disposed) return;
+    this.highlight = highlight;
+    this.selected = selected;
+    this.applyActive();
+  }
+
+  private updateLabels() {
     const list = [...this.nodes.values()];
-    this.matches = highlightMatches(list, highlight);
+    const selected = this.selected;
+    this.matches = highlightMatches(list, this.highlight);
     const topMatches = [...this.matches]
       .map((id) => this.nodes.get(id) as ForceNode)
       .sort((a, b) => b.val - a.val)
       .slice(0, MATCH_LABEL_LIMIT)
       .map((n) => n.id);
-    const wanted = labelCandidates(list, LABEL_LIMIT, selected ? [selected, ...topMatches] : topMatches);
+    const always = [...(selected ? [selected] : []), ...topMatches, ...(this.center ? (this.active ?? []) : [])];
+    // При подсветке окрестности подписаны только она и совпадения: остальное приглушено.
+    const wanted = labelCandidates(list, this.center ? 0 : LABEL_LIMIT, always);
     for (const [id, label] of this.labels) {
       if (!wanted.has(id)) {
         disposeLabel(label);
@@ -335,7 +421,7 @@ class Scene3D {
     for (const id of wanted) {
       const node = this.nodes.get(id);
       if (!node) continue;
-      const strong = this.matches.has(id) || id === selected;
+      const strong = this.matches.has(id) || id === selected || id === this.center;
       const key = `${node.name}\u0000${this.palette.ink}\u0000${this.palette.bg}\u0000${strong ? 1 : 0}`;
       const old = this.labels.get(id);
       if (old?.key === key) continue;
@@ -371,11 +457,24 @@ class Scene3D {
     this.flyTo(target, target.clone().add(this.viewDirection().multiplyScalar(dist)), FIT_MS);
   }
 
-  private flyToNode(node: ForceNode) {
-    if (node.x === undefined || node.y === undefined || node.z === undefined) return;
-    const target = new Vector3(node.x, node.y, node.z);
+  /**
+   * Перелёт к узлу. `offset` (CSS-пиксели) сдвигает узел от центра кадра: камера смотрит
+   * правее/ниже узла, и он оказывается левее/выше — например, не под карточкой сущности.
+   */
+  focusNode(id: string, offset: FocusOffset = { x: 0, y: 0 }) {
+    const node = this.nodes.get(id);
+    if (this.disposed || !node || node.x === undefined || node.y === undefined || node.z === undefined) return;
+    this.userMoved = true;
     const current = this.camera.position.distanceTo(this.controls.target);
     const dist = Math.min(current, Math.max(nodeRadius(node) * 10, 80));
+    const h = Math.max(1, this.container.clientHeight);
+    const perPx = (2 * dist * Math.tan(((FOV / 2) * Math.PI) / 180)) / h;
+    this.camera.updateMatrixWorld();
+    const right = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+    const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1).normalize();
+    const target = new Vector3(node.x, node.y, node.z)
+      .addScaledVector(right, offset.x * perPx)
+      .addScaledVector(up, -offset.y * perPx);
     this.flyTo(target, target.clone().add(this.viewDirection().multiplyScalar(dist)), FLY_MS);
   }
 
@@ -492,7 +591,7 @@ class Scene3D {
     if (this.disposed) return;
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
-    this.width = w;
+
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -563,19 +662,15 @@ class Scene3D {
     if (id === this.hovered) return;
     this.hovered = id;
     this.renderer.domElement.style.cursor = id ? "pointer" : "";
+    this.applyActive();
     this.applyNodeScales();
-    this.callbacks.onHover(node ? { id: node.id, name: node.name } : null);
+    this.callbacks.onHover(node);
     this.dirty = true;
   }
 
   /** Подсказка у курсора: позиция через CSSOM (style-атрибуты CSP запрещает, CSSOM — нет). */
   placeTooltip() {
-    const el = this.callbacks.tooltip();
-    if (!el) return;
-    const rect = this.container.getBoundingClientRect();
-    const x = Math.min(this.pointer.x - rect.left + 14, Math.max(0, this.width - el.offsetWidth - 4));
-    const y = Math.max(0, this.pointer.y - rect.top - el.offsetHeight - 10);
-    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    placeTooltip(this.callbacks.tooltip(), this.container, this.pointer.x, this.pointer.y);
   }
 
   private readonly onPointerMove = (e: PointerEvent) => {
@@ -604,10 +699,12 @@ class Scene3D {
     if (!press || press.id !== e.pointerId) return;
     if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > CLICK_SLOP_PX) return;
     const node = this.pick(e.clientX, e.clientY);
-    if (!node) return;
+    if (!node) {
+      this.callbacks.onBackground();
+      return;
+    }
+    // Перелёт к выбранному узлу делает страница (focusNode с местом под карточку).
     this.callbacks.onSelect(node.id);
-    this.userMoved = true;
-    this.flyToNode(node);
   };
 
   private readonly onPointerCancel = () => {
@@ -625,7 +722,23 @@ class Scene3D {
 
   // ——— события three-forcegraph ———
 
-  private readonly linkColor = (l: ForceLink) => withAlpha(this.palette.edge, linkAlpha(l.weight, this.maxWeight));
+  /** Новая функция при каждом вызове: three-forcegraph перекрашивает только при смене аксессора. */
+  private nodeColorFn() {
+    const active = this.active;
+    const bg = this.palette.bg;
+    return (n: ForceNode) => (active === null || active.has(n.id) ? n.color : mixRgb(n.color, bg, DIM_MIX));
+  }
+
+  private linkColorFn() {
+    const { active, center, palette, maxWeight } = this;
+    return (l: ForceLink) => {
+      const s = endId(l.source);
+      const t = endId(l.target);
+      if (center !== null && (s === center || t === center)) return withAlpha(palette.edgeActive, 0.95);
+      if (active !== null) return withAlpha(palette.edge, 0.06);
+      return withAlpha(palette.edge, linkAlpha(l.weight, maxWeight));
+    };
+  }
 
   private readonly onEngineTick = () => {
     this.engineRunning = true;
@@ -669,6 +782,7 @@ export function Graph3D({
   entityTypes,
   selected = null,
   onSelect,
+  onBackgroundClick,
   onReady,
   autoRotate = false,
 }: Graph3DProps) {
@@ -676,25 +790,49 @@ export function Graph3D({
   const tooltipRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<Scene3D | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onBackgroundRef = useRef(onBackgroundClick);
   const onReadyRef = useRef(onReady);
-  const [hover, setHover] = useState<{ id: string; name: string } | null>(null);
+  const graphRef = useRef(graph);
+  const [hover, setHover] = useState<TooltipInfo | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [themeVersion, setThemeVersion] = useState(0);
+  // Подписи рисуются на canvas: шрифт нужен до первой подписи.
+  const [fontsLoaded, setFontsLoaded] = useState(() => fontsReady(LABEL_FONTS));
 
   useEffect(() => {
     onSelectRef.current = onSelect;
+    onBackgroundRef.current = onBackgroundClick;
     onReadyRef.current = onReady;
+    graphRef.current = graph;
   });
+
+  useEffect(() => {
+    if (fontsLoaded) return;
+    let cancelled = false;
+    void loadFonts(LABEL_FONTS).then(() => {
+      if (!cancelled) setFontsLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fontsLoaded]);
 
   // Сцена на каждый новый граф; разрушение при размонтировании.
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !fontsLoaded) return;
+    const toTooltip = (node: ForceNode | null): TooltipInfo | null => {
+      const g = graphRef.current;
+      if (!node || !g.hasNode(node.id)) return null;
+      const a = g.getNodeAttributes(node.id);
+      return { id: node.id, name: a.name, type: a.type, mentions: a.mention_count, color: node.color };
+    };
     let scene: Scene3D;
     try {
       scene = new Scene3D(container, {
         onSelect: (id) => onSelectRef.current(id),
-        onHover: setHover,
+        onBackground: () => onBackgroundRef.current?.(),
+        onHover: (node) => setHover(toTooltip(node)),
         tooltip: () => tooltipRef.current,
       });
     } catch {
@@ -725,9 +863,13 @@ export function Graph3D({
       exportPng: () => scene.exportPng(),
       fit: () => scene.fit(),
       dispose,
+      zoomIn: () => scene.zoom(1),
+      zoomOut: () => scene.zoom(-1),
+      focusNode: (id, offset) => scene.focusNode(id, offset),
+      emphasize: (ids) => scene.emphasize(ids),
     });
     return dispose;
-  }, [graph]);
+  }, [graph, fontsLoaded]);
 
   // Состав, цвета и размеры. Тот же состав — только перекраска, раскладка не перезапускается.
   const typesKey = filters.types.join("\u0000");
@@ -748,7 +890,7 @@ export function Graph3D({
     scene.setData(
       toForceData(graph, visible, { colorBy, sizeBy }, typesOrder === "" ? undefined : typesOrder.split("\u0000")),
     );
-  }, [graph, typesKey, community, minWeight, minMentions, hideIsolated, colorBy, sizeBy, typesOrder, themeVersion]);
+  }, [graph, fontsLoaded, typesKey, community, minWeight, minMentions, hideIsolated, colorBy, sizeBy, typesOrder, themeVersion]);
 
   // Подписи и подсветка поиска; зависят от состава и размеров, поэтому идут после данных.
   const highlight = filters.highlight;
@@ -756,6 +898,7 @@ export function Graph3D({
     sceneRef.current?.setDecorations(highlight, selected);
   }, [
     graph,
+    fontsLoaded,
     highlight,
     selected,
     typesKey,
@@ -771,7 +914,7 @@ export function Graph3D({
 
   useEffect(() => {
     sceneRef.current?.setAutoRotate(autoRotate);
-  }, [graph, autoRotate]);
+  }, [graph, fontsLoaded, autoRotate]);
 
   // Подсказка появилась — сразу поставить её к курсору, без кадра в углу.
   useLayoutEffect(() => {
@@ -793,14 +936,7 @@ export function Graph3D({
       role="img"
       aria-label="Трёхмерный граф связей между сущностями"
     >
-      {hover && (
-        <div
-          ref={tooltipRef}
-          className="pointer-events-none absolute left-0 top-0 z-10 max-w-xs truncate rounded-lg bg-card px-2 py-1 text-xs text-ink shadow-card"
-        >
-          {hover.name}
-        </div>
-      )}
+      {hover && <GraphTooltip ref={tooltipRef} info={hover} />}
     </div>
   );
 }
