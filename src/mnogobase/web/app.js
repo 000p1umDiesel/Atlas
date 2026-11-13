@@ -8,6 +8,7 @@ import { Chat, ConversationList } from "./views/chat.js";
 import { DocumentCard } from "./views/document.js";
 import { Documents } from "./views/documents.js";
 import { DocumentView } from "./views/docview.js";
+import { Graph } from "./views/graph.js";
 import { Login } from "./views/login.js";
 import { Wiki } from "./views/wiki.js";
 
@@ -36,6 +37,8 @@ function Page({ route, user, chats, reloadChats }) {
       return html`<${Documents} />`;
     case "wiki":
       return html`<${Wiki} parts=${route.parts} />`;
+    case "graph":
+      return html`<${Graph} id=${id} />`;
     default:
       return html`<${Placeholder} title=${(NAV.find(([id]) => id === section) || NAV[0])[1]} />`;
   }

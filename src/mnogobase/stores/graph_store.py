@@ -536,10 +536,15 @@ class GraphStore:
             relations=[RelationView(**r) for r in rows[0]["relations"]],
         )
 
-    def fulltext_entities(self, query: str, k: int) -> list[tuple[str, float]]:
+    def fulltext_entities(
+        self, query: str, k: int, *, prefix: bool = False
+    ) -> list[tuple[str, float]]:
         """До `k` сущностей, чьё имя или алиасы совпадают со словами запроса, по индексу
         `entity_names` (Lucene, слова объединяются через OR). Возвращает пары
-        `(entity_id, score)` в порядке убывания score. Начальные узлы режима `graph`."""
+        `(entity_id, score)` в порядке убывания score. Начальные узлы режима `graph`.
+
+        `prefix` — слова ищутся как начала слов (`soft` находит Softmax): поиск по мере
+        набора в веб-интерфейсе."""
         # простые словесные токены в нижнем регистре: операторы Lucene и спецсимволы не проходят
         tokens = list(dict.fromkeys(t.casefold() for t in _WORD.findall(query)))
         tokens = tokens[:FULLTEXT_MAX_TOKENS]
@@ -548,7 +553,7 @@ class GraphStore:
         rows = self._run(
             "CALL db.index.fulltext.queryNodes('entity_names', $q) YIELD node, score "
             "RETURN node.entity_id AS id, score LIMIT $k",
-            q=" ".join(tokens),
+            q=" ".join(t + "*" if prefix else t for t in tokens),
             k=k,
         )
         return [(r["id"], r["score"]) for r in rows]

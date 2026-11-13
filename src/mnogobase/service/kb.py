@@ -1019,7 +1019,8 @@ class KnowledgeBase:
 
         async def run(app: App) -> list[dict]:
             found = (
-                app.graph.get_entity(eid) for eid, _ in app.graph.fulltext_entities(query, limit)
+                app.graph.get_entity(eid)
+                for eid, _ in app.graph.fulltext_entities(query, limit, prefix=True)
             )
             # сущность могла исчезнуть между двумя запросами (параллельное удаление документа)
             return [entity.model_dump() for entity in found if entity is not None]

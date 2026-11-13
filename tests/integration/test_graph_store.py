@@ -324,3 +324,9 @@ def test_entity_analysis_reads_only_the_current_run(graph):
     graph._run("MATCH (s:AnalysisState {key: 'graph'}) SET s.run_id = 'old'")
     assert graph.entity_analysis("a" * 16) == {"pagerank": 0.5, "community": 3}
     assert graph.entity_analysis("missing") == {"pagerank": None, "community": None}
+
+
+def test_fulltext_prefix_search_for_the_ui(graph):
+    make_entity(graph, "s" * 16, "Softmax")
+    assert graph.fulltext_entities("soft", 5) == []
+    assert [eid for eid, _ in graph.fulltext_entities("soft", 5, prefix=True)] == ["s" * 16]

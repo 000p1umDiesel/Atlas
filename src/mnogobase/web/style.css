@@ -78,6 +78,7 @@
   --serif: "Literata", "PT Serif", Georgia, serif;
   --sans: "Golos Text", "PT Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --cell: 24px;
+  --g1: #2747a8; --g2: #c2410c; --g3: #0f766e; --g4: #7c3aed; --g5: #a16207; --g6: #be185d; --g7: #4d7c0f; --g8: #475569;
   --radius: 6px;
   color-scheme: light;
 }
@@ -99,6 +100,7 @@
     --ok: #6cc08e;
     --warn: #e0a84a;
     --err: #f07c88;
+    --g1: #93abff; --g2: #fb923c; --g3: #2dd4bf; --g4: #c4b5fd; --g5: #facc15; --g6: #f9a8d4; --g7: #a3e635; --g8: #94a3b8;
     color-scheme: dark;
   }
 }
@@ -393,3 +395,28 @@ progress::-moz-progress-bar { background: var(--pen); }
 .wiki-column { max-width: 860px; padding: 32px 40px 64px 96px; }
 @media (max-width: 760px) { .wiki-column { padding: 18px 16px 40px 30px; } }
 .sources-title { font-size: 17px; margin-top: 28px; }
+
+/* ---- граф ---- */
+.graph-page { display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px; height: 100vh; }
+.graph-side { padding: 28px 18px; border-right: 1px solid var(--rule); overflow-y: auto; }
+.graph-side h1 { font-size: 24px; }
+.graph-results { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 4px; font-size: 14px; }
+.graph-controls { display: grid; gap: 10px; margin-top: 18px; }
+.graph-canvas { position: relative; min-width: 0; }
+.graph-canvas > .empty, .graph-canvas > .loading, .graph-canvas > .note, .graph-note { position: absolute; top: 24px; left: 28px; right: 28px; z-index: 1; }
+.cy { position: absolute; inset: 0; }
+.graph-card { border-left: 1px solid var(--rule); padding: 28px 20px; overflow-y: auto; background: var(--raised); }
+.graph-card:empty { background: transparent; }
+.entity-card h2 { margin-bottom: 4px; overflow-wrap: anywhere; }
+.entity-description { font: 15.5px/1.6 var(--serif); }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 14px; margin: 12px 0 16px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.entity-card h3 { margin-top: 20px; }
+.relation-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: 14px; }
+.predicate { color: var(--pen); font-size: 12.5px; padding: 0 4px; }
+@media (max-width: 1100px) {
+  .graph-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto; height: auto; }
+  .graph-side, .graph-card { border: 0; }
+  .graph-canvas { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+}
