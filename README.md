@@ -1940,12 +1940,12 @@ uv run mnogobase client ask "О чём статья?"
 
 | Задача | Команда (на сервере — из `/srv/mnogobase/app` через `sudo`) |
 |---|---|
-| обновить | `deploy/backup.sh && git pull --ff-only && MB_TAG=$(git rev-parse --short HEAD) docker compose up -d --build --wait` |
-| откатить | `git checkout <commit> && MB_TAG=<commit> docker compose up -d --wait` (старый образ уже есть локально) |
+| обновить | `deploy/update.sh [ветка] [--no-backup]`: снимок restic, `git pull` ветки (по умолчанию `main`; git — от владельца каталога), сборка `mnogobase:latest` (его поднимает `mnogobase.service`), перезапуск api и worker; ветка и чистота рабочей копии проверяются до снимка, в режиме Minecraft образ только собирается |
+| откатить | `update.sh` оставляет прежний образ как `mnogobase:<прежний коммит>` и печатает команду отката (`git checkout`, `docker tag … mnogobase:latest`, `docker compose up -d --wait`); миграции базы назад не откатываются — тогда восстановление из restic |
 | состояние | `docker compose ps`, `mnogobase client status` (раздел 16) |
 | логи | `docker compose logs -f api worker`, `journalctl -u mnogobase` |
 | пользователь | `docker compose exec api mnogobase user passwd owner` / `user disable NAME` |
-| бэкап вручную | `deploy/backup.sh`: останавливает api, worker и базы на 1–2 минуты, `restic backup` каталогов `data/{app,postgres,qdrant,neo4j}`, `.env` и `config.yaml` (модели и кэши не копируются), хранит 7 ежедневных, 4 еженедельных и 6 ежемесячных снимков |
+| бэкап вручную | `deploy/backup.sh`: останавливает api, worker и базы на несколько минут, `restic backup` каталогов `data/{app,postgres,qdrant,neo4j}`, `.env` и `config.yaml` (модели и кэши не копируются), хранит 7 ежедневных, 4 еженедельных и 6 ежемесячных снимков |
 | проверить бэкап | `restic check` и учебное восстановление в отдельный Compose-проект — команды в `deploy/README.md` |
 
 Схема базы создаётся при старте (`CREATE ... IF NOT EXISTS`), разрушающих миграций нет. **Никогда не используйте `docker compose down -v` и `docker volume prune`**: данные лежат в `./data`, но это опасная привычка, а прежние тома разработки так удаляются без возврата.
@@ -1962,7 +1962,7 @@ mnogobase/
 ├── .env.example               # шаблон секретов; .env не коммитится
 ├── compose.yaml               # всё: api, worker, базы, llama.cpp embed/rerank/vision на 127.0.0.1 (раздел 11)
 ├── Dockerfile  .dockerignore  # образ приложения (CPU) для api и worker
-├── deploy/                    # README.md, nginx.conf, backup.sh (restic), prepare-data.sh, systemd-юниты
+├── deploy/                    # README.md, nginx.conf, update.sh, backup.sh (restic), prepare-data.sh, systemd-юниты
 ├── docs/neo4j/mnogobase.grass     # стиль Neo4j Browser
 ├── eval/questions.jsonl           # 40 вопросов по Attention Is All You Need
 ├── src/mnogobase/

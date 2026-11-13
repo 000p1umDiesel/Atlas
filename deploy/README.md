@@ -68,8 +68,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 
 | Что | Команда (из `/srv/mnogobase/app`) |
 |---|---|
-| Обновление | `sudo deploy/backup.sh && sudo git pull --ff-only && sudo MB_TAG=$(git rev-parse --short HEAD) docker compose up -d --build --wait` |
-| Откат | `sudo git checkout <commit> && sudo MB_TAG=<commit> docker compose up -d --wait` (старый образ уже есть локально) |
+| Обновление | `sudo deploy/update.sh` — снимок restic, `git pull` ветки `main`, сборка `mnogobase:latest`, перезапуск api и worker. Другая ветка: `sudo deploy/update.sh <ветка>`, без снимка: `--no-backup`. Ветка, перемотка (fast-forward) и отсутствие локальных правок проверяются до снимка; git работает от владельца каталога, не от root; в режиме Minecraft образ только собирается |
+| Откат | `update.sh` сохраняет прежний образ как `mnogobase:<прежний коммит>` и в конце печатает команду отката: `git checkout <коммит>`, `docker tag mnogobase:<коммит> mnogobase:latest`, `docker compose up -d --wait`. Миграции базы назад не откатываются: если они были, восстановите снимок restic |
 | Minecraft ↔ mnogobase | `sudo host-mode vanilla` (или `neoforge`) / `sudo host-mode mnogobase`; `sudo host-mode status` |
 | Состояние | `sudo docker compose ps`, `mnogobase client status` |
 | Логи | `sudo docker compose logs -f api worker`, `journalctl -u mnogobase` |
@@ -83,7 +83,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mnogobase-backup.tim
 
 ## Бэкап и проверка восстановления
 
-`deploy/backup.sh` останавливает api, worker и базы примерно на 1–2 минуты. Он делает `restic backup` каталогов `data/{app,postgres,qdrant,neo4j}`, `.env` и `config.yaml`, а затем снова запускает то, что работало. Хранятся 7 ежедневных, 4 еженедельных и 6 ежемесячных снимков.
+`deploy/backup.sh` останавливает api, worker и базы на несколько минут (на медленном диске Neo4j поднимается 2–3 минуты). Он делает `restic backup` каталогов `data/{app,postgres,qdrant,neo4j}`, `.env` и `config.yaml`, а затем снова запускает то, что работало. Хранятся 7 ежедневных, 4 еженедельных и 6 ежемесячных снимков.
 
 Раз в неделю: `sudo restic -r "$(sudo cat /root/.restic-repo)" -p /root/.restic-pass check`.
 
