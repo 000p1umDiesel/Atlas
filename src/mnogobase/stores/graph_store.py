@@ -120,6 +120,15 @@ _REL_MAP = (
     "dst_id: endNode(r).entity_id, dst_name: endNode(r).name, description: r.description, "
     "weight: r.weight, evidence: r.evidence}"
 )
+# Связь для веба: `RelationView` плюс типы концов (`src_type`, `dst_type`); общая проекция
+# связей сущности, обзора, путей и подграфа сообщества (нужна переменная `r`).
+_REL_VIEW = _REL_MAP[:-1] + ", src_type: startNode(r).type, dst_type: endNode(r).type}"
+# Узор связи сущности `e` по направлению; `o` — другая сторона.
+_REL_PATTERNS = {
+    "out": "(e)-[r:RELATED]->(o:Entity)",
+    "in": "(e)<-[r:RELATED]-(o:Entity)",
+    "both": "(e)-[r:RELATED]-(o:Entity)",
+}
 # Актуальный запуск аналитики как переменная `run` (null — анализа нет или он устарел);
 # ставится в начало запроса перед проекциями `_NODE_VIEW` / `_NODE_CARD`.
 _CURRENT_RUN = "OPTIONAL MATCH (s:AnalysisState {key: 'graph'}) WITH s.run_id AS run"
@@ -611,6 +620,77 @@ class GraphStore:
             "MATCH (e:Entity) RETURN e.type AS type, count(*) AS n ORDER BY n DESC, type"
         )
         return {r["type"]: r["n"] for r in rows}
+
+    def entity_relations(
+        self,
+        entity_id: str,
+        *,
+        direction: Literal["out", "in", "both"] = "both",
+        predicate: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Связи RELATED сущности: `{"total", "predicates", "items"}`.
+
+        `items` (проекция `_REL_VIEW`) — по весу убыванию, затем предикат и имя другой
+        стороны; `total` считается с фильтром `predicate`. `predicates` (фасет
+        `{predicate, count}`, `count DESC`, `predicate`) учитывает `direction`, но не
+        фильтр `predicate`. Неизвестная сущность даёт пустой результат."""
+        pattern = _REL_PATTERNS[direction]
+        match = f"MATCH (e:Entity {{entity_id: $id}}) MATCH {pattern} "
+        facets = self._run(
+            match + "RETURN r.predicate AS predicate, count(r) AS count "
+            "ORDER BY count DESC, predicate",
+            id=entity_id,
+        )
+        total = sum(f["count"] for f in facets if predicate in (None, f["predicate"]))
+        items = self._run(
+            match + "WHERE $predicate IS NULL OR r.predicate = $predicate "
+            f"RETURN {_REL_VIEW} AS rel "
+            "ORDER BY r.weight DESC, r.predicate, o.name, o.entity_id SKIP $offset LIMIT $limit",
+            id=entity_id,
+            predicate=predicate,
+            offset=max(offset, 0),
+            limit=max(limit, 0),
+        )
+        return {"total": total, "predicates": facets, "items": [r["rel"] for r in items]}
+
+    def entity_mentions(
+        self, entity_id: str, limit: int = 20, offset: int = 0
+    ) -> tuple[int, list[ChunkView]]:
+        """Чанки, упоминающие сущность: `(всего, страница)` по `doc_id`, `idx`."""
+        rows = self._run(
+            "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(:Entity {entity_id: $id}) "
+            "WITH d, c ORDER BY c.doc_id, c.idx, c.chunk_id "
+            "WITH collect({d: d, c: c}) AS found "
+            "RETURN size(found) AS total, [x IN found[$offset..$offset + $limit] | "
+            "{chunk_id: x.c.chunk_id, doc_id: x.c.doc_id, text: x.c.text, path: x.d.path, "
+            "page: x.c.page_start, headings: coalesce(x.c.headings, [])}] AS page",
+            id=entity_id,
+            offset=max(offset, 0),
+            limit=max(limit, 0),
+        )
+        return rows[0]["total"], [ChunkView(**r) for r in rows[0]["page"]]
+
+    def entity_documents(self, entity_id: str, limit: int = 50) -> list[dict]:
+        """Документы, чьи чанки упоминают сущность: `{doc_id, path, title, mentions}`
+        по числу упоминающих чанков убыванию, затем `doc_id`."""
+        return self._run(
+            "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(:Entity {entity_id: $id}) "
+            "RETURN d.doc_id AS doc_id, d.path AS path, d.title AS title, count(c) AS mentions "
+            "ORDER BY mentions DESC, doc_id LIMIT $limit",
+            id=entity_id,
+            limit=max(limit, 0),
+        )
+
+    def entity_document_count(self, entity_id: str) -> int:
+        """Число документов, упоминающих сущность."""
+        rows = self._run(
+            "MATCH (d:Document)-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(:Entity {entity_id: $id}) "
+            "RETURN count(DISTINCT d) AS n",
+            id=entity_id,
+        )
+        return rows[0]["n"]
 
     def list_entities(
         self,

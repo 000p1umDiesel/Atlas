@@ -3,7 +3,12 @@
 import pytest
 
 from mnogobase.core.models import EntityRecord
-from tests.integration.graph_seed import populate_views, publish_views_analysis
+from tests.integration.graph_seed import (
+    VIEW_DOC_A,
+    VIEW_DOC_B,
+    populate_views,
+    publish_views_analysis,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -107,3 +112,41 @@ def test_pagerank_sort_and_community_filter_without_current_run(views):
     assert (
         all(r["pagerank"] is None for r in rows) and ids(rows)[0] == "ada"
     )  # дальше по упоминаниям
+
+
+def test_entity_relations_directions_and_facets(views):
+    rel = views.entity_relations("ada")
+    assert rel["total"] == 3
+    assert [r["predicate"] for r in rel["items"]] == ["collaborated_with", "wrote", "described"]
+    first = rel["items"][0]
+    assert (first["src_type"], first["dst_type"], first["weight"]) == ("Person", "Person", 6.0)
+    assert rel["predicates"] == [
+        {"predicate": p, "count": 1} for p in ("collaborated_with", "described", "wrote")
+    ]
+    assert views.entity_relations("ada", direction="in")["total"] == 0
+    babbage_in = views.entity_relations("babbage", direction="in")["items"]
+    assert [r["predicate"] for r in babbage_in] == ["collaborated_with"]
+    only = views.entity_relations("ada", predicate="wrote")
+    assert only["total"] == 1 and len(only["predicates"]) == 3
+    assert views.entity_relations("ada", limit=1, offset=1)["items"][0]["predicate"] == "wrote"
+    assert views.entity_relations("missing") == {"total": 0, "predicates": [], "items": []}
+
+
+def test_entity_mentions_and_documents(views):
+    total, chunks = views.entity_mentions("ada")
+    assert total == 3
+    assert [c.chunk_id for c in chunks] == [
+        f"{VIEW_DOC_A}:00000",
+        f"{VIEW_DOC_A}:00001",
+        f"{VIEW_DOC_B}:00000",
+    ]
+    page = views.entity_mentions("ada", limit=1, offset=2)[1]
+    assert [c.chunk_id for c in page] == [f"{VIEW_DOC_B}:00000"]
+    assert views.entity_mentions("missing") == (0, [])
+    docs = views.entity_documents("ada")
+    assert [(d["doc_id"], d["path"], d["mentions"]) for d in docs] == [
+        (VIEW_DOC_A, "/alpha.md", 2),
+        (VIEW_DOC_B, "/beta.md", 1),
+    ]
+    assert views.entity_document_count("ada") == 2
+    assert views.entity_document_count("missing") == 0
