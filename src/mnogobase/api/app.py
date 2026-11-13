@@ -5,7 +5,9 @@
 выполняет в пуле потоков, асинхронные работают с ядром через поток `CoreLoop`.
 
 Группы маршрутов:
-- `/` и `/static/*` — веб-интерфейс (`mnogobase/web/`, CSP `PAGE_CSP`, без inline-кода);
+- `/`, `/assets/*` и любой неизвестный путь — собранный SPA (`web/dist/`, history fallback на
+  `index.html`); `/legacy` и `/static/*` — прежний интерфейс (`mnogobase/web/`); везде CSP
+  `PAGE_CSP`, без inline-кода;
 - `/health` — проверка живости без авторизации и без обращения к базам;
 - `/api/auth/login|logout|me|password` — вход, отзыв сессии, текущий пользователь, смена
   своего пароля;
@@ -56,7 +58,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.staticfiles import StaticFiles
@@ -75,6 +77,10 @@ SESSION_COOKIE = "mb_session"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # статика веб-интерфейса внутри пакета (index.html, app.js, vendor/, fonts/)
 WEB_DIR = FilePath(str(files("mnogobase") / "web"))
+# сборка React-интерфейса (`npm --prefix frontend run build`)
+WEB_DIST = WEB_DIR / "dist"
+ASSETS_CACHE = "public, max-age=31536000, immutable"
+NOT_BUILT = "Веб-интерфейс не собран: npm --prefix frontend ci && npm --prefix frontend run build"
 # CSP страниц: только свои скрипты, стили и шрифты, без inline-кода и CDN (§6.4 аудита)
 PAGE_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -86,6 +92,17 @@ _PAGE_HEADERS = [
     (b"x-content-type-options", b"nosniff"),
     (b"referrer-policy", b"no-referrer"),
 ]
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """Статика с хешами в именах: кэшируется браузером навсегда."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """Ответ `StaticFiles` с `Cache-Control: immutable` для успешных ответов."""
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):
+            response.headers["Cache-Control"] = ASSETS_CACHE
+        return response
 
 
 class Login(BaseModel):
@@ -267,13 +284,16 @@ KB = Annotated[Any, Depends(get_kb)]
 User = Annotated[dict, Depends(current_user)]
 
 
-def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
+def create_api(
+    settings: Settings | None = None, *, kb=None, web_dir: FilePath | None = None
+) -> FastAPI:
     """Создаёт приложение FastAPI без изменения cwd, окружения и общих настроек.
 
     `kb` — готовая `KnowledgeBase` (тесты подставляют свою); тогда приложение её не
     закрывает. Без `kb` база создаётся при старте (`lifespan`, в пуле потоков: создание
     таблиц блокирует) и закрывается при остановке. `settings` по умолчанию — от `kb` или из
-    `config.yaml` текущего каталога."""
+    `config.yaml` текущего каталога. `web_dir` — каталог сборки SPA (по умолчанию `WEB_DIST`)."""
+    web_dir = WEB_DIST if web_dir is None else web_dir
     if settings is None:
         settings = kb.settings if kb is not None else load_settings()
 
@@ -321,13 +341,15 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
         секреты); Starlette при этом пишет трассировку в лог сервера."""
         return JSONResponse({"detail": "Сервис временно недоступен"}, status_code=503)
 
-    @app.get("/")
-    def index():
-        """Страница веб-интерфейса; маршруты внутри неё — в `#/...`, сервер их не видит."""
+    @app.get("/legacy", include_in_schema=False)
+    def legacy():
+        """Прежний интерфейс (Preact без сборки); ссылается на `/static/...`."""
         return FileResponse(WEB_DIR / "index.html", media_type="text/html")
 
     # Starlette сама отвергает выход за каталог (`..`, ссылки наружу) ответом 404.
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+    if (web_dir / "assets").is_dir():
+        app.mount("/assets", ImmutableStaticFiles(directory=web_dir / "assets"), name="assets")
 
     @app.get("/health")
     def health():
@@ -625,5 +647,17 @@ def create_api(settings: Settings | None = None, *, kb=None) -> FastAPI:
     def status(kb: KB, user: User):
         """Состояние очереди, worker'а и расход LLM."""
         return kb.status()
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):
+        """History fallback: любой неизвестный путь отдаёт `index.html` SPA. Пути API, статики
+        и `/health` сюда не попадают: для них 404 в JSON."""
+        head = path.split("/", 1)[0]
+        if head in ("api", "health", "assets", "static"):
+            raise HTTPException(404)
+        index = web_dir / "index.html"
+        if not index.is_file():
+            return HTMLResponse(NOT_BUILT, status_code=503)
+        return FileResponse(index, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
     return app

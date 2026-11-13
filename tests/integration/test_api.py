@@ -19,6 +19,7 @@ from mnogobase.service.store import ServiceStore
 
 pytestmark = pytest.mark.integration
 PASSWORD = "long-enough-password"
+SPA_INDEX = "<!doctype html><div id=root></div><script type=module src=/assets/app-abc.js></script>"
 
 
 @pytest.fixture
@@ -32,7 +33,11 @@ def api(tmp_path):
     )
     kb.upload_suffix = partial(KnowledgeBase.upload_suffix, kb)
     kb.staging_dir = partial(KnowledgeBase.staging_dir, kb)
-    client = TestClient(create_api(settings, kb=kb), raise_server_exceptions=False)
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(SPA_INDEX)
+    (dist / "assets" / "app-abc.js").write_text("console.log(1)")
+    client = TestClient(create_api(settings, kb=kb, web_dir=dist), raise_server_exceptions=False)
     headers = {"Authorization": "Bearer " + store.login("owner", PASSWORD)}
     return SimpleNamespace(**locals())
 
@@ -72,7 +77,9 @@ def test_large_bodies_are_rejected_before_parsing_and_auth(api):
 
 def test_docs_and_server_details_are_hidden(api):
     for path in ("/docs", "/redoc", "/openapi.json"):
-        assert api.client.get(path).status_code == 404
+        # неизвестный путь отдаёт SPA (history fallback), но не Swagger/OpenAPI
+        response = api.client.get(path)
+        assert response.text == SPA_INDEX
     api.kb.jobs = lambda limit=50, offset=0: (_ for _ in ()).throw(RuntimeError("dsn secret"))
     response = api.client.get("/api/jobs", headers=api.headers)
     assert response.status_code == 503 and "secret" not in response.text
@@ -361,7 +368,7 @@ PAGE_CSP = (
 
 
 def test_index_and_static_have_security_headers(api):
-    index = api.client.get("/")
+    index = api.client.get("/legacy")
     assert index.status_code == 200
     assert index.headers["content-type"].startswith("text/html")
     script = api.client.get("/static/app.js")
@@ -370,8 +377,50 @@ def test_index_and_static_have_security_headers(api):
         assert response.headers["content-security-policy"] == PAGE_CSP
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["referrer-policy"] == "no-referrer"
-    for path in ("/static/../pyproject.toml", "/static/%2e%2e/api/app.py", "/static/nope.js"):
+    for path in ("/static/%2e%2e/api/app.py", "/static/nope.js"):
         assert api.client.get(path).status_code == 404
+    # httpx сам сворачивает `..`: запрос приходит как `/pyproject.toml` (SPA), файла не отдаёт
+    assert "[project]" not in api.client.get("/static/../pyproject.toml").text
+
+
+def test_spa_index_and_fallback(api):
+    responses = [api.client.get(p) for p in ("/", "/graph?types=Person", "/entities/x")]
+    for response in responses:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.text == SPA_INDEX
+        assert response.headers["cache-control"] == "no-cache"
+        assert response.headers["content-security-policy"] == PAGE_CSP
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_assets_cached_forever(api):
+    asset = api.client.get("/assets/app-abc.js")
+    assert asset.status_code == 200
+    assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert asset.headers["content-security-policy"] == PAGE_CSP
+    for path in ("/assets/nope.js", "/assets/%2e%2e/x"):
+        assert api.client.get(path).status_code == 404
+
+
+def test_unknown_api_is_json_404(api):
+    for path in ("/api/nope", "/api"):
+        response = api.client.get(path)
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+    assert api.client.get("/health").json() == {"status": "ok"}
+
+
+def test_missing_dist_returns_503(api, tmp_path):
+    client = TestClient(
+        create_api(api.settings, kb=api.kb, web_dir=tmp_path / "missing"),
+        raise_server_exceptions=False,
+    )
+    response = client.get("/")
+    assert response.status_code == 503
+    assert "npm --prefix frontend run build" in response.text
+    assert client.get("/api/auth/me", headers=api.headers).status_code == 200
 
 
 def test_api_responses_are_not_cached(api):
@@ -384,7 +433,7 @@ def test_api_responses_are_not_cached(api):
 def test_index_has_no_inline_script_or_style(api):
     import re
 
-    html = api.client.get("/").text
+    html = api.client.get("/legacy").text
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
     assert " style=" not in html and "<style" not in html
 
