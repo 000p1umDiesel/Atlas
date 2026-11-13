@@ -25,6 +25,7 @@ import type { GraphView } from "../graph/search";
 import { useGraphSearch } from "../graph/useGraphSearch";
 import { formatInt, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
+import { ErrorBoundary, ErrorNotice } from "../ui/ErrorNotice";
 import { Segmented } from "../ui/Segmented";
 import { Toggle } from "../ui/Toggle";
 
@@ -354,29 +355,40 @@ export function GraphPage() {
       </CanvasMessage>
     );
   } else if (search.view === "3d") {
+    // Чанк 3D-вида мог исчезнуть после обновления сайта: ошибка — только в области графа.
     canvas = (
-      <Suspense
-        fallback={
+      <ErrorBoundary
+        fallback={(error) => (
           <CanvasMessage>
-            <p className="flex items-center gap-2 text-sm text-muted" role="status">
-              <span className="size-2 animate-pulse rounded-full bg-primary" aria-hidden="true" />
-              Загружаем 3D-вид…
-            </p>
+            <div className="pointer-events-auto">
+              <ErrorNotice error={error} />
+            </div>
           </CanvasMessage>
-        }
+        )}
       >
-        <Graph3D
-          graph={graph}
-          filters={search}
-          entityTypes={configured}
-          typeLabel={catalog.typeLabel}
-          selected={selected}
-          onSelect={setSelected}
-          onBackgroundClick={deselect}
-          onReady={onReady3d}
-          autoRotate={showRotate && autoRotate}
-        />
-      </Suspense>
+        <Suspense
+          fallback={
+            <CanvasMessage>
+              <p className="flex items-center gap-2 text-sm text-muted" role="status">
+                <span className="size-2 animate-pulse rounded-full bg-primary" aria-hidden="true" />
+                Загружаем 3D-вид…
+              </p>
+            </CanvasMessage>
+          }
+        >
+          <Graph3D
+            graph={graph}
+            filters={search}
+            entityTypes={configured}
+            typeLabel={catalog.typeLabel}
+            selected={selected}
+            onSelect={setSelected}
+            onBackgroundClick={deselect}
+            onReady={onReady3d}
+            autoRotate={showRotate && autoRotate}
+          />
+        </Suspense>
+      </ErrorBoundary>
     );
   } else {
     canvas = (

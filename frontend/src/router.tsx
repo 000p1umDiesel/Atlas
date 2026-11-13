@@ -16,6 +16,7 @@ import { DesignPage } from "./routes/design";
 import { HomePage } from "./routes/home";
 import { Placeholder } from "./routes/placeholder";
 import { Shell } from "./shell/Shell";
+import { RouteError } from "./ui/ErrorNotice";
 
 function Root() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -75,6 +76,8 @@ export function createAppRouter(opts?: { history?: RouterHistory }) {
   return createRouter({
     routeTree,
     history: opts?.history,
+    // Русское сообщение вместо английского по умолчанию (в том числе для чанка прежней сборки).
+    defaultErrorComponent: RouteError,
     // Без JSON: «123» остаётся строкой, списки — через запятую, дефолты не пишутся.
     parseSearch: parsePlainSearch,
     stringifySearch: stringifyPlainSearch,
