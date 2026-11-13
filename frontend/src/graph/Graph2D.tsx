@@ -5,7 +5,7 @@ import Sigma from "sigma";
 import type { EdgeExtremitySpec, NodeLayerSpec } from "sigma/primitives";
 import { extremityArrow, layerFill } from "sigma/rendering";
 import type { NodeView } from "../api/types";
-import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorVar, withAlpha } from "../lib/entityColors";
+import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { communityColorMap } from "./insights";
@@ -56,6 +56,8 @@ export interface Graph2DProps {
   filters: GraphFilters;
   /** Настроенные типы сущностей в порядке конфигурации (цвета как в легенде). */
   entityTypes?: string[];
+  /** Русская подпись типа для подсказки у курсора (без неё — ключ типа). */
+  typeLabel?(type: string): string;
   /** Выбранная сущность: её окрестность подсвечена, подписи видны. */
   selected?: string | null;
   onSelect(entityId: string): void;
@@ -194,6 +196,7 @@ export function Graph2D({
   graph,
   filters,
   entityTypes,
+  typeLabel,
   selected = null,
   onSelect,
   onBackgroundClick,
@@ -217,6 +220,7 @@ export function Graph2D({
   const onSelectRef = useRef(onSelect);
   const onBackgroundRef = useRef(onBackgroundClick);
   const onReadyRef = useRef(onReady);
+  const typeLabelRef = useRef(typeLabel);
   const [themeVersion, setThemeVersion] = useState(0);
   // Sigma создаётся после загрузки шрифта подписей: атлас глифов рисуется один раз.
   const [fontsLoaded, setFontsLoaded] = useState(() => fontsReady(FONTS));
@@ -226,6 +230,7 @@ export function Graph2D({
     onSelectRef.current = onSelect;
     onBackgroundRef.current = onBackgroundClick;
     onReadyRef.current = onReady;
+    typeLabelRef.current = typeLabel;
   });
 
   useEffect(() => {
@@ -280,7 +285,8 @@ export function Graph2D({
       return;
     }
     const a = rg.getNodeAttributes(node);
-    setTooltip({ id: node, name: a.name, type: a.type, mentions: a.mention_count, color: a.color });
+    const type = typeLabelRef.current?.(a.type) ?? a.type;
+    setTooltip({ id: node, name: a.name, type, mentions: a.mention_count, color: a.color });
   }, []);
 
   // Создание рендерера и воркера на каждый новый граф; разрушение при размонтировании.
@@ -736,7 +742,7 @@ export function Graph2D({
       size: nodeSize(a, metric, range),
       color: communities
         ? schemeColor(a.community === null ? undefined : communities.get(a.community))
-        : cssColor(typeColorVar(a.type, configured)),
+        : typeColorRgb(a.type, configured),
     }));
     sigma.refresh();
   }, [graph, fontsLoaded, colorBy, sizeBy, typesOrder, themeVersion]);

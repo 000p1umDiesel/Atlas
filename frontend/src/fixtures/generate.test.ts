@@ -1,5 +1,23 @@
 import { generateFixtures } from "./generate";
 
+const CONFIG_TYPES = [
+  "Person",
+  "Organization",
+  "Location",
+  "Event",
+  "Project",
+  "Product",
+  "Equipment",
+  "Software",
+  "Technology",
+  "Method",
+  "Concept",
+  "Work",
+  "Metric",
+  "Regulation",
+  "Substance",
+];
+
 describe("generateFixtures", () => {
   const f = generateFixtures(7);
   it("детерминирован", () => {
@@ -15,10 +33,30 @@ describe("generateFixtures", () => {
       expect(set.has(r.dst_id)).toBe(true);
     }
   });
-  it("все 8 типов представлены, 12 сообществ", () => {
-    for (const t of f.entityTypes) expect(f.graph.nodes.some((n) => n.type === t)).toBe(true);
-    expect(f.entityTypes).toHaveLength(8);
+  it("типы — реальные 15 из config.yaml в его порядке, у каждого есть узлы; 12 сообществ", () => {
+    expect(f.types.map((t) => t.type)).toEqual(CONFIG_TYPES);
+    for (const t of f.types) {
+      expect(t.count).toBeGreaterThanOrEqual(1);
+      expect(f.graph.nodes.filter((n) => n.type === t.type)).toHaveLength(t.count);
+    }
+    expect(new Set(f.graph.nodes.map((n) => n.type)).size).toBe(15);
     expect(new Set(f.graph.nodes.map((n) => n.community)).size).toBe(12);
+  });
+  it("у типа русская подпись и определение (форма API этапа 2)", () => {
+    const person = f.types.find((t) => t.type === "Person")!;
+    expect(person.label).toBe("Человек");
+    expect(person.description).toBe("Реальный или вымышленный человек, названный по имени или однозначно узнаваемый.");
+    expect(f.types.find((t) => t.type === "Software")!.label).toBe("ПО");
+    expect(f.types.find((t) => t.type === "Regulation")!.label).toBe("Нормативный акт");
+    for (const t of f.types) {
+      expect(t.label).toMatch(/^[А-ЯЁ]/);
+      expect(t.description.length).toBeGreaterThan(20);
+    }
+  });
+  it("распределение правдоподобное: понятий больше, чем веществ", () => {
+    const count = (type: string) => f.types.find((t) => t.type === type)!.count;
+    for (const big of ["Concept", "Person", "Organization", "Method", "Work"])
+      for (const small of ["Regulation", "Substance", "Equipment"]) expect(count(big)).toBeGreaterThan(count(small));
   });
   it("статистика согласована с графом (ruling E)", () => {
     expect(f.stats.entities).toBe(300);

@@ -2,7 +2,8 @@ import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useId, useMemo, useState } from "react";
 import { communityColors, themedCss } from "../lib/communityPalette";
-import { typeColorVar } from "../lib/entityColors";
+import type { TypeCatalog, TypeInfo } from "../lib/typeCatalog";
+import { TypeHint } from "../ui/TypeHint";
 import { communityLabel, type CommunitySummary } from "./insights";
 import type { ColorBy, SizeBy } from "./model";
 
@@ -19,7 +20,8 @@ type Props = {
   colorBy: ColorBy;
   /** Метрика, которая реально задаёт размер (pagerank без анализа → упоминания). */
   sizeBy: SizeBy;
-  types: string[];
+  /** Справочник типов: порядок, русские подписи, определения, цвета. */
+  catalog: TypeCatalog;
   /** Выбранные в фильтре типы (пусто — все): остальные в легенде приглушены. */
   activeTypes?: string[];
   /** Выбранное сообщество фильтра (null — все). */
@@ -42,7 +44,7 @@ function wideScreen(): boolean {
 export function Legend({
   colorBy,
   sizeBy,
-  types,
+  catalog,
   activeTypes = [],
   activeCommunity = null,
   communities,
@@ -52,19 +54,29 @@ export function Legend({
   const [open, setOpen] = useState(wideScreen);
   const bodyId = useId();
   const palette = useMemo(() => communityColors(communities.map((c) => c.id)), [communities]);
-  const items =
+  const items: {
+    key: string;
+    target: LegendTarget;
+    label: string;
+    color: string;
+    pressed: boolean;
+    dim: boolean;
+    /** Тип: определение показывается подсказкой. */
+    info?: TypeInfo;
+  }[] =
     colorBy === "type"
-      ? types.map((t) => ({
+      ? catalog.order.map((t) => ({
           key: t,
-          target: { kind: "type", value: t } as LegendTarget,
-          label: t,
-          color: typeColorVar(t, types),
+          target: { kind: "type", value: t },
+          label: catalog.typeLabel(t),
+          color: catalog.typeColor(t),
           pressed: activeTypes.includes(t),
           dim: activeTypes.length > 0 && !activeTypes.includes(t),
+          info: catalog.typeInfo(t),
         }))
       : communities.map((c) => ({
           key: c.id,
-          target: { kind: "community", value: c.id } as LegendTarget,
+          target: { kind: "community", value: c.id },
           label: communityLabel(c),
           color: themedCss(palette.get(c.id)),
           pressed: activeCommunity === c.id,
@@ -114,20 +126,33 @@ export function Legend({
                 return (
                   <li key={item.key} className={`transition-opacity ${item.dim ? "opacity-45" : ""}`}>
                     {onToggle ? (
-                      <button
-                        type="button"
-                        aria-pressed={item.pressed}
-                        title={item.label}
-                        onClick={() => onToggle(item.target)}
-                        onPointerEnter={() => onHover?.(item.target)}
+                      <TypeHint
+                        info={item.info ?? { type: item.key, label: item.label, description: "", known: false }}
+                        color={item.color}
+                        placement="top"
                         onFocus={() => onHover?.(item.target)}
                         onBlur={() => onHover?.(null)}
-                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-primary ${
-                          item.pressed ? "bg-ink/[0.07] font-medium" : ""
-                        }`}
                       >
-                        {body}
-                      </button>
+                        {(hint) => (
+                          <button
+                            {...hint}
+                            type="button"
+                            aria-pressed={item.pressed}
+                            // Подпись сообщества может не поместиться — полностью она в title.
+                            title={item.info ? undefined : item.label}
+                            onClick={() => onToggle(item.target)}
+                            onPointerEnter={(e) => {
+                              onHover?.(item.target);
+                              hint.onPointerEnter?.(e);
+                            }}
+                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-primary ${
+                              item.pressed ? "bg-ink/[0.07] font-medium" : ""
+                            }`}
+                          >
+                            {body}
+                          </button>
+                        )}
+                      </TypeHint>
                     ) : (
                       <span className="flex items-center gap-2 px-2 py-1">{body}</span>
                     )}

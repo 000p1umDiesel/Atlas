@@ -791,6 +791,7 @@ export function Graph3D({
   graph,
   filters,
   entityTypes,
+  typeLabel,
   selected = null,
   onSelect,
   onBackgroundClick,
@@ -804,6 +805,7 @@ export function Graph3D({
   const onBackgroundRef = useRef(onBackgroundClick);
   const onReadyRef = useRef(onReady);
   const graphRef = useRef(graph);
+  const typeLabelRef = useRef(typeLabel);
   const [hover, setHover] = useState<TooltipInfo | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [themeVersion, setThemeVersion] = useState(0);
@@ -815,6 +817,7 @@ export function Graph3D({
     onBackgroundRef.current = onBackgroundClick;
     onReadyRef.current = onReady;
     graphRef.current = graph;
+    typeLabelRef.current = typeLabel;
   });
 
   useEffect(() => {
@@ -836,7 +839,8 @@ export function Graph3D({
       const g = graphRef.current;
       if (!node || !g.hasNode(node.id)) return null;
       const a = g.getNodeAttributes(node.id);
-      return { id: node.id, name: a.name, type: a.type, mentions: a.mention_count, color: node.color };
+      const type = typeLabelRef.current?.(a.type) ?? a.type;
+      return { id: node.id, name: a.name, type, mentions: a.mention_count, color: node.color };
     };
     let scene: Scene3D;
     try {

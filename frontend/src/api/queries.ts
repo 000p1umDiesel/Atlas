@@ -1,4 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { createTypeCatalog, type TypeCatalog } from "../lib/typeCatalog";
 import type { GraphPayload, RecentDocument, Stats, TypeCount } from "./types";
 
 // Фикстуры подгружаются динамически и попадают в сборку только при VITE_FIXTURES=1.
@@ -14,20 +16,27 @@ export function useStats() {
 }
 
 export function useOverview() {
-  return useQuery<{ graph: GraphPayload; types: TypeCount[] }>({
+  return useQuery<{ graph: GraphPayload }>({
     queryKey: ["overview"],
-    queryFn: async () => {
-      const f = await fixtures();
-      return { graph: f.graph, types: f.types };
-    },
+    queryFn: async () => ({ graph: (await fixtures()).graph }),
   });
 }
 
+/** Типы сущностей в порядке `extract.entity_types`: ключ, русская подпись, определение, число. */
 export function useEntityTypes() {
-  return useQuery<string[]>({
+  return useQuery<TypeCount[]>({
     queryKey: ["entity-types"],
-    queryFn: async () => (await fixtures()).entityTypes,
+    queryFn: async () => (await fixtures()).types,
   });
+}
+
+/**
+ * Справочник типов из того же запроса: подписи, определения и цвета для всех компонентов.
+ * Пока список не загружен — ключи вместо подписей и порядок пуст.
+ */
+export function useTypeCatalog(): TypeCatalog {
+  const { data } = useEntityTypes();
+  return useMemo(() => createTypeCatalog(data), [data]);
 }
 
 export function useRecentDocuments() {

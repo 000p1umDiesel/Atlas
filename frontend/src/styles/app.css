@@ -12,14 +12,6 @@
   --color-on-primary: var(--on-primary);
   --color-line: var(--line);
   --color-t0: var(--t0);
-  --color-t1: var(--t1);
-  --color-t2: var(--t2);
-  --color-t3: var(--t3);
-  --color-t4: var(--t4);
-  --color-t5: var(--t5);
-  --color-t6: var(--t6);
-  --color-t7: var(--t7);
-  --color-t8: var(--t8);
   --font-sans: "Golos Text Variable", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Literata Variable", ui-serif, Georgia, serif;
   --radius-card: var(--radius);
@@ -97,4 +89,14 @@
 .legend-scroll {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklab, var(--ink) 22%, transparent) transparent;
+}
+
+/* Подсказка с определением типа: короткое проявление (при reduced motion — сразу, см. tokens.css). */
+.type-hint:not([hidden]) {
+  animation: type-hint-in 120ms ease-out;
+}
+@keyframes type-hint-in {
+  from {
+    opacity: 0;
+  }
 }

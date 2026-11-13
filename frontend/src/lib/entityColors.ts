@@ -1,13 +1,5 @@
 import type { ThemedColor } from "./communityPalette";
-
-const PALETTE_SIZE = 8;
-
-/** CSS-переменная цвета типа: по индексу в списке настроенных типов, циклически по 8. */
-export function typeColorVar(type: string, configured: string[]): string {
-  const index = configured.indexOf(type);
-  if (index < 0) return "var(--t0)";
-  return `var(--t${(index % PALETTE_SIZE) + 1})`;
-}
+import { typeColorAt } from "./typePalette";
 
 /** Минимум 2D-контекста, нужный для нормализации (его подменяют в тестах: в jsdom нет canvas). */
 export interface ColorContext {
@@ -97,6 +89,15 @@ export function isDarkScheme(): boolean {
 export function schemeColor(color: ThemedColor | undefined): string {
   if (!color) return cssColor("--t0");
   return hexToRgb(isDarkScheme() ? color.dark : color.light) ?? FALLBACK_RGB;
+}
+
+/**
+ * Цвет типа для WebGL: `rgb(r, g, b)` текущей темы по позиции типа в списке настроенных
+ * (тот же цвет, что `TypeCatalog.typeColor` в DOM); тип вне списка — нейтральный `--t0`.
+ */
+export function typeColorRgb(type: string, configured: readonly string[]): string {
+  const index = configured.indexOf(type);
+  return schemeColor(index < 0 ? undefined : typeColorAt(index));
 }
 
 /** Сброс кэша (смена темы; тесты). */

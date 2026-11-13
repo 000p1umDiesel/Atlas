@@ -38,14 +38,42 @@ test("числа в плитках — в русской записи", async ()
   expect(tile.textContent).toContain(`${stats.chunks.toLocaleString("ru-RU")} фрагментов`);
 });
 
-test("полос по типам — 8, строка «Person» с числом из фикстуры", async () => {
+test("полос по типам — 15, строка «Человек» с числом из фикстуры", async () => {
   const { types } = generateFixtures();
   await renderHome();
   const bars = screen.getByRole("list", { name: "Сущности по типам" });
-  expect(within(bars).getAllByRole("listitem")).toHaveLength(8);
-  const person = within(bars).getByRole("link", { name: /^Person/ });
+  expect(within(bars).getAllByRole("listitem")).toHaveLength(15);
+  expect(within(bars).queryByText("Person")).toBeNull();
+  const person = within(bars).getByRole("link", { name: /^Человек/ });
   expect(person.textContent).toContain(String(types.find((t) => t.type === "Person")!.count));
   expect(person.getAttribute("href")).toBe("/graph?types=Person");
+});
+
+test("«Что это за типы?» раскрывает справочник: название и определение каждого типа", async () => {
+  const { types } = generateFixtures();
+  await renderHome();
+  const toggle = screen.getByRole("button", { name: "Что это за типы?" });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("region", { name: "Типы сущностей" })).toBeNull();
+  await act(async () => fireEvent.click(toggle));
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  const glossary = screen.getByRole("region", { name: "Типы сущностей" });
+  expect(toggle.getAttribute("aria-controls")).toBe(glossary.id);
+  const terms = within(glossary).getAllByRole("term");
+  expect(terms.map((t) => t.textContent)).toEqual(types.map((t) => t.label));
+  const definitions = within(glossary).getAllByRole("definition");
+  expect(definitions.map((d) => d.textContent)).toEqual(types.map((t) => t.description));
+  await act(async () => fireEvent.click(toggle));
+  await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Типы сущностей" })).toBeNull());
+});
+
+test("в подписи к главной и в списке важных сущностей — русские названия типов", async () => {
+  const { types } = generateFixtures();
+  await renderHome();
+  const lead = [...types].sort((a, b) => b.count - a.count)[0]!;
+  expect(screen.getByText(new RegExp(`сущностей типа «${lead.label}»`))).toBeTruthy();
+  const list = screen.getByRole("list", { name: "Самые важные сущности" });
+  for (const t of types) expect(within(list).queryByText(new RegExp(`^${t.type},`))).toBeNull();
 });
 
 test("самые важные сущности ведут на граф с подсветкой", async () => {

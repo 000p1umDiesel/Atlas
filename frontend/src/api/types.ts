@@ -36,8 +36,15 @@ export interface Stats {
   analysis: { ready: boolean; completed_at: string | null };
 }
 
-export interface TypeCount {
+/** Тип сущности: ключ из `extract.entity_types`, русская подпись и определение для показа. */
+export interface EntityTypeInfo {
   type: string;
+  label: string;
+  description: string;
+}
+
+/** Ответ `GET /api/entities/types` (этап 2): в порядке `extract.entity_types`. */
+export interface TypeCount extends EntityTypeInfo {
   count: number;
 }
 

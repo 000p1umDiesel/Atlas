@@ -1,15 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { motion } from "motion/react";
-import type { TypeCount } from "../api/types";
 import { DEFAULT_FILTERS } from "../graph/model";
 import { serializeGraphSearch } from "../graph/search";
-import { typeColorVar } from "../lib/entityColors";
 import { countOf, formatInt } from "../lib/format";
+import type { TypeCatalog } from "../lib/typeCatalog";
 
 type Props = {
-  types: TypeCount[];
-  /** Настроенные типы: цвет полосы = цвет типа на графе и в легенде. */
-  configured: string[];
+  /** Справочник типов: числа, русские подписи, цвет полосы = цвет типа на графе и в легенде. */
+  catalog: TypeCatalog;
 };
 
 const ENTITY_FORMS: [string, string, string] = ["сущность", "сущности", "сущностей"];
@@ -19,8 +17,8 @@ const ENTITY_FORMS: [string, string, string] = ["сущность", "сущно�
  * по убыванию. Тип подписан текстом в каждой строке (цвет — не единственный признак),
  * число — у конца полосы, доля — в подсказке и в имени ссылки.
  */
-export function TypeBars({ types, configured }: Props) {
-  const rows = [...types].sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+export function TypeBars({ catalog }: Props) {
+  const rows = [...catalog.types].sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
   const total = rows.reduce((s, r) => s + r.count, 0);
   const max = rows.reduce((m, r) => Math.max(m, r.count), 0);
 
@@ -31,7 +29,8 @@ export function TypeBars({ types, configured }: Props) {
       {rows.map((row, i) => {
         const share = total > 0 ? Math.round((row.count / total) * 100) : 0;
         const fraction = max > 0 ? row.count / max : 0;
-        const label = `${row.type}: ${countOf(row.count, ENTITY_FORMS)}, ${share}%`;
+        const name = catalog.typeLabel(row.type);
+        const label = `${name}: ${countOf(row.count, ENTITY_FORMS)}, ${share}%`;
         return (
           <li key={row.type}>
             <Link
@@ -41,14 +40,14 @@ export function TypeBars({ types, configured }: Props) {
               title={`${label}. Показать на графе`}
               className="group -mx-2 grid grid-cols-[minmax(5.5rem,8.5rem)_1fr] items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-bg focus-visible:outline-2 focus-visible:outline-primary"
             >
-              <span className="truncate text-sm">{row.type}</span>
+              <span className="truncate text-sm">{name}</span>
               <span className="flex min-w-0 items-center gap-2">
                 <motion.span
                   aria-hidden="true"
                   className="h-3 shrink-0 origin-left rounded-r-[4px] transition-[filter] group-hover:brightness-95"
                   style={{
                     width: `calc((100% - 4.5rem) * ${fraction})`,
-                    backgroundColor: typeColorVar(row.type, configured),
+                    backgroundColor: catalog.typeColor(row.type),
                   }}
                   initial={{ scaleX: 0 }}
                   animate={{ scaleX: 1 }}

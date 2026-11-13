@@ -1,6 +1,6 @@
 // Чистая часть 3D-графа: данные для three-forcegraph, подписи, кадрирование.
 // Здесь нет three.js — модуль проверяется в jsdom без WebGL.
-import { cssColor, schemeColor, typeColorVar } from "../lib/entityColors";
+import { schemeColor, typeColorRgb } from "../lib/entityColors";
 import { communityColorMap } from "./insights";
 import { nodeSize, sizeMetric, sizeRange, type Graph, type GraphFilters } from "./model";
 
@@ -59,7 +59,7 @@ export function toForceData(
     if (!visible.nodes.has(id)) return;
     const color = communities
       ? schemeColor(a.community === null ? undefined : communities.get(a.community))
-      : cssColor(typeColorVar(a.type, types));
+      : typeColorRgb(a.type, types);
     nodes.push({ id, name: a.name, color, val: nodeSize(a, metric, range) });
   });
   const pairs = new Map<string, ForceLink>();

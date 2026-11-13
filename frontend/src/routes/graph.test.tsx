@@ -43,9 +43,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("клик по чипу «Person» → в URL ровно ?types=Person", async () => {
+test("клик по чипу «Человек» → в URL ровно ?types=Person", async () => {
   const router = await renderAt("/graph");
-  await click(within(filters()).getByRole("button", { name: /^Person/ }));
+  await click(within(filters()).getByRole("button", { name: /^Человек/ }));
   await vi.waitFor(() => expect(searchStr(router)).toBe("?types=Person"));
   expect(fake2d.last?.filters.types).toEqual(["Person"]);
 });
@@ -55,7 +55,7 @@ test("числовая строка подсветки остаётся стро
   expect(router.state.location.search).toMatchObject({ highlight: "123" });
   expect(fake2d.last?.filters.highlight).toBe("123");
   expect((within(filters()).getByLabelText("Подсветить по имени") as HTMLInputElement).value).toBe("123");
-  await click(within(filters()).getByRole("button", { name: /^Person/ }));
+  await click(within(filters()).getByRole("button", { name: /^Человек/ }));
   await vi.waitFor(() => expect(searchStr(router)).toBe("?types=Person&highlight=123"));
 });
 
@@ -111,7 +111,7 @@ test("после фильтрации граф вписывается в экр�
   await renderAt("/graph");
   await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
   fake2d.api.fit.mockClear();
-  await click(within(filters()).getByRole("button", { name: /^Person/ }));
+  await click(within(filters()).getByRole("button", { name: /^Человек/ }));
   await vi.waitFor(() => expect(fake2d.api.fit).toHaveBeenCalled(), { timeout: 1500 });
 });
 
@@ -148,7 +148,10 @@ test("клик по узлу открывает компактную карто�
   await renderAt("/graph");
   fireEvent.click(screen.getByRole("button", { name: "выбрать узел" }));
   const card = await screen.findByRole("dialog", { name: first.name });
-  expect(within(card).getByText(first.type)).toBeTruthy();
+  const { types } = generateFixtures();
+  const label = types.find((t) => t.type === first.type)!.label;
+  expect(within(card).getByText(label)).toBeTruthy();
+  expect(within(card).queryByText(first.type)).toBeNull();
   const mentions = within(card).getByRole("group", { name: "Упоминания" });
   expect(within(mentions).getByText(first.mention_count.toLocaleString("ru-RU"))).toBeTruthy();
   expect(within(card).getByRole("group", { name: "PageRank" })).toBeTruthy();
@@ -209,7 +212,7 @@ test("легенда: клик по типу — фильтр в URL, навед
   const router = await renderAt("/graph");
   await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
   const legend = screen.getByRole("list", { name: "Цвета типов" });
-  const person = within(legend).getByRole("button", { name: "Person" });
+  const person = within(legend).getByRole("button", { name: "Человек" });
   fireEvent.pointerEnter(person);
   const ids = fake2d.api.emphasize.mock.calls.at(-1)?.[0] as Set<string>;
   expect(ids.size).toBeGreaterThan(0);
@@ -255,7 +258,7 @@ test("чипы типов показывают число видимых сущ�
   const { types } = generateFixtures();
   await renderAt("/graph");
   const person = types.find((t) => t.type === "Person")!;
-  expect(within(filters()).getByRole("button", { name: /^Person/ }).textContent).toContain(String(person.count));
+  expect(within(filters()).getByRole("button", { name: /^Человек/ }).textContent).toContain(String(person.count));
 });
 
 test("без фикстур — спокойное сообщение вместо графа", async () => {

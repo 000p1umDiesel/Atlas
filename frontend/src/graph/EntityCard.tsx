@@ -1,9 +1,10 @@
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, Users, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, Info, Users, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useId, useMemo, useState } from "react";
 import { communityColors, themedCss } from "../lib/communityPalette";
-import { typeColorVar } from "../lib/entityColors";
 import { countOf, formatInt, formatScore } from "../lib/format";
+import type { TypeCatalog } from "../lib/typeCatalog";
+import { TypeHint } from "../ui/TypeHint";
 import { GRAPH_CARD_ATTR } from "./hotkeys";
 import { communityLabel, topRelations, type CommunitySummary, type RelationRow } from "./insights";
 import type { Graph } from "./model";
@@ -17,7 +18,8 @@ const TOP_RELATIONS = 5;
 type Props = {
   graph: Graph;
   entityId: string;
-  entityTypes: string[];
+  /** Справочник типов: русская подпись, определение и цвет типа сущности. */
+  catalog: TypeCatalog;
   communities: CommunitySummary[];
   rank: Map<string, number>;
   /** Узкий экран: нижняя выезжающая карточка вместо плавающей справа. */
@@ -68,7 +70,7 @@ function RelationItem({ row, onSelect }: { row: RelationRow; onSelect(id: string
 export function EntityCard({
   graph,
   entityId,
-  entityTypes,
+  catalog,
   communities,
   rank,
   compact,
@@ -93,6 +95,8 @@ export function EntityCard({
   const top = relations.slice(0, TOP_RELATIONS);
   const rest = relations.slice(TOP_RELATIONS);
   const place = rank.get(entityId);
+  const typeInfo = catalog.typeInfo(a.type);
+  const typeColor = catalog.typeColor(a.type);
 
   const motionProps = compact
     ? { initial: { y: "100%" }, animate: { y: 0 }, exit: { y: "100%" } }
@@ -118,13 +122,25 @@ export function EntityCard({
         <div className="min-w-0 flex-1">
           <h2 className="line-clamp-2 font-serif text-[17px] leading-snug font-semibold">{a.name}</h2>
           <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-bg px-2 py-0.5 text-ink">
-              <span
-                className="size-2 rounded-full"
-                style={{ backgroundColor: typeColorVar(a.type, entityTypes) }}
-                aria-hidden="true"
-              />
-              {a.type}
+            <span className="inline-flex items-center gap-0.5">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-bg px-2 py-0.5 text-ink">
+                <span className="size-2 rounded-full" style={{ backgroundColor: typeColor }} aria-hidden="true" />
+                {typeInfo.label}
+              </span>
+              {typeInfo.description && (
+                <TypeHint info={typeInfo} color={typeColor} toggleOnClick>
+                  {(hint) => (
+                    <button
+                      {...hint}
+                      type="button"
+                      aria-label={`Что такое «${typeInfo.label}»`}
+                      className="grid size-6 place-items-center rounded-full text-muted transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-primary"
+                    >
+                      <Info size={13} strokeWidth={2} />
+                    </button>
+                  )}
+                </TypeHint>
+              )}
             </span>
             {community && (
               <span className="inline-flex min-w-0 items-center gap-1.5" title={communityLabel(community)}>

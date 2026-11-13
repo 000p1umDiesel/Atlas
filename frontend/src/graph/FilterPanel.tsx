@@ -1,7 +1,6 @@
 import { PanelLeftClose, RotateCcw, Search, X } from "lucide-react";
 import { useId, useMemo, type CSSProperties, type ReactNode } from "react";
-import { useEntityTypes, useOverview } from "../api/queries";
-import { typeColorVar } from "../lib/entityColors";
+import { useOverview, useTypeCatalog } from "../api/queries";
 import { formatInt, formatScore, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
 import { HIGHLIGHT_FIELD_ATTR, requestFlyToMatch } from "./commands";
@@ -10,6 +9,7 @@ import { buildGraph, DEFAULT_FILTERS, visibleSubgraph, type ColorBy, type SizeBy
 import { useDebouncedField, useGraphSearch } from "./useGraphSearch";
 import { Segmented } from "../ui/Segmented";
 import { Toggle } from "../ui/Toggle";
+import { TypeHint } from "../ui/TypeHint";
 
 const COLOR_OPTIONS: { value: ColorBy; label: string }[] = [
   { value: "type", label: "Тип" },
@@ -45,7 +45,7 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
 export function FilterPanel() {
   const { search, update, reset } = useGraphSearch();
   const overview = useOverview();
-  const entityTypes = useEntityTypes();
+  const catalog = useTypeCatalog();
   const column = useShellColumn();
   const ids = {
     highlight: useId(),
@@ -56,10 +56,6 @@ export function FilterPanel() {
   };
 
   const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
-  const configured = useMemo(
-    () => entityTypes.data ?? overview.data?.types.map((t) => t.type) ?? [],
-    [entityTypes.data, overview.data],
-  );
   const counts = useMemo(() => (graph ? typeCounts(graph, search) : new Map<string, number>()), [graph, search]);
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
@@ -165,31 +161,37 @@ export function FilterPanel() {
         }
       >
         <div className="flex flex-wrap gap-1.5">
-          {configured.map((type) => {
+          {catalog.order.map((type) => {
             const pressed = search.types.includes(type);
             const dimmed = search.types.length > 0 && !pressed;
+            const info = catalog.typeInfo(type);
+            const color = catalog.typeColor(type);
             return (
-              <button
-                key={type}
-                type="button"
-                aria-pressed={pressed}
-                onClick={() => toggleType(type)}
-                className={`inline-flex items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-[13px] transition-[background-color,border-color,opacity] focus-visible:outline-2 focus-visible:outline-primary ${
-                  pressed
-                    ? "border-primary bg-primary/15 text-ink"
-                    : dimmed
-                      ? "border-line bg-card/50 text-muted hover:text-ink"
-                      : "border-line bg-card text-ink hover:border-primary/60"
-                }`}
-              >
-                <span
-                  className={`size-2.5 rounded-full ${dimmed ? "opacity-50" : ""}`}
-                  style={{ backgroundColor: typeColorVar(type, configured) }}
-                  aria-hidden="true"
-                />
-                {type}
-                <span className="text-muted tabular-nums">{formatInt(counts.get(type) ?? 0)}</span>
-              </button>
+              <TypeHint key={type} info={info} color={color}>
+                {(hint) => (
+                  <button
+                    {...hint}
+                    type="button"
+                    aria-pressed={pressed}
+                    onClick={() => toggleType(type)}
+                    className={`inline-flex items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-[13px] transition-[background-color,border-color,opacity] focus-visible:outline-2 focus-visible:outline-primary ${
+                      pressed
+                        ? "border-primary bg-primary/15 text-ink"
+                        : dimmed
+                          ? "border-line bg-card/50 text-muted hover:text-ink"
+                          : "border-line bg-card text-ink hover:border-primary/60"
+                    }`}
+                  >
+                    <span
+                      className={`size-2.5 rounded-full ${dimmed ? "opacity-50" : ""}`}
+                      style={{ backgroundColor: color }}
+                      aria-hidden="true"
+                    />
+                    {info.label}
+                    <span className="text-muted tabular-nums">{formatInt(counts.get(type) ?? 0)}</span>
+                  </button>
+                )}
+              </TypeHint>
             );
           })}
         </div>

@@ -21,11 +21,8 @@ const HUE_STEP = 5;
 /** Ярусы светлоты: светлая тема в полосе dataviz 0.43–0.77, тёмная — 0.48–0.67. */
 const TIERS_LIGHT = [0.5, 0.58, 0.66, 0.74];
 const TIERS_DARK = [0.5, 0.555, 0.61, 0.665];
-const CHROMAS = [0.08, 0.13, 0.17];
 /** В тёмной теме чуть меньше хромы: насыщенный цвет на тёмном фоне «светится». */
 const DARK_CHROMA = 0.92;
-/** Первый цвет — тёплая глина, как первый тип. */
-const ANCHOR = { hue: 30, tier: 2, chroma: 0.13 };
 
 interface Candidate {
   color: ThemedColor;
@@ -33,64 +30,77 @@ interface Candidate {
   dark: [number, number, number];
 }
 
-let candidates: Candidate[] | null = null;
-/** Уже выбранная последовательность (индексы кандидатов) и расстояние каждого кандидата до неё. */
-const sequence: number[] = [];
-let nearest: Float64Array | null = null;
-
-function buildCandidates(): Candidate[] {
-  const out: Candidate[] = [];
-  for (let hue = 0; hue < 360; hue += HUE_STEP) {
-    for (let t = 0; t < TIERS_LIGHT.length; t++) {
-      for (const c of CHROMAS) {
-        const light = oklchToHex(TIERS_LIGHT[t], c, hue);
-        const dark = oklchToHex(TIERS_DARK[t], c * DARK_CHROMA, hue);
-        out.push({ color: { light, dark }, light: hexToOklab(light), dark: hexToOklab(dark) });
-      }
-    }
-  }
-  return out;
-}
+const candidate = (color: ThemedColor): Candidate => ({ color, light: hexToOklab(color.light), dark: hexToOklab(color.dark) });
 
 const dist = (a: number[], b: number[]) => 100 * Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
-/** Дописать последовательность до `n` цветов (детерминированно, при равенстве — меньший индекс). */
-function extend(n: number) {
-  if (!candidates) {
-    candidates = buildCandidates();
-    nearest = new Float64Array(candidates.length).fill(Infinity);
-  }
-  const all = candidates;
-  const near = nearest as Float64Array;
-  while (sequence.length < Math.min(n, all.length)) {
-    let pick: number;
-    if (sequence.length === 0) {
-      const tier = ANCHOR.tier;
-      pick = all.findIndex(
-        (_, i) =>
-          Math.floor(i / (TIERS_LIGHT.length * CHROMAS.length)) * HUE_STEP === ANCHOR.hue &&
-          Math.floor(i / CHROMAS.length) % TIERS_LIGHT.length === tier &&
-          CHROMAS[i % CHROMAS.length] === ANCHOR.chroma,
-      );
-    } else {
-      pick = 0;
-      for (let i = 1; i < all.length; i++) if (near[i] > near[pick]) pick = i;
-    }
-    sequence.push(pick);
-    const p = all[pick];
+/**
+ * Различимая палитра: первый цвет — `seed`, дальше жадно «самый далёкий от уже выбранных»
+ * (max-min по ΔE OKLab, худшее из двух тем) из сетки оттенок × светлота × `chromas`.
+ * Последовательность дописывается лениво и не меняется: i-й цвет всегда один и тот же.
+ */
+export function createDistinctPalette(opts: {
+  chromas: readonly number[];
+  seed: ThemedColor;
+  /** Отбросить кандидатов, у которых хрома после ужатия в охват sRGB ниже порога (светлая тема). */
+  minChroma?: number;
+}): (index: number) => ThemedColor {
+  let candidates: Candidate[] | null = null;
+  let nearest: Float64Array | null = null;
+  const sequence: Candidate[] = [];
+
+  const take = (p: Candidate) => {
+    sequence.push(p);
+    const all = candidates as Candidate[];
+    const near = nearest as Float64Array;
     for (let i = 0; i < all.length; i++) {
       const d = Math.min(dist(all[i].light, p.light), dist(all[i].dark, p.dark));
       if (d < near[i]) near[i] = d;
     }
-  }
+  };
+
+  const extend = (n: number) => {
+    if (!candidates) {
+      candidates = [];
+      for (let hue = 0; hue < 360; hue += HUE_STEP)
+        for (let t = 0; t < TIERS_LIGHT.length; t++)
+          for (const c of opts.chromas) {
+            const next = candidate({
+              light: oklchToHex(TIERS_LIGHT[t], c, hue),
+              dark: oklchToHex(TIERS_DARK[t], c * DARK_CHROMA, hue),
+            });
+            if (opts.minChroma !== undefined && Math.hypot(next.light[1], next.light[2]) < opts.minChroma) continue;
+            candidates.push(next);
+          }
+      nearest = new Float64Array(candidates.length).fill(Infinity);
+      take(candidate(opts.seed));
+    }
+    const all = candidates;
+    const near = nearest as Float64Array;
+    // Сетка исчерпана (кандидаты на нулевом расстоянии) — дальше цвета пойдут по кругу.
+    while (sequence.length < n) {
+      let pick = 0;
+      for (let i = 1; i < all.length; i++) if (near[i] > near[pick]) pick = i;
+      if (near[pick] <= 0) break;
+      take(all[pick]);
+    }
+  };
+
+  return (index: number) => {
+    extend(index + 1);
+    return sequence[index % sequence.length].color;
+  };
 }
+
+/** Сообщества: первый цвет — тёплая глина (оттенок 30°, третий ярус, хрома 0.13). */
+const communityPalette = createDistinctPalette({
+  chromas: [0.08, 0.13, 0.17],
+  seed: { light: oklchToHex(TIERS_LIGHT[2], 0.13, 30), dark: oklchToHex(TIERS_DARK[2], 0.13 * DARK_CHROMA, 30) },
+});
 
 /** Цвет i-го сообщества (i — позиция в списке сообществ графа). */
 export function communityColorAt(index: number): ThemedColor {
-  extend(index + 1);
-  const all = candidates as Candidate[];
-  // Сетка исчерпана (больше 864 сообществ) — цвета пойдут по кругу.
-  return all[sequence[index % sequence.length]].color;
+  return communityPalette(index);
 }
 
 /**
@@ -99,7 +109,6 @@ export function communityColorAt(index: number): ThemedColor {
  * и пока список тот же, цвета не меняются. Каждое сообщество получает свой цвет.
  */
 export function communityColors(ids: readonly string[]): Map<string, ThemedColor> {
-  extend(ids.length);
   return new Map(ids.map((id, i) => [id, communityColorAt(i)]));
 }
 

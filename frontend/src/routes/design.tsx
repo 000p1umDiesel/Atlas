@@ -1,17 +1,6 @@
+import { useTypeCatalog } from "../api/queries";
 import { useTheme, type ThemeChoice } from "../lib/theme";
-
-/** [токен, название, hex светлой темы, hex тёмной темы, класс] — те же значения, что в tokens.css. */
-const TYPES = [
-  ["t0", "нейтральный", "#BDB6A8", "#7E7B70", "bg-t0"],
-  ["t1", "глина", "#E08A6C", "#D77755", "bg-t1"],
-  ["t2", "небо", "#6DBBE8", "#3AA0D4", "bg-t2"],
-  ["t3", "лаванда", "#987ACA", "#8766BB", "bg-t3"],
-  ["t4", "горчица", "#CFAD4E", "#B2912E", "bg-t4"],
-  ["t5", "роза", "#C46E83", "#B05C71", "bg-t5"],
-  ["t6", "мята", "#5BC99E", "#3AAC83", "bg-t6"],
-  ["t7", "карамель", "#BF7A35", "#B0660C", "bg-t7"],
-  ["t8", "олива", "#A7BC61", "#8BA03A", "bg-t8"],
-] as const;
+import { typeColorAt } from "../lib/typePalette";
 
 const THEMES: [ThemeChoice, string][] = [
   ["system", "Как в системе"],
@@ -22,6 +11,9 @@ const THEMES: [ThemeChoice, string][] = [
 /** Стилевая плитка: по ней владелец оценивает палитру, шрифты и компоненты. */
 export function DesignPage() {
   const [theme, setTheme] = useTheme();
+  const catalog = useTypeCatalog();
+  // Пример чипов — первые два типа из списка (без данных — ничего).
+  const chips = catalog.order.slice(0, 2);
   return (
     <main className="mx-auto max-w-4xl space-y-10 px-6 py-10">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -63,18 +55,32 @@ export function DesignPage() {
 
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">Цвета типов сущностей</h2>
+        <p className="text-sm text-muted">
+          Цвет даёт различимый генератор по порядку типов в config.yaml, своя пара для каждой темы. Тип вне
+          списка — нейтральный.
+        </p>
         <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {TYPES.map(([name, label, light, dark, cls]) => (
-            <li key={name} className="flex items-center gap-3 rounded-card bg-card p-3 shadow-card">
-              <span className={`size-10 shrink-0 rounded-xl ${cls}`} />
-              <span className="leading-tight">
-                <span className="block font-medium">{label}</span>
-                <span className="block text-sm text-muted tabular-nums">
-                  --{name} {light} / {dark}
+          {catalog.order.map((type, i) => {
+            const c = typeColorAt(i);
+            return (
+              <li key={type} className="flex items-center gap-3 rounded-card bg-card p-3 shadow-card">
+                <span className="size-10 shrink-0 rounded-xl" style={{ backgroundColor: catalog.typeColor(type) }} />
+                <span className="min-w-0 leading-tight">
+                  <span className="block truncate font-medium">{catalog.typeLabel(type)}</span>
+                  <span className="block text-sm text-muted tabular-nums">
+                    {c.light} / {c.dark}
+                  </span>
                 </span>
-              </span>
-            </li>
-          ))}
+              </li>
+            );
+          })}
+          <li className="flex items-center gap-3 rounded-card bg-card p-3 shadow-card">
+            <span className="size-10 shrink-0 rounded-xl bg-t0" />
+            <span className="leading-tight">
+              <span className="block font-medium">Другой тип</span>
+              <span className="block text-sm text-muted tabular-nums">--t0 #BDB6A8 / #7E7B70</span>
+            </span>
+          </li>
         </ul>
       </section>
 
@@ -87,8 +93,12 @@ export function DesignPage() {
           <button type="button" className="rounded-xl px-4 py-2 text-primary-ink hover:bg-primary/15">
             Тихая кнопка
           </button>
-          <span className="rounded-full bg-t6 px-3 py-1 text-sm text-ink">мята</span>
-          <span className="rounded-full bg-t2 px-3 py-1 text-sm text-ink">небо</span>
+          {chips.map((type) => (
+            <span key={type} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-bg px-3 py-1 text-sm">
+              <span className="size-2.5 rounded-full" style={{ backgroundColor: catalog.typeColor(type) }} aria-hidden="true" />
+              {catalog.typeLabel(type)}
+            </span>
+          ))}
           <input
             aria-label="Пример поля"
             placeholder="Задайте вопрос базе знаний"

@@ -1,14 +1,25 @@
 import type { GraphPayload, NodeView, RecentDocument, RelationView, Stats, TypeCount } from "../api/types";
 
-const ENTITY_TYPES = [
-  "Person",
-  "Organization",
-  "Concept",
-  "Method",
-  "Dataset",
-  "Place",
-  "Event",
-  "Artifact",
+/**
+ * Типы сущностей — те же 15, что в `extract.entity_types` config.yaml, в его порядке.
+ * Русская подпись и определение — форма будущего `GET /api/entities/types` (этап 2).
+ */
+const ENTITY_TYPES: { type: string; label: string; description: string }[] = [
+  { type: "Person", label: "Человек", description: "Реальный или вымышленный человек, названный по имени или однозначно узнаваемый." },
+  { type: "Organization", label: "Организация", description: "Компания, институт, университет, госорган, команда или сообщество — но не место, где они находятся." },
+  { type: "Location", label: "Место", description: "Страна, город, регион, географический объект, здание или объект в космосе (планета, звезда, галактика)." },
+  { type: "Event", label: "Событие", description: "Датированное событие — конференция, инцидент, битва, релиз, выборы — или исторический период." },
+  { type: "Project", label: "Проект", description: "Именованная инициатива, программа или миссия с целью; не разовое событие." },
+  { type: "Product", label: "Продукт", description: "Товар, услуга или бренд. Программы — в «ПО», приборы и машины — в «Оборудование»." },
+  { type: "Equipment", label: "Оборудование", description: "Конкретный прибор, аппарат, машина или космический аппарат для работы и исследований (например, телескоп «Джеймс Уэбб»)." },
+  { type: "Software", label: "ПО", description: "Программа, приложение, библиотека, фреймворк, язык программирования, платформа или обученная ML-модель (например, PyTorch, GPT-4)." },
+  { type: "Technology", label: "Технология", description: "Общая технология, стандарт, протокол или класс устройств (например, 5G, блокчейн), а не конкретный продукт." },
+  { type: "Method", label: "Метод", description: "Техника, алгоритм или процедура, которую применяют (например, градиентный спуск, ПЦР)." },
+  { type: "Concept", label: "Понятие", description: "Абстрактная идея, теория, принцип, термин, природный процесс или целая дисциплина (например, инфляция, машинное обучение)." },
+  { type: "Work", label: "Произведение", description: "Книга, статья, отчёт, журнал, фильм, датасет, бенчмарк или другая работа с названием." },
+  { type: "Metric", label: "Метрика", description: "Мера, показатель или единица измерения (например, точность, BLEU, ВВП)." },
+  { type: "Regulation", label: "Нормативный акт", description: "Закон, регламент, политика, договор или иной правовой акт." },
+  { type: "Substance", label: "Вещество", description: "Химическое вещество, материал, лекарство, пищевой ингредиент или биомолекула (белок, гормон)." },
 ];
 const PREDICATES = [
   "uses",
@@ -41,9 +52,11 @@ interface Pool {
   mods: string[];
 }
 
+// Число узлов по типам: в сумме 300 (как stats.entities). Понятий, людей, организаций,
+// методов и произведений больше; нормативных актов, веществ и оборудования — единицы.
 const POOLS: Record<string, Pool> = {
   Person: {
-    count: 50,
+    count: 38,
     bases: [
       "Иван Петров", "Анна Смирнова", "Дмитрий Волков", "Елена Кузнецова", "Алексей Морозов",
       "Ольга Новикова", "Сергей Соколов", "Мария Попова", "Andrew Ng", "Geoffrey Hinton",
@@ -53,61 +66,103 @@ const POOLS: Record<string, Pool> = {
     mods: ["мл.", "Jr.", "(автор)", "(редактор)"],
   },
   Organization: {
-    count: 36,
+    count: 30,
     bases: [
       "Яндекс", "Сбер", "МГУ", "ВШЭ", "Сколтех", "Neo4j Inc.", "OpenAI", "Google Research",
       "Qdrant Solutions", "Hugging Face", "Anthropic", "Mail.ru Group", "ИТМО", "Институт системного анализа",
     ],
     mods: ["Labs", "Group", "(лаборатория ИИ)", "Europe"],
   },
-  Concept: {
-    count: 56,
+  Location: {
+    count: 16,
     bases: [
-      "Трансформер", "Векторный поиск", "Граф знаний", "Внимание", "Эмбеддинг", "Retrieval-augmented generation",
-      "Entity resolution", "Семантическая близость", "Токенизация", "Fine-tuning", "Контекстное окно",
-      "Knowledge graph", "Attention mechanism", "Онтология", "Галлюцинация", "Zero-shot learning",
+      "Москва", "Санкт-Петербург", "Новосибирск", "Mountain View", "Лондон", "Berlin",
+      "Казань", "Сколково", "Cambridge", "Екатеринбург", "Марс", "Галактика Андромеды",
     ],
-    mods: ["(обзор)", "в продакшене", "и качество", "for search", "в русском языке"],
+    mods: ["(кампус)", "Центр", "район"],
+  },
+  Event: {
+    count: 14,
+    bases: ["NeurIPS", "Конференция «Диалог»", "ACL", "ICML", "Хакатон ИИ", "AINL", "SIGIR", "Запуск ChatGPT"],
+    mods: ["2022", "2023", "2024", "воркшоп"],
+  },
+  Project: {
+    count: 12,
+    bases: [
+      "Проект «Многобаза»", "Human Genome Project", "Миссия Artemis", "BigScience", "Open Assistant",
+      "Программа «Цифровая экономика»", "Проект ruGPT", "Horizon Europe",
+    ],
+    mods: ["фаза 2", "(пилот)", "2025"],
+  },
+  Product: {
+    count: 10,
+    bases: ["Яндекс Плюс", "iPhone 15", "Kindle Paperwhite", "Сбер Прайм", "ChatGPT Plus", "Яндекс Такси", "Pixel 8"],
+    mods: ["Pro", "(подписка)", "Lite"],
+  },
+  Equipment: {
+    count: 8,
+    bases: [
+      "Телескоп «Джеймс Уэбб»", "NVIDIA H100", "Большой адронный коллайдер", "Секвенатор NovaSeq",
+      "Марсоход Curiosity", "Raspberry Pi 5",
+    ],
+    mods: ["(стенд)", "кластер"],
+  },
+  Software: {
+    count: 24,
+    bases: [
+      "Qwen3-Embedding", "llama.cpp", "Docling", "RuBERT", "Neo4j", "Qdrant", "Ragas", "FastAPI",
+      "PyTorch", "GPT-4", "Python", "Obsidian",
+    ],
+    mods: ["0.6B", "(форк)", "v3", "плагин"],
+  },
+  Technology: {
+    count: 20,
+    bases: [
+      "5G", "Блокчейн", "CRISPR", "USB-C", "HTTP/3", "WebGPU", "Wi-Fi 7", "Литий-ионные аккумуляторы",
+      "Векторные базы данных", "GPU-вычисления",
+    ],
+    mods: ["(стандарт)", "в России", "нового поколения"],
   },
   Method: {
-    count: 50,
+    count: 30,
     bases: [
       "Leiden algorithm", "PageRank", "BM25", "Louvain method", "Reciprocal rank fusion", "Градиентный спуск",
       "Кросс-энкодер", "Dense retrieval", "Метод опорных векторов", "Chunking по смыслу", "Beam search", "LoRA",
-      "Кластеризация", "Дистилляция модели",
+      "ПЦР", "Дистилляция модели",
     ],
     mods: ["v2", "(вариант)", "с весами", "optimized", "для графов"],
   },
-  Dataset: {
+  Concept: {
+    count: 45,
+    bases: [
+      "Трансформер", "Векторный поиск", "Граф знаний", "Внимание", "Эмбеддинг", "Retrieval-augmented generation",
+      "Entity resolution", "Семантическая близость", "Токенизация", "Fine-tuning", "Контекстное окно",
+      "Машинное обучение", "Инфляция", "Онтология", "Галлюцинация", "Zero-shot learning",
+    ],
+    mods: ["(обзор)", "в продакшене", "и качество", "for search", "в русском языке"],
+  },
+  Work: {
     count: 30,
     bases: [
-      "MS MARCO", "Natural Questions", "Корпус РуСЕИТ", "SQuAD", "RuBQ", "Wikipedia dump",
-      "Taiga corpus", "HotpotQA", "Open Corpus РИА",
+      "Attention Is All You Need", "MS MARCO", "Natural Questions", "SQuAD", "RuBQ", "HotpotQA", "MTEB",
+      "Книга «Глубокое обучение»", "Отчёт State of AI", "Журнал «Наука и жизнь»", "Обзор RAG", "Фильм «Она»",
     ],
-    mods: ["(RU)", "2023", "test split", "очищенный", "mini"],
+    mods: ["(RU)", "2023", "test split", "второе издание"],
   },
-  Place: {
-    count: 26,
-    bases: [
-      "Москва", "Санкт-Петербург", "Новосибирск", "Mountain View", "Лондон", "Berlin",
-      "Казань", "Сколково", "Cambridge", "Екатеринбург",
-    ],
-    mods: ["(кампус)", "Центр", "Downtown", "район"],
+  Metric: {
+    count: 10,
+    bases: ["Точность", "BLEU", "F1-мера", "ВВП", "nDCG@10", "Recall@k", "Перплексия", "MRR"],
+    mods: ["(макро)", "на тесте"],
   },
-  Event: {
-    count: 22,
-    bases: [
-      "NeurIPS", "Dialogue конференция", "ACL", "ICML", "Хакатон ИИ", "AINL", "RuSSIR", "SIGIR",
-    ],
-    mods: ["2022", "2023", "2024", "воркшоп"],
+  Regulation: {
+    count: 7,
+    bases: ["GDPR", "152-ФЗ «О персональных данных»", "EU AI Act", "Лицензия Apache 2.0", "Парижское соглашение"],
+    mods: ["(редакция 2024)", "статья 6"],
   },
-  Artifact: {
-    count: 30,
-    bases: [
-      "Qwen3-Embedding", "llama.cpp", "Docling", "RuBERT", "Neo4j", "Qdrant", "Ragas", "FastAPI",
-      "Obsidian vault", "Модель GPT",
-    ],
-    mods: ["0.6B", "(форк)", "v3", "плагин", "в Docker"],
+  Substance: {
+    count: 6,
+    bases: ["Кофеин", "Инсулин", "Графен", "Литий", "Гемоглобин"],
+    mods: ["(образец)", "синтетический"],
   },
 };
 
@@ -146,13 +201,12 @@ export function generateFixtures(seed = 7): {
   stats: Stats;
   types: TypeCount[];
   recent: RecentDocument[];
-  entityTypes: string[];
 } {
   const rnd = mulberry32(seed);
 
   // Узлы: тип по пулам, сообщество по кругу (гарантирует все 12), затем перемешивание.
   const raw: { name: string; type: string }[] = [];
-  for (const type of ENTITY_TYPES) {
+  for (const { type } of ENTITY_TYPES) {
     for (const name of makeNames(POOLS[type]!, rnd)) raw.push({ name, type });
   }
   const order = shuffle(raw, rnd);
@@ -224,7 +278,7 @@ export function generateFixtures(seed = 7): {
 
   const counts = new Map<string, number>();
   for (const n of nodes) counts.set(n.type, (counts.get(n.type) ?? 0) + 1);
-  const types: TypeCount[] = ENTITY_TYPES.map((type) => ({ type, count: counts.get(type) ?? 0 }));
+  const types: TypeCount[] = ENTITY_TYPES.map((t) => ({ ...t, count: counts.get(t.type) ?? 0 }));
 
   const statuses = ["done", "done", "done", "running", "pending", "failed"];
   const exts = ["pdf", "docx", "md", "pptx"];
@@ -250,6 +304,5 @@ export function generateFixtures(seed = 7): {
     stats,
     types,
     recent,
-    entityTypes: [...ENTITY_TYPES],
   };
 }

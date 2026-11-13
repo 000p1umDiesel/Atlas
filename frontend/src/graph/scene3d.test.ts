@@ -1,5 +1,6 @@
 import type { GraphPayload, NodeView } from "../api/types";
 import { clearCssColorCache } from "../lib/entityColors";
+import { typeColorAt } from "../lib/typePalette";
 import { generateFixtures } from "../fixtures/generate";
 import { buildGraph, DEFAULT_FILTERS, nodeSize, sizeMetric, sizeRange, visibleSubgraph } from "./model";
 import {
@@ -15,17 +16,12 @@ import {
   type ForceNode,
 } from "./scene3d";
 
-// Палитра светлой темы: hex разбирается без canvas (в jsdom его нет).
-const VARS: Record<string, string> = {
-  "--t0": "#C9C3B6",
-  "--t1": "#D8A48F",
-  "--t2": "#9FBFD3",
-  "--t3": "#BDB0D8",
-  "--t4": "#E5CF85",
-  "--t5": "#E2B2B4",
-  "--t6": "#A9D3BC",
-  "--t7": "#EBC09A",
-  "--t8": "#B7C08A",
+// Нейтральный цвет светлой темы: hex разбирается без canvas (в jsdom его нет).
+const VARS: Record<string, string> = { "--t0": "#C9C3B6" };
+/** Цвет i-го типа светлой темы как `rgb(...)`. */
+const typeRgb = (i: number) => {
+  const h = typeColorAt(i).light;
+  return `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`;
 };
 
 beforeEach(() => {
@@ -112,8 +108,8 @@ describe("toForceData", () => {
       expect(n.color).not.toContain("var(");
     }
     const color = (id: string, data = byType) => data.nodes.find((n) => n.id === id)!.color;
-    expect(color("a")).toBe("rgb(216, 164, 143)"); // Person → --t1
-    expect(color("b")).toBe("rgb(159, 191, 211)"); // Org → --t2
+    expect(color("a")).toBe(typeRgb(0)); // Person — первый тип
+    expect(color("b")).toBe(typeRgb(1)); // Org — второй
     expect(color("d")).toBe("rgb(201, 195, 182)"); // не настроен → --t0
 
     const f = { ...DEFAULT_FILTERS, colorBy: "community" as const };
@@ -126,9 +122,9 @@ describe("toForceData", () => {
   it("без списка типов цвета идут по отсортированным типам графа", () => {
     const g = small();
     const data = toForceData(g, visibleSubgraph(g, DEFAULT_FILTERS), DEFAULT_FILTERS);
-    // Org, Person, Place → --t1, --t2, --t3
-    expect(data.nodes.find((n) => n.id === "b")!.color).toBe("rgb(216, 164, 143)");
-    expect(data.nodes.find((n) => n.id === "d")!.color).toBe("rgb(189, 176, 216)");
+    // Org, Person, Place → цвета 0, 1, 2
+    expect(data.nodes.find((n) => n.id === "b")!.color).toBe(typeRgb(0));
+    expect(data.nodes.find((n) => n.id === "d")!.color).toBe(typeRgb(2));
   });
 
   it("имя узла — исходный текст; пустой видимый набор → пустые массивы", () => {

@@ -4,6 +4,7 @@ import { countOf } from "../lib/format";
 export interface TooltipInfo {
   id: string;
   name: string;
+  /** Подпись типа (русская, если известна). */
   type: string;
   mentions: number;
   /** CSS-цвет узла (как на холсте). */

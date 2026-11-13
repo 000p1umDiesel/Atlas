@@ -13,7 +13,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { useEntityTypes, useOverview } from "../api/queries";
+import { useOverview, useTypeCatalog } from "../api/queries";
 import { focusHighlightField, onFlyToMatch } from "../graph/commands";
 import { ENTITY_CARD_WIDTH, ENTITY_SHEET_SHARE, EntityCard } from "../graph/EntityCard";
 import { Graph2D, type Graph2DApi } from "../graph/Graph2D";
@@ -72,7 +72,7 @@ const getWide = () => typeof matchMedia !== "function" || matchMedia(WIDE).match
 export function GraphPage() {
   const { search, update, reset } = useGraphSearch();
   const overview = useOverview();
-  const entityTypes = useEntityTypes();
+  const catalog = useTypeCatalog();
   const column = useShellColumn();
   const reducedMotion = useReducedMotion() ?? false;
   const wide = useSyncExternalStore(subscribeWide, getWide, () => true);
@@ -81,10 +81,7 @@ export function GraphPage() {
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
-  const configured = useMemo(
-    () => entityTypes.data ?? overview.data?.types.map((t) => t.type) ?? [],
-    [entityTypes.data, overview.data],
-  );
+  const configured = catalog.order;
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
   const rank = useMemo(() => (graph ? rankByPagerank(graph) : new Map<string, number>()), [graph]);
@@ -351,6 +348,7 @@ export function GraphPage() {
           graph={graph}
           filters={search}
           entityTypes={configured}
+          typeLabel={catalog.typeLabel}
           selected={selected}
           onSelect={setSelected}
           onBackgroundClick={deselect}
@@ -365,6 +363,7 @@ export function GraphPage() {
         graph={graph}
         filters={search}
         entityTypes={configured}
+        typeLabel={catalog.typeLabel}
         selected={selected}
         onSelect={setSelected}
         onBackgroundClick={deselect}
@@ -533,7 +532,7 @@ export function GraphPage() {
           <Legend
             colorBy={search.colorBy}
             sizeBy={sizeMetric(graph, search.sizeBy)}
-            types={configured}
+            catalog={catalog}
             activeTypes={search.types}
             activeCommunity={search.community}
             communities={communities}
@@ -557,7 +556,7 @@ export function GraphPage() {
             offsetTop={cardTop}
             graph={graph}
             entityId={selected}
-            entityTypes={configured}
+            catalog={catalog}
             communities={communities}
             rank={rank}
             compact={!wide}

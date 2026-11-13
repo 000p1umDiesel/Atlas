@@ -1,15 +1,15 @@
 import { Link } from "@tanstack/react-router";
 import { AlertCircle, CheckCircle2, Clock3, FileText, LoaderCircle, Network, RefreshCw } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
-import { useEntityTypes, useOverview, useRecentDocuments, useStats } from "../api/queries";
+import { useId, useMemo, useState, type ReactNode } from "react";
+import { useOverview, useRecentDocuments, useStats, useTypeCatalog } from "../api/queries";
 import type { NodeView, RecentDocument } from "../api/types";
 import { communityLabel, communitySummaries, type CommunitySummary } from "../graph/insights";
 import { buildGraph, DEFAULT_FILTERS } from "../graph/model";
 import { serializeGraphSearch } from "../graph/search";
 import { StatTile } from "../home/StatTile";
 import { TypeBars } from "../home/TypeBars";
+import { GlossaryToggle, TypeGlossary } from "../home/TypeGlossary";
 import { communityColors, themedCss } from "../lib/communityPalette";
-import { typeColorVar } from "../lib/entityColors";
 import { countOf, formatDay, formatDayTime } from "../lib/format";
 
 const TOP_ENTITIES = 8;
@@ -49,15 +49,13 @@ function Unavailable({ error }: { error: unknown }) {
 export function HomePage() {
   const stats = useStats();
   const overview = useOverview();
-  const entityTypes = useEntityTypes();
+  const catalog = useTypeCatalog();
   const recent = useRecentDocuments();
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
+  const glossaryId = useId();
 
   const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
-  const configured = useMemo(
-    () => entityTypes.data ?? overview.data?.types.map((t) => t.type) ?? [],
-    [entityTypes.data, overview.data],
-  );
   const top = useMemo<NodeView[]>(
     () =>
       overview.data
@@ -69,7 +67,7 @@ export function HomePage() {
   );
 
   const s = stats.data;
-  const leadType = overview.data ? [...overview.data.types].sort((a, b) => b.count - a.count)[0] : undefined;
+  const leadType = [...catalog.types].sort((a, b) => b.count - a.count)[0];
 
   return (
     // Во всю ширину до 1800px: на широком экране сводка раскладывается в три колонки.
@@ -78,7 +76,7 @@ export function HomePage() {
         <h1 className="text-[2.25rem] leading-tight font-semibold tracking-tight">Главная</h1>
         {leadType && top[0] && (
           <p className="mt-2 font-serif text-lg leading-relaxed text-muted">
-            Больше всего в базе сущностей типа {leadType.type}, а в центре графа — {top[0].name}.
+            Больше всего в базе сущностей типа «{catalog.typeLabel(leadType.type)}», а в центре графа — {top[0].name}.
           </p>
         )}
       </header>
@@ -92,7 +90,7 @@ export function HomePage() {
           {/* Одна карточка, ячейки разделены волосяными линиями (зазор 1px поверх цвета линии). */}
           <div className="mt-8 grid grid-cols-2 gap-px overflow-hidden rounded-[14px] bg-line shadow-card lg:grid-cols-4">
             <StatTile index={0} label="Документы" value={s?.documents ?? null} note={s ? countOf(s.chunks, ["фрагмент", "фрагмента", "фрагментов"]) : undefined} />
-            <StatTile index={1} label="Сущности" value={s?.entities ?? null} note={configured.length ? countOf(configured.length, ["тип", "типа", "типов"]) : undefined} />
+            <StatTile index={1} label="Сущности" value={s?.entities ?? null} note={catalog.order.length ? countOf(catalog.order.length, ["тип", "типа", "типов"]) : undefined} />
             <StatTile index={2} label="Связи" value={s?.relations ?? null} note={communities.length ? countOf(communities.length, ["сообщество", "сообщества", "сообществ"]) : undefined} />
             <StatTile index={3} label="Страницы wiki" value={s?.wiki_pages ?? null} note={s && s.entities > 0 ? `у ${Math.round((s.wiki_pages / s.entities) * 100)}% сущностей` : undefined} />
           </div>
@@ -103,15 +101,26 @@ export function HomePage() {
                 <span id="home-types">Сущности по типам</span>
               </SectionTitle>
               <div className="rounded-[14px] bg-card p-4 shadow-card sm:p-5">
-                {overview.data ? (
-                  <TypeBars types={overview.data.types} configured={configured} />
+                {catalog.types.length > 0 || overview.isSuccess ? (
+                  <>
+                    <TypeBars catalog={catalog} />
+                    {catalog.types.length > 0 && (
+                      <div className="-mx-2 mt-3 border-t border-line pt-3">
+                        <GlossaryToggle open={glossaryOpen} controls={glossaryId} onToggle={() => setGlossaryOpen((v) => !v)} />
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <p className="text-sm text-muted">Загружаем…</p>
                 )}
               </div>
             </section>
 
-            <section className="lg:col-span-5 2xl:col-span-4" aria-labelledby="home-analysis">
+            {/* Справочник — во всю ширину сетки сразу под первым рядом (на узком экране — под полосами). */}
+            <TypeGlossary id={glossaryId} open={glossaryOpen} catalog={catalog} className="lg:order-1 lg:col-span-12" />
+
+            {/* 15 полос выше карточки анализа: она не растягивается на всю высоту ряда. */}
+            <section className="lg:col-span-5 lg:self-start 2xl:col-span-4" aria-labelledby="home-analysis">
               <AnalysisCard
                 ready={s?.analysis.ready ?? null}
                 completedAt={s?.analysis.completed_at ?? null}
@@ -119,7 +128,7 @@ export function HomePage() {
               />
             </section>
 
-            <section className="lg:col-span-7 2xl:order-last 2xl:col-span-12" aria-labelledby="home-top">
+            <section className="lg:order-2 lg:col-span-7 2xl:order-last 2xl:col-span-12" aria-labelledby="home-top">
               <SectionTitle>
                 <span id="home-top">Самые важные сущности</span>
               </SectionTitle>
@@ -137,9 +146,9 @@ export function HomePage() {
                       <span className="min-w-0 flex-1">
                         <span className="block truncate font-medium underline-offset-4 group-hover:underline">{node.name}</span>
                         <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                          <span className="size-2 rounded-full" style={{ backgroundColor: typeColorVar(node.type, configured) }} aria-hidden="true" />
+                          <span className="size-2 rounded-full" style={{ backgroundColor: catalog.typeColor(node.type) }} aria-hidden="true" />
                           <span>
-                            {node.type}, {countOf(node.mention_count, ["упоминание", "упоминания", "упоминаний"])}
+                            {catalog.typeLabel(node.type)}, {countOf(node.mention_count, ["упоминание", "упоминания", "упоминаний"])}
                           </span>
                         </span>
                       </span>
@@ -149,7 +158,7 @@ export function HomePage() {
               </ol>
             </section>
 
-            <section className="lg:col-span-5 2xl:col-span-3" aria-labelledby="home-recent">
+            <section className="lg:order-2 lg:col-span-5 2xl:order-none 2xl:col-span-3" aria-labelledby="home-recent">
               <SectionTitle aside={<Link to="/documents" className={QUIET_LINK}>Все документы</Link>}>
                 <span id="home-recent">Последние документы</span>
               </SectionTitle>

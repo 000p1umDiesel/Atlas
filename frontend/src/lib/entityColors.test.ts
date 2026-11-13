@@ -5,9 +5,10 @@ import {
   mixRgb,
   normalizeColor,
   schemeColor,
-  typeColorVar,
+  typeColorRgb,
   withAlpha,
 } from "./entityColors";
+import { typeColorAt } from "./typePalette";
 
 /** Поддельный 2D-контекст: jsdom не умеет canvas. Отдаёт заданный пиксель. */
 function fakeContext(pixel: [number, number, number, number]) {
@@ -26,18 +27,22 @@ afterEach(() => {
   document.documentElement.removeAttribute("style");
 });
 
-test("typeColorVar берёт цвет по индексу типа", () => {
-  expect(typeColorVar("Person", ["Person", "Org"])).toBe("var(--t1)");
-  expect(typeColorVar("Org", ["Person", "Org"])).toBe("var(--t2)");
+test("typeColorRgb: цвет типа по позиции в списке для текущей темы", () => {
+  const hex = (h: string) => `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`;
+  expect(typeColorRgb("Org", ["Person", "Org"])).toBe(hex(typeColorAt(1).light));
+  document.documentElement.setAttribute("data-theme", "dark");
+  expect(typeColorRgb("Org", ["Person", "Org"])).toBe(hex(typeColorAt(1).dark));
+  document.documentElement.removeAttribute("data-theme");
 });
 
-test("typeColorVar циклически повторяет 8 цветов", () => {
-  const types = Array.from({ length: 9 }, (_, i) => `T${i}`);
-  expect(typeColorVar("T8", types)).toBe("var(--t1)");
+test("typeColorRgb: 15 типов — 15 разных цветов, без повторов по кругу", () => {
+  const types = Array.from({ length: 15 }, (_, i) => `T${i}`);
+  expect(new Set(types.map((t) => typeColorRgb(t, types))).size).toBe(15);
 });
 
-test("неизвестный тип получает нейтральный цвет", () => {
-  expect(typeColorVar("Nope", ["Person"])).toBe("var(--t0)");
+test("неизвестный тип получает нейтральный --t0", () => {
+  document.documentElement.style.setProperty("--t0", "#bdb6a8");
+  expect(typeColorRgb("Nope", ["Person"])).toBe("rgb(189, 182, 168)");
 });
 
 test("cssColor разворачивает вложенные var() и отдаёт rgb()", () => {
