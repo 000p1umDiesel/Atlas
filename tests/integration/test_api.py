@@ -384,20 +384,18 @@ PAGE_CSP = (
 )
 
 
-def test_index_and_static_have_security_headers(api):
-    index = api.client.get("/legacy")
-    assert index.status_code == 200
-    assert index.headers["content-type"].startswith("text/html")
-    script = api.client.get("/static/app.js")
-    assert script.status_code == 200
-    for response in (index, script):
+def test_legacy_ui_is_gone(api):
+    for path in ("/legacy", "/static/app.js"):
+        response = api.client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.text == SPA_INDEX
         assert response.headers["content-security-policy"] == PAGE_CSP
-        assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["referrer-policy"] == "no-referrer"
-    for path in ("/static/%2e%2e/api/app.py", "/static/nope.js"):
-        assert api.client.get(path).status_code == 404
-    # httpx сам сворачивает `..`: запрос приходит как `/pyproject.toml` (SPA), файла не отдаёт
-    assert "[project]" not in api.client.get("/static/../pyproject.toml").text
+    from importlib.resources import files
+
+    web = files("mnogobase") / "web"
+    assert not (web / "app.js").exists()
+    assert not (web / "vendor").exists()
 
 
 def test_spa_index_and_fallback(api):
@@ -413,7 +411,7 @@ def test_spa_index_and_fallback(api):
 
 
 def test_spa_pages_answer_head(api):
-    for path in ("/", "/graph", "/legacy"):
+    for path in ("/", "/graph", "/entities/x"):
         response = api.client.head(path)
         assert response.status_code == 200, path
         assert response.headers["content-type"].startswith("text/html")
@@ -468,14 +466,6 @@ def test_api_responses_are_not_cached(api):
     me = api.client.get("/api/auth/me", headers=api.headers)
     assert me.headers["cache-control"] == "no-store"
     assert "content-security-policy" not in me.headers
-
-
-def test_index_has_no_inline_script_or_style(api):
-    import re
-
-    html = api.client.get("/legacy").text
-    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
-    assert " style=" not in html and "<style" not in html
 
 
 def test_rename_and_delete_conversations(api):

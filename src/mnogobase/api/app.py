@@ -6,8 +6,7 @@
 
 Группы маршрутов:
 - `/`, `/assets/*` и любой неизвестный путь — собранный SPA (`web/dist/`, history fallback на
-  `index.html`); `/legacy` и `/static/*` — прежний интерфейс (`mnogobase/web/`); везде CSP
-  `PAGE_CSP`, без inline-кода;
+  `index.html`); везде CSP `PAGE_CSP`, без inline-кода;
 - `/health` — проверка живости без авторизации и без обращения к базам;
 - `/api/auth/login|logout|me|password` — вход, отзыв сессии, текущий пользователь, смена
   своего пароля;
@@ -78,7 +77,7 @@ MAX_JSON_BODY = 64 * 1024
 # cookie веб-сессии (HttpOnly: JS страницы токена не видит)
 SESSION_COOKIE = "mb_session"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-# статика веб-интерфейса внутри пакета (index.html, app.js, vendor/, fonts/)
+# каталог веб-интерфейса внутри пакета (в нём только `dist/`)
 WEB_DIR = FilePath(str(files("mnogobase") / "web"))
 # сборка React-интерфейса (`npm --prefix frontend run build`)
 WEB_DIST = WEB_DIR / "dist"
@@ -360,13 +359,6 @@ def create_api(
         return JSONResponse({"detail": "Сервис временно недоступен"}, status_code=503)
 
     # HEAD на страницах — 200, как у GET (проверки доступности, curl -I)
-    @app.api_route("/legacy", methods=["GET", "HEAD"], include_in_schema=False)
-    def legacy():
-        """Прежний интерфейс (Preact без сборки); ссылается на `/static/...`."""
-        return FileResponse(WEB_DIR / "index.html", media_type="text/html")
-
-    # Starlette сама отвергает выход за каталог (`..`, ссылки наружу) ответом 404.
-    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     app.mount(
         "/assets",
         ImmutableStaticFiles(directory=web_dir / "assets", check_dir=False),
@@ -805,7 +797,7 @@ def create_api(
         """History fallback: любой неизвестный путь отдаёт `index.html` SPA. Пути API, статики
         и `/health` сюда не попадают: для них 404 в JSON."""
         head = path.split("/", 1)[0]
-        if head in ("api", "health", "assets", "static"):
+        if head in ("api", "health", "assets"):
             raise HTTPException(404)
         index = web_dir / "index.html"
         if not index.is_file():

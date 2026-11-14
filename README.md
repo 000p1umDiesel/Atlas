@@ -1977,7 +1977,7 @@ mnogobase/
 │   │                http.py  device.py  progress.py
 │   ├── ingest/      pipeline.py  processing.py  removal.py
 │   ├── ops/         doctor.py  model_servers.py  maintenance.py  graph_analysis.py
-│   ├── api/app.py                # FastAPI: /api/*, /health, сайт /, /legacy и /static (раздел 16)
+│   ├── api/app.py                # FastAPI: /api/*, /health, сайт / и /assets (раздел 16)
 │   ├── service/     kb.py  store.py  observability.py  client.py  errors.py
 │   ├── background/  queue.py  uploads.py  watch.py  worker.py
 │   ├── evaluation/  core.py  artifacts.py  ragas.py  report.py  comparison.py
@@ -1989,7 +1989,6 @@ mnogobase/
 │   ├── stores/      qdrant_store.py  graph_store.py  registry.py
 │   ├── wiki/        builder.py  render.py  validate.py  obsidian.py
 │   ├── web/         dist/                                   # сборка React-сайта из frontend/ (в .gitignore, 16.6)
-│   │                index.html  app.js  style.css  lib/  views/  vendor/  fonts/   # прежний UI (/legacy, /static), до этапа 5
 │   └── retrieval/   base.py  rag.py  wiki.py  graph.py  combined.py  answer.py  compare.py  rerank.py  translate.py
 ├── tests/
 │   ├── unit/  integration/  e2e/  security/
@@ -2396,7 +2395,7 @@ service:
 
 ### 16.6 Веб-интерфейс
 
-Сайт раздаёт сам API. Это React + Vite + TypeScript (`frontend/`), результат сборки лежит в `src/mnogobase/web/dist` (в `.gitignore`, входит в wheel и образ Docker). Вход — по адресу `/login`, по имени и паролю учётной записи из `mnogobase user create`; сессия, истёкшая посреди работы, возвращает на вход и затем обратно на ту же страницу. Прежний интерфейс (Preact + htm, `src/mnogobase/web/`) пока доступен по адресу `/legacy` и `/static/*`; он будет удалён на этапе 5 перестройки.
+Сайт раздаёт сам API. Это React + Vite + TypeScript (`frontend/`), результат сборки лежит в `src/mnogobase/web/dist` (в `.gitignore`, входит в wheel и образ Docker). Вход — по адресу `/login`, по имени и паролю учётной записи из `mnogobase user create`; сессия, истёкшая посреди работы, возвращает на вход и затем обратно на ту же страницу.
 
 Сборка и разработка (Node нужен только для сборки):
 
