@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import type { PathView } from "../api/types";
 import { countOf } from "../lib/format";
+import { predicateLabel } from "./insights";
 
 const STEPS: [string, string, string] = ["шаг", "шага", "шагов"];
 /** Наибольшая длина пути, которую принимает сервер. */
@@ -31,7 +32,7 @@ function Chain({ path }: { path: PathView }) {
         if (relation) {
           // Связь хранится от src к dst: совпадает с ходом пути — «→», иначе — «←».
           const arrow = relation.src_id === path.nodes[i - 1]!.entity_id ? "→" : "←";
-          link = ` ${arrow} ${relation.predicate} ${arrow} `;
+          link = ` ${arrow} ${predicateLabel(relation.predicate)} ${arrow} `;
         }
         return (
           <Fragment key={`${i}-${node.entity_id}`}>

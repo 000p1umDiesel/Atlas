@@ -4,6 +4,7 @@ import { useEntityRelations, type RelationDirection } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
 import type { EntityRelation } from "../api/types";
 import { NAME_LINK } from "../documents/JobsTable";
+import { predicateLabel } from "../graph/insights";
 import { formatInt, formatScore } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
 import { usePanel } from "../shell/panel";
@@ -22,9 +23,6 @@ const CHIP =
   "inline-flex items-center gap-1.5 rounded-full border border-line bg-card px-2.5 py-1 text-[13px] transition-colors hover:border-primary/60 focus-visible:outline-2 focus-visible:outline-primary aria-pressed:border-primary aria-pressed:bg-primary/15 aria-pressed:text-primary-ink";
 const EVIDENCE =
   "rounded-md px-1.5 py-0.5 text-xs text-primary-ink underline-offset-4 hover:bg-ink/[0.06] hover:underline focus-visible:outline-2 focus-visible:outline-primary";
-
-/** Предикат для людей: `works_at` → «works at». */
-export const predicateLabel = (predicate: string) => predicate.replaceAll("_", " ");
 
 function RelationRow({ relation: r, id, catalog }: { relation: EntityRelation; id: string; catalog: TypeCatalog }) {
   const { open } = usePanel();

@@ -55,6 +55,13 @@ test("цепочка из нескольких шагов: стрелка у к�
   expect(item.textContent).toContain("a → p1 → b ← p2 ← c");
 });
 
+test("предикат в цепочке — для людей: «proposed_by» → «proposed by»", () => {
+  renderList([{ nodes: [node("a"), node("b")], relations: [relation("a", "b", "proposed_by")] }]);
+  const item = screen.getByRole("button", { name: /Путь 1/ });
+  expect(item.textContent).toContain("a → proposed by → b");
+  expect(item.textContent).not.toContain("proposed_by");
+});
+
 test("наведение и фокус сообщают путь, клик закрепляет, повторный клик — снимает", () => {
   const paths = [
     { nodes: [node("a"), node("b")], relations: [relation("a", "b")] },
