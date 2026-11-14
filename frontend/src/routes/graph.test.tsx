@@ -805,6 +805,32 @@ describe("живые данные: режимы «Окрестность» и «
       await vi.waitFor(() => expect(noticeText()).toContain("Новых связей нет"));
     });
 
+    test("раскрытие не удалось — повторное раскрытие шлёт новый запрос и добавляет узлы", async () => {
+      let calls = 0;
+      const api = fakeApi(
+        routes({
+          // 500: Query повторяет запрос один раз — оба первых ответа ошибки, третий — соседи.
+          [EXPAND_E1]: () => (++calls <= 2 ? fail(500, "Сбой") : Response.json(E1_NEIGHBORS)),
+        }),
+      );
+      await renderLive("/graph", api);
+      await screen.findByTestId("graph2d");
+      await act(async () => {
+        fake2d.last?.onExpand?.("e1");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await vi.waitFor(() => expect(noticeText()).toContain("Не удалось загрузить связи"), { timeout: 3000 });
+      expect(calls).toBe(2);
+      expect(graphNodes()).toEqual(["e1", "e2"]);
+      await act(async () => {
+        fake2d.last?.onExpand?.("e1");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await vi.waitFor(() => expect(calls).toBe(3));
+      await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e2", "e3", "e4"]));
+      await vi.waitFor(() => expect(noticeText()).toContain("Добавлено 2 сущности"));
+    });
+
     test("21-е раскрытие вытесняет первое", async () => {
       const old = Array.from({ length: 20 }, (_, i) => `x${i + 1}`);
       const api = fakeApi(routes({ [EXPAND_E1]: E1_NEIGHBORS }));

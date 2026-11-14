@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Download, Keyboard, Maximize2, Minus, Plus, RotateCw, SlidersHorizontal } from "lucide-react";
 import { AnimatePresence, useReducedMotion } from "motion/react";
 import {
@@ -15,6 +16,7 @@ import {
 } from "react";
 import { ApiError, isUnauthorized } from "../api/client";
 import { useCommunities } from "../api/entities";
+import { neighborsQuery } from "../api/graph";
 import type { PathView } from "../api/types";
 import { fixturesMode, useTypeCatalog } from "../api/queries";
 import { focusHighlightField, onFlyToMatch } from "../graph/commands";
@@ -28,7 +30,7 @@ import { MODE_CARD_WIDTH, MODE_LABELS, ModeCard } from "../graph/ModeCard";
 import { PathList } from "../graph/PathList";
 import { sizeMetric, visibleSubgraph } from "../graph/model";
 import { EXPAND_LIMIT, type GraphMode, type GraphView } from "../graph/search";
-import { activeMode, useGraphData } from "../graph/useGraphData";
+import { activeMode, EXPAND_RELATIONS_LIMIT, useGraphData } from "../graph/useGraphData";
 import { useGraphSearch } from "../graph/useGraphSearch";
 import { countOf, formatInt, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
@@ -257,16 +259,23 @@ export function GraphPage() {
   // Раскрытие соседей (двойной клик, «Показать связи»): id — в конец `expand` (последние 20,
   // старые вытесняются), узел выбран — камера остаётся на нём. Узлы графа до раскрытия
   // запоминаются, чтобы по приходу ответа сказать, сколько добавилось.
+  // Прежнее раскрытие этого id не удалось — запрос сбрасывается и уходит заново (иначе тот же
+  // наблюдатель отдал бы старую ошибку). Сброс синхронный: новый рендер уже видит «pending».
+  const queryClient = useQueryClient();
   const [expanding, setExpanding] = useState<{ id: string; before: ReadonlySet<string> } | null>(null);
+  const expansions = data.state === "ready" ? data.expansions : undefined;
   const expandNode = useCallback(
     (id: string) => {
+      if (expansions?.get(id) === "error") {
+        void queryClient.resetQueries({ queryKey: neighborsQuery(id, 1, EXPAND_RELATIONS_LIMIT).queryKey, exact: true });
+      }
       setExpanding({ id, before: new Set(graph?.nodes() ?? []) });
       const expand = [...search.expand.filter((x) => x !== id), id].slice(-EXPAND_LIMIT);
       update({ expand, focus: id }, { replace: true });
     },
-    [graph, search.expand, update],
+    [graph, expansions, queryClient, search.expand, update],
   );
-  const expandStatus = expanding && data.state === "ready" ? data.expansions.get(expanding.id) : undefined;
+  const expandStatus = expanding ? expansions?.get(expanding.id) : undefined;
   useEffect(() => {
     if (!expanding || !graph || expandStatus === undefined || expandStatus === "pending") return;
     setNotice(
