@@ -12,6 +12,8 @@ __pycache__/
 *.pyc
 .DS_Store
 documents/
+# исходники экрана «Документы» веб-интерфейса — не данные
+!frontend/src/documents/
 /wiki/
 /data/
 *.superpowers

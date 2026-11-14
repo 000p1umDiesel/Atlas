@@ -16,6 +16,7 @@ import { parsePlainSearch, stringifyPlainSearch } from "./lib/searchParams";
 import { AccountPage } from "./routes/account";
 import { ChatPage } from "./routes/chat";
 import { DesignPage } from "./routes/design";
+import { DocumentsPage } from "./routes/documents";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { Placeholder } from "./routes/placeholder";
@@ -97,6 +98,13 @@ const conversationRoute = createRoute({
   component: ChatPage,
 });
 
+// Документы: загрузка, список и очередь. Search-параметры не проверяются: `panel` сохраняется.
+const documentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/documents",
+  component: DocumentsPage,
+});
+
 const designRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/_design",
@@ -111,7 +119,7 @@ const routeTree = rootRoute.addChildren([
   designRoute,
   chatRoute,
   conversationRoute,
-  page("/documents", "Документы"),
+  documentsRoute,
   page("/entities", "Сущности"),
   page("/wiki", "Wiki"),
   page("/status", "Статус"),
