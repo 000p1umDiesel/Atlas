@@ -14,6 +14,7 @@ export interface PaletteAction {
 export const ACTIONS: readonly PaletteAction[] = [
   { id: "new-chat", label: "Новый чат", keywords: "диалог вопрос спросить new chat", run: "navigate", to: "/chat" },
   { id: "upload", label: "Загрузить документ", keywords: "файл добавить upload", run: "navigate", to: "/documents" },
+  { id: "compare", label: "Сравнить сущности", keywords: "сравнение две общие связи compare", run: "navigate", to: "/entities/compare" },
   { id: "go-home", label: "Перейти: Главная", keywords: "домой сводка home", run: "navigate", to: "/" },
   { id: "go-chat", label: "Перейти: Чат", keywords: "диалоги вопросы chat", run: "navigate", to: "/chat" },
   { id: "go-documents", label: "Перейти: Документы", keywords: "файлы загрузки documents", run: "navigate", to: "/documents" },

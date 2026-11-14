@@ -221,3 +221,39 @@ def test_communities_and_subgraph(views):
     views.upsert_entity(EntityRecord(entity_id="new", name="New", type="Concept"))
     assert views.communities() == {"ready": False, "total": 0, "items": []}
     assert views.community_subgraph("community:y") is None
+
+
+def test_entity_comparison(views):
+    found = views.entity_comparison("ada", "engine")
+    assert [(r["src_id"], r["predicate"], r["dst_id"]) for r in found["direct"]] == [
+        ("ada", "described", "engine")
+    ]
+    assert found["shared_neighbors"]["total"] == 1
+    [babbage] = found["shared_neighbors"]["items"]
+    assert (babbage["entity_id"], babbage["name"], babbage["type"]) == (
+        "babbage",
+        "Charles Babbage",
+        "Person",
+    )
+    # направление — со стороны сравниваемой сущности: ada → babbage, babbage → engine
+    assert babbage["a_predicates"] == [{"predicate": "collaborated_with", "outgoing": True}]
+    assert babbage["b_predicates"] == [{"predicate": "designed", "outgoing": False}]
+    assert found["neighbors"] == {"a": 3, "b": 3}
+    docs = found["shared_documents"]
+    assert [(d["doc_id"], d["a_mentions"], d["b_mentions"]) for d in docs] == [(VIEW_DOC_A, 2, 2)]
+    assert found["co_mentions"] == 1
+    # порядок аргументов меняет стороны, но не состав
+    flipped = views.entity_comparison("engine", "ada")
+    assert flipped["shared_neighbors"]["items"][0]["a_predicates"][0]["predicate"] == "designed"
+    assert views.entity_comparison("ada", "engine", limit=0)["shared_neighbors"] == {
+        "total": 1,
+        "items": [],
+    }
+    empty = views.entity_comparison("lonely", "missing")
+    assert empty == {
+        "direct": [],
+        "shared_neighbors": {"total": 0, "items": []},
+        "neighbors": {"a": 0, "b": 0},
+        "shared_documents": [],
+        "co_mentions": 0,
+    }

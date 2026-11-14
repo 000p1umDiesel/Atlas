@@ -716,6 +716,77 @@ class GraphStore:
             limit=max(limit, 0),
         )
 
+    def entity_comparison(self, a: str, b: str, limit: int = 50) -> dict:
+        """Две сущности бок о бок: что их связывает в графе и в документах.
+
+        `direct` — связи RELATED между ними (проекция `_REL_VIEW`, по весу);
+        `shared_neighbors` — `{"total", "items"}`: сущности, связанные с обеими, с их
+        предикатами со стороны `a` и `b` (`{"predicate", "outgoing"}`, `outgoing` — связь
+        идёт от `a`/`b` к соседу), по сумме весов; `neighbors` — число разных соседей
+        каждой; `shared_documents` — документы, где упомянуты обе (`a_mentions`,
+        `b_mentions` — упоминающие фрагменты); `co_mentions` — фрагменты, где они вместе.
+        Неизвестная сущность даёт пустые списки и нули."""
+        limit = max(limit, 0)
+        direct = self._run(
+            "MATCH (e:Entity {entity_id: $a})-[r:RELATED]-(:Entity {entity_id: $b}) "
+            f"RETURN {_REL_VIEW} AS rel ORDER BY r.weight DESC, r.predicate",
+            a=a,
+            b=b,
+        )
+        shared = self._run(
+            "MATCH (x:Entity {entity_id: $a})-[ra:RELATED]-(n:Entity) "
+            "WHERE NOT n.entity_id IN [$a, $b] "
+            "WITH n, collect(DISTINCT {predicate: ra.predicate, outgoing: startNode(ra) = x}) "
+            "AS a_predicates, sum(coalesce(ra.weight, 0)) AS aw "
+            "MATCH (n)-[rb:RELATED]-(y:Entity {entity_id: $b}) "
+            "WITH n, a_predicates, aw, "
+            "collect(DISTINCT {predicate: rb.predicate, outgoing: startNode(rb) = y}) "
+            "AS b_predicates, sum(coalesce(rb.weight, 0)) AS bw "
+            "RETURN n.entity_id AS entity_id, n.name AS name, n.type AS type, "
+            "a_predicates, b_predicates, aw + bw AS weight "
+            "ORDER BY weight DESC, name, entity_id",
+            a=a,
+            b=b,
+        )
+        neighbors = {
+            r["id"]: r["n"]
+            for r in self._run(
+                "UNWIND [$a, $b] AS id MATCH (e:Entity {entity_id: id}) "
+                "OPTIONAL MATCH (e)-[:RELATED]-(o:Entity) WHERE o <> e "
+                "RETURN id, count(DISTINCT o) AS n",
+                a=a,
+                b=b,
+            )
+        }
+        documents = self._run(
+            "MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(:Entity {entity_id: $a}) "
+            "WITH d, count(c) AS am "
+            "MATCH (d)-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(:Entity {entity_id: $b}) "
+            "WITH d, am, count(c) AS bm "
+            "RETURN d.doc_id AS doc_id, d.path AS path, d.title AS title, "
+            "am AS a_mentions, bm AS b_mentions "
+            "ORDER BY am + bm DESC, doc_id LIMIT $limit",
+            a=a,
+            b=b,
+            limit=limit,
+        )
+        together = self._run(
+            "MATCH (:Entity {entity_id: $a})<-[:MENTIONS]-(c:Chunk)-[:MENTIONS]->"
+            "(:Entity {entity_id: $b}) RETURN count(DISTINCT c) AS n",
+            a=a,
+            b=b,
+        )
+        for row in shared:
+            for key in ("a_predicates", "b_predicates"):
+                row[key] = sorted(row[key], key=lambda p: (p["predicate"] or "", not p["outgoing"]))
+        return {
+            "direct": [r["rel"] for r in direct],
+            "shared_neighbors": {"total": len(shared), "items": shared[:limit]},
+            "neighbors": {"a": neighbors.get(a, 0), "b": neighbors.get(b, 0)},
+            "shared_documents": documents,
+            "co_mentions": together[0]["n"] if together else 0,
+        }
+
     def entity_document_count(self, entity_id: str) -> int:
         """Число документов, упоминающих сущность."""
         rows = self._run(

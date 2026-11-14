@@ -22,6 +22,7 @@ import { DocumentPage } from "./routes/document";
 import { DocumentsPage } from "./routes/documents";
 import { EntitiesPage } from "./routes/entities";
 import { EntityPage, validateEntitySearch } from "./routes/entity";
+import { EntityComparePage, validateCompareSearch } from "./routes/entityCompare";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { ReaderPage } from "./routes/reader";
@@ -133,6 +134,15 @@ const entitiesRoute = createRoute({
   component: EntitiesPage,
 });
 
+// Сравнение двух сущностей: `?a=&b=` (литеральный путь важнее `/entities/$id`).
+const entityCompareRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/entities/compare",
+  validateSearch: validateCompareSearch,
+  staticData: { column: EntitiesColumn },
+  component: EntityComparePage,
+});
+
 // Страница сущности: вкладка в `?tab=` (по умолчанию «Связи» не пишется), `panel` сохраняется.
 // Колонка — та же, что у каталога (один раздел: переход сюда её не перемонтирует).
 const entityRoute = createRoute({
@@ -172,6 +182,7 @@ const routeTree = rootRoute.addChildren([
   documentRoute,
   readerRoute,
   entitiesRoute,
+  entityCompareRoute,
   entityRoute,
   wikiRoute,
   wikiSlugRoute,

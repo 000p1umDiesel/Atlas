@@ -1,5 +1,5 @@
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { BookOpen, MessageCircleQuestion, Network, Route } from "lucide-react";
+import { ArrowLeftRight, BookOpen, MessageCircleQuestion, Network, Route } from "lucide-react";
 import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { COMMUNITIES_LIMIT, communityTitle, useCommunities, useEntity } from "../api/entities";
@@ -81,6 +81,10 @@ function Actions({ entity }: { entity: EntityCard }) {
       <RouterAnchor href={graphLink({ mode: "path", source: id })} className={ACTION}>
         <Route size={15} aria-hidden="true" />
         Путь до…
+      </RouterAnchor>
+      <RouterAnchor href={`/entities/compare${stringifyPlainSearch({ a: id })}`} className={ACTION}>
+        <ArrowLeftRight size={15} aria-hidden="true" />
+        Сравнить с…
       </RouterAnchor>
       <RouterAnchor href={`/chat${stringifyPlainSearch({ ask: askAbout(entity.name), mode: "graph" })}`} className={ACTION}>
         <MessageCircleQuestion size={15} aria-hidden="true" />

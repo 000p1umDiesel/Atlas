@@ -229,6 +229,31 @@ async def test_overview_path_communities(kbv):
     assert (err.value.status, err.value.detail) == (404, "Сообщество не найдено")
 
 
+async def test_compare_entities(kbv):
+    found = await kbv.compare_entities("ada", "engine")
+    assert found["a"]["entity_id"] == "ada" and found["b"]["entity_id"] == "engine"
+    assert found["a"]["degree"] == 3 and found["a"]["has_page"] is True
+    assert [n["entity_id"] for n in found["shared_neighbors"]["items"]] == ["babbage"]
+    assert found["shared_documents"] == [
+        {
+            "doc_id": VIEW_DOC_A,
+            "name": "Отчёт.pdf",
+            "a_mentions": 2,
+            "b_mentions": 2,
+            "url": f"/api/documents/{VIEW_DOC_A}/content",
+        }
+    ]
+    assert found["co_mentions"] == 1 and len(found["direct"]) == 1
+    for args, code, detail in (
+        (("ada", "ada"), 422, "Выберите две разные сущности"),
+        (("ada", "missing"), 404, "Сущность не найдена"),
+        (("missing", "ada"), 404, "Сущность не найдена"),
+    ):
+        with pytest.raises(ServiceError) as err:
+            await kbv.compare_entities(*args)
+        assert (err.value.status, err.value.detail) == (code, detail)
+
+
 async def test_neighbors_carry_node_view_fields(kbv):
     nb = await kbv.graph_neighbors("ada")
     assert set(nb) == {"nodes", "relations"}

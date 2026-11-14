@@ -70,7 +70,7 @@ test("Ctrl+K открывает, фокус в поле; пустой ввод �
   expect(document.activeElement).toBe(input());
   expect(groupNames()).toEqual(["Действия"]);
   expect(within(dialog).getByRole("group", { name: "Действия" })).toBeTruthy();
-  expect(within(dialog).getAllByRole("option")).toHaveLength(10);
+  expect(within(dialog).getAllByRole("option")).toHaveLength(11);
   await pause(200);
   expect(searchRequests(api)).toEqual([]);
   // Повторное нажатие — из самого поля палитры — закрывает.

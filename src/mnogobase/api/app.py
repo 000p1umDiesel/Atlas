@@ -761,6 +761,19 @@ def create_api(
             offset=offset,
         )
 
+    # `/api/entities/compare` — тоже до `/api/entities/{entity_id}`
+    @app.get("/api/entities/compare")
+    async def entity_compare(
+        kb: KB,
+        user: User,
+        a: Annotated[str, Query(min_length=1, max_length=200)],
+        b: Annotated[str, Query(min_length=1, max_length=200)],
+        limit: Limit = 50,
+    ):
+        """Две сущности бок о бок: карточки, прямые связи, общие соседи и документы;
+        422 — одна и та же, 404 — нет любой из них."""
+        return await kb.compare_entities(a, b, limit=limit)
+
     @app.get("/api/entities/{entity_id}")
     async def entity_page(entity_id: str, kb: KB, user: User):
         """Карточка сущности со степенью и числом документов; 404 — нет."""

@@ -294,6 +294,44 @@ export interface EntityCard {
   slug: string | null;
 }
 
+/** Связь соседа с одной из сравниваемых сущностей; `outgoing` — от неё к соседу. */
+export interface ComparePredicate {
+  predicate: string;
+  outgoing: boolean;
+}
+
+/** Сущность, связанная с обеими сравниваемыми. */
+export interface SharedNeighbor {
+  entity_id: string;
+  name: string;
+  type: string;
+  a_predicates: ComparePredicate[];
+  b_predicates: ComparePredicate[];
+  weight: number;
+}
+
+/** Документ, где упомянуты обе сущности: сколько фрагментов упоминают каждую. */
+export interface SharedDocument {
+  doc_id: string;
+  name: string;
+  a_mentions: number;
+  b_mentions: number;
+  url: string | null;
+}
+
+/** Ответ `GET /api/entities/compare?a=&b=`. */
+export interface EntityComparison {
+  a: EntityCard;
+  b: EntityCard;
+  direct: RelationView[];
+  shared_neighbors: { total: number; items: SharedNeighbor[] };
+  /** Число разных соседей каждой. */
+  neighbors: { a: number; b: number };
+  shared_documents: SharedDocument[];
+  /** Фрагментов, где упомянуты обе. */
+  co_mentions: number;
+}
+
 /** Строка каталога `GET /api/entities`: карточка узла + псевдонимы и страница wiki. */
 export type EntityListItem = NodeView & { aliases: string[]; has_page: boolean; slug: string | null };
 

@@ -1297,20 +1297,53 @@ class KnowledgeBase:
         стороны, `documents_count` — сколько документов её упоминают. 404 — нет сущности."""
 
         async def run(app: App) -> dict:
-            entity = self._require_entity(app, entity_id)
-            views = app.graph.node_views([entity_id])
-            if not views:  # удалена между запросами
-                raise ServiceError(404, "Сущность не найдена")
-            page = app.graph.wiki_page(entity_id)
-            has_page = page is not None and not page.stale
-            return {
-                **entity.model_dump(),
-                **app.graph.entity_analysis(entity_id),
-                "has_page": has_page,
-                "slug": page.slug if has_page else None,
-                "degree": views[0]["degree"],
-                "documents_count": app.graph.entity_document_count(entity_id),
-            }
+            return self._entity_card(app, entity_id)
+
+        return await self._with_app(run, "Граф недоступен")
+
+    def _entity_card(self, app: App, entity_id: str) -> dict:
+        """Карточка сущности для `entity` и `compare_entities`; 404 — сущности нет."""
+        entity = self._require_entity(app, entity_id)
+        views = app.graph.node_views([entity_id])
+        if not views:  # удалена между запросами
+            raise ServiceError(404, "Сущность не найдена")
+        page = app.graph.wiki_page(entity_id)
+        has_page = page is not None and not page.stale
+        return {
+            **entity.model_dump(),
+            **app.graph.entity_analysis(entity_id),
+            "has_page": has_page,
+            "slug": page.slug if has_page else None,
+            "degree": views[0]["degree"],
+            "documents_count": app.graph.entity_document_count(entity_id),
+        }
+
+    async def compare_entities(self, a: str, b: str, limit: int = 50) -> dict:
+        """Две сущности бок о бок: карточки (`a`, `b`, как у `entity`), прямые связи
+        (`direct`), общие соседи (`shared_neighbors` `{"total", "items"}`), число соседей
+        каждой (`neighbors`), общие документы (`shared_documents`: `{"doc_id", "name",
+        "a_mentions", "b_mentions", "url"}`) и фрагменты, где они вместе (`co_mentions`).
+        422 — одна и та же сущность или неверный `limit`, 404 — нет любой из них, 503 — ядро
+        недоступно."""
+        if a == b:
+            raise ServiceError(422, "Выберите две разные сущности")
+        check_pagination(limit, 0)
+
+        async def run(app: App) -> dict:
+            cards = {"a": self._entity_card(app, a), "b": self._entity_card(app, b)}
+            found = app.graph.entity_comparison(a, b, limit)
+            names = self._upload_names()
+            documents = [
+                {
+                    "doc_id": row["doc_id"],
+                    "name": self._name(row["doc_id"], row["path"], names),
+                    "a_mentions": row["a_mentions"],
+                    "b_mentions": row["b_mentions"],
+                    "url": _source_url(row["doc_id"]) if row["doc_id"] in names else None,
+                }
+                for row in found["shared_documents"]
+            ]
+            return {**cards, **found, "shared_documents": documents}
 
         return await self._with_app(run, "Граф недоступен")
 

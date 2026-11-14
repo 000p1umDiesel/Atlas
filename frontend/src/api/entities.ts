@@ -6,6 +6,7 @@ import type {
   CommunitiesPayload,
   CommunityView,
   EntityCard,
+  EntityComparison,
   EntityDocument,
   EntityMention,
   EntityPage,
@@ -61,6 +62,15 @@ export function useEntityList(s: EntitiesSearch) {
     initialPageParam: 0,
     getNextPageParam: (last, _pages, offset) => nextOffset(last, offset),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** Две сущности бок о бок; пока не выбраны обе разные — без запроса. */
+export function useEntityComparison(a: string | null, b: string | null) {
+  return useQuery<EntityComparison>({
+    queryKey: ["entity-compare", a, b],
+    queryFn: () => apiGet<EntityComparison>("/api/entities/compare", { a: a!, b: b! }),
+    enabled: a !== null && b !== null && a !== b,
   });
 }
 

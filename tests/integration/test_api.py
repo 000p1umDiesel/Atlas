@@ -628,9 +628,13 @@ def test_entity_routes(api):
     async def entity_documents(entity_id, limit=50):
         return [{"args": [entity_id, limit]}]
 
+    async def compare_entities(a, b, limit=50):
+        return {"args": [a, b, limit]}
+
     api.kb.stats, api.kb.entity_types, api.kb.entities = stats, entity_types, entities
     api.kb.entity, api.kb.entity_relations = entity, entity_relations
     api.kb.entity_mentions, api.kb.entity_documents = entity_mentions, entity_documents
+    api.kb.compare_entities = compare_entities
 
     def get(path):
         response = api.client.get(path, headers=h)
@@ -679,6 +683,11 @@ def test_entity_routes(api):
     ):
         assert status(f"/api/entities?{bad}") == 422, bad
     assert get("/api/entities/e1") == {"entity_id": "e1"}
+    # `compare` — литеральный маршрут, не id сущности
+    assert get("/api/entities/compare?a=e1&b=e2&limit=5") == {"args": ["e1", "e2", 5]}
+    assert get("/api/entities/compare?a=e1&b=e2")["args"][2] == 50
+    for bad in ("a=e1", "b=e2", "a=&b=e2", "a=e1&b=e2&limit=0", "a=" + "x" * 201 + "&b=e2"):
+        assert status(f"/api/entities/compare?{bad}") == 422, bad
     assert status("/api/entities/e1/relations?direction=sideways") == 422
     assert status("/api/entities/e1/relations?limit=201") == 422
     assert status("/api/entities/e1/mentions?limit=101") == 422
