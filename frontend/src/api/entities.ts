@@ -112,8 +112,9 @@ export function useEntityDocuments(id: string) {
 }
 
 /** Самые крупные сообщества актуального анализа (`ready: false` — анализа нет). */
-export function useCommunities(limit: number) {
+export function useCommunities(limit: number, enabled = true) {
   return useQuery<CommunitiesPayload>({
+    enabled,
     queryKey: ["communities", limit],
     queryFn: () => apiGet<CommunitiesPayload>("/api/graph/communities", { limit }),
   });

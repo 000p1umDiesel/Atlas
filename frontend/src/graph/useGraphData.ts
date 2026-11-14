@@ -14,7 +14,15 @@ export type GraphData =
   | { state: "input"; prompt: string }
   | { state: "pending" }
   | { state: "error"; error: unknown }
-  | { state: "ready"; graph: Graph; truncated: boolean; paths?: PathView[]; timedOut?: boolean };
+  | {
+      state: "ready";
+      graph: Graph;
+      truncated: boolean;
+      /** Режим «Сообщество»: настоящий размер сообщества (на графе — не больше 300 участников). */
+      communitySize?: number;
+      paths?: PathView[];
+      timedOut?: boolean;
+    };
 
 export const PROMPTS = {
   neighbors: "Выберите сущность, чтобы увидеть её окрестность.",
@@ -31,6 +39,7 @@ type Source = {
   /** Основная часть графа режима (без раскрытий). */
   part: GraphPart | undefined;
   truncated: boolean;
+  communitySize?: number;
   error: unknown;
   isError: boolean;
 };
@@ -65,6 +74,7 @@ export function useGraphData(search: GraphSearch): GraphData {
       source = {
         part: community.data,
         truncated: community.data?.truncated ?? false,
+        communitySize: community.data?.size,
         error: community.error,
         isError: community.isError,
       };
@@ -78,5 +88,7 @@ export function useGraphData(search: GraphSearch): GraphData {
   if (prompt !== null) return { state: "input", prompt };
   if (source?.isError) return { state: "error", error: source.error };
   if (!graph || !source) return { state: "pending" };
-  return { state: "ready", graph, truncated: source.truncated };
+  const ready: GraphData = { state: "ready", graph, truncated: source.truncated };
+  if (source.communitySize !== undefined) ready.communitySize = source.communitySize;
+  return ready;
 }

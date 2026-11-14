@@ -8,7 +8,7 @@ import { countOf } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
 
 /** Сообществ в списке режима: самые крупные. */
-const COMMUNITIES_LIMIT = 50;
+export const COMMUNITIES_LIMIT = 50;
 const MEMBERS: [string, string, string] = ["участник", "участника", "участников"];
 
 /** Состав сообщества по типам: доли полосы — числа по типам, цвета — каталога. */

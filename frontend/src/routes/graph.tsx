@@ -14,6 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import { ApiError, isUnauthorized } from "../api/client";
+import { useCommunities } from "../api/entities";
 import { fixturesMode, useTypeCatalog } from "../api/queries";
 import { focusHighlightField, onFlyToMatch } from "../graph/commands";
 import { ENTITY_CARD_WIDTH, ENTITY_SHEET_SHARE, EntityCard } from "../graph/EntityCard";
@@ -21,6 +22,7 @@ import { Graph2D, type Graph2DApi } from "../graph/Graph2D";
 import { firstMatch, graphHotkey, type GraphAction } from "../graph/hotkeys";
 import { communitySummaries, rankByPagerank } from "../graph/insights";
 import { Legend, type LegendTarget } from "../graph/Legend";
+import { COMMUNITIES_LIMIT } from "../graph/CommunityList";
 import { MODE_LABELS, ModeCard } from "../graph/ModeCard";
 import { sizeMetric, visibleSubgraph } from "../graph/model";
 import type { GraphMode, GraphView } from "../graph/search";
@@ -98,7 +100,11 @@ export function GraphPage() {
   const configured = catalog.order;
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
-  const rank = useMemo(() => (graph ? rankByPagerank(graph) : new Map<string, number>()), [graph]);
+  // Место по PageRank имеет смысл только среди всего графа (обзор), не в окрестности или сообществе.
+  const rank = useMemo(
+    () => (graph && mode === "overview" ? rankByPagerank(graph) : new Map<string, number>()),
+    [graph, mode],
+  );
 
   // Выбранный узел живёт в URL (`focus`): переживает смену 2D↔3D, перезагрузку и ссылку.
   // Запись — заменой текущей записи истории, не новой на каждый клик.
@@ -346,6 +352,17 @@ export function GraphPage() {
   const showRotate = search.view === "3d" && !reducedMotion;
   const deselect = useCallback(() => setSelected(null), [setSelected]);
   const showCard = graph !== null && selected !== null && visible !== null && visible.nodes.has(selected);
+  // Размер сообщества выбранной сущности вне обзора — с сервера: на графе режима видна лишь часть
+  // участников. В окрестности — из списка крупнейших сообществ (тот же запрос, что у списка режима).
+  const selectedCommunity = showCard ? graph.getNodeAttribute(selected, "community") : null;
+  const topCommunities = useCommunities(COMMUNITIES_LIMIT, mode === "neighbors" && selectedCommunity !== null);
+  let communitySize: number | null | undefined;
+  if (mode === "community") {
+    communitySize =
+      data.state === "ready" && selectedCommunity === search.community ? (data.communitySize ?? null) : null;
+  } else if (mode !== "overview") {
+    communitySize = topCommunities.data?.items.find((c) => c.community === selectedCommunity)?.size ?? null;
+  }
 
   let canvas: ReactNode;
   if (data.state === "input") {
@@ -651,6 +668,7 @@ export function GraphPage() {
             catalog={catalog}
             communities={communities}
             rank={rank}
+            communitySize={communitySize}
             compact={!wide}
             onSelect={setSelected}
             onShowCommunity={(community) =>

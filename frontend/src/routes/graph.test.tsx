@@ -691,6 +691,53 @@ describe("живые данные: режимы «Окрестность» и «
     expect(params(router).get("community")).toBe("7");
   });
 
+  describe("карточка узла вне обзора: метрики всего графа, а не подграфа", () => {
+    const hub = { ...node("e1", "Ада Лавлейс"), degree: 17 };
+    const card = () => screen.findByRole("dialog", { name: "Ада Лавлейс" });
+    const metricText = (dialog: HTMLElement, label: string) => within(dialog).getByRole("group", { name: label }).textContent;
+
+    test("окрестность: «Связи» — степень с сервера, места нет, размер сообщества — настоящий", async () => {
+      const api = fakeApi(
+        routes({ "GET /api/graph/e1/neighbors?depth=1&limit=200": { ...NEIGHBORS, nodes: [hub, node("e3", "Менабреа")] } }),
+      );
+      await renderLive("/graph?mode=neighbors&center=e1&focus=e1", api);
+      const dialog = await card();
+      expect(metricText(dialog, "Связи")).toContain("17");
+      expect(metricText(dialog, "PageRank")).not.toMatch(/место/);
+      // На графе из сообщества «7» видны 2 узла, в анализе в нём 12 участников.
+      expect(await within(dialog).findByText("сообщество из 12 участников")).toBeTruthy();
+      expect(within(dialog).queryByText("сообщество из 2 участников")).toBeNull();
+    });
+
+    test("окрестность: сообщества нет среди крупнейших — число участников не показывается", async () => {
+      const api = fakeApi(
+        routes({
+          "GET /api/graph/e1/neighbors?depth=1&limit=200": { ...NEIGHBORS, nodes: [{ ...hub, community: "99" }, node("e3", "Менабреа", "99")] },
+        }),
+      );
+      await renderLive("/graph?mode=neighbors&center=e1&focus=e1", api);
+      const dialog = await card();
+      await vi.waitFor(() => expect(api.requests()).toContain("GET /api/graph/communities?limit=50"));
+      expect(within(dialog).getByText("сообщество")).toBeTruthy();
+      expect(within(dialog).queryByText(/сообщество из/)).toBeNull();
+    });
+
+    test("сообщество: размер — из ответа сервера (на графе только верхние участники), места нет", async () => {
+      const api = fakeApi(routes({ "GET /api/graph/communities/7?limit=300": { ...COMMUNITY_7, nodes: [hub, node("e2", "Бэббидж")] } }));
+      await renderLive("/graph?mode=community&community=7&focus=e1", api);
+      const dialog = await card();
+      expect(within(dialog).getByText("сообщество из 12 участников")).toBeTruthy();
+      expect(metricText(dialog, "PageRank")).not.toMatch(/место/);
+      expect(metricText(dialog, "Связи")).toContain("17");
+    });
+
+    test("обзор: место по PageRank показывается", async () => {
+      await renderLive("/graph?focus=e1", fakeApi(routes()));
+      const dialog = await card();
+      expect(metricText(dialog, "PageRank")).toMatch(/1-е место/);
+    });
+  });
+
   test("выбор сущности в карточке режима задаёт центр", async () => {
     const api = fakeApi(
       routes({

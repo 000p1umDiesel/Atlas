@@ -25,7 +25,13 @@ type Props = {
   /** Справочник типов: русская подпись, определение и цвет типа сущности. */
   catalog: TypeCatalog;
   communities: CommunitySummary[];
+  /** Место по PageRank; пустая карта — места не показываются (граф режима — лишь часть графа). */
   rank: Map<string, number>;
+  /**
+   * Настоящий размер сообщества сущности, если граф режима — лишь часть графа: число — из
+   * ответа сервера, `null` — неизвестен (число не показывается). Не задан — по узлам графа (обзор).
+   */
+  communitySize?: number | null;
   /** Узкий экран: нижняя выезжающая карточка вместо плавающей справа. */
   compact: boolean;
   /** Отступ сверху (под панелью инструментов холста), px; только для плавающей карточки. */
@@ -87,6 +93,7 @@ export function EntityCard({
   catalog,
   communities,
   rank,
+  communitySize,
   compact,
   offsetTop = 60,
   onSelect,
@@ -113,6 +120,7 @@ export function EntityCard({
   const top = relations.slice(0, TOP_RELATIONS);
   const rest = relations.slice(TOP_RELATIONS);
   const place = rank.get(entityId);
+  const size = communitySize === undefined ? (community?.size ?? null) : communitySize;
   const typeInfo = catalog.typeInfo(a.type);
   const typeColor = catalog.typeColor(a.type);
 
@@ -167,7 +175,9 @@ export function EntityCard({
                   style={{ backgroundColor: themedCss(palette.get(community.id)) }}
                   aria-hidden="true"
                 />
-                <span className="truncate">сообщество из {countOf(community.size, MEMBERS_GENITIVE)}</span>
+                <span className="truncate">
+                  {size === null ? "сообщество" : `сообщество из ${countOf(size, MEMBERS_GENITIVE)}`}
+                </span>
               </span>
             )}
           </p>
@@ -190,7 +200,8 @@ export function EntityCard({
           value={a.pagerank === null ? "—" : formatScore(a.pagerank)}
           note={a.pagerank !== null && place !== undefined ? `${formatInt(place)}-е место` : undefined}
         />
-        <Metric label="Связи" value={formatInt(graph.degree(entityId))} />
+        {/* Степень — с сервера: в окрестности или сообществе видна только часть связей. */}
+        <Metric label="Связи" value={formatInt(a.degree)} />
       </dl>
 
       <div className="legend-scroll mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-1">
