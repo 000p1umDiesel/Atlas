@@ -163,3 +163,22 @@ test("страница по pageId загружается", async () => {
   await renderAt("/wiki/page/p-adam-smith", fakeApi(routes({ "GET /api/wiki/p-adam-smith": PAGE })));
   expect(await screen.findByRole("heading", { level: 1, name: "Адам Смит" })).toBeTruthy();
 });
+
+test("адрес без ?q= очищает поле и не возвращает запрос; «назад» восстанавливает", async () => {
+  const api = fakeApi(routes({ "GET /api/wiki?limit=200&offset=0&q=x": [LIST[1]] }));
+  const router = await renderAt("/wiki?q=x", api);
+  const input = (await screen.findByRole("searchbox", { name: "Поиск по wiki" })) as HTMLInputElement;
+  expect(input.value).toBe("x");
+  await act(async () => {
+    await router.navigate({ href: "/wiki" });
+  });
+  await vi.waitFor(() => expect(input.value).toBe(""));
+  await new Promise((r) => setTimeout(r, 400));
+  expect(router.state.location.search).toEqual({});
+  expect(api.requests().filter((r) => r.includes("q=x"))).toHaveLength(1);
+  await act(async () => {
+    router.history.back();
+  });
+  await vi.waitFor(() => expect(input.value).toBe("x"));
+  expect(router.state.location.search).toEqual({ q: "x" });
+});

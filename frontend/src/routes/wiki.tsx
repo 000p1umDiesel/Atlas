@@ -36,6 +36,16 @@ export function WikiPage() {
   const [count, setCount] = useState(WIKI_PAGE);
   const list = useWikiList(urlQuery, count);
 
+  // Адрес изменился снаружи (ссылка «Wiki», «назад», вставленный `?q=`): поле следует за ним.
+  // Собственный набор не трогаем: после задержки адрес сам совпадёт с обрезанным текстом.
+  useEffect(() => {
+    setText((current) => {
+      if (current.trim() === urlQuery) return current;
+      setCount(WIKI_PAGE);
+      return urlQuery;
+    });
+  }, [urlQuery]);
+
   // Задержка 250 мс: в адрес (и в запрос) попадает обрезанное значение; `panel` сохраняется.
   useEffect(() => {
     const next = text.trim();
