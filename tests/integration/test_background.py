@@ -447,3 +447,18 @@ def test_counts_can_leave_hidden_jobs_out(tmp_path):
     assert q.counts() == {"done": 1, "pending": 1}
     assert q.counts(include_hidden=False) == {"pending": 1}
     q.close()
+
+
+def test_has_ready_sees_only_claimable_jobs_of_the_kind(tmp_path):
+    now = [100.0]
+    q = queue(lambda: now[0])
+    assert not q.has_ready("ingest")
+    job_id = q.enqueue(Path("a.md"), "v1")
+    assert q.has_ready("ingest") and not q.has_ready("remove")
+    q.defer(job_id, 50)
+    assert not q.has_ready("ingest")
+    now[0] = 200.0
+    assert q.has_ready("ingest") and not q.has_ready("ingest", max_attempts=0)
+    q.claim()
+    assert not q.has_ready("ingest")
+    q.close()

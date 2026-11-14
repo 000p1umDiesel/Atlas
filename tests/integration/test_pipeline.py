@@ -147,7 +147,7 @@ async def test_ingest_reports_progress(make_app, tmp_path):
     report = await app.pipeline.ingest([folder], progress=progress)
     [path] = report.processed
     _, chunks = app.pipeline.load_chunks(file_doc_id(Path(path)))
-    graph_total = progress.steps()[7][2]
+    graph_total = progress.steps()[8][2]
     pages = len(report.wiki.created)
     assert progress.steps() == [
         ("step", "parse", None),
@@ -157,6 +157,7 @@ async def test_ingest_reports_progress(make_app, tmp_path):
         ("step", "extract", None),
         ("step", "extract", len(chunks)),  # total известен, когда чанки загружены
         ("step", "graph", None),
+        ("step", "graph match", None),  # параллельные вопросы resolve_same до записи
         ("step", "graph", graph_total),
         ("step", "wiki evidence", pages),
         ("step", "wiki draft", pages),

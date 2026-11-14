@@ -47,6 +47,7 @@ export const JOB_STAGE_LABELS: Readonly<Record<string, string>> = {
   chunk: "Нарезка на фрагменты",
   embed: "Получение эмбеддингов",
   extract: "Извлечение сущностей",
+  "graph match": "Граф: сопоставление сущностей",
   graph: "Запись в граф",
   "wiki evidence": "Wiki: подбор фрагментов",
   "wiki draft": "Wiki: написание страниц",

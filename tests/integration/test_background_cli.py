@@ -179,6 +179,58 @@ def test_worker_wiki_failure_remains_retryable(project, monkeypatch):
     assert "failed" in runner.invoke(cli.app, ["jobs", "list"]).output
 
 
+def _wiki_app(builds_wiki, wiki_builds):
+    """Фейковый App: ingest запоминает build_wiki, wiki.build — число догоняющих сборок."""
+
+    async def ingest(paths, **options):
+        builds_wiki.append(options["build_wiki"])
+        return SimpleNamespace(failed={}, wiki=None, processed=paths, skipped=[])
+
+    async def build(**options):
+        wiki_builds.append(options)
+        return SimpleNamespace(failed=[])
+
+    return SimpleNamespace(
+        pipeline=SimpleNamespace(ingest=ingest, finish_pending_removals=lambda: []),
+        wiki=SimpleNamespace(build=build),
+        close=lambda: None,
+    )
+
+
+def test_worker_builds_wiki_once_after_the_last_queued_ingest(project, monkeypatch):
+    builds_wiki, wiki_builds = [], []
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: _wiki_app(builds_wiki, wiki_builds))
+    second = project.with_name("b.md")
+    second.write_text("other")
+    for source in (project, second):
+        assert runner.invoke(cli.app, ["jobs", "enqueue", str(source)]).exit_code == 0
+    result = runner.invoke(cli.app, ["worker", "run", "--once"])
+    assert result.exit_code == 0, result.output
+    assert builds_wiki == [False, True] and wiki_builds == []
+
+
+def test_worker_builds_owed_wiki_when_the_queue_empties(project, monkeypatch):
+    builds_wiki, wiki_builds = [], []
+    monkeypatch.setattr(cli.common, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: _wiki_app(builds_wiki, wiki_builds))
+    second = project.with_name("b.md")
+    second.write_text("other")
+    for source in (project, second):
+        assert runner.invoke(cli.app, ["jobs", "enqueue", str(source)]).exit_code == 0
+    original = background_cli.measured_ingest
+
+    async def ingest_then_lose_next(app, paths, **options):
+        report = await original(app, paths, **options)
+        second.unlink()  # последняя задача пачки упадёт до ingest и wiki не соберёт
+        return report
+
+    monkeypatch.setattr(background_cli, "measured_ingest", ingest_then_lose_next)
+    result = runner.invoke(cli.app, ["worker", "run", "--once", "--max-attempts", "1"])
+    assert result.exit_code == 1, result.output  # упавшая задача осталась в очереди
+    assert builds_wiki == [False] and len(wiki_builds) == 1
+
+
 @pytest.mark.parametrize("change", ["disappear", "mutate"])
 def test_worker_never_acknowledges_missing_or_changing_source(project, monkeypatch, change):
     async def ingest(paths, **options):

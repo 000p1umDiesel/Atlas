@@ -6,9 +6,10 @@ import { RouterAnchor } from "../ui/RouterAnchor";
 import { StatusBadge } from "../ui/StatusBadge";
 import { GHOST_BUTTON, NAME_LINK, TABLE, TD, TH } from "../ui/styles";
 
-/** Номер шага загрузки (с 1) по ключу этапа; `wiki …` — последний шаг; неизвестный — null. */
+/** Номер шага загрузки (с 1) по ключу этапа: `wiki draft` — шаг `wiki`, `graph match` — `graph`;
+ * неизвестный — null. */
 function ingestStep(stage: string): number | null {
-  const key = stage.startsWith("wiki") ? "wiki" : stage;
+  const key = stage.split(" ")[0];
   const index = INGEST_STEPS.indexOf(key);
   return index < 0 ? null : index + 1;
 }

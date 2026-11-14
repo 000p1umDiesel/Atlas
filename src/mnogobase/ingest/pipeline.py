@@ -884,7 +884,14 @@ class Pipeline:
                 f"у {missing}/{len(chunks)} чанков нет извлечения в кэше; "
                 "запустите с --retry-failed, чтобы извлечь их заново"
             )
-        progress.step("graph", sum(len(r.entities) for r in results.values() if r is not None))
+        extracted_all = [
+            e for c in chunks if (r := results[c.chunk_id]) is not None for e in r.entities
+        ]
+        # вопросы LLM о слиянии — заранее и параллельно; дальше resolve идёт по очереди
+        # и почти всё берёт из заготовок
+        progress.step("graph match", None)
+        await self._resolver.prefetch(extracted_all)
+        progress.step("graph", len(extracted_all))
         touched: set[str] = set()
         for chunk in chunks:
             result = results[chunk.chunk_id]
@@ -922,3 +929,10 @@ class Pipeline:
             self._graph.add_chunk_facts(chunk.chunk_id, entity_ids, relations)
             touched.update(entity_ids)
         self._registry.mark_dirty(touched)
+        self._log.info(
+            "graph_resolved",
+            doc_id=doc_id,
+            entities=len(touched),
+            verdict_hits=self._resolver.verdict_hits,
+            verdict_misses=self._resolver.verdict_misses,
+        )

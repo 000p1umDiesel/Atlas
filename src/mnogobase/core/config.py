@@ -364,7 +364,9 @@ class EmbedderSettings(ServedModel):
     # `auto` — полная размерность модели (узнаётся пробным запросом); число меньше неё —
     # Matryoshka-усечение
     dim: PositiveInt | Literal["auto"] = "auto"
-    batch_size: int = Field(default=32, ge=1)  # текстов в одном запросе к серверу
+    # текстов в одном запросе к серверу; сервер один на worker и вопросы и обрабатывает задачи
+    # по очереди, так что маленькая пачка не держит вопрос в чате за собой
+    batch_size: int = Field(default=8, ge=1)
     doc_template: str = "{text}"  # плейсхолдеры: {text} (обязателен) и {title}
     query_template: str = (
         "Instruct: Given a question, retrieve passages that answer it\nQuery: {query}"

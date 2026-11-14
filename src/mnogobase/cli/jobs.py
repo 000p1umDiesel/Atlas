@@ -81,6 +81,7 @@ from mnogobase.core.progress import NullProgress
 from mnogobase.ingest.processing import measured_ingest
 from mnogobase.llm.telemetry import job_scope
 from mnogobase.ops.graph_analysis import analyze
+from mnogobase.stores.registry import ingest_lock
 
 # Пауза после потери связи с PostgreSQL: от MIN, удваивается до MAX секунд (тесты уменьшают).
 DB_RETRY_MIN_S = 5.0
@@ -460,6 +461,9 @@ def run_worker(
         uploads = Uploads(settings)
         # True после ошибки базы: соединения App могли умереть, его надо создать заново
         stale = False
+        # True, если загрузка пропустила сборку wiki, потому что за ней ждали другие:
+        # тогда wiki собирается, когда очередь опустеет (`catch_up_wiki`)
+        wiki_owed = False
 
         async def services(checks=common.INGEST_CHECKS):
             """Проверяет сервисы и возвращает рабочий `App`, создавая его при необходимости.
@@ -556,10 +560,12 @@ def run_worker(
             обработки. Неполный результат (упал файл или страница wiki) — исключение,
             чтобы `process_one` засчитал попытку. `job_scope` помечает вызовы LLM номером
             задачи для учёта расхода."""
+            nonlocal wiki_owed
             q.heartbeat()
             if job.kind == "remove":
                 with job_scope(job.id):
                     await remove(job)
+                wiki_owed = False  # remove пересобирает wiki, в том числе отложенную
                 return
             if job.kind == "analyze":
                 await analyze_graph(job)
@@ -575,6 +581,11 @@ def run_worker(
                 q.supersede(job.id)
                 return
             app = await services()
+            # Wiki пересобирает страницы всех сущностей с новыми упоминаниями. Пока за этой
+            # загрузкой ждут другие, сборка отложена: иначе страницы общих сущностей
+            # переписывались бы после каждого документа. Очередь dirty_entities копится, и
+            # wiki соберёт последняя загрузка пачки или `catch_up_wiki`.
+            build_wiki = not q.has_ready("ingest", max_attempts)
             common.console.print(f"Обработка, задача {job.id}: {escape(job.path)}")
             with render.progress() as progress, job_scope(job.id):
                 report = await measured_ingest(
@@ -585,13 +596,51 @@ def run_worker(
                     expected={job.path: job.fingerprint},
                     snapshot=False,
                     retry_failed=True,
+                    build_wiki=build_wiki,
                     run_id=new_run_id(),
                     progress=JobProgress(q, job.id, progress),
                 )
+            wiki_owed = not build_wiki
             if report.failed or (report.wiki and report.wiki.failed):
                 raise RuntimeError(
                     "Загрузка или wiki завершились с ошибкой. Подробности — в `mnogobase status` и логах."
                 )
+
+        async def catch_up_wiki():
+            """Собирает wiki, отложенную загрузками, когда очередь опустела (последнюю
+            задачу пачки отменили, она устарела или упала до сборки).
+
+            Под блокировкой `ingest`; занята она — попытка в следующей паузе. Любой исход
+            снимает долг: при ошибке сущности остаются в dirty_entities, и их соберёт
+            следующая загрузка или удаление (повтор каждые `interval` секунд тратил бы
+            вызовы LLM впустую)."""
+            nonlocal wiki_owed
+            lock = ingest_lock(q.target)
+            try:
+                lock.acquire()
+            except LockBusyError:
+                return
+            except Exception as exc:  # обрыв базы: долг остаётся, цикл попробует снова
+                get_logger(__name__).warning("wiki_catch_up_failed", error_type=type(exc).__name__)
+                return
+            wiki_owed = False
+            try:
+                app = await services()
+                common.console.print("Сборка отложенной wiki")
+                deleted = app.pipeline.finish_pending_removals()
+                with render.progress() as progress:
+                    report = await app.wiki.build(
+                        run_id=new_run_id(), deleted=deleted, progress=progress
+                    )
+                if report.failed:
+                    common.console.print(
+                        "Часть страниц wiki не собрана; их повторит следующая загрузка."
+                    )
+            except Exception as exc:
+                get_logger(__name__).warning("wiki_catch_up_failed", error_type=type(exc).__name__)
+                common.console.print(f"Отложенная wiki не собрана ({type(exc).__name__}).")
+            finally:
+                lock.release()
 
         def reconnect(exc):
             """Колбэк `process_one` на временную ошибку: задача уже отложена, здесь только
@@ -665,10 +714,12 @@ def run_worker(
                     continue
                 if processed:
                     common.console.print(f"Очередь: {q.counts()}")
-                elif once:
+                    continue
+                if wiki_owed:
+                    await catch_up_wiki()
+                if once:
                     break
-                else:
-                    await asyncio.sleep(interval)
+                await asyncio.sleep(interval)
 
         try:
             asyncio.run(dispatch())

@@ -181,3 +181,63 @@ async def test_embedder_failure_on_merge_keeps_graph_unchanged(graph, make_resol
     await resolver.resolve(E("Transformer", description="two"))
     assert graph.get_entity(first.entity_id).descriptions == ["one", "two"]
     assert vectors.client.count(vectors.entities).count == 1
+
+
+def answer(same):
+    def handler(task, prompt):
+        return json.dumps({"same": same, "reason": "r"})
+
+    return handler
+
+
+@pytest.mark.parametrize("same", [True, False])
+async def test_prefetch_answers_graph_candidates_ahead_of_resolve(graph, make_resolver, same):
+    resolver, _, llm = make_resolver(answer(same))
+    base = await resolver.resolve(E("Transformer"))
+    resolver.forget()  # новый документ
+    doc = [E("Transformer Model"), E("Transformer"), E("Transformer Model", description="d2")]
+    assert await resolver.prefetch(doc) == 1  # "Transformer" уже в графе, повтор id не нужен
+    assert len(llm.calls_for("resolve")) == 1
+    records = [await resolver.resolve(e) for e in doc]
+    assert len(llm.calls_for("resolve")) == 1  # resolve взял ответ из заготовки
+    assert (resolver.verdict_hits, resolver.verdict_misses) == (1, 0)
+    assert (records[0].entity_id == base.entity_id) is same
+
+
+@pytest.mark.parametrize("same", [True, False])
+async def test_prefetch_checks_new_entities_of_the_same_document(graph, make_resolver, same):
+    resolver, _, llm = make_resolver(answer(same))
+    doc = [E("Transformer"), E("Transformer Model"), E("Cat", etype="Concept")]
+    # графа нет: единственная пара — "Transformer Model" против более раннего "Transformer"
+    assert await resolver.prefetch(doc) == 1
+    first, second, cat = [await resolver.resolve(e) for e in doc]
+    assert len(llm.calls_for("resolve")) == 1
+    assert (second.entity_id == first.entity_id) is same
+    assert cat.entity_id not in (first.entity_id, second.entity_id)
+
+
+async def test_prefetch_pairs_by_name_key_regardless_of_score(graph, make_resolver):
+    resolver, _, llm = make_resolver(answer(True))
+    doc = [E("MagAO-X", etype="Equipment"), E("MagAOX", etype="Technology")]
+    assert await resolver.prefetch(doc) == 1
+    a, b = [await resolver.resolve(e) for e in doc]
+    assert a.entity_id == b.entity_id and len(llm.calls_for("resolve")) == 1
+
+
+async def test_resolve_asks_llm_when_prefetch_missed(graph, make_resolver):
+    resolver, _, llm = make_resolver(answer(False))
+    await resolver.resolve(E("Transformer"))
+    await resolver.resolve(E("Transformer Model"))  # кандидат появился без заготовки
+    assert (resolver.verdict_hits, resolver.verdict_misses) == (0, 1)
+    resolver.forget()
+    assert (resolver.verdict_hits, resolver.verdict_misses) == (0, 0)
+
+
+async def test_prefetch_failure_raises_the_original_error(graph, make_resolver):
+    def handler(task, prompt):
+        raise ConnectionError("llm down")
+
+    resolver, _, _ = make_resolver(handler)
+    await resolver.prefetch([E("Cat", etype="Concept")])  # нечего спрашивать — LLM не нужен
+    with pytest.raises(ConnectionError, match="llm down"):
+        await resolver.prefetch([E("Transformer"), E("Transformer Model")])

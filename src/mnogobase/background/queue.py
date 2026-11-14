@@ -597,6 +597,19 @@ class JobQueue:
         )
         return [r[0] for r in rows]
 
+    def has_ready(self, kind: str, max_attempts: int | None = None) -> bool:
+        """Есть ли готовая к работе `pending`-задача вида `kind` (как их отбирает `claim`).
+
+        Worker по нему откладывает сборку wiki, пока за текущей загрузкой ждут другие."""
+        limit, args = ("", ()) if max_attempts is None else (" AND attempts<?", (max_attempts,))
+        row = self._db.execute(
+            "SELECT 1 FROM jobs WHERE status='pending' AND kind=? AND available_at<=?"
+            + limit
+            + " LIMIT 1",
+            (kind, self._clock(), *args),
+        ).fetchone()
+        return row is not None
+
     def hide_finished(self) -> int:
         """Скрывает из `jobs()` завершённые задачи (`done`, `superseded`, `cancelled`) и
         возвращает их число. `failed` не скрываются: у них «Повторить», это сигнал о поломке.
