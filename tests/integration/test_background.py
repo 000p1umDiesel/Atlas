@@ -422,3 +422,28 @@ def test_cancel_removal_cancels_every_pending_copy_atomically(tmp_path):
     assert all(q.get(i).status == "cancelled" for i in ids)
     assert all(q.is_current(q.find(Path(n), "d1")) for n in ("a.md", "b.md"))
     q.close()
+
+
+def test_cancel_removal_restores_the_previous_desired(tmp_path):
+    """Удаление поставлено поверх отменённой загрузки: отмена удаления возвращает
+    `cancel:<v>`, а не `<v>` — отменённая загрузка остаётся отменённой."""
+    q = queue()
+    ingest = q.enqueue(Path("a.md"), "d1")
+    q.cancel(ingest)
+    q.enqueue(Path("a.md"), "remove:d1", force=True, kind="remove")
+    assert [j.fingerprint for j in q.cancel_removal("remove:d1")] == ["remove:d1"]
+    assert not q.is_current(q.get(ingest))
+    assert q.enqueue(Path("a.md"), "d1") == ingest  # watcher по-прежнему не возвращает
+    assert q.claim() is None
+    q.close()
+
+
+def test_counts_can_leave_hidden_jobs_out(tmp_path):
+    q = queue()
+    q.enqueue(Path("a.md"), "d1")
+    q.finish(q.claim().id)
+    q.enqueue(Path("b.md"), "d2")
+    q.hide_finished()
+    assert q.counts() == {"done": 1, "pending": 1}
+    assert q.counts(include_hidden=False) == {"pending": 1}
+    q.close()

@@ -414,7 +414,7 @@ class KnowledgeBase:
             existing = queue.find(path, doc_id)
             if (
                 existing is not None
-                and existing.status not in ("failed", "superseded")
+                and existing.status not in ("failed", "superseded", "cancelled")
                 and queue.is_current(existing)
                 and path.is_file()
             ):
@@ -708,8 +708,9 @@ class KnowledgeBase:
             path = self.uploads.contained(Path(job.path), must_exist=False)
         except FileNotFoundError:
             return
-        path.unlink(missing_ok=True)
+        # сначала запись: её сбой откатывает отмену при целом файле; файл удаляется последним
         self.uploads.delete(job.fingerprint)
+        path.unlink(missing_ok=True)
 
     def clear_jobs(self) -> dict:
         """Скрывает из списка завершённые задачи (`done`, `superseded`, `cancelled`; упавшие

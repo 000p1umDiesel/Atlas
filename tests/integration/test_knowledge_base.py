@@ -392,6 +392,42 @@ async def test_cancel_remove_refuses_while_another_copy_is_running(env):
         await kb.close()
 
 
+async def test_reupload_after_cancelled_upload_and_cancelled_removal(env):
+    # CLI-отмена загрузки (файл и запись остаются), удаление через API, отмена удаления:
+    # повторная загрузка того же файла снова ставит задачу, а не «дубликат»
+    settings, factory, _ = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = upload(kb, "a.md", b"text")
+        with kb._queue() as queue:
+            queue.cancel(job["id"])
+        removal = await kb.remove_document(job["doc_id"])
+        kb.cancel_job(removal["id"])
+        again = upload(kb, "a.md", b"text")
+        assert not again["duplicate"] and again["status"] == "pending"
+    finally:
+        await kb.close()
+
+
+async def test_failed_upload_cleanup_keeps_the_file_and_the_job(env, monkeypatch):
+    settings, factory, _ = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = upload(kb, "a.md", b"text")
+        path = Path(kb.uploads.get(job["doc_id"])["path"])
+
+        def broken(doc_id):
+            raise OSError("db")
+
+        monkeypatch.setattr(kb.uploads, "delete", broken)
+        with pytest.raises(OSError):
+            kb.cancel_job(job["id"])
+        assert path.is_file()
+        assert kb.jobs()[0]["status"] == "pending"
+    finally:
+        await kb.close()
+
+
 async def test_cancel_and_clear_errors(env):
     settings, factory, _ = env
     kb = KnowledgeBase(settings, app_factory=factory)

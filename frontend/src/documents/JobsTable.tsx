@@ -129,8 +129,8 @@ export function JobsTable({
                 )}
                 {job.status === "pending" && (
                   <ConfirmButton
-                    label="Отменить"
-                    confirmLabel="Отменить задачу?"
+                    label="Снять с очереди"
+                    confirmLabel="Да, снять"
                     busy={busyId === job.id}
                     onConfirm={() => onCancel(job.id)}
                     className="justify-end"

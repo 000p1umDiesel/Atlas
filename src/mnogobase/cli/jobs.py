@@ -167,8 +167,16 @@ def enqueue(
     q = JobQueue(database_target(settings))
     try:
         for path in files:
-            job_id = q.enqueue(path, file_doc_id(path), force=force)
-            common.console.print(f"задача {job_id}: {escape(str(path))}")
+            fingerprint = file_doc_id(path)
+            job_id = q.enqueue(path, fingerprint, force=force)
+            job = q.get(job_id)
+            if job.fingerprint != fingerprint or job.status == "cancelled":
+                common.console.print(
+                    f"не поставлена (источник удалён или отменён через API; повторите с --force): "
+                    f"{escape(str(path))}"
+                )
+            else:
+                common.console.print(f"задача {job_id}: {escape(str(path))}")
     except OSError as exc:
         common.fail(exc)
     finally:
@@ -178,11 +186,15 @@ def enqueue(
 @jobs_app.command("list")
 def list_jobs(
     limit: Annotated[int, typer.Option(min=1, help="Сколько последних задач показать")] = 100,
+    show_all: Annotated[
+        bool, typer.Option("--all", help="Показать и скрытые командой `jobs clear` задачи")
+    ] = False,
 ) -> None:
     """Показать задачи очереди: статус, попытки, прогресс и ошибки.
 
     Сначала печатаются счётчики по статусам, затем последние задачи (не больше --limit) и
-    их полные пути. Для отложенной задачи с ошибкой видно время следующей попытки."""
+    их полные пути. Для отложенной задачи с ошибкой видно время следующей попытки. Скрытые
+    `jobs clear` задачи не показываются и не считаются, пока не указан --all."""
     settings = common.get_settings()
     target = database_target(settings)
     if not target_exists(target, "jobs"):
@@ -190,9 +202,10 @@ def list_jobs(
         return
     q = JobQueue(target)
     try:
-        common.console.print(str(q.counts()))
+        common.console.print(str(q.counts(include_hidden=show_all)))
+        jobs = q.jobs(limit, include_hidden=show_all)
         table = Table("id", "статус", "попытки", "путь", "прогресс", "ошибка", "повтор в (Unix)")
-        for job in q.jobs(limit):
+        for job in jobs:
             table.add_row(
                 str(job.id),
                 job.status,
@@ -203,7 +216,7 @@ def list_jobs(
                 str(int(job.available_at)) if job.status == "pending" and job.error else "",
             )
         common.console.print(table)
-        for job in q.jobs(limit):
+        for job in jobs:
             common.console.print(f"{job.id}: {escape(job.path)}", soft_wrap=True)
     finally:
         q.close()

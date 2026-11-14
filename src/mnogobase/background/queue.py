@@ -51,6 +51,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -225,6 +226,8 @@ class JobQueue:
                     "WHERE path=? AND fingerprint=? AND status IN ('done','failed','superseded','cancelled')",
                     (self._clock(), path, fingerprint),
                 )
+            if fingerprint.startswith("remove:") and previous and previous[0] != fingerprint:
+                self._remember_restore(path, fingerprint, previous[0])
             self._db.execute(
                 "INSERT INTO desired VALUES(?,?) ON CONFLICT(path) DO UPDATE SET fingerprint=excluded.fingerprint",
                 (path, fingerprint),
@@ -412,11 +415,27 @@ class JobQueue:
             self._db.execute("ROLLBACK")
             raise
 
+    def _remember_restore(self, path: str, fingerprint: str, previous: str) -> None:
+        """Запоминает в `payload_json` задачи удаления, что было в `desired` до неё (`restore`):
+        отмена удаления вернёт именно это (новую ревизию файла или `cancel:<v>`), а не голую
+        версию документа. Внутри транзакции `enqueue`."""
+        row = self._db.execute(
+            "SELECT payload_json FROM jobs WHERE path=? AND fingerprint=?", (path, fingerprint)
+        ).fetchone()
+        data = json.loads(row[0] or "{}") if row else {}
+        data["restore"] = previous
+        self._db.execute(
+            "UPDATE jobs SET payload_json=? WHERE path=? AND fingerprint=?",
+            (json.dumps(data, ensure_ascii=False), path, fingerprint),
+        )
+
     def _restore_desired(self, job: Job) -> None:
         """`desired` пути после отмены, если в нём всё ещё версия задачи: удаление
-        `remove:<v>` возвращает `<v>`, загрузка `<v>` даёт `cancel:<v>`. Внутри транзакции."""
+        `remove:<v>` возвращает то, что было до него (`restore` в `payload_json`, иначе `<v>`),
+        загрузка `<v>` даёт `cancel:<v>`. Внутри транзакции."""
         if job.fingerprint.startswith("remove:"):
-            restored = job.fingerprint.removeprefix("remove:")
+            saved = json.loads(job.payload_json or "{}").get("restore")
+            restored = saved or job.fingerprint.removeprefix("remove:")
         else:
             restored = f"cancel:{job.fingerprint}"
         self._db.execute(
@@ -599,9 +618,11 @@ class JobQueue:
         """Все выполняемые сейчас задачи (для статуса; их не больше числа worker'ов)."""
         return [_job(r) for r in self._db.execute("SELECT * FROM jobs WHERE status='running'")]
 
-    def counts(self) -> dict[str, int]:
-        """Число задач по статусам: `{"pending": 3, "done": 10, ...}`; нулевых нет."""
-        return dict(self._db.execute("SELECT status,COUNT(*) FROM jobs GROUP BY status"))
+    def counts(self, *, include_hidden: bool = True) -> dict[str, int]:
+        """Число задач по статусам: `{"pending": 3, "done": 10, ...}`; нулевых нет. Без
+        `include_hidden` скрытые `hide_finished` задачи не считаются (как в `jobs()`)."""
+        where = "" if include_hidden else " WHERE NOT hidden"
+        return dict(self._db.execute(f"SELECT status,COUNT(*) FROM jobs{where} GROUP BY status"))
 
     def heartbeat(self) -> None:
         """Записывает «worker жив сейчас» в `worker_heartbeat`. Worker вызывает это в цикле

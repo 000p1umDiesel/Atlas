@@ -281,7 +281,7 @@ test("прогресс: подпись этапа, шаг и полоска", as
   expect(within(wiki).getByText("шаг 6 из 6")).toBeTruthy();
 });
 
-test("«Отменить» у ожидающей задачи; у идущей и готовой кнопки нет", async () => {
+test("«Снять с очереди» у ожидающей задачи; у идущей и готовой кнопки нет", async () => {
   const jobs = [
     job({ id: 4, status: "pending", kind: "remove", name: "old.pdf" }),
     job({ id: 5, status: "running", stage: "parse", name: "b.pdf" }),
@@ -291,10 +291,10 @@ test("«Отменить» у ожидающей задачи; у идущей �
   await renderAt("/documents", api);
   const queue = section("Очередь");
   await within(queue).findByText("old.pdf");
-  const buttons = within(queue).getAllByRole("button", { name: "Отменить" });
+  const buttons = within(queue).getAllByRole("button", { name: "Снять с очереди" });
   expect(buttons).toHaveLength(1);
   await click(buttons[0]!);
-  await click(within(queue).getByRole("button", { name: "Отменить задачу?" }));
+  await click(within(queue).getByRole("button", { name: "Да, снять" }));
   expect(api.requests()).toContain("POST /api/jobs/4/cancel");
   await vi.waitFor(() => expect(count(api, JOBS)).toBe(2));
 });
@@ -308,8 +308,8 @@ test("отмена, которую worker опередил: текст ошиб�
   );
   await renderAt("/documents", api);
   const queue = section("Очередь");
-  await click(await within(queue).findByRole("button", { name: "Отменить" }));
-  await click(within(queue).getByRole("button", { name: "Отменить задачу?" }));
+  await click(await within(queue).findByRole("button", { name: "Снять с очереди" }));
+  await click(within(queue).getByRole("button", { name: "Да, снять" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Задача уже выполняется или завершена");
 });
 

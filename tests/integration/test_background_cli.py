@@ -90,6 +90,26 @@ def test_cancel_and_clear_commands(project, monkeypatch):
         q.close()
 
 
+def test_list_all_shows_hidden_jobs_and_enqueue_reports_ignored(project, monkeypatch):
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
+    assert runner.invoke(cli.app, ["jobs", "enqueue", str(project)]).exit_code == 0
+    q = JobQueue(database_target(Settings()))
+    try:
+        [job] = q.jobs()
+        q.cancel(job.id)
+        result = runner.invoke(cli.app, ["jobs", "enqueue", str(project)])
+        assert result.exit_code == 0, result.output
+        assert "не поставлена" in result.output and "--force" in result.output
+        q.hide_finished()
+    finally:
+        q.close()
+    hidden = runner.invoke(cli.app, ["jobs", "list"])
+    assert "cancelled" not in hidden.output
+    shown = runner.invoke(cli.app, ["jobs", "list", "--all"])
+    assert shown.exit_code == 0, shown.output
+    assert "cancelled" in shown.output
+
+
 def test_cancel_without_a_queue_fails(project):
     result = runner.invoke(cli.app, ["jobs", "cancel", "1"])
     assert result.exit_code == 2
