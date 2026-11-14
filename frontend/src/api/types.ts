@@ -262,3 +262,27 @@ export interface EntityCard {
   has_page: boolean;
   slug: string | null;
 }
+
+/** Строка каталога `GET /api/entities`: карточка узла + псевдонимы и страница wiki. */
+export type EntityListItem = NodeView & { aliases: string[]; has_page: boolean; slug: string | null };
+
+/** Ответ `GET /api/entities`: всего подходящих и страница. */
+export interface EntityPage {
+  total: number;
+  items: EntityListItem[];
+}
+
+/** Сообщество актуального анализа: размер, до пяти главных узлов по PageRank, число по типам. */
+export interface CommunityView {
+  community: string;
+  size: number;
+  top: NodeView[];
+  types: Record<string, number>;
+}
+
+/** Ответ `GET /api/graph/communities`; `ready: false` — анализ графа не запускался или устарел. */
+export interface CommunitiesPayload {
+  ready: boolean;
+  total: number;
+  items: CommunityView[];
+}

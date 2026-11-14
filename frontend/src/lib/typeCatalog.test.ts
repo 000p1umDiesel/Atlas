@@ -49,3 +49,13 @@ test("«Другое» (Other) — с подписью и определение
   const second = typeColorAt(1);
   expect(c.typeColor("Work")).toBe(`light-dark(${second.light}, ${second.dark})`);
 });
+
+test("present — типы с сущностями, в порядке каталога", () => {
+  const c = createTypeCatalog([
+    { type: "Person", label: "Человек", description: "", count: 2 },
+    { type: "Work", label: "Произведение", description: "", count: 0 },
+    { type: "Concept", label: "Понятие", description: "", count: 5 },
+  ]);
+  expect(c.present).toEqual(["Person", "Concept"]);
+  expect(createTypeCatalog(undefined).present).toEqual([]);
+});

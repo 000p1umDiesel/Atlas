@@ -13,6 +13,8 @@ export interface TypeCatalog {
   types: readonly TypeCount[];
   /** Ключи типов в том же порядке: по нему назначаются цвета. */
   order: string[];
+  /** Ключи типов, у которых есть сущности (`count > 0`), в том же порядке. */
+  present: string[];
   typeInfo(type: string): TypeInfo;
   /** Русская подпись; для неизвестного типа — сам ключ. */
   typeLabel(type: string): string;
@@ -33,6 +35,7 @@ export function createTypeCatalog(types: readonly TypeCount[] | undefined): Type
   return {
     types: list,
     order,
+    present: list.filter((t) => t.count > 0).map((t) => t.type),
     typeInfo,
     typeLabel: (type) => typeInfo(type).label,
     typeColor: (type) => {

@@ -10,6 +10,8 @@ import {
 import { MotionConfig } from "motion/react";
 import type { ComponentType } from "react";
 import { ConversationList } from "./chat/ConversationList";
+import { EntitiesColumn } from "./entities/EntitiesColumn";
+import { validateEntitiesSearch } from "./entities/search";
 import { FilterPanel } from "./graph/FilterPanel";
 import { parseGraphSearch, serializeGraphSearch } from "./graph/search";
 import { parsePlainSearch, stringifyPlainSearch } from "./lib/searchParams";
@@ -18,10 +20,10 @@ import { ChatPage } from "./routes/chat";
 import { DesignPage } from "./routes/design";
 import { DocumentPage } from "./routes/document";
 import { DocumentsPage } from "./routes/documents";
+import { EntitiesPage } from "./routes/entities";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { ReaderPage } from "./routes/reader";
-import { Placeholder } from "./routes/placeholder";
 import { WikiPage } from "./routes/wiki";
 import { WikiArticlePage } from "./routes/wikiPage";
 import { StatusPage } from "./routes/status";
@@ -48,9 +50,6 @@ function Root() {
 }
 
 const rootRoute = createRootRoute({ component: Root });
-
-const page = <P extends string>(path: P, title: string) =>
-  createRoute({ getParentRoute: () => rootRoute, path, component: () => <Placeholder title={title} /> });
 
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -123,6 +122,16 @@ const readerRoute = createRoute({
   component: ReaderPage,
 });
 
+// Каталог сущностей: поиск и фильтры в search-параметрах (простые строки, без дефолтов),
+// колонка — типы и сообщества. Прочие параметры отбрасываются, `panel` сохраняется.
+const entitiesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/entities",
+  validateSearch: validateEntitiesSearch,
+  staticData: { column: EntitiesColumn },
+  component: EntitiesPage,
+});
+
 // Wiki: индекс с поиском (`?q`) и страницы по slug или id. `panel` и прочие параметры сохраняются.
 const wikiRoute = createRoute({ getParentRoute: () => rootRoute, path: "/wiki", component: WikiPage });
 const wikiSlugRoute = createRoute({ getParentRoute: () => rootRoute, path: "/wiki/$slug", component: WikiArticlePage });
@@ -151,7 +160,7 @@ const routeTree = rootRoute.addChildren([
   documentsRoute,
   documentRoute,
   readerRoute,
-  page("/entities", "Сущности"),
+  entitiesRoute,
   wikiRoute,
   wikiSlugRoute,
   wikiIdRoute,
