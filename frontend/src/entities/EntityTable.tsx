@@ -1,10 +1,11 @@
 import { useRouter } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, BookOpen } from "lucide-react";
-import { useSyncExternalStore, type MouseEvent } from "react";
+import type { MouseEvent } from "react";
 import type { EntityListItem } from "../api/types";
-import { NAME_LINK, TABLE, TD, TH } from "../documents/JobsTable";
+import { NAME_LINK, TABLE, TD, TH } from "../ui/styles";
 import { countOf, formatInt, formatScore } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import { isPlainClick, RouterAnchor } from "../ui/RouterAnchor";
 import type { EntityOrder, EntitySort } from "./search";
 
@@ -13,13 +14,6 @@ const NUM = "text-right tabular-nums";
 
 // Таблица — от md, на узком экране — карточки (одна разметка за раз: ссылки не дублируются).
 const WIDE = "(min-width: 768px)";
-function subscribeWide(cb: () => void) {
-  if (typeof matchMedia !== "function") return () => {};
-  const mq = matchMedia(WIDE);
-  mq.addEventListener("change", cb);
-  return () => mq.removeEventListener("change", cb);
-}
-const getWide = () => typeof matchMedia !== "function" || matchMedia(WIDE).matches;
 
 export const entityHref = (id: string) => `/entities/${encodeURIComponent(id)}`;
 
@@ -98,7 +92,7 @@ type Props = SortProps & {
 
 /** Строки каталога: таблица с сортировкой по заголовкам, на узком экране — карточки. */
 export function EntityTable({ items, catalog, showPagerank, ...sorting }: Props) {
-  const wide = useSyncExternalStore(subscribeWide, getWide, () => true);
+  const wide = useMediaQuery(WIDE);
   const router = useRouter();
 
   // Клик по строке (мимо ссылок и кнопок) открывает сущность; с модификаторами — как раньше.

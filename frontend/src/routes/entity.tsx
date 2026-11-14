@@ -2,11 +2,11 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { BookOpen, MessageCircleQuestion, Network, Route } from "lucide-react";
 import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
-import { communityTitle, useCommunities, useEntity } from "../api/entities";
+import { COMMUNITIES_LIMIT, communityTitle, useCommunities, useEntity } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
 import type { EntityCard } from "../api/types";
 import { useWikiPage } from "../api/wiki";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 import { DocumentsTab } from "../entities/DocumentsTab";
 import { MentionsTab } from "../entities/MentionsTab";
 import { MiniGraph } from "../entities/MiniGraph";
@@ -22,10 +22,6 @@ import { WikiBody } from "../wiki/WikiBody";
 export type EntityTab = "relations" | "mentions" | "documents" | "wiki";
 
 const TABS: readonly EntityTab[] = ["relations", "mentions", "documents", "wiki"];
-/** Сообществ, среди которых ищется подпись сообщества сущности. */
-const COMMUNITIES_SHOWN = 50;
-const CRUMB =
-  "text-sm text-muted underline-offset-4 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-primary";
 const NOT_FOUND = "Сущность не найдена: возможно, её удалили вместе с документом.";
 
 /** Вкладка из URL; неизвестная — «Связи». */
@@ -51,7 +47,7 @@ function Metric({ label, children }: { label: string; children: ReactNode }) {
 
 /** Сообщество: название по главным участникам (если оно среди 50 крупнейших), иначе id. */
 function CommunityMetric({ community }: { community: string }) {
-  const communities = useCommunities(COMMUNITIES_SHOWN);
+  const communities = useCommunities(COMMUNITIES_LIMIT);
   const hit = communities.data?.items.find((c) => c.community === community);
   return (
     <Metric label="Сообщество">

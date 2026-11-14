@@ -1,14 +1,12 @@
 import { useParams } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { useWikiPage } from "../api/wiki";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 import { usePanel } from "../shell/panel";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { WikiBody } from "../wiki/WikiBody";
 
-const CRUMB =
-  "text-sm text-muted underline-offset-4 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-primary";
 
 function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
   const query = useWikiPage(ref_);

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ApiError } from "../api/client";
 import { deleteDocument, refreshDocuments, useDocument, type DocumentEntity } from "../api/documents";
 import { useTypeCatalog } from "../api/queries";
-import { GHOST_BUTTON, TABLE, TD, TH } from "../documents/JobsTable";
+import { CRUMB, GHOST_BUTTON, TABLE, TD, TH } from "../ui/styles";
 import { countOf, formatDayTime } from "../lib/format";
 import { labelOf, STAGE_LABELS } from "../lib/labels";
 import type { TypeCatalog } from "../lib/typeCatalog";
@@ -14,7 +14,6 @@ import { RouterAnchor } from "../ui/RouterAnchor";
 import { StatusBadge } from "../ui/StatusBadge";
 import { usePanel } from "../shell/panel";
 
-const CRUMB = "text-sm text-muted underline-offset-4 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-primary";
 const CHUNK_FORMS: [string, string, string] = ["фрагмент", "фрагмента", "фрагментов"];
 const ENTITY_FORMS: [string, string, string] = ["сущность", "сущности", "сущностей"];
 

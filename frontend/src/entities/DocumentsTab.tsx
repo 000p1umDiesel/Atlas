@@ -1,5 +1,5 @@
 import { useEntityDocuments } from "../api/entities";
-import { NAME_LINK } from "../documents/JobsTable";
+import { NAME_LINK } from "../ui/styles";
 import { countOf } from "../lib/format";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";

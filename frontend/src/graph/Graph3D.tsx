@@ -24,6 +24,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import ThreeForceGraph from "three-forcegraph";
 import { cssColor, isDarkScheme, mixRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, loadFonts } from "../lib/fonts";
+import { prefersReducedMotion } from "../lib/motion";
 import type { FocusOffset, Graph2DApi, Graph2DProps } from "./Graph2D";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { NO_INSETS, usableInsets, type FitInsets } from "./interaction";
@@ -126,10 +127,6 @@ const ZOOM_FACTOR = 1.5;
 const LABEL_FONTS = [graphFont(500, 12), graphFont(650, 12)];
 
 const endId = (end: string | { id?: string }) => (typeof end === "object" ? (end.id ?? "") : end);
-
-function prefersReducedMotion(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
 
 function nodeRadius(n: ForceNode): number {
   return n.val * NODE_SCALE;

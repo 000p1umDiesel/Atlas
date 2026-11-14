@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError } from "../api/client";
 import {
   deleteDocument,
   DOCUMENTS_PAGE,
@@ -12,14 +11,14 @@ import {
   useJobs,
 } from "../api/documents";
 import type { DocumentListItem } from "../api/types";
-import { GHOST_BUTTON, JobsTable, NAME_LINK, TABLE, TD, TH } from "../documents/JobsTable";
+import { JobsTable } from "../documents/JobsTable";
+import { messageOf } from "../lib/errors";
+import { GHOST_BUTTON, NAME_LINK, TABLE, TD, TH } from "../ui/styles";
 import { Uploader } from "../documents/Uploader";
 import { ConfirmButton } from "../ui/ConfirmButton";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { StatusBadge } from "../ui/StatusBadge";
-
-const messageOf = (error: unknown) => (error instanceof ApiError ? error.detail : "Ошибка запроса");
 
 function Block({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
   return (

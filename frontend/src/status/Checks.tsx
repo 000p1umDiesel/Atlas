@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { runChecks, type ServiceCheck } from "../api/status";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { GHOST_BUTTON } from "../ui/styles";
 import { CHECK_LABELS, labelOf } from "../lib/labels";
 import { FormNote } from "../ui/form";
 import { Block, Dot, type Tone } from "./parts";

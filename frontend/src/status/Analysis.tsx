@@ -1,15 +1,13 @@
 import { useAnalysis, useStartAnalysis, analysisActive } from "../api/status";
-import { ApiError } from "../api/client";
 import { formatDayTime, formatInt } from "../lib/format";
+import { messageOf } from "../lib/errors";
 import { usePanel } from "../shell/panel";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { GHOST_BUTTON } from "../ui/styles";
 import { StatusBadge } from "../ui/StatusBadge";
 import { FormNote } from "../ui/form";
 import { Block } from "./parts";
 
 const TOP = 10;
-
-const messageOf = (error: unknown) => (error instanceof ApiError ? error.detail : "Ошибка запроса");
 
 /** «Анализ графа»: запуск, строка задачи, готовый снимок и самые связанные сущности. */
 export function Analysis() {

@@ -11,11 +11,10 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { ApiError, isUnauthorized } from "../api/client";
-import { useCommunities } from "../api/entities";
+import { COMMUNITIES_LIMIT, useCommunities } from "../api/entities";
 import { neighborsQuery } from "../api/graph";
 import type { PathView } from "../api/types";
 import { fixturesMode, useTypeCatalog } from "../api/queries";
@@ -25,7 +24,6 @@ import { Graph2D, type Graph2DApi } from "../graph/Graph2D";
 import { firstMatch, graphHotkey, type GraphAction } from "../graph/hotkeys";
 import { communitySummaries, rankByPagerank, shownTypes } from "../graph/insights";
 import { Legend, type LegendTarget } from "../graph/Legend";
-import { COMMUNITIES_LIMIT } from "../graph/CommunityList";
 import { MODE_CARD_WIDTH, MODE_LABELS, ModeCard } from "../graph/ModeCard";
 import { PathList } from "../graph/PathList";
 import { sizeMetric, visibleSubgraph } from "../graph/model";
@@ -33,6 +31,7 @@ import { EXPAND_LIMIT, type GraphMode, type GraphView } from "../graph/search";
 import { activeMode, EXPAND_RELATIONS_LIMIT, useGraphData } from "../graph/useGraphData";
 import { useGraphSearch } from "../graph/useGraphSearch";
 import { countOf, formatInt, plural } from "../lib/format";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import { useShellColumn } from "../shell/columnContext";
 import { useShellOverlayOpen } from "../shell/overlay";
 import { ErrorBoundary, ErrorNotice } from "../ui/ErrorNotice";
@@ -86,13 +85,6 @@ const CANVAS_BUTTON =
   "pointer-events-auto rounded-xl bg-primary-deep px-4 py-2 text-sm text-on-primary shadow-card transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
 
 const WIDE = "(min-width: 640px)";
-function subscribeWide(cb: () => void) {
-  if (typeof matchMedia !== "function") return () => {};
-  const mq = matchMedia(WIDE);
-  mq.addEventListener("change", cb);
-  return () => mq.removeEventListener("change", cb);
-}
-const getWide = () => typeof matchMedia !== "function" || matchMedia(WIDE).matches;
 
 /**
  * Граф: холст 2D/3D во всю область, плавающие панели, легенда, карточка сущности. Режимы —
@@ -106,7 +98,7 @@ export function GraphPage() {
   const catalog = useTypeCatalog();
   const column = useShellColumn();
   const reducedMotion = useReducedMotion() ?? false;
-  const wide = useSyncExternalStore(subscribeWide, getWide, () => true);
+  const wide = useMediaQuery(WIDE);
   const modeHint = useId();
   const keysId = useId();
   const canvasRef = useRef<HTMLDivElement>(null);

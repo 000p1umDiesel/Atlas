@@ -1,6 +1,6 @@
 // Общие куски вкладок страницы сущности.
 import { ApiError } from "../api/client";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { GHOST_BUTTON } from "../ui/styles";
 import { formatInt } from "../lib/format";
 
 /** Текст ошибки запроса: `detail` сервера. */

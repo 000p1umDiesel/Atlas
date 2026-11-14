@@ -1,13 +1,10 @@
 import type { ReactNode } from "react";
 import { ApiError } from "../api/client";
-import { communityTitle, useCommunities } from "../api/entities";
+import { COMMUNITIES_SHOWN, communityTitle, useCommunities } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
 import { formatInt } from "../lib/format";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { useEntitiesSearch } from "./search";
-
-/** Сообществ в колонке: самые крупные. */
-const COMMUNITIES_SHOWN = 12;
 
 const ITEM =
   "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-primary aria-pressed:bg-primary/15 aria-pressed:font-medium aria-pressed:text-primary-ink";

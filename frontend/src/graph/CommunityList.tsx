@@ -1,14 +1,12 @@
 import { LoaderCircle, Play } from "lucide-react";
 import { ApiError } from "../api/client";
-import { communityTitle, useCommunities } from "../api/entities";
+import { COMMUNITIES_LIMIT, communityTitle, useCommunities } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
 import { analysisActive, useAnalysis, useStartAnalysis } from "../api/status";
 import type { CommunityView } from "../api/types";
 import { countOf } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
 
-/** Сообществ в списке режима: самые крупные. */
-export const COMMUNITIES_LIMIT = 50;
 const MEMBERS: [string, string, string] = ["участник", "участника", "участников"];
 
 /** Состав сообщества по типам: доли полосы — числа по типам, цвета — каталога. */

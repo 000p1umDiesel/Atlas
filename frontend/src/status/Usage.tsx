@@ -1,6 +1,6 @@
 import type { UsageRow } from "../api/types";
 import { formatInt } from "../lib/format";
-import { TABLE, TD, TH } from "../documents/JobsTable";
+import { TABLE, TD, TH } from "../ui/styles";
 import { Block } from "./parts";
 
 const NUM = "text-right tabular-nums";

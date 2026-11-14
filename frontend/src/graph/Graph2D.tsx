@@ -7,6 +7,7 @@ import { extremityArrow, layerFill } from "sigma/rendering";
 import type { NodeView } from "../api/types";
 import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
+import { prefersReducedMotion } from "../lib/motion";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { communityColorMap, predicateLabel } from "./insights";
 import {
@@ -169,10 +170,6 @@ function readPalette(): Palette {
     card,
     labelBg: withAlpha(card, 0.82),
   };
-}
-
-function prefersReducedMotion(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 /**

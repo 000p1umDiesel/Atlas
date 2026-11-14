@@ -1,12 +1,10 @@
-import { ApiError } from "../api/client";
 import { useStatus } from "../api/status";
 import { Analysis } from "../status/Analysis";
+import { messageOf } from "../lib/errors";
 import { Checks } from "../status/Checks";
 import { Usage } from "../status/Usage";
 import { Worker } from "../status/Worker";
 import { FormNote } from "../ui/form";
-
-const messageOf = (error: unknown) => (error instanceof ApiError ? error.detail : "Ошибка запроса");
 
 /** Статус: очередь и worker, расход LLM, анализ графа, проверки сервисов. */
 export function StatusPage() {

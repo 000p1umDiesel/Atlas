@@ -4,7 +4,7 @@ import { ApiError } from "../api/client";
 import { useTypeCatalog } from "../api/queries";
 import type { WikiListItem } from "../api/types";
 import { useWikiList, WIKI_PAGE } from "../api/wiki";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { GHOST_BUTTON } from "../ui/styles";
 import { countOf } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
 import { FormNote } from "../ui/form";

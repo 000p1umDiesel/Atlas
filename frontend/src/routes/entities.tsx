@@ -1,9 +1,9 @@
 import { X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef } from "react";
 import { ApiError } from "../api/client";
-import { communityTitle, useCommunities, useEntityList } from "../api/entities";
+import { COMMUNITIES_SHOWN, communityTitle, useCommunities, useEntityList } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
-import { GHOST_BUTTON } from "../documents/JobsTable";
+import { GHOST_BUTTON } from "../ui/styles";
 import { EntityTable } from "../entities/EntityTable";
 import {
   effectiveOrder,
@@ -33,9 +33,6 @@ const SELECT =
   "rounded-[10px] border border-line bg-card px-3 py-2 text-sm shadow-card outline-none focus:border-primary disabled:opacity-60";
 const CHIP =
   "inline-flex items-center gap-1.5 rounded-full border border-line bg-card py-1 pr-1.5 pl-2.5 text-[13px] transition-colors hover:border-primary/60 focus-visible:outline-2 focus-visible:outline-primary";
-/** Сообществ, по которым ищется подпись фильтра (тот же запрос, что в колонке). */
-const COMMUNITIES_SHOWN = 12;
-
 /** Подгрузка следующей страницы, когда страж внизу списка виден (если браузер умеет IO). */
 function useLoadMore(enabled: boolean, load: () => void) {
   const ref = useRef<HTMLDivElement>(null);

@@ -1,7 +1,7 @@
 import { Fragment, useId, useMemo, type MouseEvent } from "react";
 import { useEntityMentions } from "../api/entities";
 import type { EntityMention } from "../api/types";
-import { NAME_LINK } from "../documents/JobsTable";
+import { NAME_LINK } from "../ui/styles";
 import { chunkReadHref } from "../panels/ChunkPanel";
 import { usePanel } from "../shell/panel";
 import { FormNote } from "../ui/form";

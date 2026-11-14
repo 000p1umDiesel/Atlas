@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { useEntityRelations, type RelationDirection } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
 import type { EntityRelation } from "../api/types";
-import { NAME_LINK } from "../documents/JobsTable";
+import { NAME_LINK } from "../ui/styles";
 import { predicateLabel } from "../graph/insights";
 import { formatInt, formatScore } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";

@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMe } from "../api/auth";
 import { CommandPalette } from "./CommandPalette";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import { ShellColumnContext, type ShellColumnState } from "./columnContext";
 import { ContextColumn } from "./ContextColumn";
 import { MainScrollContext } from "./mainScroll";
@@ -21,10 +22,6 @@ type Props = {
 };
 
 const SPRING = { type: "spring", stiffness: 380, damping: 38 } as const;
-
-function isDesktop(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(min-width: 768px)").matches;
-}
 
 /** Раздел — первый сегмент пути: `/chat/c1` → `chat`. */
 function section(pathname: string): string {
@@ -52,17 +49,12 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
   }, [pathname]);
 
   // Окно стало широким: оба меню — телефонные (md:hidden), открытыми их не оставляем.
+  const desktop = useMediaQuery("(min-width: 768px)", false);
   useEffect(() => {
-    if (typeof matchMedia !== "function") return;
-    const mq = matchMedia("(min-width: 768px)");
-    const onChange = () => {
-      if (!mq.matches) return;
-      setMenuOpen(false);
-      setAccountOpen(false);
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+    if (!desktop) return;
+    setMenuOpen(false);
+    setAccountOpen(false);
+  }, [desktop]);
 
   // Новая страница открывается с начала: прокручивается <main>, а не окно. Только по пути —
   // правая панель (`?panel=`) и поиск (`?q=`) прокрутку не сбрасывают. Эффект разметки
@@ -87,9 +79,9 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
       available: hasColumn,
       collapsed,
       setCollapsed,
-      open: () => (isDesktop() ? setCollapsed(false) : setMenuOpen(true)),
+      open: () => (desktop ? setCollapsed(false) : setMenuOpen(true)),
     }),
-    [hasColumn, collapsed],
+    [hasColumn, collapsed, desktop],
   );
   const overlayOpen = (hasColumn && menuOpen) || accountOpen;
 

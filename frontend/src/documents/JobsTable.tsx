@@ -3,14 +3,7 @@ import { ago } from "../lib/format";
 import { JOB_KIND_LABELS, labelOf } from "../lib/labels";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { StatusBadge } from "../ui/StatusBadge";
-
-export const TABLE = "w-full border-collapse text-sm";
-export const TH = "border-b border-line py-1.5 pr-3 text-left font-medium text-muted";
-export const TD = "border-b border-line py-2.5 pr-3 align-top";
-export const NAME_LINK =
-  "font-medium text-ink underline-offset-4 [overflow-wrap:anywhere] hover:text-primary-ink hover:underline focus-visible:outline-2 focus-visible:outline-primary";
-export const GHOST_BUTTON =
-  "inline-flex items-center rounded-xl border border-line px-3 py-1.5 text-sm font-medium transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-wait disabled:opacity-60";
+import { GHOST_BUTTON, NAME_LINK, TABLE, TD, TH } from "../ui/styles";
 
 /** Ход задачи: у упавшей — ошибка, у идущей — `progress`, иначе — когда менялась. */
 function Progress({ job }: { job: Job }) {

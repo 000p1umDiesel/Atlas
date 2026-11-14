@@ -12,6 +12,10 @@ import type {
   EntityRelations,
 } from "./types";
 
+/** Сообществ в колонке «Сущности» и в подписи фильтра: самые крупные. */
+export const COMMUNITIES_SHOWN = 12;
+/** Сообществ в списке режима графа и при поиске подписи сообщества сущности. */
+export const COMMUNITIES_LIMIT = 50;
 /** Строк каталога за один запрос. */
 export const ENTITY_PAGE = 50;
 /** Связей сущности за один запрос. */
