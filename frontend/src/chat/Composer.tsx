@@ -83,24 +83,24 @@ export function Composer({ onSend, busy = false, initialText = "", onCompare }: 
       <div className="flex flex-wrap items-center gap-1">
         {!compare && (
           <div role="radiogroup" aria-label="Где искать ответ" className="flex flex-wrap gap-1">
-        {MODES.map((m) => (
-          <label
-            key={m.value}
-            title={m.hint}
-            className="cursor-pointer rounded-lg px-2.5 py-1 text-xs font-medium text-muted transition-colors select-none hover:text-ink has-checked:bg-primary/20 has-checked:text-primary-ink has-disabled:cursor-not-allowed has-disabled:opacity-60 has-focus-visible:outline-2 has-focus-visible:outline-primary"
-          >
-            <input
-              type="radio"
-              name={name}
-              value={m.value}
-              checked={mode === m.value}
-              disabled={busy}
-              onChange={() => choose(m.value)}
-              className="sr-only"
-            />
-            {m.label}
-          </label>
-        ))}
+          {MODES.map((m) => (
+            <label
+              key={m.value}
+              title={m.hint}
+              className="cursor-pointer rounded-lg px-2.5 py-1 text-xs font-medium text-muted transition-colors select-none hover:text-ink has-checked:bg-primary/20 has-checked:text-primary-ink has-disabled:cursor-not-allowed has-disabled:opacity-60 has-focus-visible:outline-2 has-focus-visible:outline-primary"
+            >
+              <input
+                type="radio"
+                name={name}
+                value={m.value}
+                checked={mode === m.value}
+                disabled={busy}
+                onChange={() => choose(m.value)}
+                className="sr-only"
+              />
+              {m.label}
+            </label>
+          ))}
           </div>
         )}
         {onCompare && (

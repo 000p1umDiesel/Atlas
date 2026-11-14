@@ -6,12 +6,9 @@ import { Compare } from "../chat/Compare";
 import { Composer } from "../chat/Composer";
 import { MessageView } from "../chat/MessageView";
 import { useSend, useUnsentQuestion } from "../chat/useSend";
+import { prefersReducedMotion } from "../lib/motion";
 import { useOpenSource } from "../sources/SourceList";
 import { FormNote } from "../ui/form";
-
-function prefersReducedMotion(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
 
 function EmptyChat() {
   return (
@@ -34,7 +31,9 @@ export function ChatPage() {
   const { send, busy, error } = useSend(id);
   const unsent = useUnsentQuestion(id);
   // Сравнение режимов: не сохраняется; `key` — новый вопрос перезапускает цикл.
-  const [compare, setCompare] = useState<{ question: string; key: number } | null>(null);
+  const [compare, setCompare] = useState<{ question: string; key: number; conversation: string | undefined } | null>(null);
+  // Сравнение принадлежит диалогу: при переходе в другой оно закрывается (и не вернётся).
+  useEffect(() => setCompare((c) => (c && c.conversation !== id ? null : c)), [id]);
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<{ id: string | undefined; count: number }>({ id: undefined, count: 0 });
 
@@ -79,7 +78,7 @@ export function ChatPage() {
           ) : (
             messages.map((message) => <MessageView key={message.id} message={message} onCite={openSource} />)
           )}
-          {compare && <Compare key={compare.key} question={compare.question} onClose={() => setCompare(null)} />}
+          {compare && compare.conversation === id && <Compare key={`${id ?? "new"}-${compare.key}`} question={compare.question} onClose={() => setCompare(null)} />}
         </div>
       </div>
       <div className="shrink-0 px-4 pt-2 pb-3 md:px-8 md:pb-5">
@@ -94,7 +93,7 @@ export function ChatPage() {
               setCompare(null);
               void send(question, mode, { onAccepted: accepted });
             }}
-            onCompare={(question) => setCompare((c) => ({ question, key: (c?.key ?? 0) + 1 }))}
+            onCompare={(question) => setCompare((c) => ({ question, key: (c?.key ?? 0) + 1, conversation: id }))}
           />
         </div>
       </div>

@@ -201,3 +201,81 @@ test("в чате: сравнение не создаёт диалог и соо
   expect(await screen.findByText("Сравнение режимов")).toBeTruthy();
   expect(api.requests().filter((r) => r.startsWith("POST") && !r.includes("/api/ask"))).toEqual([]);
 });
+
+test("401: оставшиеся режимы не запрашиваются", async () => {
+  const api = fakeApi({ "POST /api/ask": () => fail(401, "Нужен вход") });
+  vi.stubGlobal("fetch", api);
+  await renderWithRouter(<Compare question="Вопрос" onClose={vi.fn()} />);
+  await act(tick);
+  await act(tick);
+  expect(modeOf(api)).toEqual(["rag"]);
+});
+
+test("новый вопрос (другой key) прерывает предыдущий цикл", async () => {
+  const pending = deferred<Response>();
+  const api = fakeApi({ "POST /api/ask": () => pending.promise });
+  vi.stubGlobal("fetch", api);
+  function Host() {
+    const [n, setN] = useState(1);
+    return (
+      <>
+        <button onClick={() => setN(2)}>новый</button>
+        <Compare key={n} question={`Вопрос ${n}`} onClose={vi.fn()} />
+      </>
+    );
+  }
+  await renderWithRouter(<Host />);
+  await vi.waitFor(() => expect(api.mock.calls).toHaveLength(1));
+  const signal = api.mock.calls[0]![1]!.signal!;
+  fireEvent.click(screen.getByRole("button", { name: "новый" }));
+  expect(signal.aborted).toBe(true);
+  await vi.waitFor(() => expect(api.mock.calls).toHaveLength(2));
+  expect(api.bodies("POST", "/api/ask")[1]).toEqual({ question: "Вопрос 2", mode: "rag" });
+});
+
+function matchMediaStub(reduced: boolean) {
+  vi.stubGlobal("matchMedia", () => ({ matches: reduced }));
+}
+
+test.each([
+  [true, "auto"],
+  [false, "smooth"],
+])("прокрутка к сравнению: reduced=%s → behavior %s", async (reduced, behavior) => {
+  matchMediaStub(reduced);
+  const api = fakeApi({ "POST /api/ask": () => new Promise<Response>(() => {}) });
+  vi.stubGlobal("fetch", api);
+  await renderWithRouter(<Compare question="Вопрос" onClose={vi.fn()} />);
+  expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior, block: "nearest" });
+});
+
+test("переход в другой диалог закрывает сравнение и прерывает запрос", async () => {
+  const { createMemoryHistory } = await import("@tanstack/react-router");
+  const { render } = await import("@testing-library/react");
+  const { App, createQueryClient } = await import("../App");
+  const { createAppRouter } = await import("../router");
+  window.scrollTo = vi.fn();
+  const pending = deferred<Response>();
+  const conv = (id: string) => ({ id, user_id: "u1", title: `Диалог ${id}`, created_at: "2026-11-14T10:00:00Z" });
+  const api = fakeApi({
+    "GET /api/auth/me": { id: "u1", username: "owner" },
+    "GET /api/conversations?limit=200": [conv("c1"), conv("c2")],
+    "GET /api/conversations/c1/messages?limit=200&newest=true": [],
+    "GET /api/conversations/c2/messages?limit=200&newest=true": [],
+    "POST /api/ask": () => pending.promise,
+  });
+  vi.stubGlobal("fetch", api);
+  const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/chat/c1"] }) });
+  await router.load();
+  render(<App router={router} client={createQueryClient()} />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Сравнить режимы" }));
+  fireEvent.change(await screen.findByRole("textbox", { name: "Вопрос" }), { target: { value: "Вопрос" } });
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить" }));
+  await screen.findByText("Сравнение режимов");
+  await vi.waitFor(() => expect(api.mock.calls.some(([u]) => u === "/api/ask")).toBe(true));
+  const call = api.mock.calls.find(([u]) => u === "/api/ask")!;
+  await act(async () => {
+    await router.navigate({ to: "/chat/$id", params: { id: "c2" } });
+  });
+  expect(call[1]!.signal!.aborted).toBe(true);
+  expect(screen.queryByText("Сравнение режимов")).toBeNull();
+});

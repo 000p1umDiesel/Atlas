@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiSend, ApiError } from "../api/client";
 import type { Source } from "../api/types";
 import { formatInt, seconds } from "../lib/format";
+import { prefersReducedMotion } from "../lib/motion";
 import { MODES, type Mode } from "../lib/labels";
 import { SourceList, useOpenSource } from "../sources/SourceList";
 import { Markdown, type MarkdownRef } from "../ui/Markdown";
@@ -27,13 +28,6 @@ const QUEUED: Record<Mode, Card> = {
   graph: { state: "queued" },
   all: { state: "queued" },
 };
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof matchMedia === "function" &&
-    matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
 
 function ModeCard({
   mode,
@@ -140,6 +134,8 @@ export function Compare({
                 ? error.detail
                 : "Не удалось получить ответ",
           });
+          // Сессия кончилась: остальные режимы не спрашиваем (подписчики уже уведомлены).
+          if (error instanceof ApiError && error.status === 401) return;
         }
       }
     })();
