@@ -27,6 +27,9 @@ llm:
   # Локально: serve: llamacpp, model: unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M (base_url убрать)
   # Ключ API — переменная LLM_API_KEY из .env (llm.api_key_env по умолчанию).
   concurrency: 16                    # одновременных запросов к LLM
+  # Лимит провайдера — 60 запросов в минуту на ключ, общий для worker и API (у каждого
+  # процесса своё окно); 429 сверх него повторяются до retry_deadline_s.
+  requests_per_minute: 50
   temperature: 0.1
   timeout_s: 360                     # предел одного запроса, секунды
 

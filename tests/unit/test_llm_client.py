@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import openai
 import pytest
 from pydantic import BaseModel
 from tenacity import wait_none
@@ -8,6 +9,7 @@ from tenacity import wait_none
 from mnogobase.core.config import LLMSettings
 from mnogobase.llm.client import (
     OpenAICompatLLM,
+    RateLimiter,
     StructuredOutputError,
     clean_json,
     strict_json_schema,
@@ -49,8 +51,9 @@ def make_llm(replies, settings: LLMSettings | None = None, **kwargs):
         requests.append(json.loads(request.content))
         reply = queue.pop(0)
         if isinstance(reply, tuple):
-            status, headers = reply
-            return httpx.Response(status, headers=headers, json={"error": {"message": "x"}})
+            status, headers, *body = reply
+            error = body[0] if body else {"message": "x"}
+            return httpx.Response(status, headers=headers, json={"error": error})
         if isinstance(reply, int):
             return httpx.Response(reply, json={"error": {"message": "server error"}})
         return httpx.Response(200, json=_completion(reply))
@@ -148,6 +151,96 @@ async def test_retry_after_header_sets_the_pause(monkeypatch):
     assert await llm.complete([{"role": "user", "content": "go"}], task="answer") == "ok"
     assert len(requests) == 2
     assert slept == [7.0]
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Ложные часы: `asyncio.sleep` не ждёт, а сдвигает `_monotonic` клиента; `clock.slept`."""
+
+    class Clock:
+        now = 1000.0
+        slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        Clock.slept.append(seconds)
+        Clock.now += seconds
+
+    Clock.slept = []
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("mnogobase.llm.client._monotonic", lambda: Clock.now)
+    return Clock
+
+
+async def test_rate_limit_429_is_retried_beyond_five_attempts(clock):
+    llm, requests = make_llm([(429, {})] * 8 + ["ok"])
+    assert await llm.complete([{"role": "user", "content": "go"}], task="resolve") == "ok"
+    assert len(requests) == 9
+
+
+async def test_server_errors_still_stop_after_five_attempts(clock):
+    llm, requests = make_llm([500] * 6)
+    with pytest.raises(openai.InternalServerError):
+        await llm.complete([{"role": "user", "content": "go"}], task="resolve")
+    assert len(requests) == 5
+
+
+async def test_exhausted_quota_429_is_not_retried_until_deadline(clock):
+    quota = (429, {}, {"message": "no money", "type": "insufficient_quota", "code": "x"})
+    llm, requests = make_llm([quota] * 6)
+    with pytest.raises(openai.RateLimitError):
+        await llm.complete([{"role": "user", "content": "go"}], task="resolve")
+    assert len(requests) == 5
+
+
+async def test_rate_limit_429_stops_at_deadline_from_first_failure(clock):
+    settings = LLMSettings(base_url="http://test/v1", model="m", retry_deadline_s=10)
+    llm, requests = make_llm([(429, {"retry-after": "4"})] * 10, settings)
+    with pytest.raises(openai.RateLimitError):
+        await llm.complete([{"role": "user", "content": "go"}], task="resolve")
+    # неудачи в 0, 4, 8 и 12 с; после четвёртой срок 10 с вышел
+    assert len(requests) == 4
+    assert clock.slept == [4.0, 4.0, 4.0]
+
+
+async def test_rate_limiter_keeps_a_sliding_minute(clock):
+    limiter = RateLimiter(2)
+    assert await limiter.acquire() == 0
+    clock.now += 30
+    assert await limiter.acquire() == 0
+    assert await limiter.acquire() == 30.0  # ждёт, пока первое занятие выйдет из окна
+    assert await limiter.acquire() == 30.0  # второе вышло ещё через 30 с
+    assert clock.slept == [30.0, 30.0]
+
+
+async def test_requests_per_minute_paces_calls(clock):
+    settings = LLMSettings(base_url="http://test/v1", model="m", requests_per_minute=2)
+    llm, requests = make_llm(["a", "b", "c"], settings)
+    for _ in range(3):
+        await llm.complete([{"role": "user", "content": "go"}], task="resolve")
+    assert len(requests) == 3
+    assert clock.slept == [60.0]
+
+
+async def test_throttle_wait_does_not_count_toward_the_retry_deadline(clock):
+    settings = LLMSettings(
+        base_url="http://test/v1", model="m", requests_per_minute=1, retry_deadline_s=10
+    )
+    llm, requests = make_llm([(429, {}), (429, {}), "ok"], settings)
+    assert await llm.complete([{"role": "user", "content": "go"}], task="resolve") == "ok"
+    assert len(requests) == 3
+    # паузы между попытками нулевые (wait_none), 60 с — ожидание окна частоты
+    assert [s for s in clock.slept if s] == [60.0, 60.0]
+
+
+async def test_stream_waits_for_rate_limit_and_frees_the_slot_on_error(clock):
+    settings = LLMSettings(
+        base_url="http://test/v1", model="m", concurrency=1, requests_per_minute=1
+    )
+    llm, requests = make_streaming_llm([503, ["ok"]], settings)
+    assert await _collect(llm) == ["ok"]
+    assert len(requests) == 2
+    assert [s for s in clock.slept if s] == [60.0]
+    assert not llm._sem.locked()
 
 
 async def test_failing_usage_recorder_does_not_break_the_call():

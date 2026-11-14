@@ -9,11 +9,19 @@
 можно отдать другой модели того же сервера, не трогая остальные.
 
 Повторы. Сам SDK OpenAI не повторяет (`max_retries=0`), повторами управляет tenacity:
-повторяются только сетевые ошибки и таймауты, 429 и 5xx (`_RETRYABLE`); не больше 5 попыток
-и не дольше `llm.retry_deadline_s` суммарно. Пауза — экспоненциальная (до 30 с), но не
-меньше `Retry-After` из ответа сервера (не больше `_MAX_RETRY_AFTER_S`). Семафор
+повторяются только сетевые ошибки и таймауты, 429 и 5xx (`_RETRYABLE`). Сетевые ошибки и
+5xx — не больше 5 попыток; 429 («приходите позже») повторяется без счёта попыток, пока не
+выйдет `llm.retry_deadline_s` от первой неудачи (кроме исчерпанной квоты
+`insufficient_quota` — она считается как обычная ошибка). Пауза — экспоненциальная (до 30 с),
+но не меньше `Retry-After` из ответа сервера (не больше `_MAX_RETRY_AFTER_S`). Семафор
 `llm.concurrency` ограничивает число одновременных запросов и занят только на время самого
 запроса, не на паузу между попытками.
+
+Частота. `llm.requests_per_minute` (если задан) — `RateLimiter`: не больше стольких попыток
+за любые скользящие 60 секунд в этом процессе. Внешние API ограничивают именно частоту
+(например, 60 запросов в минуту), а короткие вызовы `resolve` при `concurrency` 16 дают в
+разы больше. Место в окне занимается внутри слота семафора прямо перед отправкой; время
+ожидания в окне не входит в `retry_deadline_s`.
 
 Структурированный ответ с исправлением. `structured` просит JSON по strict-схеме, которую
 строит из pydantic-модели (`strict_json_schema`); схема ответа задаётся в коде, а не в
@@ -34,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -48,8 +57,6 @@ from tenacity import (
     AsyncRetrying,
     RetryCallState,
     retry_if_exception_type,
-    stop_after_attempt,
-    stop_after_delay,
     wait_exponential,
 )
 
@@ -70,6 +77,11 @@ _RETRYABLE = (
     openai.InternalServerError,
 )
 _DEFAULT_RETRY_WAIT = wait_exponential(multiplier=1, max=30)
+# сетевые ошибки и 5xx: столько попыток всего; 429 повторяется до `retry_deadline_s`
+_MAX_ATTEMPTS = 5
+# 429 с этим кодом — исчерпанная квота или баланс: ожиданием не лечится
+_QUOTA_CODES = frozenset({"insufficient_quota"})
+_monotonic = time.monotonic  # подменяется в тестах
 # верхняя граница подсказки сервера: слишком большой Retry-After не должен подвесить вызов
 _MAX_RETRY_AFTER_S = 120.0
 
@@ -86,6 +98,72 @@ def _retry_after(exc: BaseException | None) -> float | None:
     except ValueError:
         return None
     return min(max(seconds, 0.0), _MAX_RETRY_AFTER_S) if seconds is not None else None
+
+
+def _patient(exc: BaseException | None) -> bool:
+    """429 из-за частоты: повторяется до `retry_deadline_s`, а не `_MAX_ATTEMPTS` раз."""
+    if not isinstance(exc, openai.RateLimitError):
+        return False
+    return exc.code not in _QUOTA_CODES and exc.type not in _QUOTA_CODES
+
+
+class RateLimiter:
+    """Не больше `per_minute` занятий за любые скользящие `WINDOW_S` секунд.
+
+    Привязан к event loop (asyncio.Lock); ожидающие встают в очередь FIFO и ждут, пока
+    самое старое занятие не выйдет из окна."""
+
+    WINDOW_S = 60.0
+
+    def __init__(self, per_minute: int):
+        self._limit = per_minute
+        self._taken: deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> float:
+        """Ждёт места в окне и занимает его; возвращает секунды ожидания."""
+        waited = 0.0
+        async with self._lock:
+            while True:
+                now = _monotonic()
+                while self._taken and now - self._taken[0] >= self.WINDOW_S:
+                    self._taken.popleft()
+                if len(self._taken) < self._limit:
+                    self._taken.append(now)
+                    return waited
+                pause = self._taken[0] + self.WINDOW_S - now
+                waited += pause
+                await asyncio.sleep(pause)
+
+
+class _RetryPolicy:
+    """Условия tenacity для одного логического вызова: пауза и остановка.
+
+    Пауза — экспоненциальная, но не короче `Retry-After`. Остановка: срок
+    `deadline_s` от первой неудачи, без времени ожидания в `RateLimiter` (`throttled`);
+    для всего, кроме частотного 429, ещё и `_MAX_ATTEMPTS` попыток."""
+
+    def __init__(self, backoff, deadline_s: float):
+        self._backoff = backoff
+        self._deadline_s = deadline_s
+        self._failed_at: float | None = None
+        self.throttled = 0.0  # секунды ожидания в окне частоты после первой неудачи
+
+    def wait(self, state: RetryCallState) -> float:
+        backoff = self._backoff(state)
+        hint = _retry_after(state.outcome.exception() if state.outcome else None)
+        return max(backoff, hint) if hint is not None else backoff
+
+    def stop(self, state: RetryCallState) -> bool:
+        now = _monotonic()
+        if self._failed_at is None:
+            self._failed_at = now
+            self.throttled = 0.0
+        if now - self._failed_at - self.throttled >= self._deadline_s:
+            return True
+        if _patient(state.outcome.exception() if state.outcome else None):
+            return False
+        return state.attempt_number >= _MAX_ATTEMPTS
 
 
 class StructuredOutputError(RuntimeError):
@@ -286,11 +364,29 @@ class OpenAICompatLLM:
             http_client=http_client,
         )
         self._sem = asyncio.Semaphore(settings.concurrency)
+        rpm = settings.requests_per_minute
+        self._rate = RateLimiter(rpm) if rpm is not None else None
         # False после 400 на `stream_options`: такой сервер не принимает запрос токенов в потоке
         self._stream_usage = True
         self._retry_wait = retry_wait
         self.usage = Usage()
         self._log = get_logger(__name__)
+
+    async def _throttle(self, policy: _RetryPolicy) -> int:
+        """Место в окне `llm.requests_per_minute` перед отправкой; возвращает мс ожидания."""
+        if self._rate is None:
+            return 0
+        waited = await self._rate.acquire()
+        policy.throttled += waited
+        return int(waited * 1000)
+
+    def _retrying(self, policy: _RetryPolicy) -> AsyncRetrying:
+        return AsyncRetrying(
+            retry=retry_if_exception_type(_RETRYABLE),
+            stop=policy.stop,
+            wait=policy.wait,
+            reraise=True,
+        )
 
     def model_for(self, task: str) -> str:
         """`llm.overrides[task]`, если задан, иначе `llm.model`."""
@@ -319,22 +415,13 @@ class OpenAICompatLLM:
             kwargs["response_format"] = response_format
         start = time.perf_counter()
         attempts = 0
-
-        def wait(state: RetryCallState) -> float:
-            # экспоненциальная пауза, но не короче, чем просит сервер в Retry-After
-            backoff = self._retry_wait(state)
-            hint = _retry_after(state.outcome.exception() if state.outcome else None)
-            return max(backoff, hint) if hint is not None else backoff
-
-        async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type(_RETRYABLE),
-            stop=stop_after_attempt(5) | stop_after_delay(self._settings.retry_deadline_s),
-            wait=wait,
-            reraise=True,
-        ):
+        throttle_ms = 0
+        policy = _RetryPolicy(self._retry_wait, self._settings.retry_deadline_s)
+        async for attempt in self._retrying(policy):
             with attempt:
                 # Слот конкурентности занят только на время запроса, не на паузу между попытками.
                 async with self._sem:
+                    throttle_ms += await self._throttle(policy)
                     attempts += 1
                     # external: модель за API (`serve: api`), а не локальный llama-server;
                     # только к таким вызовам применяются тарифы `service.llm_rates`
@@ -370,6 +457,7 @@ class OpenAICompatLLM:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             retries=attempts - 1,
+            throttle_ms=throttle_ms,
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
         return response.choices[0].message.content or ""
@@ -405,25 +493,18 @@ class OpenAICompatLLM:
             kwargs["stream_options"] = {"include_usage": True}
         start = time.perf_counter()
         attempts = 0
+        throttle_ms = 0
         event: CallEvent | None = None
-
-        def wait(state: RetryCallState) -> float:
-            backoff = self._retry_wait(state)
-            hint = _retry_after(state.outcome.exception() if state.outcome else None)
-            return max(backoff, hint) if hint is not None else backoff
-
-        async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type(_RETRYABLE),
-            stop=stop_after_attempt(5) | stop_after_delay(self._settings.retry_deadline_s),
-            wait=wait,
-            reraise=True,
-        ):
+        policy = _RetryPolicy(self._retry_wait, self._settings.retry_deadline_s)
+        async for attempt in self._retrying(policy):
             with attempt:
                 await self._sem.acquire()
-                attempts += 1
-                event = new_call(model, task, external=self._settings.serve == "api")
-                await self._record(event)
+                event = None
                 try:
+                    throttle_ms += await self._throttle(policy)
+                    attempts += 1
+                    event = new_call(model, task, external=self._settings.serve == "api")
+                    await self._record(event)
                     try:
                         response = await self._client.chat.completions.create(**kwargs)
                     except openai.BadRequestError:
@@ -480,6 +561,7 @@ class OpenAICompatLLM:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             retries=attempts - 1,
+            throttle_ms=throttle_ms,
             duration_ms=int((time.perf_counter() - start) * 1000),
             stream=True,
         )

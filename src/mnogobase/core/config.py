@@ -334,7 +334,10 @@ class LLMSettings(ServedModel):
     concurrency: int = Field(default=4, ge=1)  # одновременных запросов к серверу (семафор)
     temperature: float = Field(default=0.0, ge=0, le=2)
     timeout_s: float = Field(default=120.0, gt=0)
-    retry_deadline_s: float = Field(default=900.0, gt=0)  # общий предел повторов одного вызова
+    # срок повторов одного вызова от первой неудачи; 429 повторяется до него без счёта попыток
+    retry_deadline_s: float = Field(default=900.0, gt=0)
+    # не больше стольких запросов за скользящую минуту в процессе (лимит внешнего API); null — без
+    requests_per_minute: int | None = Field(default=None, ge=1)
     # задача -> имя модели; null — общая `model`
     overrides: dict[str, str | None] = Field(default_factory=lambda: dict.fromkeys(LLM_TASKS))
 
