@@ -155,3 +155,21 @@ test("неизвестный путь — русская страница «Ст
   expect(screen.getByRole("link", { name: "На главную" }).getAttribute("href")).toBe("/");
   expect(screen.getByRole("navigation", { name: "Разделы" })).toBeTruthy();
 });
+
+test("Ctrl+K открывает палитру на страницах оболочки, кнопка «Поиск» — тоже; на /login палитры нет", async () => {
+  const router = await renderAt("/status");
+  await screen.findByRole("heading", { name: "Статус" });
+  fireEvent.keyDown(document, { key: "k", code: "KeyK", ctrlKey: true });
+  expect(await screen.findByRole("dialog", { name: "Поиск" })).toBeTruthy();
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "Поиск" }), { key: "Escape" });
+  await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Поиск" })).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Поиск" }));
+  expect(await screen.findByRole("dialog", { name: "Поиск" })).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Поиск" })).toBeNull());
+  await act(() => router.navigate({ to: "/login" }));
+  await screen.findByRole("button", { name: "Войти" });
+  fireEvent.keyDown(document, { key: "k", code: "KeyK", ctrlKey: true });
+  await act(async () => new Promise((r) => setTimeout(r, 50)));
+  expect(screen.queryByRole("dialog", { name: "Поиск" })).toBeNull();
+});

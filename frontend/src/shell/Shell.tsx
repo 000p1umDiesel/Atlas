@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMe } from "../api/auth";
+import { CommandPalette } from "./CommandPalette";
 import { ShellColumnContext, type ShellColumnState } from "./columnContext";
 import { ContextColumn } from "./ContextColumn";
 import { MainScrollContext } from "./mainScroll";
@@ -36,6 +37,7 @@ function isGraph(pathname: string): boolean {
 export function Shell({ pathname, column = null, bleed = false, children }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const hasColumn = column !== null && column !== undefined && column !== false;
   // Проверка сессии на любой странице оболочки: без входа /api/auth/me ответит 401 — на вход.
   const username = useMe().data?.username;
@@ -122,6 +124,7 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
           <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
             <TopBar
               onMenu={hasColumn ? () => setMenuOpen(true) : undefined}
+              onSearch={() => setPaletteOpen(true)}
               username={username}
               onLogout={logout}
               logoutBusy={logoutBusy}
@@ -149,6 +152,8 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
           </div>
           {/* У графа своя карточка сущности: правая панель там не нужна. */}
           {!isGraph(pathname) && <PanelHost />}
+          {/* Ctrl+K — на любой странице оболочки (на /login оболочки нет). */}
+          <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
         </div>
       </MainScrollContext.Provider>
     </ShellColumnContext.Provider>

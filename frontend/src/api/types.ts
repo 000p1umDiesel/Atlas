@@ -339,3 +339,11 @@ export interface EntityDocument {
   mentions: number;
   url: string | null;
 }
+
+/** Ответ `GET /api/search/quick` (Ctrl+K): не больше пяти в каждой группе. */
+export interface QuickSearch {
+  entities: EntityListItem[];
+  wiki: { page_id: string; slug: string; title: string }[];
+  documents: { id: string; name: string; status: string }[];
+  conversations: { id: string; title: string }[];
+}

@@ -1,10 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { LogOut, Menu, Search, User } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { paletteShortcut } from "./commands";
 import { ThemeButton } from "./ThemeButton";
 
 type Props = {
   onMenu?: () => void;
+  /** Открыть палитру Ctrl+K. */
+  onSearch: () => void;
   username?: string;
   onLogout: () => void;
   logoutBusy?: boolean;
@@ -16,7 +19,7 @@ const MENU_ITEM =
   "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-ink hover:bg-bg focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50";
 
 /** Меню аккаунта для телефона: на широком экране «Аккаунт» и «Выйти» стоят в рейке. */
-function AccountMenu({ username, onLogout, logoutBusy }: Omit<Props, "onMenu">) {
+function AccountMenu({ username, onLogout, logoutBusy }: Omit<Props, "onMenu" | "onSearch">) {
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -73,7 +76,8 @@ function AccountMenu({ username, onLogout, logoutBusy }: Omit<Props, "onMenu">) 
   );
 }
 
-export function TopBar({ onMenu, username, onLogout, logoutBusy }: Props) {
+export function TopBar({ onMenu, onSearch, username, onLogout, logoutBusy }: Props) {
+  const shortcut = paletteShortcut();
   return (
     <header className="flex h-16 shrink-0 items-center gap-2 px-4 md:gap-3 md:px-8">
       {onMenu && (
@@ -87,13 +91,18 @@ export function TopBar({ onMenu, username, onLogout, logoutBusy }: Props) {
       <div className="flex-1" />
       <button
         type="button"
-        disabled
-        aria-label="Поиск (скоро)"
-        className="flex min-w-0 max-w-xs shrink-0 items-center sm:w-full sm:shrink gap-2 rounded-full border border-line bg-card px-4 py-2 text-sm text-muted shadow-card disabled:cursor-not-allowed"
+        onClick={onSearch}
+        aria-label="Поиск"
+        aria-keyshortcuts={shortcut === "⌘K" ? "Meta+K" : "Control+K"}
+        title={`Поиск (${shortcut})`}
+        className="flex min-w-0 max-w-xs shrink-0 items-center gap-2 rounded-full border border-line bg-card px-3 py-2 text-sm text-muted shadow-card transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-primary sm:w-full sm:shrink sm:px-4"
       >
-        <Search size={16} className="shrink-0" />
+        <Search size={16} className="shrink-0" aria-hidden="true" />
         {/* На телефоне — только значок: подпись не помещается. */}
-        <span className="hidden truncate sm:inline">Ctrl+K — скоро</span>
+        <span className="hidden flex-1 truncate text-left sm:inline">Поиск</span>
+        <kbd className="hidden shrink-0 rounded-md border border-line bg-bg px-1.5 py-0.5 font-sans text-xs font-medium text-muted sm:inline">
+          {shortcut}
+        </kbd>
       </button>
       {/* На телефоне в нижней панели нет места: тема и аккаунт здесь; на широком экране — в рейке. */}
       <ThemeButton className={ICON_BUTTON} />
