@@ -711,7 +711,8 @@ export function Graph2D({
     };
 
     const focusNode = (id: string, offset: FocusOffset = { x: 0, y: 0 }) => {
-      if (disposed || !rg.hasNode(id)) return;
+      // Неизвестный или скрытый узел — камера не трогается (кадр «весь граф» остаётся).
+      if (disposed || !rg.hasNode(id) || !visibleRef.current.nodes.has(id)) return;
       const camera = sigma.getCamera();
       camera.cancelAnimation();
       if (layoutRunning) {

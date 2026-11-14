@@ -898,6 +898,35 @@ describe("живые данные: режимы «Окрестность» и «
     expect(params(router).get("community")).toBe("7");
   });
 
+  test("выбранного узла нет в новой основной части — граф вписывается, камера не наводится на пропавший узел", async () => {
+    const api = fakeApi(
+      routes({
+        "GET /api/graph/e2/neighbors?depth=1&limit=200": { nodes: [node("e2", "Бэббидж"), node("e5", "Тьюринг")], relations: [relation("e2", "e5")] },
+      }),
+    );
+    // Окрестность e2 уже в кэше: смена центра без промежуточного «Собираем граф…».
+    const router = await renderLive("/graph?mode=neighbors&center=e2", api);
+    await vi.waitFor(() => expect(graphNodes()).toEqual(["e2", "e5"]));
+    await act(async () => {
+      await router.navigate({ href: "/graph?mode=neighbors&center=e1&focus=e3" });
+    });
+    await screen.findByRole("dialog", { name: "Менабреа" });
+    await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalledWith("e3", expect.anything()));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    fake2d.api.fit.mockClear();
+    fake2d.api.focusNode.mockClear();
+    // Выбранный e3 остаётся в URL, а в окрестности e2 его нет.
+    await act(async () => {
+      await router.navigate({ href: "/graph?mode=neighbors&center=e2&focus=e3" });
+    });
+    await vi.waitFor(() => expect(graphNodes()).toEqual(["e2", "e5"]));
+    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+    await vi.waitFor(() => expect(fake2d.api.fit).toHaveBeenCalled(), { timeout: 1500 });
+    expect(fake2d.api.focusNode).not.toHaveBeenCalledWith("e3", expect.anything());
+  });
+
   test("новый центр окрестности без выбранного узла — граф снова вписывается", async () => {
     const api = fakeApi(
       routes({

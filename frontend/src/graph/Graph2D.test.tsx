@@ -1,7 +1,7 @@
 import { act, render } from "@testing-library/react";
 import type { AbstractGraph } from "graphology-types";
 import { generateFixtures } from "../fixtures/generate";
-import { Graph2D } from "./Graph2D";
+import { Graph2D, type Graph2DApi } from "./Graph2D";
 import { buildGraph, DEFAULT_FILTERS, type GraphFilters } from "./model";
 import { mergeParts } from "./dataset";
 
@@ -177,4 +177,16 @@ test("новый граф: прежние узлы остаются на мес�
   const a = positions.get(anchor)!;
   const fresh = after.getNodeAttributes("fresh") as { x: number; y: number };
   expect(Math.hypot(fresh.x - a.x, fresh.y - a.y)).toBeCloseTo(12, 6);
+});
+
+test("focusNode на скрытый фильтрами или неизвестный узел ничего не делает (камера не трогается)", () => {
+  let api: Graph2DApi | null = null;
+  const person = graph.findNode((_, a) => a.type === "Person")!;
+  const other = graph.findNode((_, a) => a.type !== "Person")!;
+  render(<Graph2D graph={graph} filters={filters({ types: ["Person"] })} onSelect={() => {}} onReady={(a) => (api = a)} />);
+  expect(api).not.toBeNull();
+  // У подменной Sigma нет камеры: обращение к ней бросило бы исключение.
+  expect(() => api!.focusNode?.(other)).not.toThrow();
+  expect(() => api!.focusNode?.("no-such-node")).not.toThrow();
+  expect(() => api!.focusNode?.(person)).toThrow();
 });

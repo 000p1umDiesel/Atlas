@@ -504,7 +504,9 @@ class Scene3D {
    * встаёт на него, как только он появится, и следует за ним до остановки движка.
    */
   focusNode(id: string, offset: FocusOffset = { x: 0, y: 0 }) {
-    if (this.disposed) return;
+    // Узла нет среди видимых — ничего: иначе userMoved и слежение за пропавшим узлом
+    // отключили бы автокадрирование этой сцены.
+    if (this.disposed || !this.nodes.has(id)) return;
     this.userMoved = true;
     const pose = this.focusPose(id, offset);
     if (!pose || this.engineRunning) {

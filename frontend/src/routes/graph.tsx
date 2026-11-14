@@ -199,11 +199,12 @@ export function GraphPage() {
     scheduleFit();
   }, [current, scheduleFit]);
 
-  // Выбранный узел — в центр свободной части холста, не под карточкой.
+  // Выбранный узел — в центр свободной части холста, не под карточкой. Узла нет среди видимых
+  // (новая основная часть графа без него, фильтры) — ничего: запланированное «вписать» остаётся.
   const focusOn = useCallback(
     (id: string) => {
       const current = apiRef.current;
-      if (!current) return;
+      if (!current || !visibleRef.current?.nodes.has(id)) return;
       clearTimeout(fitTimer.current);
       const height = canvasRef.current?.clientHeight ?? 0;
       const offset = wide ? { x: (ENTITY_CARD_WIDTH + 12) / 2, y: 0 } : { x: 0, y: (height * ENTITY_SHEET_SHARE) / 2 };
