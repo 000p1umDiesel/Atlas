@@ -71,7 +71,8 @@ class Job:
     """Снимок строки `jobs`.
 
     `path` — абсолютный путь источника, `fingerprint` — версия (`doc_id` или
-    `remove:<doc_id>`), `status` — `pending` / `running` / `done` / `failed` / `superseded`,
+    `remove:<doc_id>`), `status` — `pending` / `running` / `done` / `failed` / `superseded` /
+    `cancelled`, `hidden` — скрыта из списка (`hide_finished`),
     `attempts` — сколько раз задачу брали в работу, `available_at` — unix-время, раньше
     которого её не берут, `error` — имя типа исключения (текст может содержать секреты);
     только у исключений из `worker.SAFE_MESSAGE_ERRORS` — ещё и их текст, `progress` — короткое описание текущего шага (для CLI), `stage` / `step_done` / `step_total` — тот же
@@ -176,13 +177,14 @@ class JobQueue:
         приводится к абсолютному (`resolve`), чтобы один файл не давал разных задач.
 
         Повтор той же версии не создаёт новую задачу. Уже завершённая (`done` / `failed` /
-        `superseded`) задача снова становится `pending` (попытки обнуляются) только с `force`
+        `superseded` / `cancelled`) задача снова становится `pending` (попытки обнуляются) только с `force`
         или если до этого в `desired` была другая версия пути; `pending` и `running` задачи не
         трогаются. В конце `desired` пути = `fingerprint`.
 
-        Источник, который забыли (`desired` = `remove:<та же версия>`), без `force` не
-        возвращается: метод сразу отдаёт id задачи удаления. Так watcher после рестарта не
-        загрузит обратно файл, удалённый через API.
+        Источник, который забыли (`desired` = `remove:<та же версия>`) или чью загрузку отменили
+        (`cancel:<та же версия>`), без `force` не возвращается: метод сразу отдаёт id той задачи.
+        Так watcher не загрузит обратно файл, удалённый или отменённый через API. Задача,
+        вернувшаяся в `pending`, снова видна в списке (`hidden` снимается).
 
         `on_locked` выполняется под блокировкой пути, до записи в таблицы: API переносит туда
         файл загрузки на место, чтобы идущая задача удаления не стёрла его следом. Если
@@ -194,9 +196,19 @@ class JobQueue:
             previous = self._db.execute(
                 "SELECT fingerprint FROM desired WHERE path=?", (path,)
             ).fetchone()
-            if not force and previous is not None and previous[0] == f"remove:{fingerprint}":
+            if (
+                not force
+                and previous is not None
+                and previous[0]
+                in (
+                    f"remove:{fingerprint}",
+                    f"cancel:{fingerprint}",
+                )
+            ):
+                # забытый источник — задача удаления; отменённый — сама отменённая задача
+                kept = previous[0] if previous[0].startswith("remove:") else fingerprint
                 job_id = self._db.execute(
-                    "SELECT id FROM jobs WHERE path=? AND fingerprint=?", (path, previous[0])
+                    "SELECT id FROM jobs WHERE path=? AND fingerprint=?", (path, kept)
                 ).fetchone()[0]
                 self._db.execute("COMMIT")
                 return job_id
@@ -208,8 +220,9 @@ class JobQueue:
             )
             if force or (previous is not None and previous[0] != fingerprint):
                 self._db.execute(
-                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',updated_at=?,started_at=NULL "
-                    "WHERE path=? AND fingerprint=? AND status IN ('done','failed','superseded')",
+                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',"
+                    "stage=NULL,step_done=NULL,step_total=NULL,hidden=false,updated_at=?,started_at=NULL "
+                    "WHERE path=? AND fingerprint=? AND status IN ('done','failed','superseded','cancelled')",
                     (self._clock(), path, fingerprint),
                 )
             self._db.execute(
@@ -321,6 +334,48 @@ class JobQueue:
             is not None
         )
 
+    def cancel(self, job_id: int, *, on_locked: Callable[[Job], None] | None = None) -> Job | None:
+        """Отменяет `pending`-задачу и возвращает её новое состояние; `None` — задачи нет или
+        она уже не `pending` (worker взял её первым, или она завершена).
+
+        Одна транзакция под блокировкой `queue-path:<путь>`. `desired` пути меняется, только
+        если в нём всё ещё версия задачи: отменённое удаление `remove:<v>` возвращает `<v>`
+        (документ снова актуален), отменённая загрузка `<v>` даёт `cancel:<v>` — без `force`
+        `enqueue` её не вернёт. `on_locked(job)` выполняется под той же блокировкой до COMMIT
+        (API удаляет там файл загрузки); его исключение откатывает отмену и пробрасывается."""
+        self._db.execute("BEGIN")
+        try:
+            source = self._db.execute("SELECT path FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if source is None:
+                self._db.execute("COMMIT")
+                return None
+            transaction_lock(self._db, f"queue-path:{source[0]}")
+            row = self._db.execute(
+                "UPDATE jobs SET status='cancelled',progress='отменена',stage=NULL,step_done=NULL,"
+                "step_total=NULL,available_at=0,updated_at=? WHERE id=? AND status='pending' "
+                "RETURNING *",
+                (self._clock(), job_id),
+            ).fetchone()
+            if row is None:
+                self._db.execute("COMMIT")
+                return None
+            job = _job(row)
+            if job.fingerprint.startswith("remove:"):
+                restored = job.fingerprint.removeprefix("remove:")
+            else:
+                restored = f"cancel:{job.fingerprint}"
+            self._db.execute(
+                "UPDATE desired SET fingerprint=? WHERE path=? AND fingerprint=?",
+                (restored, job.path, job.fingerprint),
+            )
+            if on_locked is not None:
+                on_locked(job)
+            self._db.execute("COMMIT")
+            return job
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+
     def supersede(self, job_id: int) -> None:
         """Переводит `running`-задачу в `superseded`: worker обнаружил, что файл изменился, и
         уже поставил задачу на новую версию."""
@@ -417,7 +472,8 @@ class JobQueue:
             # относится к следующему retry, и её состояние не сбрасывается случайно.
             for selected_id, _, _ in selected:
                 row = self._db.execute(
-                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',updated_at=?,started_at=NULL "
+                    "UPDATE jobs SET status='pending',attempts=0,available_at=0,error=NULL,progress='',"
+                    "stage=NULL,step_done=NULL,step_total=NULL,hidden=false,updated_at=?,started_at=NULL "
                     "WHERE id=? AND status='failed' RETURNING path,fingerprint",
                     (self._clock(), selected_id),
                 ).fetchone()
@@ -454,14 +510,35 @@ class JobQueue:
         row = self._db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return _job(row) if row else None
 
-    def jobs(self, limit: int = 100, offset: int = 0) -> list[Job]:
-        """Страница задач, новые первыми (`ORDER BY id DESC`)."""
+    def jobs(self, limit: int = 100, offset: int = 0, *, include_hidden: bool = False) -> list[Job]:
+        """Страница задач, новые первыми (`ORDER BY id DESC`); скрытые `hide_finished`
+        задачи — только с `include_hidden`."""
+        where = "" if include_hidden else " WHERE NOT hidden"
         return [
             _job(r)
             for r in self._db.execute(
-                "SELECT * FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+                f"SELECT * FROM jobs{where} ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
             )
         ]
+
+    def pending_ids(self, fingerprint: str) -> list[int]:
+        """id `pending`-задач с версией `fingerprint` (например, все копии `remove:<doc_id>`),
+        по возрастанию."""
+        rows = self._db.execute(
+            "SELECT id FROM jobs WHERE fingerprint=? AND status='pending' ORDER BY id",
+            (fingerprint,),
+        )
+        return [r[0] for r in rows]
+
+    def hide_finished(self) -> int:
+        """Скрывает из `jobs()` завершённые задачи (`done`, `superseded`, `cancelled`) и
+        возвращает их число. `failed` не скрываются: у них «Повторить», это сигнал о поломке.
+        Строки остаются — на них опираются `enqueue` (забытые и отменённые источники) и поиск
+        дубликатов загрузок."""
+        return self._db.execute(
+            "UPDATE jobs SET hidden=true "
+            "WHERE status IN ('done','superseded','cancelled') AND NOT hidden"
+        ).rowcount
 
     def find(self, path: Path, fingerprint: str) -> Job | None:
         """Задача для пути и версии источника (пара уникальна), если она есть."""

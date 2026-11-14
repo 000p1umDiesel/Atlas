@@ -307,3 +307,97 @@ async def test_watcher_can_enqueue_while_worker_holds_writer_lock(tmp_path):
     assert await process_one(q, handler)
     assert q.counts() == {"done": 1, "pending": 1}
     q.close()
+
+
+def test_cancel_pending_remove_restores_desired(tmp_path):
+    q = queue()
+    q.enqueue(Path("a.md"), "d1")
+    q.finish(q.claim().id)
+    removal = q.enqueue(Path("a.md"), "remove:d1", force=True, kind="remove")
+    assert q.cancel(removal).status == "cancelled"
+    assert q.claim() is None
+    assert q.is_current(q.find(Path("a.md"), "d1"))
+    q.close()
+
+
+def test_cancel_loses_to_a_claimed_job(tmp_path):
+    a, b = queue(), queue()
+    job_id = a.enqueue(Path("a.md"), "d1")
+    assert b.claim().id == job_id
+    assert a.cancel(job_id) is None
+    assert a.get(job_id).status == "running"
+    a.close()
+    b.close()
+
+
+def test_cancelled_ingest_is_not_requeued_by_the_watcher(tmp_path):
+    q = queue()
+    job_id = q.enqueue(Path("a.md"), "d1")
+    q.cancel(job_id)
+    assert q.enqueue(Path("a.md"), "d1") == job_id  # watcher, без force
+    assert q.claim() is None
+    changed = q.enqueue(Path("a.md"), "d2")  # содержимое изменилось
+    assert q.claim().id == changed
+    q.close()
+
+
+def test_cancelled_ingest_returns_with_force(tmp_path):
+    q = queue()
+    job_id = q.enqueue(Path("a.md"), "d1")
+    q.cancel(job_id)
+    assert q.enqueue(Path("a.md"), "d1", force=True) == job_id  # повторная загрузка через API
+    assert q.claim().id == job_id
+    q.close()
+
+
+def test_cancel_runs_on_locked_and_rolls_back_on_error(tmp_path):
+    q = queue()
+    job_id = q.enqueue(Path("a.md"), "d1")
+
+    def broken(job):
+        raise OSError("disk")
+
+    with pytest.raises(OSError):
+        q.cancel(job_id, on_locked=broken)
+    assert q.get(job_id).status == "pending"
+    seen = []
+    q.cancel(job_id, on_locked=seen.append)
+    assert [j.id for j in seen] == [job_id]
+    q.close()
+
+
+def test_hide_finished_keeps_failed_and_unhides_requeued(tmp_path):
+    q = queue()
+    done = q.enqueue(Path("a.md"), "d1")
+    q.finish(q.claim().id)
+    failed = q.enqueue(Path("b.md"), "d2")
+    q.fail(q.claim().id, "Boom", max_attempts=1, delay=0)
+    cancelled = q.enqueue(Path("c.md"), "d3")
+    q.cancel(cancelled)
+    assert q.hide_finished() == 2
+    assert [j.id for j in q.jobs()] == [failed]
+    assert len(q.jobs(include_hidden=True)) == 3
+    q.enqueue(Path("a.md"), "d1", force=True)
+    assert {j.id for j in q.jobs()} == {done, failed}
+    q.close()
+
+
+def test_retry_unhides_nothing_it_did_not_hide(tmp_path):
+    """`retry` возвращает `failed`-задачу, а скрытые соседние задачи остаются скрытыми."""
+    q = queue()
+    q.enqueue(Path("a.md"), "d1")
+    q.finish(q.claim().id)
+    failed = q.enqueue(Path("b.md"), "d2")
+    q.fail(q.claim().id, "Boom", max_attempts=1, delay=0)
+    q.hide_finished()
+    assert q.retry(failed) == 1
+    assert [j.id for j in q.jobs()] == [failed]
+    q.close()
+
+
+def test_pending_ids_lists_copies_of_a_removal(tmp_path):
+    q = queue()
+    a = q.enqueue(Path("a.md"), "remove:d1", force=True, kind="remove")
+    b = q.enqueue(Path("b.md"), "remove:d1", force=True, kind="remove")
+    assert q.pending_ids("remove:d1") == [a, b]
+    q.close()
