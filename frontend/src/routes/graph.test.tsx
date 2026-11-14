@@ -1081,13 +1081,41 @@ describe("живые данные: режимы «Окрестность» и «
       await vi.waitFor(() => expect(api.requests()).toContain(PATH_URL(5)));
     });
 
-    test("«Поменять местами» меняет source и target", async () => {
+    test("«Поменять местами» меняет source и target, раскрытые соседи остаются", async () => {
       const api = fakeApi(routes({ [PATH_URL(4)]: TWO_PATHS }));
-      const router = await renderLive("/graph?mode=path&source=a&target=b", api);
+      const router = await renderLive("/graph?mode=path&source=a&target=b&expand=c", api);
       await screen.findByTestId("graph2d");
       await click(screen.getByRole("button", { name: "Поменять местами" }));
       await vi.waitFor(() => expect(params(router).get("source")).toBe("b"));
       expect(params(router).get("target")).toBe("a");
+      expect(params(router).get("expand")).toBe("c");
+    });
+
+    test("новый конец пути снимает раскрытых соседей прежнего пути", async () => {
+      const api = fakeApi(
+        routes({
+          [PATH_URL(4)]: TWO_PATHS,
+          "GET /api/entities?q=%D0%B0%D0%B4&limit=8": {
+            total: 1,
+            items: [{ ...node("e1", "Ада Лавлейс"), aliases: [], has_page: false, slug: null }],
+          },
+        }),
+      );
+      const router = await renderLive("/graph?mode=path&source=a&target=b&expand=c", api);
+      await screen.findByTestId("graph2d");
+      for (const [label, key] of [
+        ["Откуда", "source"],
+        ["Куда", "target"],
+      ] as const) {
+        await act(async () => {
+          await router.navigate({ href: `/graph?mode=path&source=a&target=b&expand=c` });
+        });
+        const picker = await screen.findByRole("combobox", { name: label });
+        act(() => fireEvent.change(picker, { target: { value: "ад" } }));
+        await click(await screen.findByRole("option", { name: /Ада Лавлейс/ }));
+        await vi.waitFor(() => expect(params(router).get(key)).toBe("e1"));
+        expect(params(router).get("expand")).toBeNull();
+      }
     });
 
     test("404 конца пути → «Сущность не найдена…»", async () => {

@@ -75,12 +75,13 @@ export function ModeCard({ mode, search, update, compact, offsetTop, needsInput,
   } else if (mode === "path") {
     body = (
       <div className="flex min-h-0 flex-col gap-3">
+        {/* Новый конец — другой путь: раскрытые соседи прежнего снимаются; обмен концов их сохраняет. */}
         <div className="space-y-2">
           <EntityPicker
             label="Откуда"
             value={search.source}
             exclude={search.target ?? undefined}
-            onChange={(source) => update({ source })}
+            onChange={(source) => update({ source, expand: [] })}
           />
           <div className="flex justify-center">
             <button
@@ -97,7 +98,7 @@ export function ModeCard({ mode, search, update, compact, offsetTop, needsInput,
             label="Куда"
             value={search.target}
             exclude={search.source ?? undefined}
-            onChange={(target) => update({ target })}
+            onChange={(target) => update({ target, expand: [] })}
           />
         </div>
         <div className="space-y-1">
