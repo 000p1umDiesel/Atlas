@@ -6,8 +6,8 @@ import { analysisActive, useAnalysis, useStartAnalysis } from "../api/status";
 import { useOverview, useRecentDocuments, useStats, useTypeCatalog } from "../api/queries";
 import type { NodeView, RecentDocument } from "../api/types";
 import { communityLabel, communitySummaries, type CommunitySummary } from "../graph/insights";
-import { buildGraph, DEFAULT_FILTERS } from "../graph/model";
-import { serializeGraphSearch } from "../graph/search";
+import { buildGraph } from "../graph/model";
+import { graphLink } from "../graph/search";
 import { StatTile } from "../home/StatTile";
 import { TypeBars } from "../home/TypeBars";
 import { GlossaryToggle, TypeGlossary } from "../home/TypeGlossary";
@@ -237,15 +237,14 @@ export function AnalysisCard({
         <ul aria-label="Крупнейшие сообщества" className="mt-5 space-y-2 text-sm">
           {largest.map((c) => (
             <li key={c.id}>
-              <Link
-                to="/graph"
-                search={serializeGraphSearch({ ...DEFAULT_FILTERS, community: c.id, view: "2d" })}
+              <RouterAnchor
+                href={graphLink({ mode: "community", community: c.id })}
                 className="flex items-center gap-2.5 rounded-lg underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary"
               >
                 <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: themedCss(colors.get(c.id)) }} aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate">{communityLabel(c)}</span>
                 <span className="shrink-0 text-xs text-muted tabular-nums">{c.size}</span>
-              </Link>
+              </RouterAnchor>
             </li>
           ))}
         </ul>

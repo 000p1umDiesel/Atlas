@@ -60,11 +60,12 @@ export function useEntityList(s: EntitiesSearch) {
   });
 }
 
-/** Карточка сущности; тот же ключ, что у правой панели, — данные общие. */
-export function useEntity(id: string) {
+/** Карточка сущности; тот же ключ, что у правой панели, — данные общие. `null` — без запроса. */
+export function useEntity(id: string | null) {
   return useQuery<EntityCard>({
     queryKey: ["entity", id],
-    queryFn: () => apiGet<EntityCard>(entityPath(id)),
+    queryFn: () => apiGet<EntityCard>(entityPath(id!)),
+    enabled: id !== null,
   });
 }
 

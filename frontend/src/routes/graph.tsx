@@ -13,16 +13,18 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { isUnauthorized } from "../api/client";
-import { useOverview, useTypeCatalog } from "../api/queries";
+import { ApiError, isUnauthorized } from "../api/client";
+import { fixturesMode, useTypeCatalog } from "../api/queries";
 import { focusHighlightField, onFlyToMatch } from "../graph/commands";
 import { ENTITY_CARD_WIDTH, ENTITY_SHEET_SHARE, EntityCard } from "../graph/EntityCard";
 import { Graph2D, type Graph2DApi } from "../graph/Graph2D";
 import { firstMatch, graphHotkey, type GraphAction } from "../graph/hotkeys";
 import { communitySummaries, rankByPagerank } from "../graph/insights";
 import { Legend, type LegendTarget } from "../graph/Legend";
-import { buildGraph, sizeMetric, visibleSubgraph } from "../graph/model";
-import type { GraphView } from "../graph/search";
+import { MODE_LABELS, ModeCard } from "../graph/ModeCard";
+import { sizeMetric, visibleSubgraph } from "../graph/model";
+import type { GraphMode, GraphView } from "../graph/search";
+import { activeMode, useGraphData } from "../graph/useGraphData";
 import { useGraphSearch } from "../graph/useGraphSearch";
 import { formatInt, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
@@ -41,7 +43,9 @@ const VIEW_OPTIONS: { value: GraphView; label: string }[] = [
   { value: "3d", label: "3D" },
 ];
 
-const MODES = ["Обзор", "Окрестность", "Путь", "Сообщество"] as const;
+const MODES: GraphMode[] = ["overview", "neighbors", "path", "community"];
+
+const notFound = (error: unknown) => error instanceof ApiError && error.status === 404;
 
 const KEYS: [string, string][] = [
   ["F", "вписать граф в экран"],
@@ -61,6 +65,9 @@ function CanvasMessage({ children }: { children: ReactNode }) {
   return <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center">{children}</div>;
 }
 
+const CANVAS_BUTTON =
+  "pointer-events-auto rounded-xl bg-primary-deep px-4 py-2 text-sm text-on-primary shadow-card transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+
 const WIDE = "(min-width: 640px)";
 function subscribeWide(cb: () => void) {
   if (typeof matchMedia !== "function") return () => {};
@@ -70,10 +77,15 @@ function subscribeWide(cb: () => void) {
 }
 const getWide = () => typeof matchMedia !== "function" || matchMedia(WIDE).matches;
 
-/** Обзор графа: холст 2D/3D во всю область, плавающие панели, легенда, карточка сущности. */
+/**
+ * Граф: холст 2D/3D во всю область, плавающие панели, легенда, карточка сущности. Режимы —
+ * обзор, окрестность сущности, сообщество (данные режима — `useGraphData`).
+ */
 export function GraphPage() {
-  const { search, update, reset } = useGraphSearch();
-  const overview = useOverview();
+  const { search, update, setMode, reset } = useGraphSearch();
+  const mode = activeMode(search);
+  const live = !fixturesMode();
+  const data = useGraphData(search);
   const catalog = useTypeCatalog();
   const column = useShellColumn();
   const reducedMotion = useReducedMotion() ?? false;
@@ -82,7 +94,7 @@ export function GraphPage() {
   const keysId = useId();
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
+  const graph = data.state === "ready" ? data.graph : null;
   const configured = catalog.order;
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
@@ -293,11 +305,12 @@ export function GraphPage() {
           ? search.types.filter((t) => t !== target.value)
           : [...search.types, target.value];
         update({ types });
-      } else {
+      } else if (mode !== "community") {
+        // В режиме «Сообщество» сообщество выбрано в карточке режима, легенда его не снимает.
         update({ community: search.community === target.value ? null : target.value });
       }
     },
-    [search.types, search.community, update],
+    [search.types, search.community, mode, update],
   );
 
   const downloadPng = async () => {
@@ -329,20 +342,49 @@ export function GraphPage() {
   }, [notice]);
 
   const empty = visible !== null && visible.nodes.size === 0;
+  const truncated = data.state === "ready" && data.truncated;
   const showRotate = search.view === "3d" && !reducedMotion;
   const deselect = useCallback(() => setSelected(null), [setSelected]);
   const showCard = graph !== null && selected !== null && visible !== null && visible.nodes.has(selected);
 
   let canvas: ReactNode;
-  if (overview.isError) {
+  if (data.state === "input") {
+    canvas = (
+      <CanvasMessage>
+        <p className="max-w-xs font-serif text-lg font-semibold">{data.prompt}</p>
+      </CanvasMessage>
+    );
+  } else if (data.state === "error" && notFound(data.error) && mode === "neighbors") {
+    canvas = (
+      <CanvasMessage>
+        <div className="max-w-sm space-y-3">
+          <p className="font-serif text-lg font-semibold">Сущность не найдена: возможно, её удалили вместе с документом.</p>
+          <button type="button" onClick={() => update({ center: null, focus: null, expand: [] })} className={CANVAS_BUTTON}>
+            Выбрать другую сущность
+          </button>
+        </div>
+      </CanvasMessage>
+    );
+  } else if (data.state === "error" && notFound(data.error) && mode === "community") {
+    canvas = (
+      <CanvasMessage>
+        <div className="max-w-sm space-y-3">
+          <p className="font-serif text-lg font-semibold">Сообщество не найдено: анализ графа мог устареть.</p>
+          <button type="button" onClick={() => update({ community: null, focus: null, expand: [] })} className={CANVAS_BUTTON}>
+            К списку сообществ
+          </button>
+        </div>
+      </CanvasMessage>
+    );
+  } else if (data.state === "error") {
     canvas = (
       <CanvasMessage>
         <div className="max-w-sm space-y-2">
           <p className="font-serif text-xl font-semibold">Граф пока недоступен</p>
           <p className="text-sm text-muted">
-            {overview.error instanceof Error ? overview.error.message : "Нет данных"}.
+            {data.error instanceof ApiError ? data.error.detail : data.error instanceof Error ? data.error.message : "Нет данных"}.
             {/* Без сессии совет не нужен: 401 уводит на страницу входа. */}
-            {isUnauthorized(overview.error) ? "" : " Обновите страницу чуть позже."}
+            {isUnauthorized(data.error) ? "" : " Обновите страницу чуть позже."}
           </p>
         </div>
       </CanvasMessage>
@@ -435,38 +477,43 @@ export function GraphPage() {
       >
         <div className="group/modes pointer-events-auto relative">
           <div role="group" aria-label="Режим графа" className={`${GLASS} flex p-1`}>
-            {MODES.map((mode, i) =>
-              i === 0 ? (
+            {MODES.map((m) => {
+              const pressed = m === mode;
+              // На фикстурах есть только обзор: остальные режимы требуют живых данных.
+              const disabled = !live && m !== "overview";
+              return (
                 <button
-                  key={mode}
+                  key={m}
                   type="button"
-                  aria-pressed="true"
-                  className="h-8 rounded-xl bg-primary-deep px-3 text-[13px] font-medium text-on-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  aria-pressed={pressed}
+                  aria-disabled={disabled ? true : undefined}
+                  aria-describedby={disabled ? modeHint : undefined}
+                  onClick={(e) => {
+                    if (disabled) e.preventDefault();
+                    else if (!pressed) setMode(m);
+                  }}
+                  className={`h-8 rounded-xl px-2.5 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:px-3 ${
+                    pressed
+                      ? "bg-primary-deep font-medium text-on-primary"
+                      : disabled
+                        ? "cursor-not-allowed text-muted"
+                        : "text-ink hover:bg-ink/[0.06]"
+                  }`}
                 >
-                  {mode}
+                  {MODE_LABELS[m]}
                 </button>
-              ) : (
-                <button
-                  key={mode}
-                  type="button"
-                  aria-pressed="false"
-                  aria-disabled="true"
-                  aria-describedby={modeHint}
-                  onClick={(e) => e.preventDefault()}
-                  className="h-8 cursor-not-allowed rounded-xl px-2.5 text-[13px] text-muted focus-visible:outline-2 focus-visible:outline-primary sm:px-3"
-                >
-                  {mode}
-                </button>
-              ),
-            )}
+              );
+            })}
           </div>
-          <p
-            id={modeHint}
-            role="tooltip"
-            className="pointer-events-none absolute top-full left-0 z-10 mt-2 w-max max-w-64 rounded-lg bg-ink px-2.5 py-1.5 text-xs text-bg opacity-0 shadow-card transition-opacity group-has-[[aria-disabled=true]:focus-visible]/modes:opacity-100 group-has-[[aria-disabled=true]:hover]/modes:opacity-100"
-          >
-            Окрестность, путь и сообщество появятся после этапа 2
-          </p>
+          {!live && (
+            <p
+              id={modeHint}
+              role="tooltip"
+              className="pointer-events-none absolute top-full left-0 z-10 mt-2 w-max max-w-64 rounded-lg bg-ink px-2.5 py-1.5 text-xs text-bg opacity-0 shadow-card transition-opacity group-has-[[aria-disabled=true]:focus-visible]/modes:opacity-100 group-has-[[aria-disabled=true]:hover]/modes:opacity-100"
+            >
+              Доступно на живых данных
+            </p>
+          )}
         </div>
 
         <div className="pointer-events-auto relative">
@@ -579,10 +626,20 @@ export function GraphPage() {
               {formatInt(visible.nodes.size)} из {formatInt(graph.order)}{" "}
               {plural(graph.order, ["сущности", "сущностей", "сущностей"])}, {formatInt(visible.edges.size)}{" "}
               {plural(visible.edges.size, ["связь", "связи", "связей"])}
+              {truncated && <span className="block text-right">Показаны не все связи</span>}
             </p>
           )}
         </div>
       )}
+
+      <ModeCard
+        mode={mode}
+        search={search}
+        update={update}
+        compact={!wide}
+        offsetTop={cardTop}
+        needsInput={data.state === "input"}
+      />
 
       <AnimatePresence>
         {showCard && graph && selected && (
@@ -596,7 +653,13 @@ export function GraphPage() {
             rank={rank}
             compact={!wide}
             onSelect={setSelected}
-            onShowCommunity={(community) => update({ community })}
+            onShowCommunity={(community) =>
+              live ? setMode("community", { community, focus: selected }) : update({ community })
+            }
+            shownCommunity={mode === "community" ? search.community : null}
+            modesEnabled={live}
+            onShowNeighbors={(id) => setMode("neighbors", { center: id, focus: id })}
+            onPathFrom={(id) => setMode("path", { source: id, target: search.target === id ? null : search.target })}
             onClose={deselect}
           />
         )}

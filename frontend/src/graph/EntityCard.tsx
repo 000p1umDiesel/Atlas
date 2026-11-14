@@ -1,9 +1,10 @@
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, Info, Users, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, FileText, Info, Network, Route, Users, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useId, useMemo, useState } from "react";
 import { communityColors, themedCss } from "../lib/communityPalette";
 import { countOf, formatInt, formatScore } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
+import { RouterAnchor } from "../ui/RouterAnchor";
 import { TypeHint } from "../ui/TypeHint";
 import { GRAPH_CARD_ATTR } from "./hotkeys";
 import { communityLabel, topRelations, type CommunitySummary, type RelationRow } from "./insights";
@@ -31,8 +32,18 @@ type Props = {
   offsetTop?: number;
   onSelect(entityId: string): void;
   onShowCommunity(community: string): void;
+  /** Режимы «Окрестность» и «Путь» доступны (на фикстурах — нет). */
+  modesEnabled: boolean;
+  onShowNeighbors(entityId: string): void;
+  onPathFrom(entityId: string): void;
+  /** Сообщество уже показано на графе: кнопка «Показать сообщество» не нужна. */
+  shownCommunity?: string | null;
   onClose(): void;
 };
+
+const ACTION =
+  "inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[13px] font-medium text-primary-ink transition-colors hover:bg-primary/15 focus-visible:outline-2 focus-visible:outline-primary aria-disabled:cursor-not-allowed aria-disabled:text-muted aria-disabled:hover:bg-transparent";
+const LIVE_ONLY = "Доступно на живых данных";
 
 function Metric({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
@@ -80,6 +91,10 @@ export function EntityCard({
   offsetTop = 60,
   onSelect,
   onShowCommunity,
+  modesEnabled,
+  onShowNeighbors,
+  onPathFrom,
+  shownCommunity = null,
   onClose,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -206,12 +221,50 @@ export function EntityCard({
                 </motion.ul>
               )}
             </AnimatePresence>
+            {rest.length > 0 && (
+              <button
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={moreId}
+                onClick={() => setExpanded((v) => !v)}
+                className="mt-0.5 inline-flex items-center gap-1 rounded-xl px-2 py-1.5 text-[13px] font-medium text-primary-ink transition-colors hover:bg-primary/15 focus-visible:outline-2 focus-visible:outline-primary"
+              >
+                {expanded ? "Свернуть" : `Подробнее: ещё ${countOf(rest.length, ["связь", "связи", "связей"])}`}
+                <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+              </button>
+            )}
           </>
         )}
       </div>
 
-      <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line px-4 py-3">
-        {community && (
+      <footer className="shrink-0 space-y-2 border-t border-line px-4 py-3">
+        <div className="-mx-2 flex flex-wrap items-center gap-0.5">
+          <button
+            type="button"
+            aria-disabled={modesEnabled ? undefined : true}
+            title={modesEnabled ? "Соседи этой сущности" : LIVE_ONLY}
+            onClick={() => modesEnabled && onShowNeighbors(entityId)}
+            className={ACTION}
+          >
+            <Network size={14} />
+            Окрестность
+          </button>
+          <button
+            type="button"
+            aria-disabled={modesEnabled ? undefined : true}
+            title={modesEnabled ? "Найти путь от этой сущности" : LIVE_ONLY}
+            onClick={() => modesEnabled && onPathFrom(entityId)}
+            className={ACTION}
+          >
+            <Route size={14} />
+            Путь отсюда
+          </button>
+          <RouterAnchor href={`/entities/${encodeURIComponent(entityId)}`} className={ACTION}>
+            <FileText size={14} />
+            Страница
+          </RouterAnchor>
+        </div>
+        {community && community.id !== shownCommunity && (
           <button
             type="button"
             onClick={() => onShowCommunity(community.id)}
@@ -220,18 +273,6 @@ export function EntityCard({
           >
             <Users size={14} />
             Показать сообщество
-          </button>
-        )}
-        {rest.length > 0 && (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={moreId}
-            onClick={() => setExpanded((v) => !v)}
-            className="inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[13px] font-medium text-primary-ink transition-colors hover:bg-primary/15 focus-visible:outline-2 focus-visible:outline-primary"
-          >
-            {expanded ? "Свернуть" : `Подробнее: ещё ${countOf(rest.length, ["связь", "связи", "связей"])}`}
-            <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
           </button>
         )}
       </footer>

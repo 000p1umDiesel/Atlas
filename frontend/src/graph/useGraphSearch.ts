@@ -1,15 +1,26 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_FILTERS } from "./model";
-import { parseGraphSearch, serializeGraphSearch, type GraphSearch } from "./search";
+import { parseGraphSearch, serializeGraphSearch, type GraphMode, type GraphSearch } from "./search";
 
 type Update = (patch: Partial<GraphSearch>, opts?: { replace?: boolean }) => void;
+type SetMode = (mode: GraphMode, patch?: Partial<GraphSearch>) => void;
+
+/**
+ * Переход в режим: раскрытые узлы и выбранный узел сбрасываются. В режиме «Сообщество»
+ * `community` — выбор сообщества, а не фильтр: при выходе из режима он снимается, иначе
+ * прятал бы чужие узлы окрестности или пути. `patch` применяется поверх (центр, фокус…).
+ */
+export function modePatch(prev: GraphSearch, mode: GraphMode, patch: Partial<GraphSearch> = {}): GraphSearch {
+  const community = prev.mode === "community" && mode !== "community" ? null : prev.community;
+  return { ...prev, mode, expand: [], focus: null, community, ...patch };
+}
 
 /**
  * Фильтры графа живут в URL. Запись — только через `serializeGraphSearch`
  * (дефолты опускаются, списки через запятую), от свежего состояния URL.
  */
-export function useGraphSearch(): { search: GraphSearch; update: Update; reset(): void } {
+export function useGraphSearch(): { search: GraphSearch; update: Update; setMode: SetMode; reset(): void } {
   const raw = useSearch({ strict: false }) as Record<string, unknown>;
   const search = useMemo(() => parseGraphSearch(raw), [raw]);
   const navigate = useNavigate();
@@ -25,18 +36,29 @@ export function useGraphSearch(): { search: GraphSearch; update: Update; reset()
     [navigate],
   );
 
+  const setMode = useCallback<SetMode>(
+    (mode, patch) => {
+      void navigate({
+        to: "/graph",
+        search: (prev) => serializeGraphSearch(modePatch(parseGraphSearch(prev), mode, patch)),
+      });
+    },
+    [navigate],
+  );
+
   const reset = useCallback(() => {
     void navigate({
       to: "/graph",
       search: (prev) => {
-        // Сброс фильтров не трогает вид и выбранный узел (после сброса он снова виден).
-        const { view, focus } = parseGraphSearch(prev);
-        return serializeGraphSearch({ ...DEFAULT_FILTERS, view, focus });
+        // Сброс фильтров не трогает режим, вид и выбранный узел (после сброса он снова виден);
+        // в режиме «Сообщество» выбранное сообщество — не фильтр, оно остаётся.
+        const s = parseGraphSearch(prev);
+        return serializeGraphSearch({ ...s, ...DEFAULT_FILTERS, community: s.mode === "community" ? s.community : null });
       },
     });
   }, [navigate]);
 
-  return { search, update, reset };
+  return { search, update, setMode, reset };
 }
 
 /**

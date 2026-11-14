@@ -2,7 +2,9 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { App, createQueryClient } from "../App";
 import { generateFixtures } from "../fixtures/generate";
+import { graphLink } from "../graph/search";
 import { createAppRouter } from "../router";
+import { fail, fakeApi, type FakeApi } from "../test/fakeApi";
 import { fake2d, fake3d } from "../test/fakeGraph";
 
 vi.mock("../graph/Graph2D", async () => ({ Graph2D: (await import("../test/fakeGraph")).FakeGraph2D }));
@@ -133,15 +135,17 @@ test("PNG скачивается через object URL", async () => {
   expect(anchor.download).toMatch(/\.png$/);
 });
 
-test("режимы кроме «Обзор» недоступны до этапа 2", async () => {
-  await renderAt("/graph");
+test("в режиме фикстур режимы кроме «Обзор» недоступны: «Доступно на живых данных»", async () => {
+  const router = await renderAt("/graph");
   const group = screen.getByRole("group", { name: "Режим графа" });
   expect(within(group).getByRole("button", { name: "Обзор" }).getAttribute("aria-pressed")).toBe("true");
   for (const name of ["Окрестность", "Путь", "Сообщество"]) {
     const tab = within(group).getByRole("button", { name });
     expect(tab.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByText(/после этапа 2/).id).toBe(tab.getAttribute("aria-describedby"));
+    expect(screen.getByText("Доступно на живых данных").id).toBe(tab.getAttribute("aria-describedby"));
   }
+  await click(within(group).getByRole("button", { name: "Окрестность" }));
+  expect(searchStr(router)).toBe("");
 });
 
 test("клик по узлу открывает компактную карточку; «Подробнее» раскрывает все связи; Esc закрывает", async () => {
@@ -425,4 +429,285 @@ test("карточка узла: размер сообщества с согла
   await renderAt(`/graph?focus=${node.entity_id}`);
   const card = await screen.findByRole("dialog", { name: node.name });
   expect(within(card).getByText(`сообщество из ${size} ${word}`)).toBeTruthy();
+});
+
+describe("живые данные: режимы «Окрестность» и «Сообщество»", () => {
+  const node = (id: string, name: string, community: string | null = "7") => ({
+    entity_id: id,
+    name,
+    type: "Person",
+    mention_count: 3,
+    pagerank: 0.1,
+    community,
+    degree: 1,
+  });
+  const relation = (src: string, dst: string) => ({
+    src_id: src,
+    src_name: src,
+    predicate: "knows",
+    dst_id: dst,
+    dst_name: dst,
+    description: "",
+    weight: 1,
+    evidence: [],
+  });
+  const TYPES = [{ type: "Person", label: "Человек", description: "", count: 3 }];
+  const OVERVIEW = {
+    nodes: [node("e1", "Ада Лавлейс"), node("e2", "Бэббидж")],
+    relations: [relation("e2", "e1")],
+    ranked_by: "pagerank",
+    truncated: false,
+    total_nodes: 2,
+  };
+  const NEIGHBORS = { nodes: [node("e1", "Ада Лавлейс"), node("e3", "Менабреа")], relations: [relation("e1", "e3")] };
+  const COMMUNITIES = {
+    ready: true,
+    total: 2,
+    items: [
+      { community: "7", size: 12, top: [node("e1", "Ада Лавлейс"), node("e2", "Бэббидж")], types: { Person: 10, Concept: 2 } },
+      { community: "9", size: 4, top: [node("e5", "Тьюринг", "9")], types: { Person: 4 } },
+    ],
+  };
+  const COMMUNITY_7 = {
+    community: "7",
+    size: 12,
+    nodes: [node("e1", "Ада Лавлейс"), node("e2", "Бэббидж")],
+    relations: [{ ...relation("e2", "e1"), src_type: "Person", dst_type: "Person" }],
+    truncated: true,
+  };
+
+  type Routes = Parameters<typeof fakeApi>[0];
+  const routes = (extra: Routes = {}): Routes => ({
+    "GET /api/auth/me": { id: "u1", username: "owner" },
+    "GET /api/entities/types": TYPES,
+    "GET /api/graph/overview?limit=500": OVERVIEW,
+    "GET /api/graph/communities?limit=50": COMMUNITIES,
+    "GET /api/graph/communities/7?limit=300": COMMUNITY_7,
+    "GET /api/graph/e1/neighbors?depth=1&limit=200": NEIGHBORS,
+    "GET /api/graph/e1/neighbors?depth=2&limit=200": NEIGHBORS,
+    "GET /api/entities/e1": { ...node("e1", "Ада Лавлейс"), aliases: [], description: "", descriptions: [], documents_count: 1, has_page: false, slug: null },
+    ...extra,
+  });
+
+  async function renderLive(path: string, api: FakeApi) {
+    vi.stubGlobal("fetch", api);
+    const router = createAppRouter({ history: createMemoryHistory({ initialEntries: [path] }) });
+    await router.load();
+    render(<App router={router} client={createQueryClient()} />);
+    return router;
+  }
+  const params = (router: ReturnType<typeof createAppRouter>) => new URLSearchParams(searchStr(router));
+  const modes = () => screen.getByRole("group", { name: "Режим графа" });
+  const graphNodes = () => fake2d.last?.graph.nodes().sort();
+
+  beforeEach(() => vi.stubEnv("VITE_FIXTURES", ""));
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("переключатель режимов рабочий: aria-pressed, без подсказки про этап 2", async () => {
+    const router = await renderLive("/graph", fakeApi(routes()));
+    await screen.findByTestId("graph2d");
+    const group = modes();
+    expect(within(group).getByRole("button", { name: "Обзор" }).getAttribute("aria-pressed")).toBe("true");
+    const neighbors = within(group).getByRole("button", { name: "Окрестность" });
+    expect(neighbors.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(/после этапа 2/)).toBeNull();
+    await click(neighbors);
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("neighbors"));
+    expect(neighbors.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  test("?mode=neighbors без центра → просьба выбрать сущность, запроса окрестности нет", async () => {
+    const api = fakeApi(routes());
+    await renderLive("/graph?mode=neighbors", api);
+    expect(await screen.findByText("Выберите сущность, чтобы увидеть её окрестность.")).toBeTruthy();
+    expect(within(modes()).getByRole("button", { name: "Окрестность" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Сущность" })).toBeTruthy();
+    expect(api.requests().some((r) => r.includes("/neighbors"))).toBe(false);
+    expect(api.requests()).not.toContain("GET /api/graph/overview?limit=500");
+  });
+
+  test("?mode=neighbors&center=e1&depth=2 → запрос depth=2&limit=200, узлы ответа на графе", async () => {
+    const api = fakeApi(routes());
+    await renderLive("/graph?mode=neighbors&center=e1&depth=2", api);
+    await screen.findByTestId("graph2d");
+    expect(api.requests()).toContain("GET /api/graph/e1/neighbors?depth=2&limit=200");
+    expect(graphNodes()).toEqual(["e1", "e3"]);
+    const depth = screen.getByRole("radiogroup", { name: "Глубина" });
+    expect(within(depth).getByRole("radio", { name: "2" }).getAttribute("aria-checked")).toBe("true");
+    // Выбранная сущность — имя в поле.
+    await vi.waitFor(() =>
+      expect((screen.getByRole("combobox", { name: "Сущность" }) as HTMLInputElement).value).toBe("Ада Лавлейс"),
+    );
+    expect(screen.queryByText("Показаны не все связи")).toBeNull();
+  });
+
+  test("смена глубины пишет depth и шлёт новый запрос", async () => {
+    const api = fakeApi(routes());
+    const router = await renderLive("/graph?mode=neighbors&center=e1", api);
+    await screen.findByTestId("graph2d");
+    await click(within(screen.getByRole("radiogroup", { name: "Глубина" })).getByRole("radio", { name: "2" }));
+    await vi.waitFor(() => expect(params(router).get("depth")).toBe("2"));
+    await vi.waitFor(() => expect(api.requests()).toContain("GET /api/graph/e1/neighbors?depth=2&limit=200"));
+  });
+
+  test("404 центра → «Сущность не найдена…»", async () => {
+    const api = fakeApi(routes({ "GET /api/graph/gone/neighbors?depth=1&limit=200": () => fail(404, "Сущность не найдена") }));
+    await renderLive("/graph?mode=neighbors&center=gone", api);
+    expect(await screen.findByText("Сущность не найдена: возможно, её удалили вместе с документом.")).toBeTruthy();
+  });
+
+  test("прочая ошибка → detail сервера", async () => {
+    const api = fakeApi(routes({ "GET /api/graph/e1/neighbors?depth=1&limit=200": () => fail(503, "Граф недоступен") }));
+    await renderLive("/graph?mode=neighbors&center=e1", api);
+    // 503 повторяется один раз (через секунду), затем — текст сервера.
+    expect(await screen.findByText(/Граф недоступен\./, {}, { timeout: 4000 })).toBeTruthy();
+    expect(screen.getByText("Граф пока недоступен")).toBeTruthy();
+  });
+
+  test("ссылки graphLink приводят в нужный режим", async () => {
+    const api = fakeApi(routes());
+    const router = await renderLive("/graph", api);
+    await screen.findByTestId("graph2d");
+    await act(async () => {
+      await router.navigate({ href: graphLink({ mode: "neighbors", center: "e1" }) });
+    });
+    expect(params(router).get("mode")).toBe("neighbors");
+    expect(params(router).get("center")).toBe("e1");
+    expect(params(router).get("focus")).toBe("e1");
+    await vi.waitFor(() => expect(api.requests()).toContain("GET /api/graph/e1/neighbors?depth=1&limit=200"));
+    await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e3"]));
+    await act(async () => {
+      await router.navigate({ href: graphLink({ mode: "community", community: "7" }) });
+    });
+    expect(params(router).get("mode")).toBe("community");
+    expect(params(router).get("community")).toBe("7");
+    await vi.waitFor(() => expect(api.requests()).toContain("GET /api/graph/communities/7?limit=300"));
+    await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e2"]));
+  });
+
+  test("?mode=community без анализа → объяснение и «Запустить анализ» → POST /api/graph/analyze", async () => {
+    const api = fakeApi(
+      routes({
+        "GET /api/graph/communities?limit=50": { ready: false, total: 0, items: [] },
+        "POST /api/graph/analyze": () => Response.json({ id: 1, status: "pending" }, { status: 202 }),
+      }),
+    );
+    await renderLive("/graph?mode=community", api);
+    expect(await screen.findByText("Сообщества появятся после анализа графа.")).toBeTruthy();
+    expect(screen.getByText("Выберите сообщество.")).toBeTruthy();
+    await click(screen.getByRole("button", { name: "Запустить анализ" }));
+    await vi.waitFor(() => expect(api.requests()).toContain("POST /api/graph/analyze"));
+  });
+
+  test("во время анализа кнопка — «Анализ идёт…» и выключена", async () => {
+    const api = fakeApi(
+      routes({
+        "GET /api/graph/communities?limit=50": { ready: false, total: 0, items: [] },
+        "GET /api/graph/analysis": { ready: false, job: { status: "running" } },
+      }),
+    );
+    await renderLive("/graph?mode=community", api);
+    const busy = (await screen.findByRole("button", { name: "Анализ идёт…" })) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+  });
+
+  test("клик по сообществу → community=<id>, запрос подграфа, «Показаны не все связи»", async () => {
+    const api = fakeApi(routes());
+    const router = await renderLive("/graph?mode=community", api);
+    const list = await screen.findByRole("list", { name: "Сообщества" });
+    const row = within(list).getByRole("button", { name: /Ада Лавлейс, Бэббидж/ });
+    expect(row.textContent).toContain("12 участников");
+    expect(row.getAttribute("aria-current")).toBeNull();
+    await click(row);
+    await vi.waitFor(() => expect(params(router).get("community")).toBe("7"));
+    expect(params(router).get("mode")).toBe("community");
+    await vi.waitFor(() => expect(api.requests()).toContain("GET /api/graph/communities/7?limit=300"));
+    await screen.findByTestId("graph2d");
+    expect(graphNodes()).toEqual(["e1", "e2"]);
+    expect(within(list).getByRole("button", { name: /Ада Лавлейс, Бэббидж/ }).getAttribute("aria-current")).toBe("true");
+    expect(screen.getByText("Показаны не все связи")).toBeTruthy();
+    // Выбор сообщества — в карточке режима, блок в фильтрах скрыт.
+    expect(within(filters()).queryByRole("combobox", { name: "Сообщество" })).toBeNull();
+  });
+
+  test("404 сообщества → объяснение и «К списку сообществ» снимает community", async () => {
+    const api = fakeApi(routes({ "GET /api/graph/communities/old?limit=300": () => fail(404, "Сообщество не найдено") }));
+    const router = await renderLive("/graph?mode=community&community=old", api);
+    expect(await screen.findByText("Сообщество не найдено: анализ графа мог устареть.")).toBeTruthy();
+    await click(screen.getByRole("button", { name: "К списку сообществ" }));
+    await vi.waitFor(() => expect(params(router).get("community")).toBeNull());
+    expect(params(router).get("mode")).toBe("community");
+    expect(await screen.findByText("Выберите сообщество.")).toBeTruthy();
+  });
+
+  test("смена режима очищает focus и expand", async () => {
+    const router = await renderLive("/graph?mode=neighbors&center=e1&focus=e1&expand=e3", fakeApi(routes()));
+    await screen.findByTestId("graph2d");
+    expect(params(router).get("focus")).toBe("e1");
+    await click(within(modes()).getByRole("button", { name: "Обзор" }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBeNull());
+    expect(params(router).get("focus")).toBeNull();
+    expect(params(router).get("expand")).toBeNull();
+    // Центр окрестности запоминается до возврата в режим.
+    expect(params(router).get("center")).toBe("e1");
+  });
+
+  test("выход из режима «Сообщество» снимает выбранное сообщество; сброс фильтров в режиме его не трогает", async () => {
+    const router = await renderLive("/graph?mode=community&community=7&types=Person", fakeApi(routes()));
+    await screen.findByTestId("graph2d");
+    await click(within(filters()).getByRole("button", { name: "Сбросить фильтры" }));
+    await vi.waitFor(() => expect(params(router).get("types")).toBeNull());
+    expect(params(router).get("community")).toBe("7");
+    await click(within(modes()).getByRole("button", { name: "Обзор" }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBeNull());
+    expect(params(router).get("community")).toBeNull();
+  });
+
+  test("карточка узла: «Окрестность» → mode=neighbors&center=<id>&focus=<id>", async () => {
+    const router = await renderLive("/graph", fakeApi(routes()));
+    await screen.findByTestId("graph2d");
+    await click(screen.getByRole("button", { name: "выбрать узел" }));
+    const card = await screen.findByRole("dialog", { name: "Ада Лавлейс" });
+    expect(within(card).getByRole("link", { name: /Страница/ }).getAttribute("href")).toBe("/entities/e1");
+    await click(within(card).getByRole("button", { name: /Окрестность/ }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("neighbors"));
+    expect(params(router).get("center")).toBe("e1");
+    expect(params(router).get("focus")).toBe("e1");
+  });
+
+  test("карточка узла: «Путь отсюда» → mode=path&source=<id>; «Показать сообщество» → mode=community", async () => {
+    const router = await renderLive("/graph?focus=e1", fakeApi(routes()));
+    const card = await screen.findByRole("dialog", { name: "Ада Лавлейс" });
+    await click(within(card).getByRole("button", { name: /Путь отсюда/ }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("path"));
+    expect(params(router).get("source")).toBe("e1");
+
+    await act(async () => {
+      await router.navigate({ href: "/graph?focus=e1" });
+    });
+    const again = await screen.findByRole("dialog", { name: "Ада Лавлейс" });
+    await click(within(again).getByRole("button", { name: /Показать сообщество/ }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("community"));
+    expect(params(router).get("community")).toBe("7");
+  });
+
+  test("выбор сущности в карточке режима задаёт центр", async () => {
+    const api = fakeApi(
+      routes({
+        "GET /api/entities?q=%D0%B0%D0%B4&limit=8": {
+          total: 1,
+          items: [{ ...node("e1", "Ада Лавлейс"), aliases: [], has_page: false, slug: null }],
+        },
+      }),
+    );
+    const router = await renderLive("/graph?mode=neighbors", api);
+    const picker = await screen.findByRole("combobox", { name: "Сущность" });
+    act(() => fireEvent.change(picker, { target: { value: "ад" } }));
+    const option = await screen.findByRole("option", { name: /Ада Лавлейс/ });
+    await click(option);
+    await vi.waitFor(() => expect(params(router).get("center")).toBe("e1"));
+    expect(params(router).get("focus")).toBe("e1");
+    await screen.findByTestId("graph2d");
+    expect(graphNodes()).toEqual(["e1", "e3"]);
+  });
 });

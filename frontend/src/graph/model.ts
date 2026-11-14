@@ -13,6 +13,8 @@ export interface GraphFilters {
   colorBy: ColorBy;
   sizeBy: SizeBy;
   highlight: string;
+  /** Показывать только связи с этими предикатами (пусто — все). */
+  predicates: string[];
 }
 
 export const DEFAULT_FILTERS: GraphFilters = {
@@ -24,6 +26,7 @@ export const DEFAULT_FILTERS: GraphFilters = {
   colorBy: "type",
   sizeBy: "pagerank",
   highlight: "",
+  predicates: [],
 };
 
 type EdgeAttrs = {

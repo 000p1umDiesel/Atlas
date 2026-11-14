@@ -294,6 +294,20 @@ export interface CommunitiesPayload {
 /** Связь со страницы сущности: типы обоих концов для цвета точки. */
 export type EntityRelation = RelationView & { src_type: string; dst_type: string };
 
+/** Ответ `GET /api/graph/communities/<c>`: топ участников по PageRank и связи между ними. */
+export interface CommunityGraph extends GraphPart {
+  community: string;
+  size: number;
+  relations: EntityRelation[];
+  /** В ответе не все участники (`size` больше `limit`). */
+  truncated: boolean;
+}
+
+/** Один путь между двумя сущностями (`GET /api/graph/path`). */
+export interface PathView extends GraphPart {
+  relations: EntityRelation[];
+}
+
 /** Ответ `GET /api/entities/<id>/relations`: фасет `predicates` не учитывает фильтр по предикату. */
 export interface EntityRelations {
   total: number;

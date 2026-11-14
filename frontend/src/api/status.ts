@@ -34,8 +34,8 @@ export function useAnalysis() {
     staleTime: 0,
     refetchInterval: (q) => (analysisActive(q.state.data) ? STATUS_POLL_MS : false),
   });
-  // Задача закончилась (done/failed): сводка и граф главной (PageRank, сообщества) и статус
-  // читают результат из своих запросов.
+  // Задача закончилась (done/failed): сводка и граф главной (PageRank, сообщества), список
+  // сообществ и статус читают результат из своих запросов.
   const wasActive = useRef(false);
   const active = analysisActive(query.data);
   useEffect(() => {
@@ -43,19 +43,23 @@ export function useAnalysis() {
       void client.invalidateQueries({ queryKey: statusKey });
       void client.invalidateQueries({ queryKey: ["stats"] });
       void client.invalidateQueries({ queryKey: ["overview"] });
+      void client.invalidateQueries({ queryKey: ["communities"] });
+      void client.invalidateQueries({ queryKey: ["community"] });
     }
     wasActive.current = active;
   }, [active, client]);
   return query;
 }
 
-/** Перечитать всё, что зависит от анализа: снимок, статус очереди, сводку и граф главной. */
+/** Перечитать всё, что зависит от анализа: снимок, статус очереди, сводку, граф и сообщества. */
 export function refreshAnalysis(client: QueryClient): Promise<void> {
   return Promise.all([
     client.invalidateQueries({ queryKey: analysisKey }),
     client.invalidateQueries({ queryKey: statusKey }),
     client.invalidateQueries({ queryKey: ["stats"] }),
     client.invalidateQueries({ queryKey: ["overview"] }),
+    client.invalidateQueries({ queryKey: ["communities"] }),
+    client.invalidateQueries({ queryKey: ["community"] }),
   ]).then(() => undefined);
 }
 

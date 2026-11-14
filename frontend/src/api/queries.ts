@@ -34,8 +34,10 @@ export function useStats() {
   return useQuery<Stats>({ queryKey: ["stats"], queryFn: fetchStats });
 }
 
-export function useOverview() {
+/** Обзор графа; `enabled: false` — без запроса (данные из кэша остаются доступны). */
+export function useOverview(enabled = true) {
   return useQuery<{ graph: GraphPayload }>({
+    enabled,
     queryKey: ["overview", OVERVIEW_LIMIT],
     queryFn: async () => ({
       graph: fixturesMode()

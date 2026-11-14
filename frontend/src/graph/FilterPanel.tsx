@@ -1,12 +1,13 @@
 import { PanelLeftClose, RotateCcw, Search, X } from "lucide-react";
 import { useId, useMemo, type CSSProperties, type ReactNode } from "react";
-import { useOverview, useTypeCatalog } from "../api/queries";
+import { useTypeCatalog } from "../api/queries";
 import { formatInt, formatScore, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
 import { HIGHLIGHT_FIELD_ATTR, requestFlyToMatch } from "./commands";
 import { communityLabel, communitySummaries, typeCounts } from "./insights";
-import { buildGraph, DEFAULT_FILTERS, visibleSubgraph, type ColorBy, type SizeBy } from "./model";
+import { DEFAULT_FILTERS, visibleSubgraph, type ColorBy, type SizeBy } from "./model";
 import { fromSlider, sliderScale, toSlider } from "./sliderScale";
+import { activeMode, useGraphData } from "./useGraphData";
 import { useDebouncedField, useGraphSearch } from "./useGraphSearch";
 import { Segmented } from "../ui/Segmented";
 import { Toggle } from "../ui/Toggle";
@@ -41,10 +42,12 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
   );
 }
 
-/** Фильтры графа (контекстная колонка). Каждое изменение пишется в URL. */
+/** Фильтры графа (контекстная колонка) для графа любого режима. Каждое изменение пишется в URL. */
 export function FilterPanel() {
   const { search, update, reset } = useGraphSearch();
-  const overview = useOverview();
+  const data = useGraphData(search);
+  // В режиме «Сообщество» сообщество выбирается в карточке режима, а не фильтром.
+  const communityMode = activeMode(search) === "community";
   const catalog = useTypeCatalog();
   const column = useShellColumn();
   const ids = {
@@ -55,7 +58,7 @@ export function FilterPanel() {
     community: useId(),
   };
 
-  const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
+  const graph = data.state === "ready" ? data.graph : null;
   const counts = useMemo(() => (graph ? typeCounts(graph, search) : new Map<string, number>()), [graph, search]);
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
@@ -71,7 +74,8 @@ export function FilterPanel() {
 
   const isDefault =
     search.types.length === 0 &&
-    search.community === null &&
+    (communityMode || search.community === null) &&
+    search.predicates.length === 0 &&
     search.minWeight === DEFAULT_FILTERS.minWeight &&
     search.minMentions === DEFAULT_FILTERS.minMentions &&
     !search.hideIsolated &&
@@ -196,24 +200,26 @@ export function FilterPanel() {
         </div>
       </Section>
 
-      <Section title="Сообщество">
-        <label htmlFor={ids.community} className="sr-only">
-          Сообщество
-        </label>
-        <select
-          id={ids.community}
-          value={search.community ?? ""}
-          onChange={(e) => update({ community: e.target.value === "" ? null : e.target.value })}
-          className="w-full rounded-xl border border-line bg-card px-3 py-2 text-sm shadow-card outline-none focus:border-primary"
-        >
-          <option value="">Все сообщества</option>
-          {communities.map((c) => (
-            <option key={c.id} value={c.id}>
-              {communityLabel(c)}
-            </option>
-          ))}
-        </select>
-      </Section>
+      {!communityMode && (
+        <Section title="Сообщество">
+          <label htmlFor={ids.community} className="sr-only">
+            Сообщество
+          </label>
+          <select
+            id={ids.community}
+            value={search.community ?? ""}
+            onChange={(e) => update({ community: e.target.value === "" ? null : e.target.value })}
+            className="w-full rounded-xl border border-line bg-card px-3 py-2 text-sm shadow-card outline-none focus:border-primary"
+          >
+            <option value="">Все сообщества</option>
+            {communities.map((c) => (
+              <option key={c.id} value={c.id}>
+                {communityLabel(c)}
+              </option>
+            ))}
+          </select>
+        </Section>
+      )}
 
       <div className="space-y-4">
         <div className="space-y-1.5">
