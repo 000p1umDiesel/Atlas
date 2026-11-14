@@ -103,6 +103,35 @@ async def test_stats_counts_registry_rows(kbv, settings):
     assert all("/" not in r["name"] and "path" not in r for r in recent)
 
 
+async def test_document_card_entities_from_mentions_and_registry(kbv, settings):
+    """Сущности карточки — объединение MENTIONS чанков и registry `doc_entities`."""
+    failed = "c" * 16
+    registry = Registry(database_target(settings))
+    try:
+        # документ A: упоминания в графе есть, журнал `doc_entities` пуст (старая база)
+        registry.upsert_file("/data/alpha.md", VIEW_DOC_A, 1, 1.0, "done")
+        # документ после сбоя стадии graph: сущность записана, упоминаний ещё нет
+        registry.upsert_file("/data/broken.md", failed, 1, 1.0, "failed")
+        registry.add_doc_entity(failed, "loom")
+    finally:
+        registry.close()
+
+    card = await kbv.document(VIEW_DOC_A)
+    assert [e["entity_id"] for e in card["entities"]] == ["ada", "engine", "babbage", "notes"]
+    ada = next(e for e in card["entities"] if e["entity_id"] == "ada")
+    assert ada == {
+        "entity_id": "ada",
+        "name": "Ada Lovelace",
+        "type": "Person",
+        "has_page": True,
+        "slug": "ada-lovelace",
+    }
+
+    broken = await kbv.document(failed)
+    assert broken["status"] == "failed" and broken["chunks"] == 0
+    assert [e["entity_id"] for e in broken["entities"]] == ["loom"]
+
+
 async def test_stats_and_types_on_empty_graph(kb_empty):
     s = await kb_empty.stats()
     assert s["entities"] == 0 and s["documents"] == 0 and s["recent"] == []

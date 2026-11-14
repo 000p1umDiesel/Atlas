@@ -516,7 +516,8 @@ class KnowledgeBase:
         """Карточка документа: имя, статус, стадии с ошибками, число чанков и сущности.
 
         Загрузка, которую worker ещё не взял, — `status="queued"` без стадий и сущностей.
-        У сущности `has_page` — есть ли актуальная страница wiki, `slug` — её адрес.
+        Сущности — объединение упомянутых чанками документа (MENTIONS) и записанных в registry
+        `doc_entities` (так видны и сущности после сбоя стадии graph). У сущности `has_page` — есть ли актуальная страница wiki, `slug` — её адрес.
         404 — неверный id или документ неизвестен; 503 — ядро недоступно."""
         if not _DOC_ID.fullmatch(doc_id):
             raise ServiceError(404, "Документ не найден")
@@ -542,10 +543,16 @@ class KnowledgeBase:
                 }
             path = upload["path"] if upload is not None and upload["path"] in rows else min(rows)
             pages = {p.page_id: p.slug for p in app.graph.wiki_pages()}
-            entities = sorted(
-                app.graph.get_entities(app.registry.doc_entities(doc_id)),
-                key=lambda e: e.name.lower(),
-            )
+            # Сущности документа — упомянутые его чанками (MENTIONS) и записанные стадией graph
+            # в registry `doc_entities`: у документов до этого журнала он пуст, а после сбоя
+            # стадии graph упоминаний ещё нет.
+            mentioned = {
+                entity_id
+                for ids in app.graph.chunk_entity_ids(doc_id).values()
+                for entity_id in ids
+            }
+            ids = sorted(mentioned.union(app.registry.doc_entities(doc_id)))
+            entities = sorted(app.graph.get_entities(ids), key=lambda e: e.name.lower())
             return {
                 **base,
                 "name": self._name(doc_id, path),
