@@ -1,5 +1,5 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { useTypeCatalog } from "../api/queries";
 import type { WikiListItem } from "../api/types";
@@ -36,14 +36,19 @@ export function WikiPage() {
   const [count, setCount] = useState(WIKI_PAGE);
   const list = useWikiList(urlQuery, count);
 
+  // Значения `q`, на которые поле само переводит адрес и которые ещё не применились.
+  const ownQueries = useRef(new Set<string>());
+  const textRef = useRef(text);
+  textRef.current = text;
+
   // Адрес изменился снаружи (ссылка «Wiki», «назад», вставленный `?q=`): поле следует за ним.
-  // Собственный набор не трогаем: после задержки адрес сам совпадёт с обрезанным текстом.
+  // Свои переходы пропускаем: за это время в поле могли появиться новые символы.
   useEffect(() => {
-    setText((current) => {
-      if (current.trim() === urlQuery) return current;
-      setCount(WIKI_PAGE);
-      return urlQuery;
-    });
+    if (ownQueries.current.delete(urlQuery)) return;
+    ownQueries.current.clear();
+    if (textRef.current.trim() === urlQuery) return;
+    setText(urlQuery);
+    setCount(WIKI_PAGE);
   }, [urlQuery]);
 
   // Задержка 250 мс: в адрес (и в запрос) попадает обрезанное значение; `panel` сохраняется.
@@ -52,6 +57,7 @@ export function WikiPage() {
     if (next === urlQuery) return;
     const timer = setTimeout(() => {
       setCount(WIKI_PAGE);
+      ownQueries.current.add(next);
       void navigate({
         to: ".",
         search: ((prev: Record<string, unknown>) => ({ ...prev, q: next || undefined })) as never,

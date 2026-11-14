@@ -182,3 +182,28 @@ test("адрес без ?q= очищает поле и не возвращает
   await vi.waitFor(() => expect(input.value).toBe("x"));
   expect(router.state.location.search).toEqual({ q: "x" });
 });
+
+test("символ, набранный пока обновляется адрес, не теряется", async () => {
+  const SMI = encodeURIComponent("сми");
+  const api = fakeApi(
+    routes({
+      [`GET /api/wiki?limit=200&offset=0&q=${SMI}`]: [LIST[1]],
+      [`GET /api/wiki?limit=200&offset=0&q=${SMIT}`]: [LIST[1]],
+    }),
+  );
+  const router = await renderAt("/wiki", api);
+  const input = (await screen.findByRole("searchbox", { name: "Поиск по wiki" })) as HTMLInputElement;
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  fireEvent.change(input, { target: { value: "сми" } });
+  await act(async () => {
+    vi.advanceTimersByTime(250); // навигация начата, адрес ещё не обновился
+    fireEvent.change(input, { target: { value: "смит" } });
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(400);
+  });
+  vi.useRealTimers();
+  await vi.waitFor(() => expect(router.state.location.search).toEqual({ q: "смит" }));
+  expect(input.value).toBe("смит");
+  expect(api.requests()).toContain(`GET /api/wiki?limit=200&offset=0&q=${SMIT}`);
+});
