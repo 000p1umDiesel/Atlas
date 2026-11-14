@@ -26,6 +26,7 @@ import { cssColor, isDarkScheme, mixRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, loadFonts } from "../lib/fonts";
 import type { FocusOffset, Graph2DApi, Graph2DProps } from "./Graph2D";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
+import { NO_INSETS, usableInsets, type FitInsets } from "./interaction";
 import { DEFAULT_FILTERS, visibleSubgraph } from "./model";
 import { seedPositions, type SeedPosition } from "./seed";
 import {
@@ -482,7 +483,8 @@ class Scene3D {
 
   // ——— камера ———
 
-  fit() {
+  /** Вписать видимые узлы; `insets` — места под панели по краям: граф — в свободной части кадра. */
+  fit(insets: FitInsets = NO_INSETS) {
     if (this.disposed) return;
     this.tracking = null;
     const sphere = boundingSphere(
@@ -492,8 +494,31 @@ class Scene3D {
       this.flyTo(new Vector3(0, 0, 0), new Vector3(0, 0, 400), FIT_MS);
       return;
     }
-    const target = new Vector3(sphere.center.x, sphere.center.y, sphere.center.z);
-    const dist = fitDistance(Math.max(sphere.radius, 20), FOV, this.camera.aspect) * FIT_MARGIN;
+    const center = new Vector3(sphere.center.x, sphere.center.y, sphere.center.z);
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    const radius = Math.max(sphere.radius, 20);
+    if (!(width > 0) || !(height > 0)) {
+      const dist = fitDistance(radius, FOV, this.camera.aspect) * FIT_MARGIN;
+      this.flyTo(center, center.clone().add(this.viewDirection().multiplyScalar(dist)), FIT_MS);
+      return;
+    }
+    const pad = usableInsets(insets, width, height, 0);
+    const w = width - pad.left - pad.right;
+    const h = height - pad.top - pad.bottom;
+    // Вертикальный угол обзора свободной части кадра: та же камера, но видна доля h / height.
+    const tanHalf = Math.tan(((FOV / 2) * Math.PI) / 180);
+    const freeFov = ((2 * Math.atan((tanHalf * h) / height)) * 180) / Math.PI;
+    const dist = fitDistance(radius, freeFov, w / h) * FIT_MARGIN;
+    // Центр графа — в центр свободного прямоугольника (как сдвиг в focusPose).
+    const perPx = (2 * dist * tanHalf) / height;
+    this.camera.updateMatrixWorld();
+    const right = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+    const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1).normalize();
+    const target = center
+      .clone()
+      .addScaledVector(right, (-(pad.left - pad.right) / 2) * perPx)
+      .addScaledVector(up, ((pad.top - pad.bottom) / 2) * perPx);
     this.flyTo(target, target.clone().add(this.viewDirection().multiplyScalar(dist)), FIT_MS);
   }
 
@@ -994,7 +1019,7 @@ export function Graph3D({
     };
     onReadyRef.current?.({
       exportPng: () => scene.exportPng(),
-      fit: () => scene.fit(),
+      fit: (insets) => scene.fit(insets),
       dispose,
       zoomIn: () => scene.zoom(1),
       zoomOut: () => scene.zoom(-1),

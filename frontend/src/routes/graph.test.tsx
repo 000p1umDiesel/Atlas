@@ -201,6 +201,18 @@ test("клик по пустому месту холста снимает выд
   await vi.waitFor(() => expect(fake2d.last?.selected).toBeNull());
 });
 
+test("вписать в обзоре: слева места не нужно, при открытой карточке узла — место справа", async () => {
+  await renderAt("/graph");
+  const fit = screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement;
+  await vi.waitFor(() => expect(fit.disabled).toBe(false));
+  fireEvent.click(fit);
+  expect(fake2d.api.fit).toHaveBeenLastCalledWith(expect.objectContaining({ left: 0, right: 0 }));
+  await click(screen.getByRole("button", { name: "выбрать узел" }));
+  await screen.findByRole("dialog");
+  fireEvent.click(fit);
+  expect(fake2d.api.fit).toHaveBeenLastCalledWith(expect.objectContaining({ left: 0, right: 332 }));
+});
+
 test("горячие клавиши: F — вписать, 3 — 3D, ? — подсказка по клавишам", async () => {
   const router = await renderAt("/graph");
   await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
@@ -1056,6 +1068,21 @@ describe("живые данные: режимы «Окрестность» и «
       const api = fakeApi(routes({ [PATH_URL(4)]: () => fail(404, "Сущность не найдена") }));
       await renderLive("/graph?mode=path&source=a&target=b", api);
       expect(await screen.findByText("Сущность не найдена: возможно, её удалили вместе с документом.")).toBeTruthy();
+    });
+
+    test("вписать в режиме пути оставляет место под карточкой режима слева", async () => {
+      const api = fakeApi(routes({ [PATH_URL(4)]: TWO_PATHS }));
+      await renderLive("/graph?mode=path&source=a&target=b", api);
+      await screen.findByTestId("graph2d");
+      // Новый рендерер вписывается сам — уже с отступом слева.
+      await vi.waitFor(() => expect(fake2d.api.fit).toHaveBeenCalled(), { timeout: 1500 });
+      expect(fake2d.api.fit).toHaveBeenLastCalledWith(expect.objectContaining({ left: 292, right: 0 }));
+      fake2d.api.fit.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Вписать" }));
+      expect(fake2d.api.fit).toHaveBeenLastCalledWith(expect.objectContaining({ left: 292, right: 0 }));
+      fake2d.api.fit.mockClear();
+      fireEvent.keyDown(document.body, { key: "f", code: "KeyF" });
+      expect(fake2d.api.fit).toHaveBeenLastCalledWith(expect.objectContaining({ left: 292 }));
     });
 
     test("карточка узла в режиме пути: настоящий размер сообщества", async () => {

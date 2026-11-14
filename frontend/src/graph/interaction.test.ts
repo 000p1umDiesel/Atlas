@@ -1,5 +1,5 @@
 import { MultiDirectedGraph } from "graphology";
-import { framingRatio, neighborhood, smoothTowards } from "./interaction";
+import { fitRatio, framingRatio, neighborhood, NO_INSETS, smoothTowards, usableInsets } from "./interaction";
 
 function sample() {
   const g = new MultiDirectedGraph();
@@ -70,5 +70,34 @@ describe("framingRatio", () => {
     expect(framingRatio([{ x: 0.1, y: 0 }], { x: 200, y: 200 })).toBe(0.06);
     expect(framingRatio([{ x: 1e6, y: 0 }], { x: 200, y: 200 })).toBe(2);
     expect(framingRatio([{ x: 100, y: 0 }], { x: 0, y: 0 })).toBe(2);
+  });
+});
+
+describe("fitRatio / usableInsets", () => {
+  test("масштаб по более тесной оси с запасом; больше 1 — можно (отдалить)", () => {
+    expect(fitRatio({ x: 1000, y: 100 }, { x: 500, y: 500 })).toBeCloseTo(2 * 1.15, 6);
+    expect(fitRatio({ x: 100, y: 400 }, { x: 500, y: 200 })).toBeCloseTo(2 * 1.15, 6);
+  });
+
+  test("приближение ограничено; один узел (без размаха) — умеренный масштаб", () => {
+    expect(fitRatio({ x: 10, y: 10 }, { x: 900, y: 500 })).toBe(0.15);
+    expect(fitRatio({ x: 0, y: 0 }, { x: 900, y: 500 })).toBe(0.3);
+    expect(fitRatio({ x: 100, y: 100 }, { x: 0, y: 500 })).toBe(1);
+  });
+
+  test("узкий холст: отступы оси, которые не оставляют места, отбрасываются", () => {
+    expect(usableInsets({ top: 60, right: 332, bottom: 80, left: 292 }, 1200, 800, 36)).toEqual({
+      top: 60,
+      right: 332,
+      bottom: 80,
+      left: 292,
+    });
+    expect(usableInsets({ top: 60, right: 0, bottom: 300, left: 292 }, 360, 640, 36)).toEqual({
+      top: 60,
+      right: 0,
+      bottom: 300,
+      left: 0,
+    });
+    expect(usableInsets({ top: -5, right: NaN, bottom: 0, left: 0 }, 800, 600, 36)).toEqual(NO_INSETS);
   });
 });

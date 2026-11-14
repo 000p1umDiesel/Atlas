@@ -62,3 +62,50 @@ export function framingRatio(offsets: readonly Point[], half: Point): number {
   for (const o of offsets) need = Math.max(need, Math.abs(o.x) / half.x, Math.abs(o.y) / half.y);
   return Math.min(FRAME_MAX, Math.max(FRAME_MIN, need * FRAME_MARGIN));
 }
+
+/** Отступы от краёв холста под плавающие панели, CSS-пиксели. */
+export interface FitInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export const NO_INSETS: FitInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+
+/** Пределы масштаба «вписать»: ближе нельзя (граф из пары узлов не раздувается), дальше — можно. */
+const FIT_MIN = 0.15;
+const FIT_MAX = 8;
+
+/**
+ * Масштаб камеры Sigma для «вписать»: `extent` — размах видимых узлов в пикселях экрана при
+ * ratio = 1, `free` — ширина и высота свободной части холста. Может быть больше 1 (отдалить,
+ * когда панели закрывают часть холста). Один узел (размаха нет) — как окрестность без соседей.
+ */
+export function fitRatio(extent: Point, free: Point): number {
+  if (!(free.x > 0) || !(free.y > 0)) return 1;
+  if (extent.x < 1 && extent.y < 1) return FRAME_EMPTY;
+  const need = Math.max(extent.x / free.x, extent.y / free.y) * FRAME_MARGIN;
+  return Math.min(FIT_MAX, Math.max(FIT_MIN, need));
+}
+
+/** Свободный отрезок оси меньше этого (узкий экран) — отступы на этой оси не учитываются. */
+const MIN_FREE = 120;
+
+/**
+ * Отступы, которые реально можно соблюсти: если панели оставляют по оси меньше `MIN_FREE`
+ * пикселей (с учётом `pad` с обеих сторон), отступы этой оси отбрасываются.
+ */
+export function usableInsets(insets: FitInsets, width: number, height: number, pad: number): FitInsets {
+  const clamp = (v: number) => (Number.isFinite(v) && v > 0 ? v : 0);
+  const out = { top: clamp(insets.top), right: clamp(insets.right), bottom: clamp(insets.bottom), left: clamp(insets.left) };
+  if (width - out.left - out.right - 2 * pad < MIN_FREE) {
+    out.left = 0;
+    out.right = 0;
+  }
+  if (height - out.top - out.bottom - 2 * pad < MIN_FREE) {
+    out.top = 0;
+    out.bottom = 0;
+  }
+  return out;
+}

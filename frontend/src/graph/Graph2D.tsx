@@ -9,7 +9,16 @@ import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorRgb, withAlpha } 
 import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { communityColorMap, predicateLabel } from "./insights";
-import { framingRatio, neighborhood, smoothTowards, type Point } from "./interaction";
+import {
+  fitRatio,
+  framingRatio,
+  neighborhood,
+  NO_INSETS,
+  smoothTowards,
+  usableInsets,
+  type FitInsets,
+  type Point,
+} from "./interaction";
 import {
   applyFrame,
   encodeLayoutRequest,
@@ -31,6 +40,8 @@ import {
 } from "./model";
 import { seedPositions, type SeedPosition } from "./seed";
 
+export type { FitInsets } from "./interaction";
+
 /** Сдвиг точки фокуса от центра холста, CSS-пиксели (место под карточку сущности). */
 export interface FocusOffset {
   x: number;
@@ -40,8 +51,11 @@ export interface FocusOffset {
 export interface Graph2DApi {
   /** Снимок текущего вида в PNG. */
   exportPng(): Promise<Blob>;
-  /** Вписать видимые узлы в экран. */
-  fit(): void;
+  /**
+   * Вписать видимые узлы в экран; `insets` — места под плавающие панели по краям холста
+   * (CSS-пиксели): узлы окажутся в свободном прямоугольнике между ними.
+   */
+  fit(insets?: FitInsets): void;
   /** Освободить WebGL и воркер (повторный вызов безопасен; размонтирование делает то же). */
   dispose(): void;
   /** Приблизить / отдалить на шаг. */
@@ -677,7 +691,8 @@ export function Graph2D({
       setTooltip(null);
     };
 
-    const fit = () => {
+    // «Вписать»: видимые узлы — в свободной части холста (без панелей по краям, `insets`).
+    const fit = (insets: FitInsets = NO_INSETS) => {
       if (disposed) return;
       tracking = null;
       const camera = sigma.getCamera();
@@ -686,9 +701,11 @@ export function Graph2D({
       let maxX = -Infinity;
       let minY = Infinity;
       let maxY = -Infinity;
+      const framed: Point[] = [];
       for (const id of visibleRef.current.nodes) {
         if (!rg.hasNode(id)) continue;
         const p = sigma.graphToFramedGraph(rg.getNodeAttributes(id));
+        framed.push(p);
         minX = Math.min(minX, p.x);
         maxX = Math.max(maxX, p.x);
         minY = Math.min(minY, p.y);
@@ -698,8 +715,32 @@ export function Graph2D({
         void camera.reset({ duration });
         return;
       }
-      const ratio = Math.min(1, Math.max(0.05, Math.max(maxX - minX, maxY - minY) * 1.15));
-      void camera.animate({ x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio, angle: 0 }, { duration });
+      const { width, height } = sigma.getDimensions();
+      const pad = usableInsets(insets, width, height, FRAME_PAD);
+      // Размах в пикселях экрана при ratio = 1 (как в focusState): по нему — нужный масштаб.
+      const c = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+      const probe = { cameraState: { x: c.x, y: c.y, ratio: 1, angle: 0 } };
+      let left = Infinity;
+      let right = -Infinity;
+      let top = Infinity;
+      let bottom = -Infinity;
+      for (const p of framed) {
+        const q = sigma.framedGraphToViewport(p, probe);
+        left = Math.min(left, q.x);
+        right = Math.max(right, q.x);
+        top = Math.min(top, q.y);
+        bottom = Math.max(bottom, q.y);
+      }
+      const ratio = fitRatio(
+        { x: right - left, y: bottom - top },
+        { x: width - pad.left - pad.right - 2 * FRAME_PAD, y: height - pad.top - pad.bottom - 2 * FRAME_PAD },
+      );
+      // Центр узлов — в центр свободного прямоугольника: камера сдвинута на половину разницы отступов.
+      const shifted = sigma.viewportToFramedGraph(
+        { x: width / 2 - (pad.left - pad.right) / 2, y: height / 2 - (pad.top - pad.bottom) / 2 },
+        { cameraState: { x: c.x, y: c.y, ratio, angle: 0 } },
+      );
+      void camera.animate({ x: shifted.x, y: shifted.y, ratio, angle: 0 }, { duration });
     };
 
     const zoom = (dir: 1 | -1) => {

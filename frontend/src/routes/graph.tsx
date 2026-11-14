@@ -24,7 +24,7 @@ import { firstMatch, graphHotkey, type GraphAction } from "../graph/hotkeys";
 import { communitySummaries, rankByPagerank, shownTypes } from "../graph/insights";
 import { Legend, type LegendTarget } from "../graph/Legend";
 import { COMMUNITIES_LIMIT } from "../graph/CommunityList";
-import { MODE_LABELS, ModeCard } from "../graph/ModeCard";
+import { MODE_CARD_WIDTH, MODE_LABELS, ModeCard } from "../graph/ModeCard";
 import { PathList } from "../graph/PathList";
 import { sizeMetric, visibleSubgraph } from "../graph/model";
 import { EXPAND_LIMIT, type GraphMode, type GraphView } from "../graph/search";
@@ -154,6 +154,8 @@ export function GraphPage() {
   }, [visible]);
   // Наведение на выбранный узел (задаётся ниже, когда известна ширина под карточку).
   const focusRef = useRef<((id: string) => void) | null>(null);
+  // «Вписать» с местом под плавающие панели (задаётся ниже, когда известны панели).
+  const fitRef = useRef<() => void>(() => {});
 
   // Через паузу после смены состава или вида: выбранный узел остался видимым — камера снова
   // на нём (его окрестность могла измениться), иначе — вписать видимые узлы.
@@ -163,7 +165,7 @@ export function GraphPage() {
     fitTimer.current = setTimeout(() => {
       const id = selectedRef.current;
       if (id !== null && visibleRef.current?.nodes.has(id) && focusRef.current) focusRef.current(id);
-      else apiRef.current?.fit();
+      else fitRef.current();
     }, FIT_DELAY_MS);
   }, []);
   useEffect(() => () => clearTimeout(fitTimer.current), []);
@@ -219,6 +221,34 @@ export function GraphPage() {
     if (current && selected !== null) focusOn(selected);
   }, [current, selected, focusOn]);
 
+  // «Вписать»: граф — в свободной части холста, не под панелью инструментов, карточкой режима
+  // (слева, на широком экране), карточкой узла (справа или снизу) и легендой.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
+  const cardShown = graph !== null && selected !== null && visible !== null && visible.nodes.has(selected);
+  const modeCardShown = mode !== "overview";
+  const fitView = useCallback(() => {
+    const current = apiRef.current;
+    if (!current) return;
+    const height = canvasRef.current?.clientHeight ?? 0;
+    const toolbar = toolbarRef.current;
+    const legend = legendRef.current;
+    const insets = {
+      top: toolbar ? toolbar.offsetTop + toolbar.offsetHeight : 0,
+      right: 0,
+      bottom: legend && height > 0 ? Math.max(0, height - legend.offsetTop) : 0,
+      left: wide && modeCardShown ? MODE_CARD_WIDTH + 12 : 0,
+    };
+    if (cardShown) {
+      if (wide) insets.right = ENTITY_CARD_WIDTH + 12;
+      else insets.bottom = Math.max(insets.bottom, height * ENTITY_SHEET_SHARE);
+    }
+    current.fit(insets);
+  }, [wide, modeCardShown, cardShown]);
+  useLayoutEffect(() => {
+    fitRef.current = fitView;
+  }, [fitView]);
+
   // Выбранный узел скрыт фильтрами (или такого id нет) — выделение снимается, focus уходит из URL.
   useEffect(() => {
     if (selected !== null && visible && !visible.nodes.has(selected)) setSelected(null);
@@ -248,7 +278,6 @@ export function GraphPage() {
   }, [expanding, expandStatus, graph]);
 
   // Карточка — под панелью инструментов, даже когда та переносится на вторую строку.
-  const toolbarRef = useRef<HTMLDivElement>(null);
   const [cardTop, setCardTop] = useState(60);
   useLayoutEffect(() => {
     const el = toolbarRef.current;
@@ -290,7 +319,7 @@ export function GraphPage() {
     (action: GraphAction) => {
       switch (action) {
         case "fit":
-          apiRef.current?.fit();
+          fitRef.current();
           break;
         case "zoomIn":
           apiRef.current?.zoomIn?.();
@@ -433,7 +462,7 @@ export function GraphPage() {
   const truncated = data.state === "ready" && data.truncated;
   const showRotate = search.view === "3d" && !reducedMotion;
   const deselect = useCallback(() => setSelected(null), [setSelected]);
-  const showCard = graph !== null && selected !== null && visible !== null && visible.nodes.has(selected);
+  const showCard = cardShown;
   // Размер сообщества выбранной сущности вне обзора — с сервера: на графе режима видна лишь часть
   // участников. В окрестности — из списка крупнейших сообществ (тот же запрос, что у списка режима).
   const selectedCommunity = showCard ? graph.getNodeAttribute(selected, "community") : null;
@@ -667,7 +696,7 @@ export function GraphPage() {
             <button type="button" aria-label="Отдалить" title="Отдалить (−)" disabled={!api} onClick={() => api?.zoomOut?.()} className={ICON_TOOL}>
               <Minus size={16} />
             </button>
-            <button type="button" aria-label="Вписать" title="Вписать в экран (F)" disabled={!api} onClick={() => api?.fit()} className={TOOL}>
+            <button type="button" aria-label="Вписать" title="Вписать в экран (F)" disabled={!api} onClick={fitView} className={TOOL}>
               <Maximize2 size={16} />
               <span className="hidden sm:inline">Вписать</span>
             </button>
@@ -724,7 +753,10 @@ export function GraphPage() {
       </div>
 
       {graph && (
-        <div className="pointer-events-none absolute inset-x-2.5 bottom-2.5 z-10 flex items-end justify-between gap-2 sm:inset-x-3 sm:bottom-3">
+        <div
+          ref={legendRef}
+          className="pointer-events-none absolute inset-x-2.5 bottom-2.5 z-10 flex items-end justify-between gap-2 sm:inset-x-3 sm:bottom-3"
+        >
           <Legend
             colorBy={search.colorBy}
             sizeBy={sizeMetric(graph, search.sizeBy)}
