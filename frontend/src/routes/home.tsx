@@ -174,7 +174,8 @@ export function HomePage() {
               <WorkCard />
             </section>
 
-            <section className="lg:order-2 lg:col-span-5 2xl:order-none 2xl:col-span-3" aria-labelledby="home-recent">
+            {/* На 2xl — после справочника: он раскрывается сразу под первым рядом. */}
+            <section className="lg:order-2 lg:col-span-5 2xl:order-2 2xl:col-span-3" aria-labelledby="home-recent">
               <SectionTitle aside={<Link to="/documents" className={QUIET_LINK}>Все документы</Link>}>
                 <span id="home-recent">Последние документы</span>
               </SectionTitle>

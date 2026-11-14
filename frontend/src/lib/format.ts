@@ -53,3 +53,12 @@ export function seconds(ms: number): string {
   if (ms < 100) return "<0,1 с";
   return `${(ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} с`;
 }
+
+/** Длиннее этого подпись узла на графе обрезается: полное имя — в подсказке и карточке. */
+export const LABEL_MAX_CHARS = 32;
+
+/** Короткая подпись: длинное имя обрезается с «…» (по символам, не по UTF-16). */
+export function truncateLabel(name: string, max = LABEL_MAX_CHARS): string {
+  const chars = Array.from(name.trim());
+  return chars.length > max ? `${chars.slice(0, max - 1).join("").trimEnd()}…` : chars.join("");
+}

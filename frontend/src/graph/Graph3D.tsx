@@ -24,6 +24,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import ThreeForceGraph from "three-forcegraph";
 import { cssColor, isDarkScheme, mixRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, loadFonts } from "../lib/fonts";
+import { truncateLabel } from "../lib/format";
 import { prefersReducedMotion } from "../lib/motion";
 import type { FocusOffset, Graph2DApi, Graph2DProps } from "./Graph2D";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
@@ -73,7 +74,6 @@ const FIT_MARGIN = 0.95;
 const LABEL_PX = 13;
 /** Текстура подписи рисуется с двойной плотностью. */
 const LABEL_DENSITY = 2;
-const LABEL_MAX_CHARS = 40;
 /** Сдвиг клика, после которого это уже вращение камеры, а не выбор узла. */
 const CLICK_SLOP_PX = 5;
 /** Два клика по одному узлу не дольше этого — раскрыть его соседей. */
@@ -143,7 +143,7 @@ interface Label {
 
 /** Подпись-спрайт: текст на canvas (недоверенное имя рисуется как текст, без разметки). */
 function createLabel(name: string, palette: Palette, strong: boolean): Label {
-  const text = name.length > LABEL_MAX_CHARS ? `${name.slice(0, LABEL_MAX_CHARS - 1)}…` : name;
+  const text = truncateLabel(name);
   const fontPx = 12.5 * LABEL_DENSITY;
   const font = `${strong ? 650 : 500} ${fontPx}px "Golos Text Variable", ui-sans-serif, system-ui, sans-serif`;
   const canvas = document.createElement("canvas");

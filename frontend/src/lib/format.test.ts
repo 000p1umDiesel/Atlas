@@ -1,4 +1,4 @@
-import { ago, countOf, formatInt, formatScore, plural, seconds } from "./format";
+import { ago, countOf, formatInt, formatScore, LABEL_MAX_CHARS, plural, seconds, truncateLabel } from "./format";
 
 const DOCS: [string, string, string] = ["документ", "документа", "документов"];
 
@@ -62,4 +62,16 @@ describe("ago и seconds", () => {
     expect(seconds(1234)).toBe("1,2 с");
     expect(seconds(3000)).toBe("3 с");
   });
+});
+
+test("truncateLabel: длинная подпись узла режется с многоточием", () => {
+  expect(truncateLabel("Сбер")).toBe("Сбер");
+  const long = "Отчёт State of AI (RU) по рынку генеративных моделей";
+  const short = truncateLabel(long);
+  expect(Array.from(short)).toHaveLength(LABEL_MAX_CHARS);
+  expect(short.endsWith("…")).toBe(true);
+  expect(truncateLabel("abcdef", 4)).toBe("abc…");
+  // Пробел перед многоточием не остаётся; суррогатные пары не разрываются.
+  expect(truncateLabel("ab cdef", 4)).toBe("ab…");
+  expect(truncateLabel("😀😀😀😀😀", 3)).toBe("😀😀…");
 });

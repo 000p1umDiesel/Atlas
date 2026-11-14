@@ -7,6 +7,7 @@ import { extremityArrow, layerFill } from "sigma/rendering";
 import type { NodeView } from "../api/types";
 import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
+import { truncateLabel } from "../lib/format";
 import { prefersReducedMotion } from "../lib/motion";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { communityColorMap, predicateLabel } from "./insights";
@@ -190,7 +191,7 @@ function toRenderGraph(graph: Graph, seeds: ReadonlyMap<string, SeedPosition> = 
       y: seed ? seed.y : r * Math.sin(angle),
       size: 8,
       color: "rgb(189, 182, 168)",
-      label: a.name,
+      label: truncateLabel(a.name),
     });
     i++;
   });
