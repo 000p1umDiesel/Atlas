@@ -12,7 +12,7 @@ import type { Conversation, Message, Source } from "../api/types";
 import { App, createQueryClient } from "../App";
 import { ConversationList } from "../chat/ConversationList";
 import { createAppRouter } from "../router";
-import { fakeApi, type FakeApi } from "../test/fakeApi";
+import { fail, fakeApi, type FakeApi } from "../test/fakeApi";
 import { ChatPage } from "./chat";
 
 const ME = { id: "u1", username: "owner" };
@@ -189,6 +189,24 @@ test("ошибка загрузки истории — текст detail", async
   );
   await renderAt("/chat/c1", api);
   expect((await screen.findByRole("alert")).textContent).toContain("Диалог не найден");
+});
+
+test("ошибка перечитывания истории — над прежними сообщениями, они не пропадают", async () => {
+  let broken = false;
+  const api = fakeApi(
+    routes({ [MESSAGES("c1")]: () => (broken ? fail(404, "Диалог не найден") : Response.json(HISTORY)) }),
+  );
+  vi.stubGlobal("fetch", api);
+  const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/chat/c1"] }) });
+  await router.load();
+  const client = createQueryClient();
+  render(<App router={router} client={client} />);
+  await screen.findByText("Кто такой Смит?");
+  broken = true;
+  await act(() => client.invalidateQueries({ queryKey: ["messages", "c1"] }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Диалог не найден");
+  expect(screen.getByText("Кто такой Смит?")).toBeTruthy();
+  expect(screen.getByText(/Шотландский экономист/)).toBeTruthy();
 });
 
 test("переименование: PATCH {title} и перезапрос списка", async () => {

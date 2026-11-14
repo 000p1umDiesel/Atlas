@@ -40,7 +40,10 @@ export function ChatPage() {
   const conversation = id ? conversations.data?.find((c) => c.id === id) : undefined;
   const messages = id ? (history.data ?? []) : [];
   const loading = id !== undefined && history.isPending;
-  const failed = id !== undefined && history.isError;
+  // Ошибка без истории — вместо сообщений; ошибка перечитывания при уже показанной истории —
+  // над ней: сообщения не пропадают.
+  const failed = id !== undefined && history.isError && history.data === undefined;
+  const refetchFailed = id !== undefined && history.isError && history.data !== undefined;
 
   // К концу при новых сообщениях: открытие диалога — сразу, новое сообщение — плавно
   // (при reduced motion — тоже сразу).
@@ -69,6 +72,7 @@ export function ChatPage() {
           {messages.length === LIST_LIMIT && (
             <p className="text-center text-sm text-muted">Показаны последние 200 сообщений диалога.</p>
           )}
+          {refetchFailed && <FormNote tone="error">{history.error.message}</FormNote>}
           {loading ? (
             <p className="text-muted">Загружаю…</p>
           ) : failed ? (

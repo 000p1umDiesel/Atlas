@@ -16,6 +16,10 @@ async function renderHome() {
   return router;
 }
 
+/** Запросы графа главной (`/api/graph/overview?limit=…`). */
+const overviewCalls = (mock: { mock: { calls: unknown[][] } }) =>
+  mock.mock.calls.filter((c) => String(c[0]).split("?")[0] === "/api/graph/overview").length;
+
 beforeAll(() => {
   window.scrollTo = vi.fn(); // jsdom не реализует scrollTo, роутер его зовёт
 });
@@ -181,6 +185,7 @@ test("«Пересчитать» запускает анализ и перечи
     render(<App router={router} client={createQueryClient()} />);
     const button = await screen.findByRole("button", { name: "Пересчитать" });
     const statsBefore = fetchMock.mock.calls.filter((c) => c[0] === "/api/stats").length;
+    const overviewBefore = overviewCalls(fetchMock);
     await act(async () => {
       fireEvent.click(button);
       await new Promise((r) => setTimeout(r, 0));
@@ -188,6 +193,8 @@ test("«Пересчитать» запускает анализ и перечи
     expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST" && c[0] === "/api/graph/analyze")).toBe(true);
     await vi.waitFor(() => expect((screen.getByRole("button", { name: "Анализ идёт…" }) as HTMLButtonElement).disabled).toBe(true));
     await vi.waitFor(() => expect(fetchMock.mock.calls.filter((c) => c[0] === "/api/stats").length).toBeGreaterThan(statsBefore));
+    // граф главной (PageRank, сообщества) тоже перечитывается
+    await vi.waitFor(() => expect(overviewCalls(fetchMock)).toBeGreaterThan(overviewBefore));
   } finally {
     vi.unstubAllGlobals();
   }
@@ -214,12 +221,15 @@ test("после завершения анализа карточка главн
     await router.load();
     render(<App router={router} client={createQueryClient()} />);
     await screen.findByText("Не запускался");
+    await vi.waitFor(() => expect(overviewCalls(fetchMock)).toBeGreaterThan(0));
+    const overviewBefore = overviewCalls(fetchMock);
     ready = true;
     analysis = { ...(analysis as object), ready: true, job: { ...job, status: "done" } };
     await act(async () => {
       vi.advanceTimersByTime(5000);
     });
     await vi.waitFor(() => expect(screen.getByText("Готов")).toBeTruthy());
+    await vi.waitFor(() => expect(overviewCalls(fetchMock)).toBeGreaterThan(overviewBefore));
   } finally {
     vi.useRealTimers();
     vi.unstubAllGlobals();

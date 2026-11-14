@@ -34,25 +34,28 @@ export function useAnalysis() {
     staleTime: 0,
     refetchInterval: (q) => (analysisActive(q.state.data) ? STATUS_POLL_MS : false),
   });
-  // Задача закончилась (done/failed): сводка главной и статус читают результат из своих запросов.
+  // Задача закончилась (done/failed): сводка и граф главной (PageRank, сообщества) и статус
+  // читают результат из своих запросов.
   const wasActive = useRef(false);
   const active = analysisActive(query.data);
   useEffect(() => {
     if (wasActive.current && !active) {
       void client.invalidateQueries({ queryKey: statusKey });
       void client.invalidateQueries({ queryKey: ["stats"] });
+      void client.invalidateQueries({ queryKey: ["overview"] });
     }
     wasActive.current = active;
   }, [active, client]);
   return query;
 }
 
-/** Перечитать всё, что зависит от анализа: снимок, статус очереди и сводку главной. */
+/** Перечитать всё, что зависит от анализа: снимок, статус очереди, сводку и граф главной. */
 export function refreshAnalysis(client: QueryClient): Promise<void> {
   return Promise.all([
     client.invalidateQueries({ queryKey: analysisKey }),
     client.invalidateQueries({ queryKey: statusKey }),
     client.invalidateQueries({ queryKey: ["stats"] }),
+    client.invalidateQueries({ queryKey: ["overview"] }),
   ]).then(() => undefined);
 }
 

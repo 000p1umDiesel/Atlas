@@ -50,6 +50,8 @@ test("короткий новый пароль — сообщение без з�
   fill("old password 1", "short", "short");
   await submit();
   expect(screen.getByRole("alert").textContent).toBe("Новый пароль — не короче 12 символов");
+  // проверку делает страница, а не всплывающая подсказка браузера
+  expect((screen.getByRole("button", { name: "Сменить пароль" }).closest("form") as HTMLFormElement).noValidate).toBe(true);
   expect(api.requests()).not.toContain("POST /api/auth/password");
 });
 

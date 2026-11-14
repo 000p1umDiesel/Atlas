@@ -48,7 +48,8 @@ export function AccountPage() {
           <code className="rounded-md bg-card px-1.5 py-0.5 font-mono text-sm text-ink">mnogobase user create</code>.
         </p>
       )}
-      <form onSubmit={submit} className="mt-6 space-y-4 rounded-[14px] bg-card p-6 shadow-card">
+      {/* noValidate: подсказка браузера о minLength опережала бы своё русское сообщение. */}
+      <form onSubmit={submit} noValidate className="mt-6 space-y-4 rounded-[14px] bg-card p-6 shadow-card">
         <h2 className="text-xl font-semibold">Смена пароля</h2>
         <TextField
           label="Текущий пароль"
