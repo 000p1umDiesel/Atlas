@@ -1,4 +1,5 @@
 // Статус: очередь и worker, расход LLM, анализ графа, проверки сервисов.
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "./client";
 import type { AnalysisPayload, Job, StatusPayload } from "./types";
@@ -26,12 +27,24 @@ export function analysisActive(data: AnalysisPayload | undefined): boolean {
 
 /** Снимок анализа; опрос раз в 5000 мс только пока задача активна. */
 export function useAnalysis() {
-  return useQuery<AnalysisPayload>({
+  const client = useQueryClient();
+  const query = useQuery<AnalysisPayload>({
     queryKey: analysisKey,
     queryFn: () => apiGet<AnalysisPayload>("/api/graph/analysis"),
     staleTime: 0,
-    refetchInterval: (query) => (analysisActive(query.state.data) ? STATUS_POLL_MS : false),
+    refetchInterval: (q) => (analysisActive(q.state.data) ? STATUS_POLL_MS : false),
   });
+  // Задача закончилась (done/failed): сводка главной и статус читают результат из своих запросов.
+  const wasActive = useRef(false);
+  const active = analysisActive(query.data);
+  useEffect(() => {
+    if (wasActive.current && !active) {
+      void client.invalidateQueries({ queryKey: statusKey });
+      void client.invalidateQueries({ queryKey: ["stats"] });
+    }
+    wasActive.current = active;
+  }, [active, client]);
+  return query;
 }
 
 /** Перечитать всё, что зависит от анализа: снимок, статус очереди и сводку главной. */

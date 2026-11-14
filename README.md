@@ -1988,7 +1988,8 @@ mnogobase/
 │   ├── extraction/  extractor.py  resolver.py
 │   ├── stores/      qdrant_store.py  graph_store.py  registry.py
 │   ├── wiki/        builder.py  render.py  validate.py  obsidian.py
-│   ├── web/         dist/ (сборка frontend/)  index.html  app.js  views/  vendor/  # сайт (16.6); прежний UI — /legacy
+│   ├── web/         dist/                                   # сборка React-сайта из frontend/ (в .gitignore, 16.6)
+│   │                index.html  app.js  style.css  lib/  views/  vendor/  fonts/   # прежний UI (/legacy, /static), до этапа 5
 │   └── retrieval/   base.py  rag.py  wiki.py  graph.py  combined.py  answer.py  compare.py  rerank.py  translate.py
 ├── tests/
 │   ├── unit/  integration/  e2e/  security/

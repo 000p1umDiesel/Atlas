@@ -192,3 +192,36 @@ test("«Пересчитать» запускает анализ и перечи
     vi.unstubAllGlobals();
   }
 });
+
+test("после завершения анализа карточка главной перечитывает сводку", async () => {
+  vi.stubEnv("VITE_FIXTURES", "");
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const { stats } = generateFixtures();
+  const job = { id: 3, kind: "analyze", status: "running", attempts: 1, available_at: 0, error: null, progress: "", created_at: 0, updated_at: 0, doc_id: null, name: "анализ графа" };
+  let analysis: unknown = { revision: null, run_id: null, ready: false, completed_at: null, metadata: {}, top: [], job };
+  let ready = false;
+  const fetchMock = vi.fn(async (url: string) => {
+    const path = url.split("?")[0];
+    if (path === "/api/stats") return Response.json({ ...stats, analysis: { ...stats.analysis, ready, completed_at: ready ? "2026-11-14T10:00:00Z" : null } });
+    if (path === "/api/graph/analysis") return Response.json(analysis);
+    if (path === "/api/graph/overview") return Response.json({ nodes: [], relations: [] });
+    if (path === "/api/entities/types") return Response.json([]);
+    return Response.json({ detail: "Не найдено" }, { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/"] }) });
+    await router.load();
+    render(<App router={router} client={createQueryClient()} />);
+    await screen.findByText("Не запускался");
+    ready = true;
+    analysis = { ...(analysis as object), ready: true, job: { ...job, status: "done" } };
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    await vi.waitFor(() => expect(screen.getByText("Готов")).toBeTruthy());
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
+});

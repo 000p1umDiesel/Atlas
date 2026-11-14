@@ -1,7 +1,8 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { AnalysisPayload, Job, StatusPayload, UsageRow } from "../api/types";
-import { App, createQueryClient } from "../App";
+import { QueryClient } from "@tanstack/react-query";
+import { App } from "../App";
 import { createAppRouter } from "../router";
 import { fail, fakeApi, type FakeApi } from "../test/fakeApi";
 
@@ -65,7 +66,7 @@ async function renderAt(path: string, api: FakeApi) {
   vi.stubGlobal("fetch", api);
   const router = createAppRouter({ history: createMemoryHistory({ initialEntries: [path] }) });
   await router.load();
-  render(<App router={router} client={createQueryClient()} />);
+  render(<App router={router} client={new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: false, refetchOnWindowFocus: false } } })} />);
   return router;
 }
 
@@ -154,13 +155,13 @@ test("ошибка после первой загрузки — над преж�
   await act(async () => {
     vi.advanceTimersByTime(5000);
   });
-  await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("x"), { timeout: 4000 });
+  await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("x"), { timeout: 1000 });
   expect(screen.getByText(/готово:/)).toBeTruthy();
 });
 
 test("ошибка первой загрузки — только сообщение", async () => {
   await renderAt("/status", fakeApi(routes({ [STATUS]: () => fail(500, "x") })));
-  expect(await screen.findByRole("alert", {}, { timeout: 4000 })).toBeTruthy();
+  expect(await screen.findByRole("alert", {}, { timeout: 1000 })).toBeTruthy();
   expect(screen.queryByRole("heading", { level: 2, name: "Расход LLM" })).toBeNull();
 });
 
@@ -201,6 +202,8 @@ test("анализ: запуск, опрос раз в 5000 мс пока идё
   });
   await vi.waitFor(() => expect(screen.getByText(/сообществ\./)).toBeTruthy());
   expect(count(api, ANALYSIS)).toBeGreaterThan(before);
+  // завершение задачи перечитывает и статус очереди
+  await vi.waitFor(() => expect(count(api, STATUS)).toBeGreaterThan(1));
   const after = count(api, ANALYSIS);
   await act(async () => {
     vi.advanceTimersByTime(20_000);
