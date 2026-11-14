@@ -233,3 +233,62 @@ test("кнопка в верхней панели — «Поиск» с подс
   fireEvent.click(button);
   expect(await screen.findByRole("dialog", { name: "Поиск" })).toBeTruthy();
 });
+
+test("устаревший ответ не цель Enter: после «ada» ввод «граф» и сразу Enter → /graph", async () => {
+  const slow = deferred<Response>();
+  const api = fakeApi({
+    "GET /api/entities/types": TYPES,
+    "GET /api/search/quick?q=ada": ADA,
+    "GET /api/search/quick": () => slow.promise,
+  });
+  const { router } = await setup(api);
+  await ctrlK();
+  await type("ada");
+  await screen.findByRole("option", { name: /ada\.pdf/ });
+  // Сразу после ввода: пауза 150 мс ещё идёт, на экране — ответ на «ada».
+  await type("граф");
+  expect(screen.getByRole("status").textContent).toBe("Ищу…");
+  expect(screen.getByRole("listbox").getAttribute("aria-busy")).toBe("true");
+  const active = document.getElementById(input().getAttribute("aria-activedescendant") ?? "");
+  expect(active?.textContent).toContain("Перейти: Граф");
+  await act(() => fireEvent.keyDown(input(), { key: "Enter" }));
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/graph"));
+  await closed();
+});
+
+test("пока ждём новый ответ, Enter на устаревшем пункте сервера ничего не делает", async () => {
+  const slow = deferred<Response>();
+  const api = fakeApi({
+    "GET /api/entities/types": TYPES,
+    "GET /api/search/quick?q=ada": ADA,
+    "GET /api/search/quick?q=adx": () => slow.promise,
+  });
+  const { router } = await setup(api);
+  await ctrlK();
+  await type("ada");
+  await screen.findByRole("option", { name: /ada\.pdf/ });
+  await type("adx");
+  // Запрос на «adx» ушёл, но ответа нет: виден прежний (keepPreviousData), он устарел.
+  await vi.waitFor(() => expect(searchRequests(api)).toContain("GET /api/search/quick?q=adx"));
+  expect(screen.getByRole("status").textContent).toBe("Ищу…");
+  expect(input().getAttribute("aria-activedescendant")).toBeNull();
+  fireEvent.keyDown(input(), { key: "ArrowDown" });
+  await act(() => fireEvent.keyDown(input(), { key: "Enter" }));
+  expect(router.state.location.pathname).toBe("/");
+  expect(screen.getByRole("dialog", { name: "Поиск" })).toBeTruthy();
+  await act(async () => slow.resolve(Response.json(EMPTY)));
+  expect(await screen.findByText("Ничего не нашлось.")).toBeTruthy();
+});
+
+test("повторное открытие во время закрытия начинается с пустого поля", async () => {
+  await setup(fakeApi({ "GET /api/entities/types": TYPES, "GET /api/search/quick": EMPTY }));
+  await ctrlK();
+  await type("ada");
+  await act(() => fireEvent.keyDown(input(), { key: "Escape" }));
+  await ctrlK();
+  const focused = document.activeElement as HTMLInputElement;
+  expect(focused.getAttribute("role")).toBe("combobox");
+  expect(focused.value).toBe("");
+  await vi.waitFor(() => expect(screen.getAllByRole("dialog", { name: "Поиск" })).toHaveLength(1));
+  expect((input() as HTMLInputElement).value).toBe("");
+});

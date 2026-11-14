@@ -18,7 +18,8 @@ const THEME_NAMES: Record<ThemeChoice, string> = { system: "как в систе
 
 type Props = { open: boolean; onOpenChange(open: boolean): void };
 
-type Item = { key: string; run(): void; content: ReactNode };
+/** `server` — пункт из ответа сервера (может устареть), иначе действие. */
+type Item = { key: string; server: boolean; run(): void; content: ReactNode };
 type Group = { id: string; label: string; items: Item[] };
 
 /**
@@ -31,6 +32,14 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const openRef = useRef(open);
   const changeRef = useRef(onOpenChange);
+  // Номер открытия — ключ содержимого: Ctrl+K во время анимации закрытия даёт новое пустое
+  // поле, а не возвращает прежний текст и выделение. Счёт — при смене пропса во время рендера.
+  const [session, setSession] = useState(0);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setSession((n) => n + 1);
+  }
 
   useEffect(() => {
     openRef.current = open;
@@ -69,7 +78,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   return (
     <AnimatePresence>
       {open && (
-        <div key="palette" className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-3 sm:pt-[12vh]">
+        <div key={`palette-${session}`} className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-3 sm:pt-[12vh]">
           <motion.div
             data-palette-backdrop=""
             aria-hidden="true"
@@ -100,6 +109,9 @@ export function CommandPalette({ open, onOpenChange }: Props) {
 
 /** Содержимое: монтируется при каждом открытии — поле и выделение начинаются заново. */
 function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputElement | null>; onClose(): void }) {
+  // Своё поле — для Tab; общий ref родителя получает последнее смонтированное поле и не
+  // обнуляется уходящим (во время анимации закрытия старое и новое содержимое живут вместе).
+  const ownInput = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
   const catalog = useTypeCatalog();
   const [theme, setTheme] = useTheme();
@@ -107,6 +119,8 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  // Выделение двигали стрелками или мышью после последнего ввода.
+  const [moved, setMoved] = useState(false);
 
   const typed = text.trim();
   useEffect(() => {
@@ -132,6 +146,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
         label: "Сущности",
         items: data.entities.map((e) => ({
           key: `e:${e.entity_id}`,
+          server: true,
           run: () => go(path("entities", e.entity_id)),
           content: (
             <>
@@ -147,6 +162,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
         label: "Wiki",
         items: data.wiki.map((w) => ({
           key: `w:${w.page_id}`,
+          server: true,
           run: () => go(path("wiki", w.slug)),
           content: (
             <>
@@ -161,6 +177,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
         label: "Документы",
         items: data.documents.map((d) => ({
           key: `d:${d.id}`,
+          server: true,
           run: () => go(path("documents", d.id)),
           content: (
             <>
@@ -176,6 +193,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
         label: "Диалоги",
         items: data.conversations.map((c) => ({
           key: `c:${c.id}`,
+          server: true,
           run: () => go(path("chat", c.id)),
           content: (
             <>
@@ -192,6 +210,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
     label: "Действия",
     items: filterActions(typed).map((a) => ({
       key: `a:${a.id}`,
+      server: false,
       run:
         a.run === "theme"
           ? () => {
@@ -210,7 +229,12 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
   });
   const shown = groups.filter((g) => g.items.length > 0);
   const items = shown.flatMap((g) => g.items);
-  const activeIndex = items.length === 0 ? -1 : Math.min(active, items.length - 1);
+  // Ответ сервера устарел: текст ещё в паузе перед запросом или виден прежний ответ, пока
+  // идёт новый. Тогда пункты сервера приглушены и по умолчанию выделено первое действие.
+  const stale = data !== undefined && (query !== typed || search.isPlaceholderData);
+  const firstAction = items.findIndex((item) => !item.server);
+  const activeIndex =
+    items.length === 0 ? -1 : stale && !moved ? firstAction : Math.min(active, items.length - 1);
   const optionId = (i: number) => `${ids.list}-${i}`;
 
   // Выделенный пункт виден и при прокрутке списка стрелками.
@@ -220,7 +244,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
   });
 
   const error = typed !== "" && search.isError ? (search.error instanceof ApiError ? search.error.detail : "Не удалось выполнить поиск") : null;
-  const pending = typed !== "" && !data && !error && (query !== typed || search.isFetching);
+  const pending = typed !== "" && !error && (stale || (!data && (query !== typed || search.isFetching)));
   const nothing = typed !== "" && !pending && !error && items.length === 0;
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -229,10 +253,13 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
       e.preventDefault();
       if (items.length === 0) return;
       const step = e.key === "ArrowDown" ? 1 : -1;
-      setActive((activeIndex + step + items.length) % items.length);
+      setActive(activeIndex < 0 ? (step > 0 ? 0 : items.length - 1) : (activeIndex + step + items.length) % items.length);
+      setMoved(true);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (activeIndex >= 0) items[activeIndex]!.run();
+      const item = activeIndex >= 0 ? items[activeIndex] : undefined;
+      // Устаревший пункт сервера может не подходить к введённому тексту: ждём свежий ответ.
+      if (item && !(stale && item.server)) item.run();
     }
   };
 
@@ -244,14 +271,17 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
         // Tab не уходит из диалога: в нём единственное поле фокуса.
         if (e.key === "Tab") {
           e.preventDefault();
-          inputRef.current?.focus();
+          ownInput.current?.focus();
         }
       }}
     >
       <div className="flex items-center gap-2.5 border-b border-line px-4">
         <Search size={17} className="shrink-0 text-muted" aria-hidden="true" />
         <input
-          ref={inputRef}
+          ref={(el) => {
+            ownInput.current = el;
+            if (el) inputRef.current = el;
+          }}
           type="text"
           role="combobox"
           aria-label="Поиск"
@@ -268,6 +298,7 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
           onChange={(e) => {
             setText(e.target.value);
             setActive(0);
+            setMoved(false);
           }}
           onKeyDown={onKeyDown}
           className="min-w-0 flex-1 bg-transparent py-3.5 text-[15px] outline-none placeholder:text-muted"
@@ -276,11 +307,16 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
           Esc
         </kbd>
       </div>
-      <div id={ids.list} role="listbox" aria-label="Результаты" className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <div id={ids.list} role="listbox" aria-label="Результаты" aria-busy={stale} className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {shown.map((group) => {
           const headingId = `${ids.list}-${group.id}`;
           return (
-            <div key={group.id} role="group" aria-labelledby={headingId} className="pb-1">
+            <div
+              key={group.id}
+              role="group"
+              aria-labelledby={headingId}
+              className={stale && group.id !== "actions" ? "pb-1 opacity-55 transition-opacity" : "pb-1 transition-opacity"}
+            >
               <div id={headingId} role="presentation" className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted">
                 {group.label}
               </div>
@@ -296,7 +332,9 @@ function PaletteBody({ inputRef, onClose }: { inputRef: RefObject<HTMLInputEleme
                     // Фокус остаётся в поле.
                     onMouseDown={(e) => e.preventDefault()}
                     onMouseMove={() => {
-                      if (!selected) setActive(i);
+                      if (selected) return;
+                      setActive(i);
+                      setMoved(true);
                     }}
                     onClick={() => item.run()}
                     className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm aria-selected:bg-primary/15"
