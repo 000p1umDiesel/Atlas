@@ -179,22 +179,41 @@ test("без активных задач опроса нет", async () => {
   expect(count(api, DOCS)).toBe(1);
 });
 
-test("опрос прекращается, когда задачи закончились", async () => {
+test("опрос прекращается, когда задачи закончились; документы перечитываются в этот момент", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   let status: Job["status"] = "pending";
-  const api = fakeApi(routes({ [JOBS]: () => Response.json([job({ id: 5, status, name: "b.pdf" })]) }));
+  let docStatus = "running";
+  const api = fakeApi(
+    routes({
+      [DOCS]: () => Response.json([doc("d1", "Смит.pdf", docStatus)]),
+      // worker закончил, пока шёл запрос очереди: документы того же такта прочитаны старыми
+      [JOBS]: () => {
+        if (status !== "done") return Response.json([job({ id: 5, status, name: "b.pdf" })]);
+        return new Promise<Response>((resolve) =>
+          setTimeout(() => {
+            docStatus = "done";
+            resolve(Response.json([job({ id: 5, status, name: "b.pdf" })]));
+          }, 0),
+        );
+      },
+    }),
+  );
   await renderAt("/documents", api);
   await vi.waitFor(() => expect(screen.getByText("обновляется")).toBeTruthy());
+  expect(within(section("В базе")).getByText("в работе")).toBeTruthy();
   status = "done";
   await act(async () => {
     vi.advanceTimersByTime(3000);
   });
   await vi.waitFor(() => expect(screen.queryByText("обновляется")).toBeNull());
+  await vi.waitFor(() => expect(within(section("В базе")).getByText("готово")).toBeTruthy());
   const jobs = count(api, JOBS);
+  const docs = count(api, DOCS);
   await act(async () => {
     vi.advanceTimersByTime(9000);
   });
   expect(count(api, JOBS)).toBe(jobs);
+  expect(count(api, DOCS)).toBe(docs);
 });
 
 test("«Показать ещё»: страницы по 200 и проба следующей", async () => {

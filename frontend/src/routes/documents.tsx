@@ -1,9 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import {
   deleteDocument,
   DOCUMENTS_PAGE,
+  documentsKey,
   hasActiveJobs,
   refreshDocuments,
   retryJob,
@@ -93,6 +94,14 @@ export function DocumentsPage() {
   const [retrying, setRetrying] = useState<number | null>(null);
 
   const reload = useCallback(() => void refreshDocuments(client), [client]);
+
+  // Очередь опустела: опрос документов остановится, а их последний опрос мог пройти раньше, чем
+  // worker закончил (таймеры списков независимы) — перечитываем документы ещё раз.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (wasActive.current && !active) void client.invalidateQueries({ queryKey: documentsKey });
+    wasActive.current = active;
+  }, [active, client]);
 
   async function remove(doc: DocumentListItem) {
     setDeleting(doc.id);

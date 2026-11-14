@@ -86,7 +86,9 @@ export function Uploader({ onUploaded }: { onUploaded: () => void }) {
     void pump();
   };
 
+  // Подсвечиваем и принимаем только перетаскивание файлов (не текста или ссылки).
   const onDragOver = (event: DragEvent) => {
+    if (!Array.from(event.dataTransfer?.types ?? []).includes("Files")) return;
     event.preventDefault();
     setOver(true);
   };

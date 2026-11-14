@@ -17,6 +17,8 @@ export class FakeXhr {
   upload: { onprogress: Listener } = { onprogress: null };
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  ontimeout: (() => void) | null = null;
 
   constructor() {
     FakeXhr.instances.push(this);
@@ -49,6 +51,18 @@ export class FakeXhr {
   fail() {
     this.done = true;
     this.onerror?.();
+  }
+
+  /** Запрос прерван (браузер, расширение, `abort()`). */
+  abort() {
+    this.done = true;
+    this.onabort?.();
+  }
+
+  /** Истёк `timeout` запроса. */
+  timeout() {
+    this.done = true;
+    this.ontimeout?.();
   }
 }
 

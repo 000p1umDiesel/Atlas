@@ -68,6 +68,22 @@ test("сетевой сбой — ApiError(0, «Нет связи с серве�
   expect(error).toMatchObject({ status: 0, detail: "Нет связи с сервером" });
 });
 
+test.each(["abort", "timeout"] as const)("%s — тоже «Нет связи с сервером», обещание не висит", async (how) => {
+  const xhrs = installFakeXhr();
+  const result = uploadFile(file(), () => {});
+  xhrs[0]![how]();
+  await expect(result).rejects.toMatchObject({ status: 0, detail: "Нет связи с сервером" });
+});
+
+test("2xx без объекта в теле — ошибка, а не «успех» без задачи", async () => {
+  const xhrs = installFakeXhr();
+  const result = uploadFile(file(), () => {});
+  xhrs[0]!.respond(202, "<html>proxy</html>");
+  const error = await result.catch((e: unknown) => e);
+  expect(error).toBeInstanceOf(ApiError);
+  expect(error).toMatchObject({ status: 0, detail: "Сервис временно недоступен" });
+});
+
 test("401 — подписчики onUnauthorized уведомлены", async () => {
   const xhrs = installFakeXhr();
   const handler = vi.fn();

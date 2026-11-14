@@ -18,7 +18,9 @@ export function uploadFile(file: File, onProgress: (fraction: number) => void): 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
     };
-    xhr.onerror = () => reject(new ApiError(0, "Нет связи с сервером"));
+    // Сбой сети, прерывание и истёкший timeout — одно и то же для пользователя; без этого обещание
+    // повисло бы, и очередь загрузок встала бы на этом файле.
+    xhr.onerror = xhr.onabort = xhr.ontimeout = () => reject(new ApiError(0, "Нет связи с сервером"));
     xhr.onload = () => {
       let body: unknown = null;
       try {
@@ -26,8 +28,10 @@ export function uploadFile(file: File, onProgress: (fraction: number) => void): 
       } catch {
         // не JSON (например, страница прокси) — текст по коду ответа
       }
-      if (xhr.status >= 200 && xhr.status < 300 && body && typeof body === "object") {
-        resolve(body as UploadJob);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // 2xx без задачи в теле (страница прокси) — не успех: файл мог и не дойти до сервера
+        if (body && typeof body === "object") resolve(body as UploadJob);
+        else reject(new ApiError(0, "Сервис временно недоступен"));
         return;
       }
       if (xhr.status === 401) notifyUnauthorized();

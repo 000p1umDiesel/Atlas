@@ -49,10 +49,30 @@ test("тексты зоны, скрытый выбор файлов, подсв�
   fireEvent.click(screen.getByRole("button", { name: "выберите на диске" }));
   expect(click).toHaveBeenCalled();
 
-  fireEvent.dragOver(zone());
+  fireEvent.dragOver(zone(), { dataTransfer: { types: ["Files"] } });
   expect(zone().dataset.over).toBe("true");
   fireEvent.dragLeave(zone());
   expect(zone().dataset.over).toBeUndefined();
+  // перетаскивают текст, а не файлы — зона не подсвечивается
+  fireEvent.dragOver(zone(), { dataTransfer: { types: ["text/plain"] } });
+  expect(zone().dataset.over).toBeUndefined();
+});
+
+test.each(["abort", "timeout"] as const)("%s у файла не останавливает очередь", async (how) => {
+  const xhrs = installFakeXhr();
+  render(<Uploader onUploaded={() => {}} />);
+  await act(async () => {
+    fireEvent.change(input(), { target: { files: [file("a.pdf"), file("b.pdf")] } });
+  });
+  await act(async () => {
+    xhrs[0]![how]();
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(row("a.pdf").textContent).toContain("Нет связи с сервером");
+  expect(xhrs).toHaveLength(2);
+  expect(xhrs[1]!.url).toContain("filename=b.pdf");
+  await respond(xhrs[1]!, 202, { ...job(), duplicate: false });
+  expect(row("b.pdf").textContent).toContain("принят");
 });
 
 test("три файла по одному: ошибка второго не останавливает очередь, дубликат — «уже в базе»", async () => {
