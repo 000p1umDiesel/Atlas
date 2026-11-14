@@ -74,6 +74,74 @@ export async function deleteDocument(id: string): Promise<Job> {
   return (await apiSend<Job>("DELETE", `/api/documents/${encodeURIComponent(id)}`))!;
 }
 
+/** Стадия обработки документа (`stages[]` карточки). */
+export interface DocumentStage {
+  stage: string;
+  status: string;
+  attempts: number;
+  error: string | null;
+  updated_at: string | null;
+}
+
+/** Сущность документа в карточке. */
+export interface DocumentEntity {
+  entity_id: string;
+  name: string;
+  type: string;
+  has_page: boolean;
+  slug: string | null;
+}
+
+/** Ответ `GET /api/documents/<id>`. */
+export interface DocumentDetail {
+  id: string;
+  name: string;
+  status: string;
+  uploaded: boolean;
+  url: string | null;
+  stages: DocumentStage[];
+  chunks: number;
+  entities: DocumentEntity[];
+}
+
+export interface ReaderChunk {
+  chunk_id: string;
+  idx: number;
+  text: string;
+  headings: string[];
+  page_start: number | null;
+  page_end: number | null;
+}
+
+/** Ответ `GET /api/documents/<id>/chunks`. */
+export interface ChunkPage {
+  document: { id: string; name: string; title: string | null; n_pages: number | null };
+  total: number;
+  chunks: ReaderChunk[];
+}
+
+/** Фрагментов на странице чтения (предел по умолчанию для сервера — 50). */
+export const READER_PAGE = 50;
+
+/** Карточка документа: без опроса, статусы читаются при каждом открытии. */
+export function useDocument(id: string) {
+  return useQuery<DocumentDetail>({
+    queryKey: ["document", id],
+    queryFn: () => apiGet<DocumentDetail>(`/api/documents/${encodeURIComponent(id)}`),
+    staleTime: 0,
+  });
+}
+
+/** Страница фрагментов документа для чтения; при смене страницы прежняя не показывается. */
+export function useDocumentChunks(id: string, offset: number) {
+  return useQuery<ChunkPage>({
+    queryKey: ["document-chunks", id, offset],
+    queryFn: () =>
+      apiGet<ChunkPage>(`/api/documents/${encodeURIComponent(id)}/chunks`, { limit: READER_PAGE, offset }),
+    staleTime: 0,
+  });
+}
+
 /** Повтор упавшей задачи. */
 export async function retryJob(id: number): Promise<void> {
   await apiSend("POST", `/api/jobs/${encodeURIComponent(String(id))}/retry`);

@@ -12,6 +12,7 @@ import { TypeBars } from "../home/TypeBars";
 import { GlossaryToggle, TypeGlossary } from "../home/TypeGlossary";
 import { communityColors, themedCss } from "../lib/communityPalette";
 import { countOf, formatDay, formatDayTime } from "../lib/format";
+import { RouterAnchor } from "../ui/RouterAnchor";
 
 const TOP_ENTITIES = 8;
 const RECENT_DOCUMENTS = 5;
@@ -267,7 +268,12 @@ function RecentList({ docs }: { docs: RecentDocument[] }) {
             <FileText size={18} strokeWidth={1.7} className="shrink-0 text-muted" aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium" title={doc.name}>
-                {doc.name}
+                <RouterAnchor
+                  href={`/documents/${encodeURIComponent(doc.id)}`}
+                  className="underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary"
+                >
+                  {doc.name}
+                </RouterAnchor>
               </p>
               {/* null — загрузка ещё ждёт worker'а */}
               <p className="mt-0.5 text-xs text-muted">{doc.updated_at ? formatDay(doc.updated_at) : "в очереди"}</p>

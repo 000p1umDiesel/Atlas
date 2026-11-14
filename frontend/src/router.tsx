@@ -16,9 +16,11 @@ import { parsePlainSearch, stringifyPlainSearch } from "./lib/searchParams";
 import { AccountPage } from "./routes/account";
 import { ChatPage } from "./routes/chat";
 import { DesignPage } from "./routes/design";
+import { DocumentPage } from "./routes/document";
 import { DocumentsPage } from "./routes/documents";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
+import { ReaderPage } from "./routes/reader";
 import { Placeholder } from "./routes/placeholder";
 import { Shell } from "./shell/Shell";
 import { RouteError } from "./ui/ErrorNotice";
@@ -105,6 +107,19 @@ const documentsRoute = createRoute({
   component: DocumentsPage,
 });
 
+// Карточка документа и чтение по фрагментам (`?chunk=<idx>`): параметры не проверяются, `panel` сохраняется.
+const documentRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/documents/$id",
+  component: DocumentPage,
+});
+
+const readerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/documents/$id/read",
+  component: ReaderPage,
+});
+
 const designRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/_design",
@@ -120,6 +135,8 @@ const routeTree = rootRoute.addChildren([
   chatRoute,
   conversationRoute,
   documentsRoute,
+  documentRoute,
+  readerRoute,
   page("/entities", "Сущности"),
   page("/wiki", "Wiki"),
   page("/status", "Статус"),
