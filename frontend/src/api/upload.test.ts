@@ -15,6 +15,9 @@ const JOB: Job = {
   updated_at: 1_800_000_000,
   doc_id: null,
   name: "отчёт 1.pdf",
+  stage: null,
+  step_done: null,
+  step_total: null,
 };
 
 const file = (name = "отчёт 1.pdf") => new File(["%PDF"], name, { type: "application/pdf" });

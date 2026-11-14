@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { DocumentListItem, Job } from "../api/types";
 import { App, createQueryClient } from "../App";
 import { createAppRouter } from "../router";
-import { fakeApi, type FakeApi } from "../test/fakeApi";
+import { fail, fakeApi, type FakeApi } from "../test/fakeApi";
 
 const ME = { id: "u1", username: "owner" };
 const NOW = Math.floor(Date.now() / 1000);
@@ -28,6 +28,9 @@ const job = (over: Partial<Job>): Job => ({
   updated_at: NOW - 300,
   doc_id: null,
   name: "a.pdf",
+  stage: null,
+  step_done: null,
+  step_total: null,
   ...over,
 });
 
@@ -238,4 +241,98 @@ test("ссылка на документ сохраняет панель на э
   const router = await renderAt("/documents?panel=entity%3Ae1", fakeApi(routes()));
   await screen.findByRole("link", { name: "Смит.pdf" });
   expect(router.state.location.search).toMatchObject({ panel: "entity:e1" });
+});
+
+test("прогресс: подпись этапа, шаг и полоска", async () => {
+  const jobs = [
+    job({ id: 1, status: "running", kind: "ingest", stage: "embed", step_done: 3, step_total: 12, name: "a.pdf" }),
+    job({ id: 2, status: "running", kind: "ingest", stage: "parse", name: "b.pdf" }),
+    job({ id: 3, status: "running", kind: "ingest", stage: "embed", step_done: 0, step_total: 0, name: "c.pdf" }),
+    job({ id: 4, status: "running", kind: "analyze", stage: "analyze", name: "граф" }),
+    job({ id: 5, status: "running", kind: "ingest", stage: "wiki draft", step_done: 1, step_total: 2, name: "d.pdf" }),
+  ];
+  await renderAt("/documents", fakeApi(routes({ [JOBS]: jobs })));
+  const queue = section("Очередь");
+  const rowOf = async (name: string) => (await within(queue).findByText(name)).closest("tr")!;
+
+  const embed = await rowOf("a.pdf");
+  expect(within(embed).getByText("Получение эмбеддингов")).toBeTruthy();
+  expect(within(embed).getByText("шаг 3 из 6")).toBeTruthy();
+  expect(within(embed).getByText("3/12")).toBeTruthy();
+  const bar = within(embed).getByRole("progressbar");
+  expect(bar.getAttribute("aria-valuenow")).toBe("3");
+  expect(bar.getAttribute("aria-valuemax")).toBe("12");
+
+  const parse = await rowOf("b.pdf");
+  expect(within(parse).getByText("Разбор документа")).toBeTruthy();
+  expect(within(parse).getByText("шаг 1 из 6")).toBeTruthy();
+  expect(within(parse).getByRole("progressbar").getAttribute("aria-valuenow")).toBeNull();
+
+  const empty = await rowOf("c.pdf");
+  const fill = within(empty).getByRole("progressbar").firstElementChild as HTMLElement;
+  expect(fill.style.width).toBe("100%");
+
+  const analyze = await rowOf("граф");
+  expect(within(analyze).getByText("Анализ графа")).toBeTruthy();
+  expect(within(analyze).queryByText(/шаг/)).toBeNull();
+
+  const wiki = await rowOf("d.pdf");
+  expect(within(wiki).getByText("Wiki: написание страниц")).toBeTruthy();
+  expect(within(wiki).getByText("шаг 6 из 6")).toBeTruthy();
+});
+
+test("«Отменить» у ожидающей задачи; у идущей и готовой кнопки нет", async () => {
+  const jobs = [
+    job({ id: 4, status: "pending", kind: "remove", name: "old.pdf" }),
+    job({ id: 5, status: "running", stage: "parse", name: "b.pdf" }),
+    job({ id: 6, status: "done", name: "c.pdf" }),
+  ];
+  const api = fakeApi(routes({ [JOBS]: jobs, "POST /api/jobs/4/cancel": job({ id: 4, status: "cancelled" }) }));
+  await renderAt("/documents", api);
+  const queue = section("Очередь");
+  await within(queue).findByText("old.pdf");
+  const buttons = within(queue).getAllByRole("button", { name: "Отменить" });
+  expect(buttons).toHaveLength(1);
+  await click(buttons[0]!);
+  await click(within(queue).getByRole("button", { name: "Отменить задачу?" }));
+  expect(api.requests()).toContain("POST /api/jobs/4/cancel");
+  await vi.waitFor(() => expect(count(api, JOBS)).toBe(2));
+});
+
+test("отмена, которую worker опередил: текст ошибки", async () => {
+  const api = fakeApi(
+    routes({
+      [JOBS]: [job({ id: 4, status: "pending", name: "old.pdf" })],
+      "POST /api/jobs/4/cancel": () => fail(409, "Задача уже выполняется или завершена"),
+    }),
+  );
+  await renderAt("/documents", api);
+  const queue = section("Очередь");
+  await click(await within(queue).findByRole("button", { name: "Отменить" }));
+  await click(within(queue).getByRole("button", { name: "Отменить задачу?" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Задача уже выполняется или завершена");
+});
+
+test("«Очистить историю» скрывает завершённые; без них кнопки нет", async () => {
+  const api = fakeApi(
+    routes({
+      [JOBS]: [job({ id: 1, status: "done", name: "a.pdf" }), job({ id: 2, status: "cancelled", name: "b.pdf" })],
+      "POST /api/jobs/clear": { hidden: 2 },
+    }),
+  );
+  await renderAt("/documents", api);
+  const queue = section("Очередь");
+  expect(await within(queue).findByText("отменена")).toBeTruthy();
+  await click(within(queue).getByRole("button", { name: "Очистить историю" }));
+  await click(within(queue).getByRole("button", { name: "Скрыть завершённые?" }));
+  expect(api.requests()).toContain("POST /api/jobs/clear");
+  await vi.waitFor(() => expect(count(api, JOBS)).toBe(2));
+});
+
+test("только упавшие и ожидающие — «Очистить историю» не показывается", async () => {
+  const jobs = [job({ id: 1, status: "failed", error: "Boom" }), job({ id: 2, status: "pending", name: "b.pdf" })];
+  await renderAt("/documents", fakeApi(routes({ [JOBS]: jobs })));
+  const queue = section("Очередь");
+  await within(queue).findByText("b.pdf");
+  expect(within(queue).queryByRole("button", { name: "Очистить историю" })).toBeNull();
 });

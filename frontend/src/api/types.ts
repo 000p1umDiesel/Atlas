@@ -132,7 +132,7 @@ export interface Conversation {
 export interface Job {
   id: number;
   kind: "ingest" | "remove" | "analyze";
-  status: "pending" | "running" | "done" | "failed" | "superseded";
+  status: "pending" | "running" | "done" | "failed" | "superseded" | "cancelled";
   attempts: number;
   available_at: number;
   /** Имя типа исключения (у `AnalysisError` — «Тип: текст»). */
@@ -142,6 +142,11 @@ export interface Job {
   updated_at: number;
   doc_id: string | null;
   name: string;
+  /** Ключ текущего шага (`parse`, `embed`, `wiki draft`, `analyze`…); null — неизвестен. */
+  stage: string | null;
+  /** Выполнено и всего единиц шага; null — шаг без счётчика. */
+  step_done: number | null;
+  step_total: number | null;
 }
 
 /** Ответ загрузки `POST /api/documents` (202). */

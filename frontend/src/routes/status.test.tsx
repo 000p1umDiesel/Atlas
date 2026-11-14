@@ -41,6 +41,9 @@ const job = (over: Partial<Job> = {}): Job => ({
   updated_at: NOW,
   doc_id: null,
   name: "анализ графа",
+  stage: null,
+  step_done: null,
+  step_total: null,
   ...over,
 });
 

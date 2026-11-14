@@ -136,3 +136,18 @@ export function useDocumentChunks(id: string, offset: number) {
 export async function retryJob(id: number): Promise<void> {
   await apiSend("POST", `/api/jobs/${encodeURIComponent(String(id))}/retry`);
 }
+
+/** Отменить ожидающую задачу (409 — worker уже взял её или она завершена). */
+export async function cancelJob(id: number): Promise<void> {
+  await apiSend("POST", `/api/jobs/${encodeURIComponent(String(id))}/cancel`);
+}
+
+/** Скрыть из списка завершённые задачи (упавшие остаются). */
+export async function clearJobs(): Promise<void> {
+  await apiSend("POST", "/api/jobs/clear");
+}
+
+/** Есть ли в списке задачи, которые «Очистить историю» скроет. */
+export function hasFinishedJobs(jobs: readonly Job[] | undefined): boolean {
+  return (jobs ?? []).some((job) => ["done", "superseded", "cancelled"].includes(job.status));
+}

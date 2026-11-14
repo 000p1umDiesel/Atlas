@@ -15,6 +15,9 @@ const job = (over: Partial<Job> = {}): Job => ({
   updated_at: 1_800_000_000,
   doc_id: null,
   name: "a.pdf",
+  stage: null,
+  step_done: null,
+  step_total: null,
   ...over,
 });
 

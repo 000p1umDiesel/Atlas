@@ -1,10 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  cancelJob,
+  clearJobs,
   deleteDocument,
   DOCUMENTS_PAGE,
   documentsKey,
   hasActiveJobs,
+  hasFinishedJobs,
   refreshDocuments,
   retryJob,
   useDocuments,
@@ -20,13 +23,28 @@ import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { StatusBadge } from "../ui/StatusBadge";
 
-function Block({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
+function Block({
+  title,
+  aside,
+  action,
+  children,
+}: {
+  title: string;
+  /** Пометка в заголовке («обновляется»). */
+  aside?: ReactNode;
+  /** Кнопка справа от заголовка, вне его текста. */
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <section className="min-w-0 rounded-[14px] bg-card p-4 shadow-card sm:p-6">
-      <h2 className="mb-3 flex items-baseline gap-2 text-xl font-semibold tracking-tight">
-        {title}
-        {aside}
-      </h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-baseline gap-2 text-xl font-semibold tracking-tight">
+          {title}
+          {aside}
+        </h2>
+        {action}
+      </div>
       {children}
     </section>
   );
@@ -90,7 +108,8 @@ export function DocumentsPage() {
   const docs = useDocuments(count, { poll: active });
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState<number | null>(null);
+  const [jobBusy, setJobBusy] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const reload = useCallback(() => void refreshDocuments(client), [client]);
 
@@ -115,16 +134,30 @@ export function DocumentsPage() {
     }
   }
 
-  async function retry(id: number) {
-    setRetrying(id);
+  /** Действие над задачей очереди («Повторить», «Отменить»): ошибка — над списками. */
+  async function onJob(id: number, action: (id: number) => Promise<void>) {
+    setJobBusy(id);
     setActionError(null);
     try {
-      await retryJob(id);
+      await action(id);
       reload();
     } catch (error) {
       setActionError(messageOf(error));
     } finally {
-      setRetrying(null);
+      setJobBusy(null);
+    }
+  }
+
+  async function clearHistory() {
+    setClearing(true);
+    setActionError(null);
+    try {
+      await clearJobs();
+      reload();
+    } catch (error) {
+      setActionError(messageOf(error));
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -159,11 +192,29 @@ export function DocumentsPage() {
             </>
           )}
         </Block>
-        <Block title="Очередь" aside={active && <span className="text-sm font-normal text-muted">обновляется</span>}>
+        <Block
+          title="Очередь"
+          aside={active && <span className="text-sm font-normal text-muted">обновляется</span>}
+          action={
+            hasFinishedJobs(jobs.data) && (
+              <ConfirmButton
+                label="Очистить историю"
+                confirmLabel="Скрыть завершённые?"
+                busy={clearing}
+                onConfirm={() => void clearHistory()}
+              />
+            )
+          }
+        >
           {jobs.data === undefined ? (
             jobs.isPending && <p className="text-muted">Загружаю…</p>
           ) : (
-            <JobsTable jobs={jobs.data} onRetry={(id) => void retry(id)} busyId={retrying} />
+            <JobsTable
+              jobs={jobs.data}
+              onRetry={(id) => void onJob(id, retryJob)}
+              onCancel={(id) => void onJob(id, cancelJob)}
+              busyId={jobBusy}
+            />
           )}
         </Block>
       </div>
