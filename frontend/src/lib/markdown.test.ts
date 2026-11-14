@@ -104,3 +104,31 @@ it("prepareWikiPage убирает строки определений снос�
   const { body } = prepareWikiPage(`Текст[^${a}]\n\n[^${a}]: источник\n`);
   expect(body).toBe(`Текст[^${a}]`);
 });
+
+it("строка-определение `[2]: адрес` не перехватывает номер источника и не исчезает", () => {
+  const box = dom(renderMarkdown("см. [2]\n\n[2]: https://evil.example", { citations: true }));
+  const cites = [...box.querySelectorAll("a.cite")];
+  expect(cites.length).toBeGreaterThan(0);
+  for (const cite of cites) expect(cite.getAttribute("href")).toBe("#cite:2");
+  // Ни одна ссылка не прячет evil.example за подписью: номер [2] ведёт к источнику, а строка
+  // определения остаётся видимой; голый адрес linkify делает ссылкой с самим адресом в подписи,
+  // как любой другой адрес в тексте ответа.
+  for (const a of box.querySelectorAll('a[href*="evil.example"]')) {
+    expect(a.textContent).toBe(a.getAttribute("href"));
+  }
+  expect(box.textContent).toContain("2: https://evil.example");
+  // и без режима цитат определение не превращает [1] в ссылку на файл
+  const plain = dom(renderMarkdown("см. [1]\n\n[1]: report.pdf"));
+  expect(plain.querySelector("a")).toBeNull();
+  expect(plain.textContent).toContain("[1]: report.pdf");
+});
+
+it("длинная цепочка `[[` разбирается быстро (без квадратичного перебора)", () => {
+  const started = performance.now();
+  const html = renderMarkdown("[[".repeat(20_000));
+  // прежнее выражение тратило на это ~0,7 с, линейное — миллисекунды
+  expect(performance.now() - started).toBeLessThan(250);
+  expect(html).toContain("[[[[");
+  // обычные wiki-ссылки по-прежнему работают
+  expect(dom(renderMarkdown("[[a|b]] и [[c]]")).querySelectorAll("a.wikilink")).toHaveLength(2);
+});

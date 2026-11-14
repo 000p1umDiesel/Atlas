@@ -17,6 +17,9 @@ export const ALLOWED_URI = /^(?:https?:|#|\/api\/|\/wiki\/|\/documents\/)/i;
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 md.disable("image");
+// Определения ссылок `[n]: адрес` выключены: иначе строка `[2]: https://…` из ответа LLM
+// превращала бы номер источника `[2]` в ссылку наружу (а сама строка исчезала бы).
+md.disable("reference");
 // Ссылку с чужой схемой (`javascript:`, `data:`) markdown-it по умолчанию оставляет сырым
 // текстом «[x](javascript:…)». Здесь она разбирается как ссылка, а правило ниже снимает
 // с неё <a>: остаётся только подпись. DOMPurify всё равно проверяет href ещё раз.
@@ -26,7 +29,8 @@ md.validateLink = () => true;
 //   [[slug|подпись]]  — страница wiki (всегда);
 //   [^<chunk_id>]     — сноска страницы wiki на фрагмент (только с env.footnotes);
 //   [n]               — номер источника ответа (только с env.citations).
-const REFS = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|\[\^([0-9a-f]{16}:\d{5})\]|\[(\d{1,3})\]/g;
+// Внутри `[[…]]` скобок нет: длинная цепочка `[[[[…` не разбирается квадратично.
+const REFS = /\[\[([^[\]|]+)(?:\|([^[\]]+))?\]\]|\[\^([0-9a-f]{16}:\d{5})\]|\[(\d{1,3})\]/g;
 const FOOTNOTE = /\[\^([0-9a-f]{16}:\d{5})\]/g;
 
 function textToken(state: StateCore, content: string): Token {
