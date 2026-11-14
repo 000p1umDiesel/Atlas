@@ -230,6 +230,27 @@ test("обрыв чтения посреди ответа — пузырь бо�
   expect(document.querySelector('[aria-busy="true"]')).toBeNull();
 });
 
+test("обрыв до первой дельты — пустой карточки ответа нет, ошибка показана", async () => {
+  const stream = sseStream();
+  const reloaded = deferred<Response>(); // перечитанная история так и не приходит
+  let loads = 0;
+  const api = fakeApi(
+    routes({
+      [STREAM("c1")]: () => stream.response(),
+      [MESSAGES("c1")]: () => (loads++ === 0 ? Response.json(HISTORY) : reloaded.promise),
+    }),
+  );
+  await renderAt("/chat/c1", api);
+  await screen.findByText("Кто такой Смит?");
+  const cards = document.querySelectorAll("[aria-busy]").length; // ответы из истории
+  await ask("Оборванный вопрос");
+  await stream.fail();
+  await idle();
+  await vi.waitFor(() => expect(count(api, MESSAGES("c1"))).toBe(2));
+  expect((await screen.findByRole("alert")).textContent).toBe("Нет связи с сервером");
+  expect(document.querySelectorAll("[aria-busy]")).toHaveLength(cards);
+});
+
 test("поток оборвался без done/error — история перечитывается, «Отвечаю…» пропадает", async () => {
   const stream = sseStream();
   const api = fakeApi(routes({ [STREAM("c1")]: () => stream.response() }));

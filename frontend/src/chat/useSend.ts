@@ -140,7 +140,10 @@ export function useSend(conversationId: string | undefined) {
       const settle = () => {
         if (cid === undefined || !live()) return;
         client.setQueryData<ChatMessage[]>(messagesKey(cid), (list) =>
-          list?.map((message) => (message.id === pendingId ? { ...message, streaming: false } : message)),
+          list
+            // Обрыв до первой дельты: пустой ответ без источников не оставляем карточкой.
+            ?.filter((m) => m.id !== pendingId || m.content !== "" || m.sources.length > 0)
+            .map((message) => (message.id === pendingId ? { ...message, streaming: false } : message)),
         );
       };
       try {
