@@ -136,3 +136,15 @@ it("streamSse: a read failure mid-stream cancels the reader and is ApiError(0)",
   await expect(streamSse("/api/x", {}, () => {})).rejects.toMatchObject({ status: 0, detail: "Нет связи с сервером" });
   expect(cancel).toHaveBeenCalledTimes(1);
 });
+
+it("streamSse: an exception from onEvent cancels the reader and is rethrown unchanged", async () => {
+  const { response, cancel } = watched(body([new TextEncoder().encode('event: delta\ndata: {"text":"a"}\n\n')]));
+  fetchMock.mockResolvedValueOnce(response);
+  const boom = new Error("consumer failed");
+  await expect(
+    streamSse("/api/x", {}, () => {
+      throw boom;
+    }),
+  ).rejects.toBe(boom);
+  expect(cancel).toHaveBeenCalledTimes(1);
+});

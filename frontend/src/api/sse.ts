@@ -99,6 +99,11 @@ export async function streamSse(
       throw new ApiError(502, MALFORMED);
     }
     buffer = parsed.rest;
-    for (const { event, data } of parsed.events) onEvent(event, data);
+    try {
+      for (const { event, data } of parsed.events) onEvent(event, data);
+    } catch (error) {
+      cancel(); // исключение потребителя: поток не остаётся открытым, ошибка уходит как есть
+      throw error;
+    }
   }
 }
