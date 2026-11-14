@@ -1,8 +1,8 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { App, createQueryClient } from "../App";
 import { createAppRouter } from "../router";
-import { fakeApi, type FakeApi } from "../test/fakeApi";
+import { fail, fakeApi, type FakeApi } from "../test/fakeApi";
 
 const ME = { id: "u1", username: "owner" };
 const DOC = { id: "d1", name: "Смит.pdf", title: "Богатство народов", n_pages: 9 };
@@ -83,4 +83,32 @@ test("заголовок раздела один раз для подряд ид
   expect(screen.getAllByRole("heading", { level: 3, name: "Глава 2" })).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Дальше" })).toBeNull();
   expect(screen.getByRole("link", { name: "Смит.pdf" }).getAttribute("href")).toBe("/documents/d1");
+});
+
+test("«Дальше» прокручивает к началу область страницы (<main>), а не окно", async () => {
+  const api = fakeApi(
+    base({
+      [`${BASE}0`]: { document: DOC, total: 120, chunks: [ch(0)] },
+      [`${BASE}50`]: { document: DOC, total: 120, chunks: [ch(50)] },
+    }),
+  );
+  await renderAt("/documents/d1/read", api);
+  await screen.findByText("Текст 0", { exact: false });
+  const main = screen.getByRole("main");
+  main.scrollTop = 900;
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Дальше" })[1]!);
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(await screen.findByText("Текст 50", { exact: false })).toBeTruthy();
+  expect(main.scrollTop).toBe(0);
+});
+
+test("ошибка (404): путь «Документы» и ссылка на карточку документа", async () => {
+  const api = fakeApi(base({ [`${BASE}0`]: () => fail(404, "Документ не найден") }));
+  await renderAt("/documents/d1/read", api);
+  expect(await screen.findByText("Документ не найден")).toBeTruthy();
+  const crumbs = screen.getByRole("navigation", { name: "Путь" });
+  expect(within(crumbs).getByRole("link", { name: "Документы" }).getAttribute("href")).toBe("/documents");
+  expect(screen.getByRole("link", { name: "К карточке документа" }).getAttribute("href")).toBe("/documents/d1");
 });

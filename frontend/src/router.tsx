@@ -26,7 +26,7 @@ import { WikiPage } from "./routes/wiki";
 import { WikiArticlePage } from "./routes/wikiPage";
 import { StatusPage } from "./routes/status";
 import { Shell } from "./shell/Shell";
-import { RouteError } from "./ui/ErrorNotice";
+import { NotFound, RouteError } from "./ui/ErrorNotice";
 
 function Root() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -164,6 +164,8 @@ export function createAppRouter(opts?: { history?: RouterHistory }) {
     history: opts?.history,
     // Русское сообщение вместо английского по умолчанию (в том числе для чанка прежней сборки).
     defaultErrorComponent: RouteError,
+    // Неизвестный адрес — русская страница внутри оболочки (корневой маршрут рисует Shell).
+    defaultNotFoundComponent: NotFound,
     // Без JSON: «123» остаётся строкой, списки — через запятую, дефолты не пишутся.
     parseSearch: parsePlainSearch,
     stringifySearch: stringifyPlainSearch,

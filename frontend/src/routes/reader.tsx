@@ -4,6 +4,7 @@ import { ApiError } from "../api/client";
 import { READER_PAGE, useDocumentChunks, type ReaderChunk } from "../api/documents";
 import { GHOST_BUTTON } from "../documents/JobsTable";
 import { prefersReducedMotion } from "../lib/motion";
+import { useScrollMainToTop } from "../shell/mainScroll";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
 
@@ -52,6 +53,7 @@ function Reader({ id, chunk }: { id: string; chunk: number | null }) {
   const [offset, setOffset] = useState(chunk === null ? 0 : Math.floor(chunk / READER_PAGE) * READER_PAGE);
   const query = useDocumentChunks(id, offset);
   const data = query.data;
+  const scrollToTop = useScrollMainToTop();
 
   // После каждой загрузки страницы выделенный фрагмент прокручивается в центр.
   useEffect(() => {
@@ -64,11 +66,24 @@ function Reader({ id, chunk }: { id: string; chunk: number | null }) {
 
   const move = (next: number) => {
     setOffset(next);
-    window.scrollTo(0, 0);
+    scrollToTop();
   };
 
   if (query.isError) {
-    return <FormNote tone="error">{query.error instanceof ApiError ? query.error.detail : "Ошибка запроса"}</FormNote>;
+    // Как у карточки: путь к списку и ссылка назад, а не тупик с одной ошибкой.
+    return (
+      <>
+        <nav aria-label="Путь">
+          <RouterAnchor href="/documents" className={CRUMB}>
+            Документы
+          </RouterAnchor>
+        </nav>
+        <FormNote tone="error">{query.error instanceof ApiError ? query.error.detail : "Ошибка запроса"}</FormNote>
+        <RouterAnchor href={`/documents/${encodeURIComponent(id)}`} className={`${CRUMB} inline-block`}>
+          К карточке документа
+        </RouterAnchor>
+      </>
+    );
   }
   if (!data) return <p className="text-muted">Загружаю…</p>;
 

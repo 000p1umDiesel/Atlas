@@ -133,3 +133,25 @@ test("на телефоне «Аккаунт» и «Выйти» — в меню
   await vi.waitFor(() => expect(within(bar).queryByRole("button", { name: "Выйти" })).toBeNull());
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
 });
+
+test("новый путь открывает страницу с начала; смена только search-параметров прокрутку не сбрасывает", async () => {
+  const router = await renderAt("/status");
+  await screen.findByRole("heading", { name: "Статус" });
+  const main = screen.getByRole("main");
+  main.scrollTop = 500;
+  // правая панель — только search-параметр: прокрутка остаётся
+  await act(() => router.navigate({ to: "/status", search: { panel: "entity:e1" } as never }));
+  expect(router.state.location.search).toEqual({ panel: "entity:e1" });
+  expect(main.scrollTop).toBe(500);
+  await act(() => router.navigate({ to: "/account" }));
+  await screen.findByRole("heading", { name: "Аккаунт" });
+  expect(screen.getByRole("main")).toBe(main);
+  expect(main.scrollTop).toBe(0);
+});
+
+test("неизвестный путь — русская страница «Страница не найдена» в оболочке", async () => {
+  await renderAt("/no/such/page");
+  expect(await screen.findByRole("heading", { name: "Страница не найдена" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "На главную" }).getAttribute("href")).toBe("/");
+  expect(screen.getByRole("navigation", { name: "Разделы" })).toBeTruthy();
+});

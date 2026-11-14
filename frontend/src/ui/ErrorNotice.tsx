@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { RotateCw } from "lucide-react";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
@@ -48,6 +49,21 @@ export function RouteError({ error }: { error: unknown }) {
   return (
     <section className="px-4 py-16">
       <ErrorNotice error={error} />
+    </section>
+  );
+}
+
+/** Неизвестный адрес (`defaultNotFoundComponent` роутера): внутри оболочки, по-русски. */
+export function NotFound() {
+  return (
+    <section className="mx-auto max-w-md py-16 text-center">
+      <h1 className="text-3xl font-semibold tracking-tight">Страница не найдена</h1>
+      <Link
+        to="/"
+        className="mt-4 inline-block text-primary-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary"
+      >
+        На главную
+      </Link>
     </section>
   );
 }

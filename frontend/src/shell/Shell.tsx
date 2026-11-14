@@ -1,8 +1,9 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMe } from "../api/auth";
 import { ShellColumnContext, type ShellColumnState } from "./columnContext";
 import { ContextColumn } from "./ContextColumn";
+import { MainScrollContext } from "./mainScroll";
 import { PanelHost } from "./PanelHost";
 import { Rail } from "./Rail";
 import { TopBar } from "./TopBar";
@@ -43,6 +44,14 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
   // Смена раздела закрывает мобильное меню.
   useEffect(() => setMenuOpen(false), [pathname]);
 
+  // Новая страница открывается с начала: прокручивается <main>, а не окно. Только по пути —
+  // правая панель (`?panel=`) и поиск (`?q=`) прокрутку не сбрасывают. Эффект разметки
+  // успевает до эффектов страницы (прокрутка читалки к `?chunk` идёт после него).
+  const mainRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [pathname]);
+
   useEffect(() => {
     if (!menuOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -64,81 +73,84 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
 
   return (
     <ShellColumnContext.Provider value={columnState}>
-      <div className="flex h-dvh bg-bg text-ink">
-        <Rail pathname={pathname} username={username} onLogout={logout} logoutBusy={logoutBusy} />
-        <AnimatePresence initial={false}>
-          {hasColumn && !collapsed && (
-            <motion.div
-              key="column"
-              className="hidden shrink-0 overflow-hidden md:block"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 288, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={SPRING}
-            >
-              <ContextColumn>{column}</ContextColumn>
-            </motion.div>
-          )}
-        </AnimatePresence>
-        <AnimatePresence>
-          {hasColumn && menuOpen && (
-            <motion.div
-              key="menu-backdrop"
-              className="fixed inset-0 z-30 bg-ink/20 md:hidden"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setMenuOpen(false)}
+      <MainScrollContext.Provider value={mainRef}>
+        <div className="flex h-dvh bg-bg text-ink">
+          <Rail pathname={pathname} username={username} onLogout={logout} logoutBusy={logoutBusy} />
+          <AnimatePresence initial={false}>
+            {hasColumn && !collapsed && (
+              <motion.div
+                key="column"
+                className="hidden shrink-0 overflow-hidden md:block"
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 288, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={SPRING}
+              >
+                <ContextColumn>{column}</ContextColumn>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {hasColumn && menuOpen && (
+              <motion.div
+                key="menu-backdrop"
+                className="fixed inset-0 z-30 bg-ink/20 md:hidden"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setMenuOpen(false)}
+              />
+            )}
+            {hasColumn && menuOpen && (
+              <motion.aside
+                key="menu"
+                aria-label="Меню раздела"
+                initial={{ x: "-100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={SPRING}
+                className="fixed inset-y-0 left-0 z-40 w-80 max-w-[88%] overflow-y-auto border-r border-line bg-card p-4 shadow-card md:hidden"
+                onClick={(event) => {
+                  // Переход по ссылке закрывает меню; фильтры и прочие элементы — нет.
+                  if ((event.target as HTMLElement).closest("a")) setMenuOpen(false);
+                }}
+              >
+                {column}
+              </motion.aside>
+            )}
+          </AnimatePresence>
+          <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
+            <TopBar
+              onMenu={hasColumn ? () => setMenuOpen(true) : undefined}
+              username={username}
+              onLogout={logout}
+              logoutBusy={logoutBusy}
             />
-          )}
-          {hasColumn && menuOpen && (
-            <motion.aside
-              key="menu"
-              aria-label="Меню раздела"
-              initial={{ x: "-100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "-100%" }}
-              transition={SPRING}
-              className="fixed inset-y-0 left-0 z-40 w-80 max-w-[88%] overflow-y-auto border-r border-line bg-card p-4 shadow-card md:hidden"
-              onClick={(event) => {
-                // Переход по ссылке закрывает меню; фильтры и прочие элементы — нет.
-                if ((event.target as HTMLElement).closest("a")) setMenuOpen(false);
-              }}
+            <main
+              ref={mainRef}
+              className={
+                bleed
+                  ? "min-h-0 flex-1 overflow-hidden"
+                  : "min-h-0 flex-1 overflow-y-auto px-4 pb-8 md:px-8"
+              }
             >
-              {column}
-            </motion.aside>
-          )}
-        </AnimatePresence>
-        <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
-          <TopBar
-            onMenu={hasColumn ? () => setMenuOpen(true) : undefined}
-            username={username}
-            onLogout={logout}
-            logoutBusy={logoutBusy}
-          />
-          <main
-            className={
-              bleed
-                ? "min-h-0 flex-1 overflow-hidden"
-                : "min-h-0 flex-1 overflow-y-auto px-4 pb-8 md:px-8"
-            }
-          >
-            {/* Только вход: выходящий поддерев рендерил бы живой <Outlet/> уже нового маршрута.
-                Ключ — раздел: переход между диалогами не гасит и не перемонтирует страницу. */}
-            <motion.div
-              key={section(pathname)}
-              className={bleed ? "h-full" : undefined}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.16 }}
-            >
-              {children}
-            </motion.div>
-          </main>
+              {/* Только вход: выходящий поддерев рендерил бы живой <Outlet/> уже нового маршрута.
+                  Ключ — раздел: переход между диалогами не гасит и не перемонтирует страницу. */}
+              <motion.div
+                key={section(pathname)}
+                className={bleed ? "h-full" : undefined}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.16 }}
+              >
+                {children}
+              </motion.div>
+            </main>
+          </div>
+          {/* У графа своя карточка сущности: правая панель там не нужна. */}
+          {!isGraph(pathname) && <PanelHost />}
         </div>
-        {/* У графа своя карточка сущности: правая панель там не нужна. */}
-        {!isGraph(pathname) && <PanelHost />}
-      </div>
+      </MainScrollContext.Provider>
     </ShellColumnContext.Provider>
   );
 }
