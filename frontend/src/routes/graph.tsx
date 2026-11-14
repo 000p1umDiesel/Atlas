@@ -21,16 +21,16 @@ import { focusHighlightField, onFlyToMatch } from "../graph/commands";
 import { ENTITY_CARD_WIDTH, ENTITY_SHEET_SHARE, EntityCard } from "../graph/EntityCard";
 import { Graph2D, type Graph2DApi } from "../graph/Graph2D";
 import { firstMatch, graphHotkey, type GraphAction } from "../graph/hotkeys";
-import { communitySummaries, rankByPagerank } from "../graph/insights";
+import { communitySummaries, rankByPagerank, shownTypes } from "../graph/insights";
 import { Legend, type LegendTarget } from "../graph/Legend";
 import { COMMUNITIES_LIMIT } from "../graph/CommunityList";
 import { MODE_LABELS, ModeCard } from "../graph/ModeCard";
 import { PathList } from "../graph/PathList";
 import { sizeMetric, visibleSubgraph } from "../graph/model";
-import type { GraphMode, GraphView } from "../graph/search";
+import { EXPAND_LIMIT, type GraphMode, type GraphView } from "../graph/search";
 import { activeMode, useGraphData } from "../graph/useGraphData";
 import { useGraphSearch } from "../graph/useGraphSearch";
-import { formatInt, plural } from "../lib/format";
+import { countOf, formatInt, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
 import { ErrorBoundary, ErrorNotice } from "../ui/ErrorNotice";
 import { Segmented } from "../ui/Segmented";
@@ -48,6 +48,12 @@ const VIEW_OPTIONS: { value: GraphView; label: string }[] = [
 ];
 
 const MODES: GraphMode[] = ["overview", "neighbors", "path", "community"];
+
+const ENTITY_FORMS: [string, string, string] = ["сущность", "сущности", "сущностей"];
+
+/** Итог раскрытия узла: сколько сущностей добавилось на граф. */
+const addedNotice = (added: number) =>
+  added > 0 ? `${plural(added, ["Добавлена", "Добавлено", "Добавлено"])} ${countOf(added, ENTITY_FORMS)}` : "Новых связей нет";
 
 const notFound = (error: unknown) => error instanceof ApiError && error.status === 404;
 
@@ -106,6 +112,8 @@ export function GraphPage() {
   const configured = catalog.order;
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
+  // В легенде — только типы с узлами в текущем графе (и выбранные фильтром).
+  const legendTypes = useMemo(() => shownTypes(configured, graph, search.types), [configured, graph, search.types]);
   // Место по PageRank имеет смысл только среди всего графа (обзор), не в окрестности или сообществе.
   const rank = useMemo(
     () => (graph && mode === "overview" ? rankByPagerank(graph) : new Map<string, number>()),
@@ -124,7 +132,9 @@ export function GraphPage() {
   // Ручка рендерера помечена видом, которому принадлежит: после переключения 2D↔3D
   // старая ручка сразу перестаёт считаться текущей (3D без WebGL onReady не вызовет).
   const [renderer, setRenderer] = useState<{ view: GraphView; api: Graph2DApi } | null>(null);
-  const api = renderer?.view === search.view ? renderer.api : null;
+  // Новый объект — новый рендерер (новый граф или вид): по нему камера заново вписывает граф.
+  const current = renderer?.view === search.view ? renderer : null;
+  const api = current?.api ?? null;
   const apiRef = useRef<Graph2DApi | null>(null);
   // До отрисовки: клавиши и легенда должны видеть ручку сразу, как только кнопки включились.
   useLayoutEffect(() => {
@@ -160,7 +170,14 @@ export function GraphPage() {
 
   // Sigma масштабирует кадр по всем узлам, включая скрытые: после смены состава вписываем видимые.
   const compositionKey = graph
-    ? [search.types.join(","), search.community, search.minWeight, search.minMentions, search.hideIsolated].join("|")
+    ? [
+        search.types.join(","),
+        search.community,
+        search.predicates.join(","),
+        search.minWeight,
+        search.minMentions,
+        search.hideIsolated,
+      ].join("|")
     : "";
   const firstComposition = useRef(true);
   useEffect(() => {
@@ -172,11 +189,15 @@ export function GraphPage() {
     scheduleFit();
   }, [compositionKey, scheduleFit]);
 
-  // Новый рендерер (смена вида) — вписать после первых кадров. С выбранным узлом — нет:
-  // камера сразу встаёт на него (ниже), без промежуточного кадра «весь граф».
+  // Новый рендерер (смена вида, новая основная часть графа: центр, сообщество, путь) — вписать
+  // после первых кадров. Выбранный узел виден (в том числе только что раскрытый) — нет: камера
+  // сразу встаёт на него (ниже), без промежуточного кадра «весь граф».
   useEffect(() => {
-    if (api && selectedRef.current === null) scheduleFit();
-  }, [api, scheduleFit]);
+    if (!current) return;
+    const id = selectedRef.current;
+    if (id !== null && visibleRef.current?.nodes.has(id)) return;
+    scheduleFit();
+  }, [current, scheduleFit]);
 
   // Выбранный узел — в центр свободной части холста, не под карточкой.
   const focusOn = useCallback(
@@ -194,13 +215,36 @@ export function GraphPage() {
     focusRef.current = focusOn;
   }, [focusOn]);
   useEffect(() => {
-    if (api && selected !== null) focusOn(selected);
-  }, [api, selected, focusOn]);
+    if (current && selected !== null) focusOn(selected);
+  }, [current, selected, focusOn]);
 
   // Выбранный узел скрыт фильтрами (или такого id нет) — выделение снимается, focus уходит из URL.
   useEffect(() => {
     if (selected !== null && visible && !visible.nodes.has(selected)) setSelected(null);
   }, [selected, visible, setSelected]);
+
+  // Раскрытие соседей (двойной клик, «Показать связи»): id — в конец `expand` (последние 20,
+  // старые вытесняются), узел выбран — камера остаётся на нём. Узлы графа до раскрытия
+  // запоминаются, чтобы по приходу ответа сказать, сколько добавилось.
+  const [expanding, setExpanding] = useState<{ id: string; before: ReadonlySet<string> } | null>(null);
+  const expandNode = useCallback(
+    (id: string) => {
+      setExpanding({ id, before: new Set(graph?.nodes() ?? []) });
+      const expand = [...search.expand.filter((x) => x !== id), id].slice(-EXPAND_LIMIT);
+      update({ expand, focus: id }, { replace: true });
+    },
+    [graph, search.expand, update],
+  );
+  const expandStatus = expanding && data.state === "ready" ? data.expansions.get(expanding.id) : undefined;
+  useEffect(() => {
+    if (!expanding || !graph || expandStatus === undefined || expandStatus === "pending") return;
+    setNotice(
+      expandStatus === "error"
+        ? "Не удалось загрузить связи. Попробуйте ещё раз."
+        : addedNotice(graph.filterNodes((id) => !expanding.before.has(id)).length),
+    );
+    setExpanding(null);
+  }, [expanding, expandStatus, graph]);
 
   // Карточка — под панелью инструментов, даже когда та переносится на вторую строку.
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -496,6 +540,7 @@ export function GraphPage() {
             onSelect={setSelected}
             onBackgroundClick={deselect}
             onReady={onReady3d}
+            onExpand={live ? expandNode : undefined}
             autoRotate={showRotate && autoRotate}
           />
         </Suspense>
@@ -512,6 +557,7 @@ export function GraphPage() {
         onSelect={setSelected}
         onBackgroundClick={deselect}
         onReady={onReady2d}
+        onExpand={live ? expandNode : undefined}
       />
     );
   }
@@ -682,6 +728,7 @@ export function GraphPage() {
             colorBy={search.colorBy}
             sizeBy={sizeMetric(graph, search.sizeBy)}
             catalog={catalog}
+            types={legendTypes}
             activeTypes={search.types}
             activeCommunity={search.community}
             communities={communities}
@@ -740,6 +787,7 @@ export function GraphPage() {
             modesEnabled={live}
             onShowNeighbors={(id) => setMode("neighbors", { center: id, focus: id })}
             onPathFrom={(id) => setMode("path", { source: id, target: search.target === id ? null : search.target })}
+            onExpand={expandNode}
             onClose={deselect}
           />
         )}

@@ -1,5 +1,14 @@
 import type { GraphPayload, NodeView } from "../api/types";
-import { communityLabel, communitySummaries, rankByPagerank, topRelations, typeCounts } from "./insights";
+import {
+  communityLabel,
+  communitySummaries,
+  predicateCounts,
+  predicateLabel,
+  rankByPagerank,
+  shownTypes,
+  topRelations,
+  typeCounts,
+} from "./insights";
 import { buildGraph, DEFAULT_FILTERS } from "./model";
 
 const node = (id: string, type: string, community: string | null, pagerank: number, mentions = 1): NodeView => ({
@@ -52,6 +61,30 @@ test("сообщества: размер, участники по pagerank, бе
 test("счётчики типов учитывают прочие фильтры, но не фильтр типов", () => {
   const counts = typeCounts(g, { ...DEFAULT_FILTERS, types: ["Place"], minMentions: 2 });
   expect(Object.fromEntries(counts)).toEqual({ Person: 1, Concept: 2 });
+});
+
+test("типы чипов и легенды: только с узлами в графе плюс выбранные, в порядке конфигурации", () => {
+  const order = ["Organization", "Concept", "Person", "Event", "Place"];
+  expect(shownTypes(order, g, [])).toEqual(["Concept", "Person", "Place"]);
+  expect(shownTypes(order, g, ["Event"])).toEqual(["Concept", "Person", "Event", "Place"]);
+  expect(shownTypes(order, null, ["Event"])).toEqual(["Event"]);
+});
+
+test("предикаты: по числу связей во всём графе, счётчик — при прочих фильтрах; выбранный без связей — в конце", () => {
+  const twice = buildGraph({ ...payload, relations: [...payload.relations, rel("b", "d", "cites", 0.1)] });
+  expect(predicateCounts(twice, DEFAULT_FILTERS)).toEqual([
+    { predicate: "cites", count: 2 },
+    { predicate: "knows", count: 1 },
+    { predicate: "uses", count: 1 },
+  ]);
+  const filtered = predicateCounts(twice, { ...DEFAULT_FILTERS, types: ["Person"], predicates: ["knows", "works_at"] });
+  expect(filtered).toEqual([
+    { predicate: "cites", count: 0 },
+    { predicate: "knows", count: 1 },
+    { predicate: "uses", count: 0 },
+    { predicate: "works_at", count: 0 },
+  ]);
+  expect(predicateLabel("works_at")).toBe("works at");
 });
 
 test("топ связей: по весу, с направлением", () => {

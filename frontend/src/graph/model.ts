@@ -60,6 +60,7 @@ export function visibleSubgraph(
   f: GraphFilters,
 ): { nodes: Set<string>; edges: Set<string> } {
   const typeSet = new Set(f.types);
+  const predicateSet = new Set(f.predicates);
   const nodes = new Set<string>();
   g.forEachNode((id, a) => {
     if (typeSet.size > 0 && !typeSet.has(a.type)) return;
@@ -71,6 +72,7 @@ export function visibleSubgraph(
   const connected = new Set<string>();
   g.forEachEdge((key, a, s, t) => {
     if (a.weight < f.minWeight) return;
+    if (predicateSet.size > 0 && !predicateSet.has(a.predicate)) return;
     if (!nodes.has(s) || !nodes.has(t)) return;
     edges.add(key);
     connected.add(s);
@@ -82,8 +84,22 @@ export function visibleSubgraph(
   return { nodes, edges };
 }
 
-const SIZE_MIN = 4;
-const SIZE_MAX = 22;
+export interface SizeBounds {
+  min: number;
+  max: number;
+}
+
+/** Радиус узла на обычном графе. */
+const SIZE_BOUNDS: SizeBounds = { min: 4, max: 22 };
+/** На маленьком графе (окрестность, путь) мелкие узлы плохо видны, а крупные давят: шкала уже. */
+const SMALL_SIZE_BOUNDS: SizeBounds = { min: 7, max: 18 };
+/** Граф меньше этого числа узлов считается маленьким. */
+const SMALL_GRAPH = 60;
+
+/** Границы радиуса узла для графа: `{7, 18}` до 60 узлов, иначе `{4, 22}`. */
+export function sizeBounds(g: Graph): SizeBounds {
+  return g.order < SMALL_GRAPH ? SMALL_SIZE_BOUNDS : SIZE_BOUNDS;
+}
 
 type SizeAttrs = Pick<NodeView, "mention_count" | "pagerank" | "degree">;
 
@@ -119,11 +135,16 @@ export function sizeRange(g: Graph, sizeBy: SizeBy): { min: number; max: number 
 
 /**
  * Радиус узла: sqrt-шкала по диапазону значений. `sizeBy` — результат `sizeMetric(g, …)`,
- * `range` — `sizeRange(g, …)`; pagerank=null у отдельного узла → по mentions.
+ * `range` — `sizeRange(g, …)`, `bounds` — `sizeBounds(g)`; pagerank=null у отдельного узла → по mentions.
  */
-export function nodeSize(attrs: SizeAttrs, sizeBy: SizeBy, range: { min: number; max: number }): number {
+export function nodeSize(
+  attrs: SizeAttrs,
+  sizeBy: SizeBy,
+  range: { min: number; max: number },
+  bounds: SizeBounds = SIZE_BOUNDS,
+): number {
   const value = metricValue(attrs, sizeBy);
-  if (!Number.isFinite(value) || !(range.max > range.min)) return (SIZE_MIN + SIZE_MAX) / 2;
+  if (!Number.isFinite(value) || !(range.max > range.min)) return (bounds.min + bounds.max) / 2;
   const t = Math.min(1, Math.max(0, (value - range.min) / (range.max - range.min)));
-  return SIZE_MIN + Math.sqrt(t) * (SIZE_MAX - SIZE_MIN);
+  return bounds.min + Math.sqrt(t) * (bounds.max - bounds.min);
 }

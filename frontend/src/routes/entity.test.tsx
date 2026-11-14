@@ -353,6 +353,8 @@ test("мини-граф: окрестность центра, клик по со
   const section = await screen.findByRole("region", { name: "Окрестность" });
   await within(section).findByTestId("graph2d");
   expect(fake2d.last!.selected).toBe("a");
+  // Колесо мыши над мини-графом прокручивает страницу, а не масштабирует холст.
+  expect(fake2d.last!.wheelZoom).toBe(false);
   await act(async () => {
     fake2d.last!.onSelect("b");
     await new Promise((r) => setTimeout(r, 0));

@@ -27,6 +27,7 @@ import { fontsReady, graphFont, loadFonts } from "../lib/fonts";
 import type { FocusOffset, Graph2DApi, Graph2DProps } from "./Graph2D";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
 import { DEFAULT_FILTERS, visibleSubgraph } from "./model";
+import { seedPositions, type SeedPosition } from "./seed";
 import {
   boundingSphere,
   compositionKey,
@@ -51,7 +52,7 @@ export interface Graph3DProps extends Graph2DProps {
   autoRotate?: boolean;
 }
 
-/** Мировой радиус узла на единицу `nodeSize` (4…22 → 2…11). */
+/** Мировой радиус узла на единицу `nodeSize` (4…22 → 2…11; на маленьком графе 7…18 → 3.5…9). */
 const NODE_SCALE = 0.5;
 const FOV = 50;
 /** Подписей без наведения: больше — и в объёме они налезают друг на друга. */
@@ -73,6 +74,8 @@ const LABEL_DENSITY = 2;
 const LABEL_MAX_CHARS = 40;
 /** Сдвиг клика, после которого это уже вращение камеры, а не выбор узла. */
 const CLICK_SLOP_PX = 5;
+/** Два клика по одному узлу не дольше этого — раскрыть его соседей. */
+const DOUBLE_CLICK_MS = 300;
 /** Тиков раскладки, если анимация выключена: считается сразу, показывается итог. */
 const WARMUP_TICKS = 400;
 
@@ -200,6 +203,10 @@ interface Flight {
 
 interface SceneCallbacks {
   onSelect(id: string): void;
+  /** Двойной клик по узлу: добавить его соседей на граф. */
+  onExpand(id: string): void;
+  /** Раскладка остановилась: позиции узлов можно запомнить для следующей сцены. */
+  onSettle(): void;
   onBackground(): void;
   onHover(node: ForceNode | null): void;
   tooltip(): HTMLElement | null;
@@ -252,6 +259,10 @@ class Scene3D {
   private labelUnit = 0;
   private pointer = { x: 0, y: 0, inside: false };
   private press: { x: number; y: number; id: number } | null = null;
+  /** Прошлый клик по узлу: второй по тому же узлу за 300 мс — двойной. */
+  private lastClick: { id: string; time: number } | null = null;
+  /** Начальные позиции узлов из прежней сцены (`seedPositions`); нужны только первому составу. */
+  private seeds: ReadonlyMap<string, SeedPosition> | undefined;
   private disposed = false;
   private readonly tmp = new Vector3();
   private readonly up = new Vector3();
@@ -323,12 +334,28 @@ class Scene3D {
 
   // ——— данные ———
 
+  /** Начальные позиции из прежней сцены: раскладка продолжается, а не начинается с нуля. */
+  setSeeds(seeds: ReadonlyMap<string, SeedPosition>) {
+    this.seeds = seeds.size > 0 ? seeds : undefined;
+  }
+
+  /** Текущие позиции узлов (для следующей сцены). */
+  positions(): Map<string, SeedPosition> {
+    const out = new Map<string, SeedPosition>();
+    for (const n of this.nodes.values()) {
+      if (Number.isFinite(n.x) && Number.isFinite(n.y) && Number.isFinite(n.z)) {
+        out.set(n.id, { x: n.x as number, y: n.y as number, z: n.z as number });
+      }
+    }
+    return out;
+  }
+
   setData(data: ForceData) {
     if (this.disposed) return;
     const key = compositionKey(data);
     // Был пустой кадр — новый состав снова кадрируется автоматически.
     if (this.nodes.size === 0) this.userMoved = false;
-    const nodes = reconcileNodes(this.nodes, data.nodes);
+    const nodes = reconcileNodes(this.nodes, data.nodes, this.seeds);
     this.nodes = new Map(nodes.map((n) => [n.id, n]));
     this.maxWeight = data.links.reduce((m, l) => Math.max(m, l.weight), 0);
     this.adjacency = new Map();
@@ -776,9 +803,19 @@ class Scene3D {
     if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > CLICK_SLOP_PX) return;
     const node = this.pick(e.clientX, e.clientY);
     if (!node) {
+      this.lastClick = null;
       this.callbacks.onBackground();
       return;
     }
+    const now = performance.now();
+    const last = this.lastClick;
+    if (last && last.id === node.id && now - last.time <= DOUBLE_CLICK_MS) {
+      // Второй клик по тому же узлу: он уже выбран первым, теперь — раскрыть соседей.
+      this.lastClick = null;
+      this.callbacks.onExpand(node.id);
+      return;
+    }
+    this.lastClick = { id: node.id, time: now };
     // Перелёт к выбранному узлу делает страница (focusNode с местом под карточку).
     this.callbacks.onSelect(node.id);
   };
@@ -828,6 +865,7 @@ class Scene3D {
     if (this.disposed) return;
     this.engineRunning = false;
     this.dirty = true;
+    this.callbacks.onSettle();
     if (!this.userMoved) this.followGraph(1);
   };
 
@@ -862,6 +900,7 @@ export function Graph3D({
   onSelect,
   onBackgroundClick,
   onReady,
+  onExpand,
   autoRotate = false,
 }: Graph3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -870,7 +909,10 @@ export function Graph3D({
   const onSelectRef = useRef(onSelect);
   const onBackgroundRef = useRef(onBackgroundClick);
   const onReadyRef = useRef(onReady);
+  const onExpandRef = useRef(onExpand);
   const graphRef = useRef(graph);
+  /** Позиции узлов прежней сцены: новая сцена (раскрытие, смена режима) стартует с них. */
+  const positionsRef = useRef<ReadonlyMap<string, SeedPosition>>(new Map());
   const typeLabelRef = useRef(typeLabel);
   const [hover, setHover] = useState<TooltipInfo | null>(null);
   const [unsupported, setUnsupported] = useState(false);
@@ -882,6 +924,7 @@ export function Graph3D({
     onSelectRef.current = onSelect;
     onBackgroundRef.current = onBackgroundClick;
     onReadyRef.current = onReady;
+    onExpandRef.current = onExpand;
     graphRef.current = graph;
     typeLabelRef.current = typeLabel;
   });
@@ -909,9 +952,14 @@ export function Graph3D({
       return { id: node.id, name: a.name, type, mentions: a.mention_count, color: node.color };
     };
     let scene: Scene3D;
+    const remember = () => {
+      positionsRef.current = scene.positions();
+    };
     try {
       scene = new Scene3D(container, {
         onSelect: (id) => onSelectRef.current(id),
+        onExpand: (id) => onExpandRef.current?.(id),
+        onSettle: () => remember(),
         onBackground: () => onBackgroundRef.current?.(),
         onHover: (node) => setHover(toTooltip(node)),
         tooltip: () => tooltipRef.current,
@@ -922,6 +970,7 @@ export function Graph3D({
       return;
     }
     setUnsupported(false);
+    scene.setSeeds(seedPositions(graph, positionsRef.current));
     sceneRef.current = scene;
 
     const bump = () => setThemeVersion((v) => v + 1);
@@ -934,6 +983,7 @@ export function Graph3D({
     const dispose = () => {
       if (disposed) return;
       disposed = true;
+      remember();
       observer.disconnect();
       scheme?.removeEventListener("change", bump);
       scene.dispose();
@@ -954,6 +1004,7 @@ export function Graph3D({
 
   // Состав, цвета и размеры. Тот же состав — только перекраска, раскладка не перезапускается.
   const typesKey = filters.types.join("\u0000");
+  const predicatesKey = filters.predicates.join("\u0000");
   const typesOrder = (entityTypes ?? []).join("\u0000");
   const { community, minWeight, minMentions, hideIsolated, colorBy, sizeBy } = filters;
   useEffect(() => {
@@ -966,12 +1017,26 @@ export function Graph3D({
       minWeight,
       minMentions,
       hideIsolated,
+      predicates: predicatesKey === "" ? [] : predicatesKey.split("\u0000"),
     });
     scene.setPalette(readPalette());
     scene.setData(
       toForceData(graph, visible, { colorBy, sizeBy }, typesOrder === "" ? undefined : typesOrder.split("\u0000")),
     );
-  }, [graph, fontsLoaded, typesKey, community, minWeight, minMentions, hideIsolated, colorBy, sizeBy, typesOrder, themeVersion]);
+  }, [
+    graph,
+    fontsLoaded,
+    typesKey,
+    predicatesKey,
+    community,
+    minWeight,
+    minMentions,
+    hideIsolated,
+    colorBy,
+    sizeBy,
+    typesOrder,
+    themeVersion,
+  ]);
 
   // Подписи и подсветка поиска; зависят от состава и размеров, поэтому идут после данных.
   const highlight = filters.highlight;
@@ -983,6 +1048,7 @@ export function Graph3D({
     highlight,
     selected,
     typesKey,
+    predicatesKey,
     community,
     minWeight,
     minMentions,

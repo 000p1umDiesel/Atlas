@@ -2,7 +2,8 @@
 // Здесь нет three.js — модуль проверяется в jsdom без WebGL.
 import { schemeColor, typeColorRgb } from "../lib/entityColors";
 import { communityColorMap } from "./insights";
-import { nodeSize, sizeMetric, sizeRange, type Graph, type GraphFilters } from "./model";
+import { nodeSize, sizeBounds, sizeMetric, sizeRange, type Graph, type GraphFilters } from "./model";
+import type { SeedPosition } from "./seed";
 
 /** Узел для three-forcegraph; x/y/z/v* дописывает и двигает симуляция d3-force-3d. */
 export interface ForceNode {
@@ -10,7 +11,7 @@ export interface ForceNode {
   name: string;
   /** Цвет `rgb(r, g, b)` (WebGL не понимает `var(...)`). */
   color: string;
-  /** Радиус узла = `nodeSize` (4…22), та же шкала, что в 2D. */
+  /** Радиус узла = `nodeSize` (4…22, на маленьком графе 7…18), та же шкала, что в 2D. */
   val: number;
   x?: number;
   y?: number;
@@ -40,7 +41,7 @@ function typeOrder(graph: Graph, entityTypes?: string[]): string[] {
 
 /**
  * Видимая часть графа в формате three-forcegraph. Размер — через
- * `sizeMetric` → `sizeRange` → `nodeSize` (по всему графу, как в 2D), цвета — готовые
+ * `sizeMetric` → `sizeRange` → `nodeSize` с `sizeBounds` (по всему графу, как в 2D), цвета — готовые
  * `rgb(...)`. Параллельные рёбра пары (в любую сторону) сливаются в одну связь
  * с наибольшим весом: в 3D они всё равно легли бы одной линией.
  */
@@ -52,6 +53,7 @@ export function toForceData(
 ): ForceData {
   const metric = sizeMetric(graph, filters.sizeBy);
   const range = sizeRange(graph, filters.sizeBy);
+  const bounds = sizeBounds(graph);
   const types = typeOrder(graph, entityTypes);
   const communities = filters.colorBy === "community" ? communityColorMap(graph) : null;
   const nodes: ForceNode[] = [];
@@ -60,7 +62,7 @@ export function toForceData(
     const color = communities
       ? schemeColor(a.community === null ? undefined : communities.get(a.community))
       : typeColorRgb(a.type, types);
-    nodes.push({ id, name: a.name, color, val: nodeSize(a, metric, range) });
+    nodes.push({ id, name: a.name, color, val: nodeSize(a, metric, range, bounds) });
   });
   const pairs = new Map<string, ForceLink>();
   graph.forEachEdge((key, a, src, dst) => {
@@ -134,12 +136,25 @@ export function fitDistance(radius: number, verticalFovDeg: number, aspect: numb
 
 /**
  * Узлы, оставшиеся после смены фильтров, сохраняют свой объект (и с ним позицию
- * и скорость в симуляции, и меш three-forcegraph); меняются только атрибуты.
+ * и скорость в симуляции, и меш three-forcegraph); меняются только атрибуты. Новый узел
+ * с позицией в `seeds` (прежняя сцена, `seedPositions`) стартует с неё, а не с нуля.
  */
-export function reconcileNodes(prev: Map<string, ForceNode>, next: ForceNode[]): ForceNode[] {
+export function reconcileNodes(
+  prev: Map<string, ForceNode>,
+  next: ForceNode[],
+  seeds?: ReadonlyMap<string, SeedPosition>,
+): ForceNode[] {
   return next.map((n) => {
     const old = prev.get(n.id);
-    if (!old) return n;
+    if (!old) {
+      const seed = seeds?.get(n.id);
+      if (seed && n.x === undefined) {
+        n.x = seed.x;
+        n.y = seed.y;
+        n.z = seed.z ?? 0;
+      }
+      return n;
+    }
     old.name = n.name;
     old.color = n.color;
     old.val = n.val;

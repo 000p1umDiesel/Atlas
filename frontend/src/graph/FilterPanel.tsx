@@ -1,10 +1,10 @@
 import { PanelLeftClose, RotateCcw, Search, X } from "lucide-react";
-import { useId, useMemo, type CSSProperties, type ReactNode } from "react";
+import { useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useTypeCatalog } from "../api/queries";
 import { formatInt, formatScore, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
 import { HIGHLIGHT_FIELD_ATTR, requestFlyToMatch } from "./commands";
-import { communityLabel, communitySummaries, typeCounts } from "./insights";
+import { communityLabel, communitySummaries, predicateCounts, predicateLabel, shownTypes, typeCounts } from "./insights";
 import { DEFAULT_FILTERS, visibleSubgraph, type ColorBy, type SizeBy } from "./model";
 import { fromSlider, sliderScale, toSlider } from "./sliderScale";
 import { activeMode, useGraphData } from "./useGraphData";
@@ -30,11 +30,25 @@ const formatWeight = (v: number) => (Number.isInteger(v) ? formatInt(v) : format
 /** Доля заполненной дорожки ползунка (CSS-переменная через CSSOM, не атрибут style в HTML). */
 const fill = (percent: number) => ({ "--fill": `${percent}%` }) as CSSProperties;
 
+/** Чипов предикатов без «Ещё N». */
+const PREDICATES_SHOWN = 12;
+
+const CHIP = "inline-flex items-center gap-1.5 rounded-full border py-1 text-[13px] transition-[background-color,border-color,opacity] focus-visible:outline-2 focus-visible:outline-primary";
+const chipState = (pressed: boolean, dimmed: boolean) =>
+  pressed
+    ? "border-primary bg-primary/15 text-ink"
+    : dimmed
+      ? "border-line bg-card/50 text-muted hover:text-ink"
+      : "border-line bg-card text-ink hover:border-primary/60";
+
 function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
+  const titleId = useId();
   return (
-    <section className="space-y-2.5">
+    <section role="group" aria-labelledby={titleId} className="space-y-2.5">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="font-sans text-[13px] font-medium text-muted">{title}</h3>
+        <h3 id={titleId} className="font-sans text-[13px] font-medium text-muted">
+          {title}
+        </h3>
         {aside}
       </div>
       {children}
@@ -60,6 +74,15 @@ export function FilterPanel() {
 
   const graph = data.state === "ready" ? data.graph : null;
   const counts = useMemo(() => (graph ? typeCounts(graph, search) : new Map<string, number>()), [graph, search]);
+  // Чипы — только типы с узлами в текущем графе (и выбранные: их можно снять).
+  const types = useMemo(() => shownTypes(catalog.order, graph, search.types), [catalog.order, graph, search.types]);
+  const predicates = useMemo(() => (graph ? predicateCounts(graph, search) : []), [graph, search]);
+  const [allPredicates, setAllPredicates] = useState(false);
+  // Свёрнуто: первые 12 и выбранные из остальных (выбранный чип не прячется).
+  const shownPredicates = allPredicates
+    ? predicates
+    : predicates.filter((p, i) => i < PREDICATES_SHOWN || search.predicates.includes(p.predicate));
+  const hiddenPredicates = predicates.length - shownPredicates.length;
   const visible = useMemo(() => (graph ? visibleSubgraph(graph, search) : null), [graph, search]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
   // Диапазоны ползунков — из данных: вес связи (сумма сил по фрагментам) сверху не ограничен.
@@ -86,6 +109,12 @@ export function FilterPanel() {
   const toggleType = (type: string) => {
     const next = search.types.includes(type) ? search.types.filter((t) => t !== type) : [...search.types, type];
     update({ types: next });
+  };
+  const togglePredicate = (predicate: string) => {
+    const next = search.predicates.includes(predicate)
+      ? search.predicates.filter((p) => p !== predicate)
+      : [...search.predicates, predicate];
+    update({ predicates: next });
   };
 
   return (
@@ -164,7 +193,8 @@ export function FilterPanel() {
         }
       >
         <div className="flex flex-wrap gap-1.5">
-          {catalog.order.map((type) => {
+          {types.length === 0 && <p className="text-[13px] text-muted">Типов на графе пока нет.</p>}
+          {types.map((type) => {
             const pressed = search.types.includes(type);
             const dimmed = search.types.length > 0 && !pressed;
             const info = catalog.typeInfo(type);
@@ -177,13 +207,7 @@ export function FilterPanel() {
                     type="button"
                     aria-pressed={pressed}
                     onClick={() => toggleType(type)}
-                    className={`inline-flex items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-[13px] transition-[background-color,border-color,opacity] focus-visible:outline-2 focus-visible:outline-primary ${
-                      pressed
-                        ? "border-primary bg-primary/15 text-ink"
-                        : dimmed
-                          ? "border-line bg-card/50 text-muted hover:text-ink"
-                          : "border-line bg-card text-ink hover:border-primary/60"
-                    }`}
+                    className={`${CHIP} pr-2.5 pl-2 ${chipState(pressed, dimmed)}`}
                   >
                     <span
                       className={`size-2.5 rounded-full ${dimmed ? "opacity-50" : ""}`}
@@ -218,6 +242,53 @@ export function FilterPanel() {
               </option>
             ))}
           </select>
+        </Section>
+      )}
+
+      {predicates.length > 0 && (
+        <Section
+          title="Связи"
+          aside={
+            search.predicates.length > 0 && (
+              <button
+                type="button"
+                onClick={() => update({ predicates: [] })}
+                className="text-[13px] text-primary-ink underline-offset-2 hover:underline"
+              >
+                Все связи
+              </button>
+            )
+          }
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {shownPredicates.map(({ predicate, count }) => {
+              const pressed = search.predicates.includes(predicate);
+              const dimmed = search.predicates.length > 0 && !pressed;
+              return (
+                <button
+                  key={predicate}
+                  type="button"
+                  aria-pressed={pressed}
+                  onClick={() => togglePredicate(predicate)}
+                  title={predicate}
+                  className={`${CHIP} max-w-full px-2.5 ${chipState(pressed, dimmed)}`}
+                >
+                  <span className="truncate">{predicateLabel(predicate)}</span>{" "}
+                  <span className="text-muted tabular-nums">{formatInt(count)}</span>
+                </button>
+              );
+            })}
+            {(hiddenPredicates > 0 || allPredicates) && predicates.length > PREDICATES_SHOWN && (
+              <button
+                type="button"
+                aria-expanded={allPredicates}
+                onClick={() => setAllPredicates((v) => !v)}
+                className="rounded-full px-2.5 py-1 text-[13px] text-primary-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-primary"
+              >
+                {allPredicates ? "Свернуть" : `Ещё ${formatInt(hiddenPredicates)}`}
+              </button>
+            )}
+          </div>
         </Section>
       )}
 

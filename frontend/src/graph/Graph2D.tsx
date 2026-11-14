@@ -8,7 +8,7 @@ import type { NodeView } from "../api/types";
 import { cssColor, isDarkScheme, mixRgb, schemeColor, typeColorRgb, withAlpha } from "../lib/entityColors";
 import { fontsReady, graphFont, GRAPH_FONT_FAMILY, loadFonts } from "../lib/fonts";
 import { GraphTooltip, placeTooltip, type TooltipInfo } from "./GraphTooltip";
-import { communityColorMap } from "./insights";
+import { communityColorMap, predicateLabel } from "./insights";
 import { framingRatio, neighborhood, smoothTowards, type Point } from "./interaction";
 import {
   applyFrame,
@@ -22,12 +22,14 @@ import {
 import {
   DEFAULT_FILTERS,
   nodeSize,
+  sizeBounds,
   sizeMetric,
   sizeRange,
   visibleSubgraph,
   type Graph,
   type GraphFilters,
 } from "./model";
+import { seedPositions, type SeedPosition } from "./seed";
 
 /** Сдвиг точки фокуса от центра холста, CSS-пиксели (место под карточку сущности). */
 export interface FocusOffset {
@@ -67,6 +69,10 @@ export interface Graph2DProps {
   /** Клик по пустому месту холста (снять выделение, закрыть карточку). */
   onBackgroundClick?(): void;
   onReady?(api: Graph2DApi): void;
+  /** Двойной клик по узлу: добавить его соседей на граф (камера при этом не приближается). */
+  onExpand?(entityId: string): void;
+  /** Колесо мыши масштабирует граф (по умолчанию). false — прокручивает страницу (мини-граф). */
+  wheelZoom?: boolean;
 }
 
 type RenderNode = NodeView & { x: number; y: number; size: number; color: string; label: string };
@@ -155,22 +161,22 @@ function prefersReducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-const predicateLabel = (p: string) => p.replaceAll("_", " ");
-
 /**
- * Граф для отрисовки: копия модели с позициями, размером, цветом и подписью.
- * Начальная раскладка — спираль золотого угла (разные точки, детерминированно).
+ * Граф для отрисовки: копия модели с позициями, размером, цветом и подписью. Узлы из
+ * `seeds` (прежний граф, `seedPositions`) стартуют со своих мест, остальные — по спирали
+ * золотого угла (разные точки, детерминированно).
  */
-function toRenderGraph(graph: Graph): RenderGraph {
+function toRenderGraph(graph: Graph, seeds: ReadonlyMap<string, SeedPosition> = new Map()): RenderGraph {
   const rg: RenderGraph = new MultiDirectedGraph();
   let i = 0;
   graph.forEachNode((id, a) => {
+    const seed = seeds.get(id);
     const r = 10 * Math.sqrt(i + 1);
     const angle = i * 2.399963;
     rg.addNode(id, {
       ...a,
-      x: r * Math.cos(angle),
-      y: r * Math.sin(angle),
+      x: seed ? seed.x : r * Math.cos(angle),
+      y: seed ? seed.y : r * Math.sin(angle),
       size: 8,
       color: "rgb(189, 182, 168)",
       label: a.name,
@@ -208,6 +214,8 @@ export function Graph2D({
   onSelect,
   onBackgroundClick,
   onReady,
+  onExpand,
+  wheelZoom = true,
 }: Graph2DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -227,7 +235,11 @@ export function Graph2D({
   const onSelectRef = useRef(onSelect);
   const onBackgroundRef = useRef(onBackgroundClick);
   const onReadyRef = useRef(onReady);
+  const onExpandRef = useRef(onExpand);
+  const wheelZoomRef = useRef(wheelZoom);
   const typeLabelRef = useRef(typeLabel);
+  /** Позиции узлов прежнего рендерера: новый граф (раскрытие, смена режима) стартует с них. */
+  const positionsRef = useRef<ReadonlyMap<string, SeedPosition>>(new Map());
   const [themeVersion, setThemeVersion] = useState(0);
   // Sigma создаётся после загрузки шрифта подписей: атлас глифов рисуется один раз.
   const [fontsLoaded, setFontsLoaded] = useState(() => fontsReady(FONTS));
@@ -237,6 +249,8 @@ export function Graph2D({
     onSelectRef.current = onSelect;
     onBackgroundRef.current = onBackgroundClick;
     onReadyRef.current = onReady;
+    onExpandRef.current = onExpand;
+    wheelZoomRef.current = wheelZoom;
     typeLabelRef.current = typeLabel;
   });
 
@@ -300,8 +314,11 @@ export function Graph2D({
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !fontsLoaded) return;
-    const rg = toRenderGraph(graph);
+    const rg = toRenderGraph(graph, seedPositions(graph, positionsRef.current));
     renderGraphRef.current = rg;
+    const remember = () => {
+      positionsRef.current = new Map(rg.mapNodes((id, a) => [id, { x: a.x, y: a.y }]));
+    };
     paletteRef.current = readPalette();
     const pal = () => paletteRef.current as Palette;
     const reduced = prefersReducedMotion();
@@ -510,6 +527,19 @@ export function Graph2D({
     });
     sigma.on("clickNode", ({ node }) => onSelectRef.current(node));
     sigma.on("clickStage", () => onBackgroundRef.current?.());
+    // Двойной клик по узлу: первый клик уже выбрал его, второй — раскрывает соседей.
+    // Зум камеры по двойному клику (поведение Sigma) на узле не нужен.
+    sigma.on("doubleClickNode", (e) => {
+      e.preventSigmaDefault();
+      onExpandRef.current?.(e.node);
+    });
+    // Без масштаба колесом (мини-граф на странице): событие уходит странице, она прокручивается.
+    const passWheel = (e: { preventSigmaDefault(): void }) => {
+      if (!wheelZoomRef.current) e.preventSigmaDefault();
+    };
+    sigma.on("wheelStage", passWheel);
+    sigma.on("wheelNode", passWheel);
+    sigma.on("wheelEdge", passWheel);
 
     // Кадр камеры на узел: соседи 1 шага видны в свободной части холста (без карточки).
     const focusState = (id: string, offset: FocusOffset) => {
@@ -579,6 +609,7 @@ export function Graph2D({
       if (reduced && !frame.done) return;
       applyFrame(rg, ids, frame, drag ? new Set([drag.node]) : undefined);
       framesApplied++;
+      remember();
       trackFocus(frame.done === true);
     });
     controllerRef.current = controller;
@@ -624,6 +655,7 @@ export function Graph2D({
     const dispose = () => {
       if (disposed) return;
       disposed = true;
+      remember();
       cancelAnimationFrame(dragFrame);
       drag = null;
       container.removeEventListener("pointermove", onPointerMove);
@@ -745,6 +777,7 @@ export function Graph2D({
 
   // Видимость по фильтрам и перезапуск раскладки — только при смене состава графа.
   const typesKey = filters.types.join("\u0000");
+  const predicatesKey = filters.predicates.join("\u0000");
   const { community, minWeight, minMentions, hideIsolated } = filters;
   useEffect(() => {
     const sigma = sigmaRef.current;
@@ -757,6 +790,7 @@ export function Graph2D({
       minWeight,
       minMentions,
       hideIsolated,
+      predicates: predicatesKey === "" ? [] : predicatesKey.split("\u0000"),
     });
     visibleRef.current = visible;
     const shown: string[] = [];
@@ -774,7 +808,7 @@ export function Graph2D({
       encodeLayoutRequest(rg, visible, LAYOUT_ITERATIONS, dragGuardRef.current?.pinned),
     );
     // Цвет, размер и подсветка в зависимости не входят: они не перезапускают раскладку.
-  }, [graph, fontsLoaded, refreshActive, typesKey, community, minWeight, minMentions, hideIsolated]);
+  }, [graph, fontsLoaded, refreshActive, typesKey, predicatesKey, community, minWeight, minMentions, hideIsolated]);
 
   // Подсветка по строке поиска (подстрока имени без учёта регистра), только среди видимых.
   const highlight = filters.highlight.trim().toLowerCase();
@@ -791,7 +825,7 @@ export function Graph2D({
     });
     sigma.setNodesState(off, { isMatch: false });
     sigma.setNodesState(on, { isMatch: true });
-  }, [graph, fontsLoaded, highlight, typesKey, community, minWeight, minMentions, hideIsolated]);
+  }, [graph, fontsLoaded, highlight, typesKey, predicatesKey, community, minWeight, minMentions, hideIsolated]);
 
   // Цвет и размер узлов; при смене темы цвета пересчитываются заново.
   const { colorBy, sizeBy } = filters;
@@ -808,6 +842,7 @@ export function Graph2D({
     const communities = colorBy === "community" ? communityColorMap(graph) : null;
     const metric = sizeMetric(graph, sizeBy);
     const range = sizeRange(graph, sizeBy);
+    const bounds = sizeBounds(graph);
     // Без подсказки `{ attributes: [...] }`: с ней Sigma 4 пропускает переиндексацию и
     // ищет узлы в своём индексе программ, а он пуст, пока ждёт полная переобработка
     // (`window.resize` → `scheduleRefresh()` до следующего кадра, потерянный WebGL-контекст).
@@ -815,7 +850,7 @@ export function Graph2D({
     // переиндексирует граф, так что подсказка ничего не экономила.
     rg.updateEachNodeAttributes((_, a) => ({
       ...a,
-      size: nodeSize(a, metric, range),
+      size: nodeSize(a, metric, range, bounds),
       color: communities
         ? schemeColor(a.community === null ? undefined : communities.get(a.community))
         : typeColorRgb(a.type, configured),

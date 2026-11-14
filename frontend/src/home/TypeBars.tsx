@@ -4,7 +4,7 @@ import { countOf, formatInt } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
 
 type Props = {
-  /** Справочник типов: числа, русские подписи, цвет полосы = цвет типа на графе и в легенде. */
+  /** Справочник типов: числа, русские подписи, цвет полосы = цвет типа на графе и в легенде. Полосы — только у типов с сущностями. */
   catalog: TypeCatalog;
 };
 
@@ -16,7 +16,11 @@ const ENTITY_FORMS: [string, string, string] = ["сущность", "сущно�
  * число — у конца полосы, доля — в подсказке и в имени ссылки.
  */
 export function TypeBars({ catalog }: Props) {
-  const rows = [...catalog.types].sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+  // Типы без сущностей (`count: 0`) — пустые полосы: их нет, как и в чипах графа.
+  const present = new Set(catalog.present);
+  const rows = catalog.types
+    .filter((t) => present.has(t.type))
+    .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
   const total = rows.reduce((s, r) => s + r.count, 0);
   const max = rows.reduce((m, r) => Math.max(m, r.count), 0);
 

@@ -54,6 +54,34 @@ test("полос по типам — 18, строка «Человек» с чи
   expect(person.getAttribute("href")).toBe("/entities?type=Person");
 });
 
+test("тип без сущностей (count: 0) не выводится в полосах; плитка считает только присутствующие типы", async () => {
+  vi.stubEnv("VITE_FIXTURES", "");
+  const { stats } = generateFixtures();
+  const types = [
+    { type: "Person", label: "Человек", description: "", count: 3 },
+    { type: "Concept", label: "Понятие", description: "", count: 0 },
+    { type: "Organization", label: "Организация", description: "", count: 2 },
+  ];
+  const fetchMock = vi.fn(async (url: string) => {
+    const path = url.split("?")[0];
+    if (path === "/api/stats") return Response.json(stats);
+    if (path === "/api/entities/types") return Response.json(types);
+    if (path === "/api/graph/overview") return Response.json({ nodes: [], relations: [] });
+    return Response.json({ detail: "Не найдено" }, { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    await renderHome();
+    const bars = screen.getByRole("list", { name: "Сущности по типам" });
+    await vi.waitFor(() => expect(within(bars).getAllByRole("listitem")).toHaveLength(2));
+    expect(within(bars).queryByRole("link", { name: /^Понятие/ })).toBeNull();
+    const tile = screen.getByRole("group", { name: "Сущности" });
+    await vi.waitFor(() => expect(tile.textContent).toContain("2 типа"));
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 test("«Что это за типы?» раскрывает справочник: название и определение каждого типа", async () => {
   const { types } = generateFixtures();
   await renderHome();

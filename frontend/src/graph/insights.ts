@@ -54,6 +54,44 @@ export function typeCounts(g: Graph, f: GraphFilters): Map<string, number> {
   return counts;
 }
 
+/**
+ * Типы для чипов фильтра и легенды: настроенные типы, у которых есть узлы в текущем графе,
+ * плюс выбранные (их можно снять), в порядке конфигурации. Без графа — только выбранные.
+ */
+export function shownTypes(order: readonly string[], g: Graph | null, selected: readonly string[]): string[] {
+  const present = new Set<string>(selected);
+  g?.forEachNode((_, a) => present.add(a.type));
+  return order.filter((t) => present.has(t));
+}
+
+export interface PredicateCount {
+  predicate: string;
+  /** Связей с этим предикатом при текущих фильтрах (не считая фильтра связей). */
+  count: number;
+}
+
+/**
+ * Предикаты связей графа для фильтра: по убыванию числа связей во всём графе (порядок не
+ * прыгает от фильтров), затем по имени; выбранные, которых в графе нет, — в конце с нулём.
+ */
+export function predicateCounts(g: Graph, f: GraphFilters): PredicateCount[] {
+  const total = new Map<string, number>();
+  g.forEachEdge((_, a) => total.set(a.predicate, (total.get(a.predicate) ?? 0) + 1));
+  const visible = new Map<string, number>();
+  for (const key of visibleSubgraph(g, { ...f, predicates: [] }).edges) {
+    const p = g.getEdgeAttribute(key, "predicate");
+    visible.set(p, (visible.get(p) ?? 0) + 1);
+  }
+  const rows = [...total.entries()]
+    .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+    .map(([predicate]) => ({ predicate, count: visible.get(predicate) ?? 0 }));
+  for (const p of f.predicates) if (!total.has(p)) rows.push({ predicate: p, count: 0 });
+  return rows;
+}
+
+/** Предикат для людей: `works_at` → «works at». */
+export const predicateLabel = (p: string) => p.replaceAll("_", " ");
+
 export interface RelationRow {
   key: string;
   direction: "out" | "in";

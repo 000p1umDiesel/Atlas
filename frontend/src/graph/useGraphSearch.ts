@@ -7,12 +7,14 @@ type Update = (patch: Partial<GraphSearch>, opts?: { replace?: boolean }) => voi
 type SetMode = (mode: GraphMode, patch?: Partial<GraphSearch>) => void;
 
 /**
- * Переход в режим: раскрытые узлы и выбранный узел сбрасываются. В режиме «Сообщество»
- * `community` — выбор сообщества, а не фильтр: при выходе из режима он снимается, иначе
- * прятал бы чужие узлы окрестности или пути. `patch` применяется поверх (центр, фокус…).
+ * Переход в режим: раскрытые узлы и выбранный узел сбрасываются. `community` снимается при
+ * любой смене режима, кроме входа в «Сообщество»: фильтр сообщества обзора прятал бы чужие
+ * узлы окрестности или пути (а в их фильтрах его может и не быть в списке), выбор сообщества
+ * в режиме «Сообщество» — тоже. При входе в «Сообщество» фильтр обзора становится выбором.
+ * `patch` применяется поверх (центр, фокус, сообщество…).
  */
 export function modePatch(prev: GraphSearch, mode: GraphMode, patch: Partial<GraphSearch> = {}): GraphSearch {
-  const community = prev.mode === "community" && mode !== "community" ? null : prev.community;
+  const community = mode === "community" ? prev.community : null;
   return { ...prev, mode, expand: [], focus: null, community, ...patch };
 }
 

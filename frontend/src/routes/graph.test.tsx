@@ -148,6 +148,18 @@ test("в режиме фикстур режимы кроме «Обзор» не
   expect(searchStr(router)).toBe("");
 });
 
+test("в режиме фикстур раскрытие соседей выключено: «Показать связи» — «Доступно на живых данных»", async () => {
+  const router = await renderAt("/graph");
+  expect(fake2d.last?.onExpand).toBeUndefined();
+  fireEvent.click(screen.getByRole("button", { name: "выбрать узел" }));
+  const card = await screen.findByRole("dialog");
+  const expand = within(card).getByRole("button", { name: /Показать связи/ });
+  expect(expand.getAttribute("aria-disabled")).toBe("true");
+  expect(expand.getAttribute("title")).toBe("Доступно на живых данных");
+  await click(expand);
+  expect(new URLSearchParams(searchStr(router)).get("expand")).toBeNull();
+});
+
 test("клик по узлу открывает компактную карточку; «Подробнее» раскрывает все связи; Esc закрывает", async () => {
   const { graph } = generateFixtures();
   const first = graph.nodes[0]!;
@@ -736,6 +748,171 @@ describe("живые данные: режимы «Окрестность» и «
       const dialog = await card();
       expect(metricText(dialog, "PageRank")).toMatch(/1-е место/);
     });
+  });
+
+  describe("раскрытие соседей", () => {
+    const EXPAND_E1 = "GET /api/graph/e1/neighbors?depth=1&limit=40";
+    const E1_NEIGHBORS = {
+      nodes: [node("e1", "Ада Лавлейс"), node("e3", "Менабреа"), node("e4", "Сомервилл")],
+      relations: [relation("e1", "e3"), relation("e4", "e1")],
+    };
+    const noticeText = () => screen.getAllByRole("status").map((el) => el.textContent ?? "").join(" ");
+
+    test("onExpand(e1) → expand=e1, запрос depth=1&limit=40, новые узлы на графе и «Добавлено 2 сущности»", async () => {
+      const api = fakeApi(routes({ [EXPAND_E1]: E1_NEIGHBORS }));
+      const router = await renderLive("/graph", api);
+      await screen.findByTestId("graph2d");
+      expect(typeof fake2d.last?.onExpand).toBe("function");
+      await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
+      await act(async () => {
+        fake2d.last?.onExpand?.("e1");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await vi.waitFor(() => expect(params(router).get("expand")).toBe("e1"));
+      // Раскрытый узел выбран: камера остаётся на нём.
+      expect(params(router).get("focus")).toBe("e1");
+      await vi.waitFor(() => expect(api.requests()).toContain(EXPAND_E1));
+      await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e2", "e3", "e4"]));
+      await vi.waitFor(() => expect(noticeText()).toContain("Добавлено 2 сущности"));
+      fake2d.api.fit.mockClear();
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      expect(fake2d.api.focusNode).toHaveBeenLastCalledWith("e1", expect.anything());
+      expect(fake2d.api.fit).not.toHaveBeenCalled();
+    });
+
+    test("повторное раскрытие того же узла — «Новых связей нет»", async () => {
+      const api = fakeApi(routes({ [EXPAND_E1]: E1_NEIGHBORS }));
+      await renderLive("/graph?expand=e1&focus=e1", api);
+      await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e2", "e3", "e4"]));
+      await act(async () => {
+        fake2d.last?.onExpand?.("e1");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await vi.waitFor(() => expect(noticeText()).toContain("Новых связей нет"));
+    });
+
+    test("21-е раскрытие вытесняет первое", async () => {
+      const old = Array.from({ length: 20 }, (_, i) => `x${i + 1}`);
+      const api = fakeApi(routes({ [EXPAND_E1]: E1_NEIGHBORS }));
+      const router = await renderLive(`/graph?expand=${old.join(",")}`, api);
+      await screen.findByTestId("graph2d");
+      await act(async () => {
+        fake2d.last?.onExpand?.("e1");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await vi.waitFor(() => expect(params(router).get("expand")).toBe([...old.slice(1), "e1"].join(",")));
+      await vi.waitFor(() => expect(graphNodes()).toContain("e3"));
+    });
+
+    test("кнопка «Показать связи» в карточке делает то же", async () => {
+      const api = fakeApi(routes({ [EXPAND_E1]: E1_NEIGHBORS }));
+      const router = await renderLive("/graph?focus=e1", api);
+      const card = await screen.findByRole("dialog", { name: "Ада Лавлейс" });
+      await click(within(card).getByRole("button", { name: /Показать связи/ }));
+      await vi.waitFor(() => expect(params(router).get("expand")).toBe("e1"));
+      await vi.waitFor(() => expect(api.requests()).toContain(EXPAND_E1));
+      await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e2", "e3", "e4"]));
+      await vi.waitFor(() => expect(noticeText()).toContain("Добавлено 2 сущности"));
+    });
+
+    test("раскрытие в окрестности сливается с графом режима", async () => {
+      const api = fakeApi(
+        routes({
+          "GET /api/graph/e3/neighbors?depth=1&limit=40": {
+            nodes: [node("e3", "Менабреа"), node("e6", "Фарадей")],
+            relations: [relation("e3", "e6")],
+          },
+        }),
+      );
+      await renderLive("/graph?mode=neighbors&center=e1&expand=e3", api);
+      await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e3", "e6"]));
+    });
+  });
+
+  test("чип типа без узлов в текущем графе не показан (выбранный — показан); легенда — так же", async () => {
+    const types = [...TYPES, { type: "Concept", label: "Понятие", description: "", count: 5 }];
+    const router = await renderLive("/graph", fakeApi(routes({ "GET /api/entities/types": types })));
+    await screen.findByTestId("graph2d");
+    await within(filters()).findByRole("button", { name: /^Человек/ });
+    expect(within(filters()).queryByRole("button", { name: /^Понятие/ })).toBeNull();
+    const legend = screen.getByRole("list", { name: "Цвета типов" });
+    expect(within(legend).getByRole("button", { name: "Человек" })).toBeTruthy();
+    expect(within(legend).queryByRole("button", { name: "Понятие" })).toBeNull();
+    await act(async () => {
+      await router.navigate({ href: "/graph?types=Concept" });
+    });
+    expect(await within(filters()).findByRole("button", { name: /^Понятие/ })).toBeTruthy();
+  });
+
+  test("фильтр связей: чипы предикатов графа, клик — predicates в URL и в фильтрах рендерера", async () => {
+    const overview = {
+      ...OVERVIEW,
+      nodes: [...OVERVIEW.nodes, node("e3", "Менабреа")],
+      relations: [relation("e2", "e1"), { ...relation("e1", "e3"), predicate: "works_at" }],
+    };
+    const router = await renderLive("/graph", fakeApi(routes({ "GET /api/graph/overview?limit=500": overview })));
+    await screen.findByTestId("graph2d");
+    const section = await within(filters()).findByRole("group", { name: "Связи" });
+    const chip = within(section).getByRole("button", { name: /^works at/ });
+    expect(chip.textContent).toContain("1");
+    expect(within(section).getByRole("button", { name: /^knows/ })).toBeTruthy();
+    await click(chip);
+    await vi.waitFor(() => expect(params(router).get("predicates")).toBe("works_at"));
+    expect(fake2d.last?.filters.predicates).toEqual(["works_at"]);
+    expect(within(section).getByRole("button", { name: /^works at/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  test("предикатов больше 12 — первые 12 и «Ещё N»", async () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({ ...relation("e2", "e1"), predicate: `p_${String(i).padStart(2, "0")}` }));
+    await renderLive("/graph", fakeApi(routes({ "GET /api/graph/overview?limit=500": { ...OVERVIEW, relations: many } })));
+    await screen.findByTestId("graph2d");
+    const section = await within(filters()).findByRole("group", { name: "Связи" });
+    expect(within(section).getAllByRole("button", { pressed: false })).toHaveLength(12);
+    await click(within(section).getByRole("button", { name: "Ещё 3" }));
+    expect(within(section).getAllByRole("button", { pressed: false })).toHaveLength(15);
+  });
+
+  test("окрестность: связей в ответе столько же, сколько limit, — «Показаны не все связи»", async () => {
+    const hubNodes = [node("e1", "Ада Лавлейс"), ...Array.from({ length: 50 }, (_, i) => node(`n${i}`, `Сосед ${i}`))];
+    const hubRelations = Array.from({ length: 200 }, (_, i) => ({ ...relation("e1", `n${i % 50}`), predicate: `p${i}` }));
+    const api = fakeApi(routes({ "GET /api/graph/e1/neighbors?depth=1&limit=200": { nodes: hubNodes, relations: hubRelations } }));
+    await renderLive("/graph?mode=neighbors&center=e1", api);
+    await screen.findByTestId("graph2d");
+    expect(await screen.findByText("Показаны не все связи")).toBeTruthy();
+  });
+
+  test("смена режима снимает фильтр сообщества обзора; вход в «Сообщество» — сохраняет его как выбор", async () => {
+    const router = await renderLive("/graph?community=7", fakeApi(routes()));
+    await screen.findByTestId("graph2d");
+    await click(within(modes()).getByRole("button", { name: "Окрестность" }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("neighbors"));
+    expect(params(router).get("community")).toBeNull();
+
+    await act(async () => {
+      await router.navigate({ href: "/graph?community=7" });
+    });
+    await click(within(modes()).getByRole("button", { name: "Сообщество" }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("community"));
+    expect(params(router).get("community")).toBe("7");
+  });
+
+  test("новый центр окрестности без выбранного узла — граф снова вписывается", async () => {
+    const api = fakeApi(
+      routes({
+        "GET /api/graph/e2/neighbors?depth=1&limit=200": { nodes: [node("e2", "Бэббидж"), node("e1", "Ада Лавлейс")], relations: [relation("e2", "e1")] },
+      }),
+    );
+    const router = await renderLive("/graph?mode=neighbors&center=e1", api);
+    await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e3"]));
+    await vi.waitFor(() => expect(fake2d.api.fit).toHaveBeenCalled(), { timeout: 1500 });
+    fake2d.api.fit.mockClear();
+    await act(async () => {
+      await router.navigate({ href: "/graph?mode=neighbors&center=e2" });
+    });
+    await vi.waitFor(() => expect(graphNodes()).toEqual(["e1", "e2"]));
+    await vi.waitFor(() => expect(fake2d.api.fit).toHaveBeenCalled(), { timeout: 1500 });
   });
 
   test("выбор сущности в карточке режима задаёт центр", async () => {

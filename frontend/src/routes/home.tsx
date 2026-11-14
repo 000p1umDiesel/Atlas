@@ -98,7 +98,7 @@ export function HomePage() {
           {/* Одна карточка, ячейки разделены волосяными линиями (зазор 1px поверх цвета линии). */}
           <div className="mt-8 grid grid-cols-2 gap-px overflow-hidden rounded-[14px] bg-line shadow-card lg:grid-cols-4">
             <StatTile index={0} label="Документы" value={s?.documents ?? null} note={s ? countOf(s.chunks, ["фрагмент", "фрагмента", "фрагментов"]) : undefined} />
-            <StatTile index={1} label="Сущности" value={s?.entities ?? null} note={catalog.order.length ? countOf(catalog.order.length, ["тип", "типа", "типов"]) : undefined} />
+            <StatTile index={1} label="Сущности" value={s?.entities ?? null} note={catalog.present.length ? countOf(catalog.present.length, ["тип", "типа", "типов"]) : undefined} />
             <StatTile index={2} label="Связи" value={s?.relations ?? null} note={communities.length ? countOf(communities.length, ["сообщество", "сообщества", "сообществ"]) : undefined} />
             <StatTile index={3} label="Страницы wiki" value={s?.wiki_pages ?? null} note={s && s.entities > 0 ? `у ${Math.round((s.wiki_pages / s.entities) * 100)}% сущностей` : undefined} />
           </div>

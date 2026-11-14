@@ -66,6 +66,8 @@ export function MiniGraph({ id }: { id: string }) {
               typeLabel={catalog.typeLabel}
               selected={id}
               onSelect={onSelect}
+              // Колесо мыши над мини-графом прокручивает страницу, а не масштабирует холст.
+              wheelZoom={false}
             />
           </Suspense>
         </ErrorBoundary>

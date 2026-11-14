@@ -2,7 +2,7 @@ import type { GraphPayload, NodeView } from "../api/types";
 import { clearCssColorCache } from "../lib/entityColors";
 import { typeColorAt } from "../lib/typePalette";
 import { generateFixtures } from "../fixtures/generate";
-import { buildGraph, DEFAULT_FILTERS, nodeSize, sizeMetric, sizeRange, visibleSubgraph } from "./model";
+import { buildGraph, DEFAULT_FILTERS, nodeSize, sizeBounds, sizeMetric, sizeRange, visibleSubgraph } from "./model";
 import {
   boundingSphere,
   compositionKey,
@@ -88,7 +88,7 @@ describe("toForceData", () => {
     expect(data.links).toHaveLength(3);
   });
 
-  it("val = nodeSize по эффективной метрике и диапазону всего графа", () => {
+  it("val = nodeSize по эффективной метрике, диапазону и границам всего графа", () => {
     const g = small();
     for (const sizeBy of ["pagerank", "mentions", "degree"] as const) {
       const filters = { ...DEFAULT_FILTERS, sizeBy, types: ["Person"] };
@@ -96,7 +96,10 @@ describe("toForceData", () => {
       const metric = sizeMetric(g, sizeBy);
       const range = sizeRange(g, sizeBy);
       for (const n of data.nodes) {
-        expect(n.val).toBe(nodeSize(g.getNodeAttributes(n.id), metric, range));
+        expect(n.val).toBe(nodeSize(g.getNodeAttributes(n.id), metric, range, sizeBounds(g)));
+        // Маленький граф: узлы не мельче 7 и не крупнее 18.
+        expect(n.val).toBeGreaterThanOrEqual(7);
+        expect(n.val).toBeLessThanOrEqual(18);
       }
     }
   });
@@ -216,6 +219,21 @@ describe("reconcileNodes", () => {
     expect(out[0]).toBe(old);
     expect(out[0]).toMatchObject({ id: "a", val: 9, name: "Новое", color: "rgb(1, 2, 3)", x: 1, y: 2, z: 3 });
     expect(out[1]).toBe(next[1]);
+  });
+
+  it("новый узел получает начальную позицию из seeds, прежний её не меняет", () => {
+    const old = { ...fn("a", 4), x: 1, y: 2, z: 3 };
+    const prev = new Map<string, ForceNode>([["a", old]]);
+    const seeds = new Map([
+      ["a", { x: 100, y: 100, z: 100 }],
+      ["b", { x: 13, y: 2, z: 3 }],
+      ["c", { x: 5, y: 6 }],
+    ]);
+    const out = reconcileNodes(prev, [fn("a", 4), fn("b", 5), fn("c", 5), fn("d", 5)], seeds);
+    expect(out[0]).toMatchObject({ x: 1, y: 2, z: 3 });
+    expect(out[1]).toMatchObject({ x: 13, y: 2, z: 3 });
+    expect(out[2]).toMatchObject({ x: 5, y: 6, z: 0 });
+    expect(out[3]!.x).toBeUndefined();
   });
 });
 

@@ -1,14 +1,21 @@
-// Данные графа текущего режима: обзор, окрестность, путь между двумя сущностями, сообщество.
-import { useMemo } from "react";
-import { useCommunity, useNeighbors, usePath } from "../api/graph";
+// Данные графа текущего режима: обзор, окрестность, путь между двумя сущностями, сообщество —
+// и раскрытые на нём соседи узлов.
+import { useQueries, type UseQueryResult } from "@tanstack/react-query";
+import { useMemo, useRef } from "react";
+import { neighborsQuery, useCommunity, useNeighbors, usePath } from "../api/graph";
 import { fixturesMode, useOverview } from "../api/queries";
 import type { GraphPart, PathView } from "../api/types";
 import { mergeParts } from "./dataset";
 import { buildGraph, type Graph } from "./model";
 import type { GraphMode, GraphSearch } from "./search";
 
-/** Узлов в окрестности сущности (ответ сервера ограничен этим числом). */
+/** Связей в окрестности сущности: сервер ограничивает число связей (узлы — их концы). */
 export const NEIGHBORS_LIMIT = 200;
+/** Связей в ответе на раскрытие соседей одного узла (глубина 1). */
+export const EXPAND_RELATIONS_LIMIT = 40;
+
+/** Раскрытие узла: ответ ещё идёт, получен или не удался. */
+export type ExpandStatus = "pending" | "done" | "error";
 
 export type GraphData =
   | { state: "input"; prompt: string }
@@ -18,6 +25,8 @@ export type GraphData =
       state: "ready";
       graph: Graph;
       truncated: boolean;
+      /** Состояние раскрытия каждого id из `expand` (на фикстурах раскрытий нет — пусто). */
+      expansions: ReadonlyMap<string, ExpandStatus>;
       /** Режим «Сообщество»: настоящий размер сообщества (на графе — не больше 300 участников). */
       communitySize?: number;
       /** Режим «Путь»: найденные пути (граф — их объединение) и признак таймаута поиска. */
@@ -37,6 +46,21 @@ export function activeMode(search: Pick<GraphSearch, "mode">): GraphMode {
   return fixturesMode() ? "overview" : search.mode;
 }
 
+type Expansion = { data: GraphPart | undefined; status: ExpandStatus };
+
+/** Ответы раскрытий (стабильная функция: useQueries пересчитывает её только при новых ответах). */
+function combineExpansions(results: UseQueryResult<GraphPart>[]): Expansion[] {
+  return results.map((r) => ({ data: r.data, status: r.isError ? "error" : r.data ? "done" : "pending" }));
+}
+
+/** Тот же массив, пока элементы те же: граф не пересобирается от одной смены статусов запросов. */
+function useSameItems<T>(items: T[]): T[] {
+  const ref = useRef(items);
+  const prev = ref.current;
+  if (prev !== items && (prev.length !== items.length || prev.some((x, i) => x !== items[i]))) ref.current = items;
+  return ref.current;
+}
+
 type Source = {
   /** Основная часть графа режима (без раскрытий). */
   part: GraphPart | undefined;
@@ -50,8 +74,8 @@ type Source = {
 
 /**
  * Граф текущего режима. Запросы общие через кэш Query: страница и колонка фильтров зовут
- * хук независимо, сеть — одна. Граф собирается из основной части (и раскрытий — потом)
- * и пересобирается только при смене данных.
+ * хук независимо, сеть — одна. Граф собирается из основной части и раскрытий (соседи узлов
+ * из `expand`, по 40 связей) и пересобирается только при смене данных.
  */
 export function useGraphData(search: GraphSearch): GraphData {
   const mode = activeMode(search);
@@ -61,6 +85,15 @@ export function useGraphData(search: GraphSearch): GraphData {
   const path = usePath(mode === "path" ? search.source : null, mode === "path" ? search.target : null, search.hops);
   // Пути — одна часть графа; пересобирается только с новым ответом.
   const pathPart = useMemo(() => (path.data ? mergeParts(path.data.paths) : undefined), [path.data]);
+  // Раскрытия — только на живых данных (у фикстур нет окрестностей).
+  const expandIds = fixturesMode() ? [] : search.expand;
+  const expansionResults = useQueries({
+    queries: expandIds.map((id) => neighborsQuery(id, 1, EXPAND_RELATIONS_LIMIT)),
+    combine: combineExpansions,
+  });
+  const expansionParts = useSameItems(
+    expansionResults.map((r) => r.data).filter((d): d is GraphPart => d !== undefined),
+  );
 
   let source: Source | null = null;
   let prompt: string | null = null;
@@ -73,8 +106,14 @@ export function useGraphData(search: GraphSearch): GraphData {
     };
   } else if (mode === "neighbors") {
     if (search.center === null) prompt = PROMPTS.neighbors;
-    // У окрестности нет признака усечения: ответ и так ограничен `limit`.
-    else source = { part: neighbors.data, truncated: false, error: neighbors.error, isError: neighbors.isError };
+    // Признака усечения у окрестности нет: сервер отдаёт не больше `limit` связей, полный ответ — сигнал.
+    else
+      source = {
+        part: neighbors.data,
+        truncated: (neighbors.data?.relations.length ?? 0) >= NEIGHBORS_LIMIT,
+        error: neighbors.error,
+        isError: neighbors.isError,
+      };
   } else if (mode === "community") {
     if (search.community === null) prompt = PROMPTS.community;
     else
@@ -101,12 +140,19 @@ export function useGraphData(search: GraphSearch): GraphData {
   }
 
   const part = source?.part;
-  const graph = useMemo(() => (part ? buildGraph(mergeParts([part])) : null), [part]);
+  // Основная часть первой: при совпадении узлов выигрывают её атрибуты.
+  const graph = useMemo(
+    () => (part ? buildGraph(mergeParts([part, ...expansionParts])) : null),
+    [part, expansionParts],
+  );
 
   if (prompt !== null) return { state: "input", prompt };
   if (source?.isError) return { state: "error", error: source.error };
   if (!graph || !source) return { state: "pending" };
-  const ready: GraphData = { state: "ready", graph, truncated: source.truncated };
+  const expansions = new Map(expandIds.map((id, i) => [id, expansionResults[i]?.status ?? "pending"] as const));
+  // Раскрытие хаба отдаёт не все связи узла: полный ответ — тоже «показаны не все».
+  const expandTruncated = expansionParts.some((p) => p.relations.length >= EXPAND_RELATIONS_LIMIT);
+  const ready: GraphData = { state: "ready", graph, truncated: source.truncated || expandTruncated, expansions };
   if (source.communitySize !== undefined) ready.communitySize = source.communitySize;
   if (source.paths !== undefined) {
     ready.paths = source.paths;

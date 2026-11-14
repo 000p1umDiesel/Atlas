@@ -4,6 +4,7 @@ import {
   buildGraph,
   DEFAULT_FILTERS,
   nodeSize,
+  sizeBounds,
   sizeMetric,
   sizeRange,
   visibleSubgraph,
@@ -40,6 +41,51 @@ describe("visibleSubgraph", () => {
   });
 });
 
+describe("visibleSubgraph: фильтр связей", () => {
+  const node = (id: string): NodeView => ({
+    entity_id: id,
+    name: id,
+    type: "Person",
+    mention_count: 1,
+    pagerank: null,
+    community: null,
+    degree: 1,
+  });
+  const rel = (src: string, predicate: string, dst: string) => ({
+    src_id: src,
+    src_name: src,
+    predicate,
+    dst_id: dst,
+    dst_name: dst,
+    description: "",
+    weight: 1,
+    evidence: [],
+  });
+  const small = buildGraph({
+    nodes: ["a", "b", "c", "d"].map(node),
+    relations: [rel("a", "works_at", "b"), rel("a", "knows", "c"), rel("c", "works_at", "d"), rel("b", "knows", "d")],
+  });
+
+  it("predicates: [\"works_at\"] оставляет только такие связи", () => {
+    const v = visibleSubgraph(small, { ...DEFAULT_FILTERS, predicates: ["works_at"] });
+    expect([...v.edges].sort()).toEqual(["a|works_at|b", "c|works_at|d"]);
+    expect(v.nodes.size).toBe(4);
+  });
+  it("hideIsolated убирает узлы, оторванные фильтром связей", () => {
+    const v = visibleSubgraph(small, { ...DEFAULT_FILTERS, predicates: ["knows"], hideIsolated: false });
+    expect(v.nodes.size).toBe(4);
+    const lonely = buildGraph({
+      nodes: ["a", "b", "c"].map(node),
+      relations: [rel("a", "works_at", "b"), rel("b", "knows", "c")],
+    });
+    const hidden = visibleSubgraph(lonely, { ...DEFAULT_FILTERS, predicates: ["works_at"], hideIsolated: true });
+    expect([...hidden.nodes].sort()).toEqual(["a", "b"]);
+  });
+  it("пустой список — все связи", () => {
+    expect(visibleSubgraph(small, DEFAULT_FILTERS).edges.size).toBe(4);
+  });
+});
+
 describe("nodeSize", () => {
   const range = { min: 1, max: 100 };
   const a = (m: number, p: number | null = null) => ({ mention_count: m, pagerank: p, degree: m });
@@ -60,6 +106,34 @@ describe("nodeSize", () => {
   });
   it("pagerank null откатывается на mentions", () => {
     expect(nodeSize(a(100, null), "pagerank", range)).toBe(22);
+  });
+  it("на маленьком графе (10 узлов) размер лежит в [7, 18]", () => {
+    const ten = buildGraph({
+      nodes: Array.from({ length: 10 }, (_, i) => ({
+        entity_id: `n${i}`,
+        name: `n${i}`,
+        type: "Person",
+        mention_count: i * i + 1,
+        pagerank: null,
+        community: null,
+        degree: 1,
+      })),
+      relations: [],
+    });
+    const bounds = sizeBounds(ten);
+    expect(bounds).toEqual({ min: 7, max: 18 });
+    const r = sizeRange(ten, "mentions");
+    const sizes = ten.mapNodes((_, attrs) => nodeSize(attrs, "mentions", r, bounds));
+    for (const s of sizes) {
+      expect(s).toBeGreaterThanOrEqual(7);
+      expect(s).toBeLessThanOrEqual(18);
+    }
+    expect(Math.min(...sizes)).toBe(7);
+    expect(Math.max(...sizes)).toBe(18);
+    expect(nodeSize(a(5), "mentions", { min: 5, max: 5 }, bounds)).toBe(12.5);
+  });
+  it("с 60 узлов — прежние границы [4, 22]", () => {
+    expect(sizeBounds(g)).toEqual({ min: 4, max: 22 });
   });
 });
 

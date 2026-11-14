@@ -17,6 +17,23 @@ const CONVERGED = 1e-4;
 const PIN_ITERATIONS = 400;
 const PIN_TIME_MS = 2500;
 
+/**
+ * Сила притяжения к центру (режим strongGravity: растёт с расстоянием). С мягкой гравитацией
+ * `inferSettings` (0.05) несвязные компоненты и одиночные узлы отталкиваются в углы, и кадр
+ * «весь граф» становится мелким; с этой — держатся рядом, не сминая компоненты.
+ */
+export const LAYOUT_GRAVITY = 0.5;
+
+/** Настройки ForceAtlas2 для графа: `inferSettings` + сильная гравитация, Барнс-Хат на крупных. */
+export function layoutSettings(g: Graph) {
+  return {
+    ...forceAtlas2.inferSettings(g),
+    strongGravityMode: true,
+    gravity: LAYOUT_GRAVITY,
+    barnesHutOptimize: g.order > BARNES_HUT_FROM,
+  };
+}
+
 export interface LayoutSession {
   step(): { positions: Float32Array; done: boolean };
   /** Закрепить узел в (x, y) и продолжить раскладку (перетаскивание). */
@@ -45,10 +62,7 @@ export function createLayoutSession(
   }
 
   const ids = req.nodes.map((n) => n.id);
-  const settings = {
-    ...forceAtlas2.inferSettings(g),
-    barnesHutOptimize: g.order > BARNES_HUT_FROM,
-  };
+  const settings = layoutSettings(g);
   let started = now();
   let timeLimit = TIME_LIMIT_MS;
   let done = g.order === 0;

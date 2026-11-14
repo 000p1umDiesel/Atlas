@@ -45,6 +45,11 @@ export function FakeGraph2D(props: Graph2DProps) {
       <button type="button" onClick={() => props.onSelect(first)}>
         выбрать узел
       </button>
+      {props.onExpand && (
+        <button type="button" onClick={() => props.onExpand?.(first)}>
+          раскрыть узел
+        </button>
+      )}
     </div>
   );
 }

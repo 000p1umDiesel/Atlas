@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, FileText, Info, Network, Route, Users, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, FileText, Info, Network, Route, Users, Waypoints, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useId, useMemo, useState } from "react";
 import { communityColors, themedCss } from "../lib/communityPalette";
@@ -7,7 +7,7 @@ import type { TypeCatalog } from "../lib/typeCatalog";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { TypeHint } from "../ui/TypeHint";
 import { GRAPH_CARD_ATTR } from "./hotkeys";
-import { communityLabel, topRelations, type CommunitySummary, type RelationRow } from "./insights";
+import { communityLabel, predicateLabel, topRelations, type CommunitySummary, type RelationRow } from "./insights";
 import type { Graph } from "./model";
 
 /** После «из» — родительный падеж: из 1 участника, из 2 / 5 участников, из 21 участника. */
@@ -38,8 +38,10 @@ type Props = {
   offsetTop?: number;
   onSelect(entityId: string): void;
   onShowCommunity(community: string): void;
-  /** Режимы «Окрестность» и «Путь» доступны (на фикстурах — нет). */
+  /** Режимы «Окрестность» и «Путь» и раскрытие соседей доступны (на фикстурах — нет). */
   modesEnabled: boolean;
+  /** Добавить соседей сущности на текущий граф (как двойной клик по узлу). */
+  onExpand(entityId: string): void;
   onShowNeighbors(entityId: string): void;
   onPathFrom(entityId: string): void;
   /** Сообщество уже показано на графе: кнопка «Показать сообщество» не нужна. */
@@ -73,7 +75,7 @@ function RelationItem({ row, onSelect }: { row: RelationRow; onSelect(id: string
         <Arrow size={14} className="text-muted" aria-label={row.direction === "out" ? "исходящая" : "входящая"} />
         <span className="min-w-0">
           <span className="block truncate text-[13px] leading-snug font-medium">{row.otherName}</span>
-          <span className="block truncate text-xs text-muted">{row.predicate.replaceAll("_", " ")}</span>
+          <span className="block truncate text-xs text-muted">{predicateLabel(row.predicate)}</span>
         </span>
         <span className="text-xs text-muted tabular-nums" title="Вес связи">
           {formatScore(row.weight)}
@@ -101,6 +103,7 @@ export function EntityCard({
   modesEnabled,
   onShowNeighbors,
   onPathFrom,
+  onExpand,
   shownCommunity = null,
   onClose,
 }: Props) {
@@ -250,6 +253,16 @@ export function EntityCard({
 
       <footer className="shrink-0 space-y-2 border-t border-line px-4 py-3">
         <div className="-mx-2 flex flex-wrap items-center gap-0.5">
+          <button
+            type="button"
+            aria-disabled={modesEnabled ? undefined : true}
+            title={modesEnabled ? "Добавить соседей на этот граф (двойной клик по узлу)" : LIVE_ONLY}
+            onClick={() => modesEnabled && onExpand(entityId)}
+            className={ACTION}
+          >
+            <Waypoints size={14} />
+            Показать связи
+          </button>
           <button
             type="button"
             aria-disabled={modesEnabled ? undefined : true}

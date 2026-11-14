@@ -22,6 +22,8 @@ type Props = {
   sizeBy: SizeBy;
   /** Справочник типов: порядок, русские подписи, определения, цвета. */
   catalog: TypeCatalog;
+  /** Типы в легенде (с узлами в текущем графе и выбранные); не задано — все настроенные. */
+  types?: string[];
   /** Выбранные в фильтре типы (пусто — все): остальные в легенде приглушены. */
   activeTypes?: string[];
   /** Выбранное сообщество фильтра (null — все). */
@@ -38,13 +40,14 @@ function wideScreen(): boolean {
 }
 
 /**
- * Легенда в углу холста: все цвета (типы или каждое сообщество — со своей прокруткой)
- * и смысл размера. Пункты — кнопки-фильтры, как чипы в колонке.
+ * Легенда в углу холста: цвета типов, которые есть на графе (или каждое сообщество — со своей
+ * прокруткой), и смысл размера. Пункты — кнопки-фильтры, как чипы в колонке.
  */
 export function Legend({
   colorBy,
   sizeBy,
   catalog,
+  types,
   activeTypes = [],
   activeCommunity = null,
   communities,
@@ -65,7 +68,7 @@ export function Legend({
     info?: TypeInfo;
   }[] =
     colorBy === "type"
-      ? catalog.order.map((t) => ({
+      ? (types ?? catalog.order).map((t) => ({
           key: t,
           target: { kind: "type", value: t },
           label: catalog.typeLabel(t),
