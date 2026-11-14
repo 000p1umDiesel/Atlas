@@ -151,17 +151,19 @@ def _job(job, names: dict[str, str] | None = None) -> dict:
     """Задача очереди в виде ответа API, без внутренних полей.
 
     Добавляются `doc_id` (из версии `<doc_id>` или `remove:<doc_id>`, иначе `None`) и `name`:
-    имя загрузки из `names` (`doc_id` → имя), иначе имя файла без каталога; у задачи анализа
-    графа — «Анализ графа»."""
+    имя загрузки из `names` (`doc_id` → имя), иначе имя из `payload_json` (запись загрузки
+    стирают удаление и отмена, а задача остаётся в списке), иначе имя файла без каталога; у
+    задачи анализа графа — «Анализ графа»."""
     data = asdict(job)
     doc_id = job.fingerprint.removeprefix("remove:")
     data["doc_id"] = doc_id if _DOC_ID.fullmatch(doc_id) else None
     if job.kind == "analyze":
         data["name"] = "Анализ графа"
     else:
-        data["name"] = (names or {}).get(data["doc_id"] or "") or Path(job.path).name
+        saved = json.loads(job.payload_json or "{}").get("name")
+        data["name"] = (names or {}).get(data["doc_id"] or "") or saved or Path(job.path).name
     # Пути, fingerprints и JSON внутренних операций не являются публичным контрактом.
-    for field in ("path", "fingerprint", "payload_json"):
+    for field in ("path", "fingerprint", "payload_json", "hidden"):
         data.pop(field, None)
     return data
 
@@ -415,7 +417,13 @@ class KnowledgeBase:
             self._queue_has_room(queue)
             path.parent.mkdir(parents=True, exist_ok=True)
             # Файл кладётся под блокировкой пути: идущая remove-задача не удалит его следом.
-            job_id = queue.enqueue(path, doc_id, force=True, on_locked=lambda: staged.replace(path))
+            job_id = queue.enqueue(
+                path,
+                doc_id,
+                force=True,
+                payload_json=json.dumps({"name": filename}, ensure_ascii=False),
+                on_locked=lambda: staged.replace(path),
+            )
             return {**self._job(queue.get(job_id)), "duplicate": False}
 
     def _upload_path(self, doc_id: str) -> Path:
@@ -648,6 +656,45 @@ class KnowledgeBase:
             queue.retry(job_id)
             return self._job(queue.get(job_id))
 
+    def cancel_job(self, job_id: int) -> dict:
+        """Отменяет задачу, которая ещё ждёт (`pending`), и возвращает её состояние.
+
+        Удаление (`remove`) отменяется на всех копиях документа сразу — документ остаётся в
+        базе. Загрузка файла из `service.uploads_dir` исчезает целиком: под блокировкой пути
+        удаляются файл и запись `uploads`, как будто его не загружали; повторная загрузка того
+        же файла снова ставит задачу. 404 — нет задачи; 409 — она уже выполняется или
+        завершена."""
+        with self._queue() as queue:
+            job = queue.get(job_id)
+            if job is None:
+                raise ServiceError(404, "Задача не найдена")
+            if job.status != "pending":
+                raise ServiceError(409, "Задача уже выполняется или завершена")
+            if job.kind == "remove":
+                ids = queue.pending_ids(job.fingerprint)
+                cancelled = [queue.cancel(i) for i in ids]
+                if job_id not in ids or cancelled[ids.index(job_id)] is None:
+                    raise ServiceError(409, "Задача уже выполняется или завершена")
+            elif queue.cancel(job_id, on_locked=self._drop_upload) is None:
+                raise ServiceError(409, "Задача уже выполняется или завершена")
+            return self._job(queue.get(job_id))
+
+    def _drop_upload(self, job) -> None:
+        """Под блокировкой пути отменяемой загрузки: удаляет её файл и запись `uploads`.
+        Источник вне каталога загрузок (CLI, папка watcher'а) не трогается."""
+        try:
+            path = self.uploads.contained(Path(job.path), must_exist=False)
+        except FileNotFoundError:
+            return
+        path.unlink(missing_ok=True)
+        self.uploads.delete(job.fingerprint)
+
+    def clear_jobs(self) -> dict:
+        """Скрывает из списка завершённые задачи (`done`, `superseded`, `cancelled`; упавшие
+        остаются) и возвращает `{"hidden": число}`."""
+        with self._queue() as queue:
+            return {"hidden": queue.hide_finished()}
+
     async def remove_document(self, doc_id: str) -> dict:
         """Ставит удаление документа из корпуса и возвращает задачу `remove`.
 
@@ -676,7 +723,10 @@ class KnowledgeBase:
                     "remove:" + doc_id,
                     force=True,
                     kind="remove",
-                    payload_json=json.dumps({"doc_id": doc_id}),
+                    payload_json=json.dumps(
+                        {"doc_id": doc_id, "name": upload["name"] if upload else Path(path).name},
+                        ensure_ascii=False,
+                    ),
                 )
                 for path in known
             ]

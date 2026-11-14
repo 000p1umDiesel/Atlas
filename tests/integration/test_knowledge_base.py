@@ -290,6 +290,76 @@ async def test_answers_use_chunks_before_the_first_document_is_done(env):
         await kb.close()
 
 
+async def test_cancel_remove_restores_the_document_and_all_copies(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        content = (FIXTURES / "attention_en.md").read_bytes()
+        upload(kb, "a.md", content)
+        await work_once()
+        [doc] = await kb.documents()
+        doc_id = doc["id"]
+        # вторая копия того же содержимого: remove_document ставит remove на каждый путь registry
+        copy = root / "copy.md"
+        copy.write_bytes(content)
+        app = factory(settings)
+        try:
+            stat = copy.stat()
+            app.registry.upsert_file(
+                str(copy.resolve()), doc_id, stat.st_size, stat.st_mtime, "done"
+            )
+        finally:
+            await app.aclose()
+        job = await kb.remove_document(doc_id)
+        cancelled = kb.cancel_job(job["id"])
+        assert cancelled["status"] == "cancelled" and cancelled["kind"] == "remove"
+        removals = [j for j in kb.jobs() if j["kind"] == "remove"]
+        assert len(removals) == 2 and all(j["status"] == "cancelled" for j in removals)
+        await work_once()
+        docs = await kb.documents()
+        assert docs and all(d["status"] == "done" for d in docs)
+        assert kb.read_source(doc_id)[0] == content
+    finally:
+        await kb.close()
+
+
+async def test_cancelled_upload_disappears_and_can_be_uploaded_again(env):
+    settings, factory, _ = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = upload(kb, "a.md", b"text")
+        cancelled = kb.cancel_job(job["id"])
+        assert cancelled["status"] == "cancelled" and cancelled["name"] == "a.md"
+        assert await kb.documents() == []
+        assert not list(kb.uploads.root.glob("*.md"))
+        assert kb.jobs()[0]["name"] == "a.md"  # имя загрузки переживает её удаление
+        again = upload(kb, "a.md", b"text")
+        assert not again["duplicate"] and again["status"] == "pending"
+        assert again["id"] == job["id"]
+    finally:
+        await kb.close()
+
+
+async def test_cancel_and_clear_errors(env):
+    settings, factory, _ = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        with pytest.raises(ServiceError) as error:
+            kb.cancel_job(999)
+        assert error.value.status == 404
+        job = upload(kb, "a.md", b"text")
+        await work_once()
+        with pytest.raises(ServiceError) as error:
+            kb.cancel_job(job["id"])
+        assert error.value.status == 409
+        assert "hidden" not in kb.jobs()[0]
+        assert {"stage", "step_done", "step_total"} <= set(kb.jobs()[0])
+        assert kb.clear_jobs() == {"hidden": 1}
+        assert kb.jobs() == []
+    finally:
+        await kb.close()
+
+
 async def test_messages_keep_metrics_and_first_question_titles_the_chat(env):
     settings, factory, root = env
     kb = KnowledgeBase(settings, app_factory=factory)

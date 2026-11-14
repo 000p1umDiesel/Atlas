@@ -12,7 +12,7 @@
   своего пароля;
 - `/api/documents` — список, карточка, фрагменты, загрузка (202, задача `ingest`),
   скачивание исходника, удаление (задача `remove`); `/api/chunks/{id}` — один фрагмент;
-- `/api/jobs` — задачи фоновой очереди и их повтор;
+- `/api/jobs` — задачи фоновой очереди: повтор, отмена ожидающих, скрытие завершённых;
 - `/api/search`, `/api/ask` — поиск фрагментов и ответ на вопрос; `/api/search/quick` —
   быстрый поиск для Ctrl+K (сущности, wiki, документы, свои диалоги);
 - `/api/conversations` — личные диалоги (создание, переименование, удаление) и сообщения в
@@ -529,6 +529,16 @@ def create_api(
     def retry_job(job_id: Annotated[int, Path(ge=1, le=9223372036854775807)], kb: KB, user: User):
         """Повторяет упавшую задачу; 404 — нет задачи. `le` — предел BIGINT в PostgreSQL."""
         return kb.retry_job(job_id)
+
+    @app.post("/api/jobs/clear")
+    def clear_jobs(kb: KB, user: User):
+        """Скрывает из списка завершённые задачи; упавшие остаются."""
+        return kb.clear_jobs()
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: Annotated[int, Path(ge=1, le=9223372036854775807)], kb: KB, user: User):
+        """Отменяет ожидающую задачу; 404 — нет задачи, 409 — уже выполняется или завершена."""
+        return kb.cancel_job(job_id)
 
     @app.post("/api/search")
     async def search(body: Search, kb: KB, user: User):

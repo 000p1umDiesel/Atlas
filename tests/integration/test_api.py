@@ -149,6 +149,8 @@ def test_all_routes(api, tmp_path):
     kb.read_source = lambda doc_id: (b"<script>", "отчёт.html")
     kb.jobs = lambda limit=50, offset=0: [{"id": 1}]
     kb.retry_job = lambda job_id: {"id": job_id, "status": "pending"}
+    kb.cancel_job = lambda job_id: {"id": job_id, "status": "cancelled"}
+    kb.clear_jobs = lambda: {"hidden": 3}
 
     async def history(user_id, cid, limit=100, offset=0, newest=False):
         return kb.store.messages(user_id, cid)
@@ -169,6 +171,14 @@ def test_all_routes(api, tmp_path):
     assert api.client.get("/api/jobs", headers=h).json() == [{"id": 1}]
     assert api.client.post("/api/jobs/5/retry", headers=h).json()["id"] == 5
     assert api.client.post("/api/jobs/0/retry", headers=h).status_code == 422
+    assert api.client.post("/api/jobs/5/cancel", headers=h).json() == {
+        "id": 5,
+        "status": "cancelled",
+    }
+    assert api.client.post("/api/jobs/0/cancel", headers=h).status_code == 422
+    assert api.client.post("/api/jobs/clear", headers=h).json() == {"hidden": 3}
+    assert api.client.post("/api/jobs/clear").status_code == 401
+    assert api.client.post("/api/jobs/5/cancel").status_code == 401
     found = api.client.post("/api/search", headers=h, json={"question": "q", "mode": "wiki"})
     assert found.json()[0] == {"text": "evidence", "mode": "wiki", "k": 8}
     assert (
