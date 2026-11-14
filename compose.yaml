@@ -133,9 +133,10 @@ services:
       # потоки Docling (layout, таблицы, OCR) = потолок cpus; иначе torch и onnxruntime
       # берут по числу ядер хоста и упираются в квоту контейнера
       OMP_NUM_THREADS: "4"
-    # Docling (layout, таблицы, OCR) на PDF с картинками доходил до 3.1 ГБ (OOM при 3g)
-    mem_limit: 4608m
-    memswap_limit: 4608m
+    # Пик разбора Docling при parsing.page_window 10 — ~3.05 ГБ (замер cgroup в Linux, книга
+    # на 144 стр.) плюс ~0.25 ГБ остального worker; запас на страницы с таблицами и картинками
+    mem_limit: 5g
+    memswap_limit: 5g
     cpus: 4.0
     cpu_shares: 256    # фон: свободные ядра берёт, но уступает чату
     stop_signal: SIGINT        # задача дорабатывает шаг и остаётся в очереди
@@ -259,8 +260,9 @@ services:
     command: ["-hf", "mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0", "--alias", "mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0",
               "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--embedding", "--ubatch-size", "4096",
               "--n-gpu-layers", "0", "--threads", "4", "--threads-batch", "4", "--parallel", "1"]
-    mem_limit: 2g
-    memswap_limit: 2g
+    # llama.cpp выделяет веса, KV-кэш и буферы вычислений при загрузке; под нагрузкой ~0.55 ГБ
+    mem_limit: 1g
+    memswap_limit: 1g
     cpus: 4.0
     cpu_shares: 2048   # вектор вопроса в чате
 
@@ -272,8 +274,8 @@ services:
     command: ["-hf", "gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0", "--alias", "gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0",
               "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--rerank", "--ubatch-size", "4096",
               "--n-gpu-layers", "0", "--threads", "6", "--threads-batch", "6", "--parallel", "1"]
-    mem_limit: 2g
-    memswap_limit: 2g
+    mem_limit: 1g      # как у embed: ~0.55 ГБ, выделяется при загрузке
+    memswap_limit: 1g
     cpus: 6.0
     cpu_shares: 2048   # самая тяжёлая CPU-работа чата: rerank.candidates фрагментов на вопрос
 
@@ -285,7 +287,8 @@ services:
     command: ["-hf", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K", "--alias", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K",
               "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--image-min-tokens", "1024",
               "--n-gpu-layers", "0", "--threads", "4", "--threads-batch", "4", "--parallel", "1"]
-    mem_limit: 3g
-    memswap_limit: 3g
+    # ~0.9 ГБ после загрузки; запас на кодировщик картинок (до 2048 px по длинной стороне)
+    mem_limit: 2g
+    memswap_limit: 2g
     cpus: 4.0
     cpu_shares: 256    # фон: картинки при разборе документов
