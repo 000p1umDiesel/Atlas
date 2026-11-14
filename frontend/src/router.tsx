@@ -21,6 +21,7 @@ import { DesignPage } from "./routes/design";
 import { DocumentPage } from "./routes/document";
 import { DocumentsPage } from "./routes/documents";
 import { EntitiesPage } from "./routes/entities";
+import { EntityPage, validateEntitySearch } from "./routes/entity";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { ReaderPage } from "./routes/reader";
@@ -132,6 +133,16 @@ const entitiesRoute = createRoute({
   component: EntitiesPage,
 });
 
+// Страница сущности: вкладка в `?tab=` (по умолчанию «Связи» не пишется), `panel` сохраняется.
+// Колонка — та же, что у каталога (один раздел: переход сюда её не перемонтирует).
+const entityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/entities/$id",
+  validateSearch: validateEntitySearch,
+  staticData: { column: EntitiesColumn },
+  component: EntityPage,
+});
+
 // Wiki: индекс с поиском (`?q`) и страницы по slug или id. `panel` и прочие параметры сохраняются.
 const wikiRoute = createRoute({ getParentRoute: () => rootRoute, path: "/wiki", component: WikiPage });
 const wikiSlugRoute = createRoute({ getParentRoute: () => rootRoute, path: "/wiki/$slug", component: WikiArticlePage });
@@ -161,6 +172,7 @@ const routeTree = rootRoute.addChildren([
   documentRoute,
   readerRoute,
   entitiesRoute,
+  entityRoute,
   wikiRoute,
   wikiSlugRoute,
   wikiIdRoute,

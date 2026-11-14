@@ -286,3 +286,32 @@ export interface CommunitiesPayload {
   total: number;
   items: CommunityView[];
 }
+
+/** Связь со страницы сущности: типы обоих концов для цвета точки. */
+export type EntityRelation = RelationView & { src_type: string; dst_type: string };
+
+/** Ответ `GET /api/entities/<id>/relations`: фасет `predicates` не учитывает фильтр по предикату. */
+export interface EntityRelations {
+  total: number;
+  predicates: { predicate: string; count: number }[];
+  items: EntityRelation[];
+}
+
+/** Фрагмент, упоминающий сущность (`GET /api/entities/<id>/mentions`). */
+export interface EntityMention {
+  chunk_id: string;
+  doc_id: string;
+  name: string;
+  text: string;
+  page: number | null;
+  headings: string[];
+  url: string | null;
+}
+
+/** Документ, упоминающий сущность (`GET /api/entities/<id>/documents`). */
+export interface EntityDocument {
+  doc_id: string;
+  name: string;
+  mentions: number;
+  url: string | null;
+}

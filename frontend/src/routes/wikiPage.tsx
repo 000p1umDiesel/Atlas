@@ -1,13 +1,11 @@
 import { useParams } from "@tanstack/react-router";
-import { useMemo } from "react";
 import { ApiError } from "../api/client";
 import { useWikiPage } from "../api/wiki";
 import { GHOST_BUTTON } from "../documents/JobsTable";
-import { prepareWikiPage } from "../lib/markdown";
 import { usePanel } from "../shell/panel";
 import { FormNote } from "../ui/form";
-import { Markdown } from "../ui/Markdown";
 import { RouterAnchor } from "../ui/RouterAnchor";
+import { WikiBody } from "../wiki/WikiBody";
 
 const CRUMB =
   "text-sm text-muted underline-offset-4 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-primary";
@@ -16,11 +14,6 @@ function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
   const query = useWikiPage(ref_);
   const { open } = usePanel();
   const page = query.data;
-  const prepared = useMemo(() => (page ? prepareWikiPage(page.content) : null), [page]);
-  const sources = useMemo(
-    () => (prepared ? [...prepared.footnotes].sort(([, a], [, b]) => a - b) : []),
-    [prepared],
-  );
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 pt-2 pb-10 md:pt-6">
@@ -37,7 +30,7 @@ function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
               ? query.error.detail
               : "Ошибка запроса"}
         </FormNote>
-      ) : !page || !prepared ? (
+      ) : !page ? (
         <p className="text-muted">Загружаю…</p>
       ) : (
         <article className="space-y-6">
@@ -49,33 +42,7 @@ function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
               Сущность
             </button>
           </header>
-          <Markdown
-            text={prepared.body}
-            env={{ footnotes: prepared.footnotes }}
-            onRef={(ref) => ref.kind === "chunk" && open({ kind: "chunk", id: ref.id })}
-          />
-          {sources.length > 0 && (
-            <section className="rounded-[14px] bg-card p-4 shadow-card sm:p-6">
-              <h2 className="mb-3 text-xl font-semibold tracking-tight">Источники</h2>
-              <ol aria-label="Источники" className="space-y-1.5">
-                {sources.map(([id, n]) => {
-                  const name = page.sources[id];
-                  return (
-                    <li key={id}>
-                      <button
-                        type="button"
-                        onClick={() => open({ kind: "chunk", id })}
-                        className={`flex w-full gap-2 text-left text-sm underline-offset-4 [overflow-wrap:anywhere] hover:text-primary-ink hover:underline focus-visible:outline-2 focus-visible:outline-primary ${name ? "" : "text-muted"}`}
-                      >
-                        <span className="tabular-nums text-muted">{n}</span>
-                        <span>{name ?? "фрагмент удалён"}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ol>
-            </section>
-          )}
+          <WikiBody page={page} />
         </article>
       )}
     </div>

@@ -1,8 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Users } from "lucide-react";
-import { apiGet } from "../api/client";
+import { useEntity } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
-import type { EntityCard } from "../api/types";
 import { formatInt, formatScore } from "../lib/format";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { PANEL_ACTION, PanelError, PanelLoading } from "./common";
@@ -19,10 +17,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 /** Карточка сущности: тип, псевдонимы, описание, числа и место в анализе графа. */
 export function EntityPanel({ id }: { id: string }) {
   const catalog = useTypeCatalog();
-  const query = useQuery<EntityCard>({
-    queryKey: ["entity", id],
-    queryFn: () => apiGet<EntityCard>(`/api/entities/${encodeURIComponent(id)}`),
-  });
+  const query = useEntity(id);
   if (query.isPending) return <PanelLoading />;
   if (query.isError) return <PanelError error={query.error} notFound="Сущность не найдена" />;
   const entity = query.data;

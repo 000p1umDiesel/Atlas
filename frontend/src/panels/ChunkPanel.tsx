@@ -5,11 +5,11 @@ import type { ChunkView } from "../api/types";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { PANEL_ACTION, PanelError, PanelLoading } from "./common";
 
-/** Адрес чтения документа на месте фрагмента: номер — часть `chunk_id` после двоеточия. */
+/** Адрес чтения документа на месте фрагмента: номер — часть `chunk_id` после последнего двоеточия. */
 export function chunkReadHref(chunk: Pick<ChunkView, "chunk_id" | "doc_id">): string {
-  const idx = Number(chunk.chunk_id.split(":")[1]);
+  const tail = chunk.chunk_id.slice(chunk.chunk_id.lastIndexOf(":") + 1);
   const base = `/documents/${encodeURIComponent(chunk.doc_id)}/read`;
-  return Number.isInteger(idx) ? `${base}?chunk=${idx}` : base;
+  return chunk.chunk_id.includes(":") && /^\d+$/.test(tail) ? `${base}?chunk=${Number(tail)}` : base;
 }
 
 /** Полный текст фрагмента документа (по клику на источник или сноску). */
