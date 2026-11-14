@@ -128,6 +128,10 @@ async def test_upload_ingest_answer_and_remove(env):
         assert pages and "path" not in pages[0]
         page = await kb.wiki_page(pages[0]["page_id"])
         assert page["content"]
+        # Обратные ссылки: только существующие страницы, у каждой — тип сущности.
+        known = {p["page_id"] for p in pages}
+        for back in page["backlinks"]:
+            assert back["id"] in known and back["id"] != page["id"] and back["type"]
         [entity, *_] = await kb.graph_search("Transformer")
         neighbors = await kb.graph_neighbors(entity["entity_id"])
         assert neighbors["nodes"]

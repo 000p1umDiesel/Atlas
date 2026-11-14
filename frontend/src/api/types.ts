@@ -229,6 +229,17 @@ export interface WikiPage {
   content: string;
   /** `chunk_id` → имя документа; удалённых фрагментов здесь нет. */
   sources: Record<string, string>;
+  /** Страницы со ссылкой на эту (по заголовку); нет у ответа старого сервера. */
+  backlinks?: WikiBacklink[];
+}
+
+/** Обратная ссылка: страница wiki, которая ссылается на текущую. */
+export interface WikiBacklink {
+  id: string;
+  slug: string;
+  title: string;
+  /** Тип сущности страницы. */
+  type: string;
 }
 
 /** Строка расхода LLM. */

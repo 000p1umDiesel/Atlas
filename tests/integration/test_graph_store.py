@@ -260,6 +260,25 @@ def test_pages_linking_to(graph):
     assert graph.pages_linking_to([]) == []
 
 
+def test_wiki_backlinks_skip_stale_pages_and_self_links(graph):
+    make_doc(graph)
+    for eid, name in (("e1", "One"), ("e2", "Two"), ("e3", "Three")):
+        make_entity(graph, eid, name, etype="Method")
+        page = WikiPageRecord(page_id=eid, slug=name.lower(), title=name, path=f"{name}.md")
+        graph.upsert_wiki_page(page, eid, [], [])
+    for src, targets in (("e1", ["e3"]), ("e2", ["e3"]), ("e3", ["e3", "e1"])):
+        graph.upsert_wiki_page(graph.wiki_page(src), src, targets, [])
+    rows = graph.wiki_backlinks("e3")
+    assert rows == [
+        {"page_id": "e1", "slug": "one", "title": "One", "type": "Method"},
+        {"page_id": "e2", "slug": "two", "title": "Two", "type": "Method"},
+    ]
+    graph.invalidate_wiki_page("e2")
+    assert [r["page_id"] for r in graph.wiki_backlinks("e3")] == ["e1"]
+    assert graph.wiki_backlinks("e2") == []
+    assert graph.wiki_backlinks("missing") == []
+
+
 def test_doc_chunks_rebuilds_records_from_the_graph(graph):
     doc_id = "e" * 16
     graph.upsert_document(

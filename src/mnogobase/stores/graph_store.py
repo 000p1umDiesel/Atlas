@@ -1411,6 +1411,18 @@ class GraphStore:
         )
         return [r["id"] for r in rows]
 
+    def wiki_backlinks(self, page_id: str) -> list[dict]:
+        """Актуальные страницы со ссылкой `[[...]]` на `page_id` (без неё самой):
+        `{page_id, slug, title, type}` по заголовку; `type` — тип сущности страницы."""
+        return self._run(
+            "MATCH (p:WikiPage)-[:LINKS_TO]->(:WikiPage {page_id: $id}) "
+            "WHERE p.page_id <> $id AND NOT coalesce(p.stale, false) "
+            "MATCH (p)-[:ABOUT]->(e:Entity) "
+            "RETURN DISTINCT p.page_id AS page_id, p.slug AS slug, p.title AS title, "
+            "e.type AS type ORDER BY title, page_id",
+            id=page_id,
+        )
+
     def wiki_page(self, page_id: str) -> WikiPageRecord | None:
         """Страница по id (в том числе устаревшая, с `stale=True`) или None."""
         rows = self._run(f"MATCH (p:WikiPage {{page_id: $id}}) RETURN {_PAGE_FIELDS}", id=page_id)

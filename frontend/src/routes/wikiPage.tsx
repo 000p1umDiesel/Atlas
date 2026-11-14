@@ -1,11 +1,44 @@
 import { useParams } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
+import { useTypeCatalog } from "../api/queries";
+import type { WikiBacklink } from "../api/types";
 import { useWikiPage } from "../api/wiki";
 import { usePanel } from "../shell/panel";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 import { WikiBody } from "../wiki/WikiBody";
+
+/** «Ссылаются на эту страницу»: страницы wiki с `[[ссылкой]]` сюда; пустой список — ничего. */
+function Backlinks({ links }: { links: WikiBacklink[] }) {
+  const catalog = useTypeCatalog();
+  if (links.length === 0) return null;
+  return (
+    <section aria-labelledby="wiki-backlinks" className="border-t border-line pt-5">
+      <h2 id="wiki-backlinks" className="text-sm font-semibold text-muted">
+        Ссылаются на эту страницу <span className="font-normal tabular-nums">· {links.length}</span>
+      </h2>
+      <ul className="mt-3 grid gap-x-6 gap-y-1 sm:grid-cols-2">
+        {links.map((link) => (
+          <li key={link.id} className="min-w-0">
+            <RouterAnchor
+              href={`/wiki/${encodeURIComponent(link.slug)}`}
+              className="group flex items-center gap-2 rounded-lg py-1 focus-visible:outline-2 focus-visible:outline-primary"
+            >
+              <span
+                className="size-2 shrink-0 rounded-full"
+                style={{ backgroundColor: catalog.typeColor(link.type) }}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 truncate font-medium underline-offset-4 group-hover:underline">{link.title}</span>
+              <span className="shrink-0 text-xs text-muted">{catalog.typeLabel(link.type)}</span>
+            </RouterAnchor>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
   const query = useWikiPage(ref_);
@@ -40,6 +73,7 @@ function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
             </button>
           </header>
           <WikiBody page={page} />
+          <Backlinks links={page.backlinks ?? []} />
         </article>
       )}
     </div>

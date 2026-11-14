@@ -153,6 +153,27 @@ test("переход по ссылке внутри страницы без пе
   expect(await screen.findByRole("heading", { level: 1, name: "Рикардо" })).toBeTruthy();
 });
 
+test("обратные ссылки: страницы со ссылкой сюда, с русским типом", async () => {
+  const backlinks = [
+    { id: "p-rent", slug: "rent", title: "Рента", type: "Concept" },
+    { id: "p-ricardo", slug: "ricardo", title: "Давид Рикардо", type: "Person" },
+  ];
+  const router = await renderAt("/wiki/adam-smith", fakeApi(routes({ "GET /api/wiki/by-slug/adam-smith": { ...PAGE, backlinks } })));
+  const section = await screen.findByRole("region", { name: /Ссылаются на эту страницу/ });
+  const links = within(section).getAllByRole("link");
+  expect(links.map((a) => a.getAttribute("href"))).toEqual(["/wiki/rent", "/wiki/ricardo"]);
+  // Подпись типа — из каталога (загружается отдельно).
+  expect(await within(section).findByText("Человек")).toBeTruthy();
+  await click(links[0]!);
+  expect(router.state.location.pathname).toBe("/wiki/rent");
+});
+
+test("обратных ссылок нет — блока нет", async () => {
+  await renderAt("/wiki/adam-smith", fakeApi(routes({ "GET /api/wiki/by-slug/adam-smith": { ...PAGE, backlinks: [] } })));
+  await screen.findByRole("heading", { level: 1, name: "Адам Смит" });
+  expect(screen.queryByRole("region", { name: /Ссылаются/ })).toBeNull();
+});
+
 test("по pageId; 404 — текст про удалённую страницу", async () => {
   await renderAt("/wiki/page/zz", fakeApi(routes({ "GET /api/wiki/zz": () => fail(404, "нет") })));
   expect(await screen.findByText("Страница не найдена: возможно, её удалили вместе с документом.")).toBeTruthy();

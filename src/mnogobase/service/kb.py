@@ -1133,10 +1133,12 @@ class KnowledgeBase:
         return await self._with_app(run, "Wiki недоступна")
 
     def _wiki_page(self, app: App, page_id: str) -> dict:
-        """Markdown страницы wiki с заголовком, slug и именами источников сносок.
+        """Markdown страницы wiki с заголовком, slug, именами источников сносок и обратными
+        ссылками.
 
         `sources` — `chunk_id` → имя документа для каждой сноски `[^chunk_id]`: в разделе
         Sources файлы загрузок записаны как `<doc_id>.ext`, а показать нужно исходное имя.
+        `backlinks` — актуальные страницы, которые ссылаются на эту (`{id, slug, title, type}`).
         404 — страницы нет, она устарела или её файл отсутствует либо лежит вне `wiki.dir`."""
         page = app.graph.wiki_page(page_id)
         if page is None or page.stale:
@@ -1154,6 +1156,15 @@ class KnowledgeBase:
             "slug": page.slug,
             "content": content,
             "sources": {cid: self._name(view.doc_id, view.path) for cid, view in views.items()},
+            "backlinks": [
+                {
+                    "id": row["page_id"],
+                    "slug": row["slug"],
+                    "title": row["title"],
+                    "type": row["type"],
+                }
+                for row in app.graph.wiki_backlinks(page.page_id)
+            ],
         }
 
     async def wiki_page(self, page_id: str) -> dict:
