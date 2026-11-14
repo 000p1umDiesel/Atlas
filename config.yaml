@@ -162,6 +162,12 @@ evaluation:
   temperature: 0
   strictness: 3                      # сколько вопросов генерирует answer_relevancy на ответ
 
+# Фоновая очередь. Предел одной задачи: на VPS стадия graph шла до 21 мин на ~45 чанков, а
+# llm.requests_per_minute растягивает extract, graph и wiki по частоте; 1 ч (по умолчанию)
+# уже срабатывал (job_timeout), повтор начинал прерванную стадию заново.
+jobs:
+  timeout_s: 21600
+
 database:                          # адрес PostgreSQL; пароль — POSTGRES_PASSWORD в .env
   host: localhost
   port: 5432

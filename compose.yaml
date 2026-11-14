@@ -118,7 +118,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      # холодный старт после сборки образа на загруженном VPS (CPU steal, медленный диск)
+      # занимал ~6 мин; здоровым контейнер считается сразу после первого ответа /health
+      start_period: 10m
 
   # Единственный писатель корпуса: выполняет задачи очереди (ingest / remove) и следит за
   # каталогом /data/inbox (на хосте data/app/inbox) — положенные туда файлы индексируются сами.
@@ -131,8 +133,9 @@ services:
       # потоки Docling (layout, таблицы, OCR) = потолок cpus; иначе torch и onnxruntime
       # берут по числу ядер хоста и упираются в квоту контейнера
       OMP_NUM_THREADS: "4"
-    mem_limit: 3g
-    memswap_limit: 3g
+    # Docling (layout, таблицы, OCR) на PDF с картинками доходил до 3.1 ГБ (OOM при 3g)
+    mem_limit: 4608m
+    memswap_limit: 4608m
     cpus: 4.0
     cpu_shares: 256    # фон: свободные ядра берёт, но уступает чату
     stop_signal: SIGINT        # задача дорабатывает шаг и остаётся в очереди
@@ -169,7 +172,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-      start_period: 20s
+      start_period: 5m   # запас на восстановление после сбоя и CPU steal; успех засчитывается сразу
     restart: on-failure:5
     logging: *logging
 
@@ -194,7 +197,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-      start_period: 10s
+      start_period: 5m   # загрузка коллекций с медленного диска; успех засчитывается сразу
     restart: on-failure:5
     logging: *logging
 
@@ -232,7 +235,7 @@ services:
       interval: 10s
       timeout: 10s
       retries: 18
-      start_period: 90s
+      start_period: 10m  # обычно ~2.5 мин до healthy, под нагрузкой VPS бывает дольше
     restart: on-failure:5
     logging: *logging
 
