@@ -203,6 +203,9 @@ export function EntitiesPage() {
 
       {list.data === undefined ? (
         list.isPending && <p className="text-muted">Загружаю…</p>
+      ) : items.length === 0 && list.isPlaceholderData ? (
+        // Пустой ответ прежнего запроса (например, до «Сбросить фильтры») — не повод говорить «пусто».
+        <p className="text-muted">Загружаю…</p>
       ) : items.length === 0 ? (
         filtered ? (
           <div className="space-y-3 rounded-[14px] bg-card p-6 shadow-card">

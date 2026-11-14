@@ -239,6 +239,29 @@ test("пусто с фильтром: «Ничего не нашлось…» и
   await vi.waitFor(() => expect(router.state.location.search).toEqual({ sort: "name" }));
 });
 
+test("после сброса фильтров, пока идёт запрос, — «Загружаю…», а не «Сущностей пока нет»", async () => {
+  const all = deferred<Response>();
+  const api = fakeApi(
+    routes({
+      "GET /api/entities?type=Concept&sort=name&limit=50&offset=0": page([]),
+      "GET /api/entities?sort=name&limit=50&offset=0": () => all.promise,
+    }),
+  );
+  await renderAt("/entities?type=Concept&sort=name", api);
+  expect(await screen.findByText("Ничего не нашлось. Ослабьте фильтры.")).toBeTruthy();
+  await click(screen.getByRole("button", { name: "Сбросить фильтры" }));
+  await vi.waitFor(() => expect(entityRequests(api)).toContain("GET /api/entities?sort=name&limit=50&offset=0"));
+  expect(screen.getByText("Загружаю…")).toBeTruthy();
+  expect(screen.queryByText(/Сущностей пока нет/)).toBeNull();
+  expect(screen.queryByText("Ничего не нашлось. Ослабьте фильтры.")).toBeNull();
+  await act(async () => {
+    all.resolve(Response.json(page([entity("e1", "Ада Лавлейс")])));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await within(await screen.findByRole("table", { name: "Сущности" })).findByRole("link", { name: "Ада Лавлейс" });
+  expect(screen.queryByText("Загружаю…")).toBeNull();
+});
+
 test("пусто без фильтров: ссылка на документы", async () => {
   await renderAt("/entities", fakeApi(routes({ [ALL]: page([]) })));
   const note = await screen.findByText((_, el) => el?.textContent === "Сущностей пока нет: загрузите документы.");
