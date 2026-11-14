@@ -1,7 +1,8 @@
 import { useParams } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LIST_LIMIT, useConversations, useMessages } from "../api/chat";
 import { ChatHeader } from "../chat/ChatHeader";
+import { Compare } from "../chat/Compare";
 import { Composer } from "../chat/Composer";
 import { MessageView } from "../chat/MessageView";
 import { useSend, useUnsentQuestion } from "../chat/useSend";
@@ -32,6 +33,8 @@ export function ChatPage() {
   const openSource = useOpenSource();
   const { send, busy, error } = useSend(id);
   const unsent = useUnsentQuestion(id);
+  // Сравнение режимов: не сохраняется; `key` — новый вопрос перезапускает цикл.
+  const [compare, setCompare] = useState<{ question: string; key: number } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<{ id: string | undefined; count: number }>({ id: undefined, count: 0 });
 
@@ -76,6 +79,7 @@ export function ChatPage() {
           ) : (
             messages.map((message) => <MessageView key={message.id} message={message} onCite={openSource} />)
           )}
+          {compare && <Compare key={compare.key} question={compare.question} onClose={() => setCompare(null)} />}
         </div>
       </div>
       <div className="shrink-0 px-4 pt-2 pb-3 md:px-8 md:pb-5">
@@ -86,7 +90,11 @@ export function ChatPage() {
             key={id ?? "new"}
             busy={busy}
             initialText={unsent ?? ""}
-            onSend={(question, mode, accepted) => void send(question, mode, { onAccepted: accepted })}
+            onSend={(question, mode, accepted) => {
+              setCompare(null);
+              void send(question, mode, { onAccepted: accepted });
+            }}
+            onCompare={(question) => setCompare((c) => ({ question, key: (c?.key ?? 0) + 1 }))}
           />
         </div>
       </div>

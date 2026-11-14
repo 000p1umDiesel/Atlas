@@ -107,3 +107,16 @@ test("недоступный localStorage — «Фрагменты» без ош
   });
   expect(radio("Wiki").checked).toBe(true);
 });
+
+test("«Сравнить режимы»: нет выбора режима, свой плейсхолдер и кнопка; вопрос уходит в onCompare", () => {
+  const onSend = vi.fn();
+  const onCompare = vi.fn();
+  render(<Composer onSend={onSend} onCompare={onCompare} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Сравнить режимы" }));
+  expect(screen.queryByRole("radiogroup")).toBeNull();
+  expect(box().placeholder).toBe("Вопрос для сравнения режимов…");
+  fireEvent.change(box(), { target: { value: " Вопрос " } });
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить" }));
+  expect(onCompare).toHaveBeenCalledWith("Вопрос");
+  expect(onSend).not.toHaveBeenCalled();
+});

@@ -60,6 +60,8 @@ export function notifyUnauthorized(): void {
 export type SendOptions = {
   /** 401 здесь — не истёкшая сессия (неверный пароль): подписчиков не будить. */
   quiet401?: boolean;
+  /** Отмена запроса: `fetch` бросит `AbortError`, он пробрасывается как есть. */
+  signal?: AbortSignal;
 };
 
 /** Ошибка из неуспешного ответа; при 401 (если не `quiet401`) — уведомление подписчиков. */
@@ -101,6 +103,7 @@ export async function apiSend<T>(
 ): Promise<T | null> {
   const headers: Record<string, string> = { Accept: "application/json" };
   const init: RequestInit = { method, headers };
+  if (options.signal) init.signal = options.signal;
   if (json !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(json);

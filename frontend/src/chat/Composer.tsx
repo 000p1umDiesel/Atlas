@@ -36,18 +36,26 @@ type Props = {
   busy?: boolean;
   /** Начальный текст поля (вопрос, который сервер не принял). */
   initialText?: string;
+  /** Сравнить режимы: вопрос уходит сюда, а не в `onSend`. Без него флажка нет. */
+  onCompare?: (question: string) => void;
 };
 
 /** Поле вопроса и выбор режима. Enter — отправить, Shift+Enter — новая строка. */
-export function Composer({ onSend, busy = false, initialText = "" }: Props) {
+export function Composer({ onSend, busy = false, initialText = "", onCompare }: Props) {
   const [text, setText] = useState(initialText);
   const [mode, setMode] = useState<Mode>(loadMode);
+  const [compare, setCompare] = useState(false);
   const name = useId();
   const question = text.trim();
   const canSend = !busy && question.length > 0;
 
   const send = () => {
     if (!canSend) return;
+    if (compare && onCompare) {
+      onCompare(question);
+      setText("");
+      return;
+    }
     onSend(question, mode, () => setText(""));
   };
 
@@ -72,11 +80,9 @@ export function Composer({ onSend, busy = false, initialText = "" }: Props) {
 
   return (
     <form onSubmit={onSubmit} className="space-y-2">
-      <div
-        role="radiogroup"
-        aria-label="Где искать ответ"
-        className="flex flex-wrap gap-1"
-      >
+      <div className="flex flex-wrap items-center gap-1">
+        {!compare && (
+          <div role="radiogroup" aria-label="Где искать ответ" className="flex flex-wrap gap-1">
         {MODES.map((m) => (
           <label
             key={m.value}
@@ -95,13 +101,21 @@ export function Composer({ onSend, busy = false, initialText = "" }: Props) {
             {m.label}
           </label>
         ))}
+          </div>
+        )}
+        {onCompare && (
+          <label className="ml-auto flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-muted select-none hover:text-ink has-disabled:cursor-not-allowed has-disabled:opacity-60 has-focus-visible:outline-2 has-focus-visible:outline-primary">
+            <input type="checkbox" checked={compare} disabled={busy} onChange={(e) => setCompare(e.target.checked)} />
+            Сравнить режимы
+          </label>
+        )}
       </div>
       <div className="flex items-end gap-2 rounded-[14px] border border-line bg-card p-2 shadow-card focus-within:border-primary">
         <textarea
           rows={2}
           maxLength={MAX_QUESTION_CHARS}
           aria-label="Вопрос"
-          placeholder="Спросите о своих документах…"
+          placeholder={compare ? "Вопрос для сравнения режимов…" : "Спросите о своих документах…"}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
@@ -112,7 +126,7 @@ export function Composer({ onSend, busy = false, initialText = "" }: Props) {
           disabled={!canSend}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-primary-deep px-3.5 py-2 text-sm font-medium text-on-primary transition-colors hover:bg-primary-deep/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {busy ? "Отвечаю…" : "Спросить"}
+          {busy ? "Отвечаю…" : compare ? "Сравнить" : "Спросить"}
           {!busy && <ArrowUp size={15} strokeWidth={2.2} aria-hidden="true" />}
         </button>
       </div>
