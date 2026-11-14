@@ -76,6 +76,7 @@ from mnogobase.service.observability import UsageStore
 from mnogobase.service.store import ServiceStore
 from mnogobase.service.views import type_catalog
 from mnogobase.stores.graph_store import EntitySort
+from mnogobase.stores.registry import Registry
 
 _DOC_ID = re.compile(r"[0-9a-f]{16}")
 _CHUNK_ID = re.compile(r"[0-9a-f]{16}:\d{5}")
@@ -145,6 +146,10 @@ def _question(question: str) -> str:
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
         raise ServiceError(422, f"Вопрос должен содержать от 1 до {MAX_QUESTION_CHARS} символов")
     return question.strip()
+
+
+class _AlreadyStarted(Exception):
+    """Отменяемую загрузку worker уже начинал: отмена откатывается (`cancel_job` → 409)."""
 
 
 def _job(job, names: dict[str, str] | None = None) -> dict:
@@ -660,9 +665,12 @@ class KnowledgeBase:
         """Отменяет задачу, которая ещё ждёт (`pending`), и возвращает её состояние.
 
         Удаление (`remove`) отменяется на всех копиях документа сразу — документ остаётся в
-        базе. Загрузка файла из `service.uploads_dir` исчезает целиком: под блокировкой пути
-        удаляются файл и запись `uploads`, как будто его не загружали; повторная загрузка того
-        же файла снова ставит задачу. 404 — нет задачи; 409 — она уже выполняется или
+        базе; если какая-то копия уже удаляется, не отменяется ничего (409). Загрузка файла из
+        `service.uploads_dir` исчезает целиком: под блокировкой пути удаляются файл и запись
+        `uploads`, как будто его не загружали; повторная загрузка того же файла снова ставит
+        задачу. Загрузку, которую worker уже начинал (путь есть в registry: задача ждёт повтора
+        после сбоя), отменить нельзя — остались бы чанки и граф без файла (409, документ
+        удаляют обычным удалением). 404 — нет задачи; 409 — она уже выполняется или
         завершена."""
         with self._queue() as queue:
             job = queue.get(job_id)
@@ -671,17 +679,31 @@ class KnowledgeBase:
             if job.status != "pending":
                 raise ServiceError(409, "Задача уже выполняется или завершена")
             if job.kind == "remove":
-                ids = queue.pending_ids(job.fingerprint)
-                cancelled = [queue.cancel(i) for i in ids]
-                if job_id not in ids or cancelled[ids.index(job_id)] is None:
+                cancelled = queue.cancel_removal(job.fingerprint)
+                if cancelled is None or job_id not in {j.id for j in cancelled}:
                     raise ServiceError(409, "Задача уже выполняется или завершена")
-            elif queue.cancel(job_id, on_locked=self._drop_upload) is None:
-                raise ServiceError(409, "Задача уже выполняется или завершена")
+            else:
+                try:
+                    if queue.cancel(job_id, on_locked=self._drop_upload) is None:
+                        raise ServiceError(409, "Задача уже выполняется или завершена")
+                except _AlreadyStarted:
+                    raise ServiceError(
+                        409, "Файл уже начал обрабатываться: отменить нельзя, удалите документ"
+                    ) from None
             return self._job(queue.get(job_id))
 
     def _drop_upload(self, job) -> None:
         """Под блокировкой пути отменяемой загрузки: удаляет её файл и запись `uploads`.
-        Источник вне каталога загрузок (CLI, папка watcher'а) не трогается."""
+        Источник вне каталога загрузок (CLI, папка watcher'а) не трогается. Путь, который уже
+        есть в registry (worker начинал его обработку), — `_AlreadyStarted`: отмена
+        откатывается. Задача в этот момент `pending`, поэтому worker путь не пишет."""
+        registry = Registry(database_target(self.settings))
+        try:
+            started = registry.get_file(job.path) is not None
+        finally:
+            registry.close()
+        if started:
+            raise _AlreadyStarted
         try:
             path = self.uploads.contained(Path(job.path), must_exist=False)
         except FileNotFoundError:

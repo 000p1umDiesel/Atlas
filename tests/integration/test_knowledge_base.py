@@ -340,6 +340,58 @@ async def test_cancelled_upload_disappears_and_can_be_uploaded_again(env):
         await kb.close()
 
 
+async def test_cancel_refuses_an_upload_that_was_already_partly_processed(env):
+    # первая попытка дошла до registry, задача снова ждёт (повтор после сбоя): отмена удалила
+    # бы файл, оставив чанки и граф — вместо этого 409, файл на месте
+    settings, factory, _ = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        job = upload(kb, "a.md", (FIXTURES / "attention_en.md").read_bytes())
+        await work_once()
+        with kb._queue() as queue:
+            done = queue.get(job["id"])
+            queue.enqueue(Path(done.path), done.fingerprint, force=True)
+        with pytest.raises(ServiceError) as error:
+            kb.cancel_job(job["id"])
+        assert error.value.status == 409
+        assert kb.uploads.get(job["doc_id"]) is not None
+        assert Path(kb.uploads.get(job["doc_id"])["path"]).is_file()
+        assert kb.jobs()[0]["status"] == "pending"
+    finally:
+        await kb.close()
+
+
+async def test_cancel_remove_refuses_while_another_copy_is_running(env):
+    settings, factory, root = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        content = (FIXTURES / "attention_en.md").read_bytes()
+        upload(kb, "a.md", content)
+        await work_once()
+        [doc] = await kb.documents()
+        copy = root / "copy.md"
+        copy.write_bytes(content)
+        app = factory(settings)
+        try:
+            stat = copy.stat()
+            app.registry.upsert_file(
+                str(copy.resolve()), doc["id"], stat.st_size, stat.st_mtime, "done"
+            )
+        finally:
+            await app.aclose()
+        await kb.remove_document(doc["id"])
+        with kb._queue() as queue:
+            running = queue.claim()  # worker уже удаляет одну из копий
+        pending = next(j for j in kb.jobs() if j["status"] == "pending")
+        with pytest.raises(ServiceError) as error:
+            kb.cancel_job(pending["id"])
+        assert error.value.status == 409
+        assert {j["id"]: j["status"] for j in kb.jobs()}[pending["id"]] == "pending"
+        assert running.status == "running"
+    finally:
+        await kb.close()
+
+
 async def test_cancel_and_clear_errors(env):
     settings, factory, _ = env
     kb = KnowledgeBase(settings, app_factory=factory)

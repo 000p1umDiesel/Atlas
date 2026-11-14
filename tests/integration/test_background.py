@@ -401,3 +401,24 @@ def test_pending_ids_lists_copies_of_a_removal(tmp_path):
     b = q.enqueue(Path("b.md"), "remove:d1", force=True, kind="remove")
     assert q.pending_ids("remove:d1") == [a, b]
     q.close()
+
+
+def test_cancel_removal_refuses_while_a_copy_is_running(tmp_path):
+    q = queue()
+    a = q.enqueue(Path("a.md"), "remove:d1", force=True, kind="remove")
+    b = q.enqueue(Path("b.md"), "remove:d1", force=True, kind="remove")
+    assert q.claim().id == a
+    assert q.cancel_removal("remove:d1") is None
+    assert q.get(b).status == "pending"  # ничего не отменено
+
+
+def test_cancel_removal_cancels_every_pending_copy_atomically(tmp_path):
+    q = queue()
+    for name in ("a.md", "b.md"):
+        q.enqueue(Path(name), "d1")
+        q.finish(q.claim().id)
+    ids = [q.enqueue(Path(n), "remove:d1", force=True, kind="remove") for n in ("a.md", "b.md")]
+    assert [j.id for j in q.cancel_removal("remove:d1")] == ids
+    assert all(q.get(i).status == "cancelled" for i in ids)
+    assert all(q.is_current(q.find(Path(n), "d1")) for n in ("a.md", "b.md"))
+    q.close()

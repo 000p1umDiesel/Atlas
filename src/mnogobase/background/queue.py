@@ -360,14 +360,7 @@ class JobQueue:
                 self._db.execute("COMMIT")
                 return None
             job = _job(row)
-            if job.fingerprint.startswith("remove:"):
-                restored = job.fingerprint.removeprefix("remove:")
-            else:
-                restored = f"cancel:{job.fingerprint}"
-            self._db.execute(
-                "UPDATE desired SET fingerprint=? WHERE path=? AND fingerprint=?",
-                (restored, job.path, job.fingerprint),
-            )
+            self._restore_desired(job)
             if on_locked is not None:
                 on_locked(job)
             self._db.execute("COMMIT")
@@ -375,6 +368,61 @@ class JobQueue:
         except BaseException:
             self._db.execute("ROLLBACK")
             raise
+
+    def cancel_removal(self, fingerprint: str) -> list[Job] | None:
+        """Отменяет удаление документа на всех копиях сразу (`fingerprint` = `remove:<v>`) и
+        возвращает отменённые задачи; `None` — какая-то копия уже выполняется, тогда не
+        отменяется ничего (иначе часть копий забылась бы, а часть осталась).
+
+        Одна транзакция: блокировки путей всех копий (по порядку), затем `FOR UPDATE` строк
+        задач — `claim` их пропускает (`SKIP LOCKED`), так что worker не возьмёт копию между
+        проверкой и отменой."""
+        self._db.execute("BEGIN")
+        try:
+            paths = self._db.execute(
+                "SELECT DISTINCT path FROM jobs WHERE fingerprint=? "
+                "AND status IN ('pending','running') ORDER BY path",
+                (fingerprint,),
+            ).fetchall()
+            for (path,) in paths:
+                transaction_lock(self._db, f"queue-path:{path}")
+            statuses = [
+                r[0]
+                for r in self._db.execute(
+                    "SELECT status FROM jobs WHERE fingerprint=? "
+                    "AND status IN ('pending','running') FOR UPDATE",
+                    (fingerprint,),
+                )
+            ]
+            if "running" in statuses:
+                self._db.execute("COMMIT")
+                return None
+            rows = self._db.execute(
+                "UPDATE jobs SET status='cancelled',progress='отменена',stage=NULL,step_done=NULL,"
+                "step_total=NULL,available_at=0,updated_at=? WHERE fingerprint=? AND status='pending' "
+                "RETURNING *",
+                (self._clock(), fingerprint),
+            ).fetchall()
+            jobs = sorted((_job(r) for r in rows), key=lambda j: j.id)
+            for job in jobs:
+                self._restore_desired(job)
+            self._db.execute("COMMIT")
+            return jobs
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+
+    def _restore_desired(self, job: Job) -> None:
+        """`desired` пути после отмены, если в нём всё ещё версия задачи: удаление
+        `remove:<v>` возвращает `<v>`, загрузка `<v>` даёт `cancel:<v>`. Внутри транзакции."""
+        if job.fingerprint.startswith("remove:"):
+            restored = job.fingerprint.removeprefix("remove:")
+        else:
+            restored = f"cancel:{job.fingerprint}"
+        self._db.execute(
+            "UPDATE desired SET fingerprint=? WHERE path=? AND fingerprint=?",
+            (restored, job.path, job.fingerprint),
+        )
 
     def supersede(self, job_id: int) -> None:
         """Переводит `running`-задачу в `superseded`: worker обнаружил, что файл изменился, и
