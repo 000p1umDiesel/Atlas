@@ -156,3 +156,39 @@ test("анализ не запускался: completed_at пуст", async () =
   expect(screen.getByText(/ещё не посчитаны/)).toBeTruthy();
   expect(screen.queryByText(/Последний запуск/)).toBeNull();
 });
+
+test("«Пересчитать» запускает анализ и перечитывает сводку", async () => {
+  vi.stubEnv("VITE_FIXTURES", "");
+  const { stats } = generateFixtures();
+  let current: unknown = { revision: null, run_id: null, ready: false, completed_at: null, metadata: {}, top: [], job: null };
+  const job = { id: 3, kind: "analyze", status: "pending", attempts: 0, available_at: 0, error: null, progress: "", created_at: 0, updated_at: 0, doc_id: null, name: "анализ графа" };
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const path = url.split("?")[0];
+    if (init?.method === "POST" && path === "/api/graph/analyze") {
+      current = { ...(current as object), job };
+      return Response.json(job, { status: 202 });
+    }
+    if (path === "/api/stats") return Response.json(stats);
+    if (path === "/api/graph/analysis") return Response.json(current);
+    if (path === "/api/graph/overview") return Response.json({ nodes: [], relations: [] });
+    if (path === "/api/entities/types") return Response.json([]);
+    return Response.json({ detail: "Не найдено" }, { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/"] }) });
+    await router.load();
+    render(<App router={router} client={createQueryClient()} />);
+    const button = await screen.findByRole("button", { name: "Пересчитать" });
+    const statsBefore = fetchMock.mock.calls.filter((c) => c[0] === "/api/stats").length;
+    await act(async () => {
+      fireEvent.click(button);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST" && c[0] === "/api/graph/analyze")).toBe(true);
+    await vi.waitFor(() => expect((screen.getByRole("button", { name: "Анализ идёт…" }) as HTMLButtonElement).disabled).toBe(true));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.filter((c) => c[0] === "/api/stats").length).toBeGreaterThan(statsBefore));
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

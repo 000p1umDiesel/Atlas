@@ -24,6 +24,7 @@ import { ReaderPage } from "./routes/reader";
 import { Placeholder } from "./routes/placeholder";
 import { WikiPage } from "./routes/wiki";
 import { WikiArticlePage } from "./routes/wikiPage";
+import { StatusPage } from "./routes/status";
 import { Shell } from "./shell/Shell";
 import { RouteError } from "./ui/ErrorNotice";
 
@@ -131,6 +132,8 @@ const wikiIdRoute = createRoute({
   component: WikiArticlePage,
 });
 
+const statusRoute = createRoute({ getParentRoute: () => rootRoute, path: "/status", component: StatusPage });
+
 const designRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/_design",
@@ -152,7 +155,7 @@ const routeTree = rootRoute.addChildren([
   wikiRoute,
   wikiSlugRoute,
   wikiIdRoute,
-  page("/status", "Статус"),
+  statusRoute,
 ]);
 
 export function createAppRouter(opts?: { history?: RouterHistory }) {

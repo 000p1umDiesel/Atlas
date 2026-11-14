@@ -1,0 +1,65 @@
+// Статус: очередь и worker, расход LLM, анализ графа, проверки сервисов.
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { apiGet, apiSend } from "./client";
+import type { AnalysisPayload, Job, StatusPayload } from "./types";
+
+/** Опрос статуса и (пока задача активна) анализа. */
+export const STATUS_POLL_MS = 5000;
+
+export const statusKey = ["status"] as const;
+export const analysisKey = ["analysis"] as const;
+
+/** Состояние обработки; опрашивается всегда (в фоновой вкладке Query не опрашивает). */
+export function useStatus() {
+  return useQuery<StatusPayload>({
+    queryKey: statusKey,
+    queryFn: () => apiGet<StatusPayload>("/api/status"),
+    staleTime: 0,
+    refetchInterval: STATUS_POLL_MS,
+  });
+}
+
+/** Задача анализа ждёт или идёт. */
+export function analysisActive(data: AnalysisPayload | undefined): boolean {
+  return data?.job?.status === "pending" || data?.job?.status === "running";
+}
+
+/** Снимок анализа; опрос раз в 5000 мс только пока задача активна. */
+export function useAnalysis() {
+  return useQuery<AnalysisPayload>({
+    queryKey: analysisKey,
+    queryFn: () => apiGet<AnalysisPayload>("/api/graph/analysis"),
+    staleTime: 0,
+    refetchInterval: (query) => (analysisActive(query.state.data) ? STATUS_POLL_MS : false),
+  });
+}
+
+/** Перечитать всё, что зависит от анализа: снимок, статус очереди и сводку главной. */
+export function refreshAnalysis(client: QueryClient): Promise<void> {
+  return Promise.all([
+    client.invalidateQueries({ queryKey: analysisKey }),
+    client.invalidateQueries({ queryKey: statusKey }),
+    client.invalidateQueries({ queryKey: ["stats"] }),
+  ]).then(() => undefined);
+}
+
+/** Запуск анализа графа: `POST /api/graph/analyze` (202, задача в очереди). */
+export function useStartAnalysis() {
+  const client = useQueryClient();
+  return useMutation<Job | null, Error>({
+    mutationFn: () => apiSend<Job>("POST", "/api/graph/analyze"),
+    onSuccess: () => refreshAnalysis(client),
+  });
+}
+
+export interface ServiceCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+  warn: boolean;
+}
+
+/** Быстрые проверки сервисов — только по кнопке, без кэша. */
+export function runChecks(): Promise<ServiceCheck[]> {
+  return apiGet<ServiceCheck[]>("/api/status/checks");
+}

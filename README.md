@@ -94,7 +94,7 @@ flowchart TB
 | Эмбеддер и реранкер | в `config.yaml` — Qwen3-Embedding-0.6B и Qwen3-Reranker-0.6B на llama.cpp; размерность эмбеддингов определяется автоматически | модели меняются через настройки; llama.cpp работает нативно на Mac (`models up`) или в CPU-контейнерах полного стека (`compose.yaml`); любой другой OpenAI-совместимый сервер или облачный API подключается как `serve: api` |
 | LLM | один клиент для любого OpenAI-совместимого API | llama.cpp, LM Studio, OpenRouter, OpenAI и прокси подключаются правкой конфига. Структурированный вывод через строгую JSON Schema |
 | Состояние | PostgreSQL, одна схема на проект | файлы, этапы, ошибки, кэш извлечения, очередь wiki, очередь заданий, пользователи и учёт LLM; на нём держатся возобновление и инкрементальность |
-| Интерфейс | пакет, CLI на Typer, HTTP API на FastAPI и веб-интерфейс для одного владельца | API и сайт используют тот же пакет; сайт — Preact + htm без сборки, раздаётся самим API (раздел 16.6); MCP можно навесить поверх |
+| Интерфейс | пакет, CLI на Typer, HTTP API на FastAPI и веб-интерфейс для одного владельца | API и сайт используют тот же пакет; сайт — React + Vite (`frontend/`), раздаётся самим API (раздел 16.6); MCP можно навесить поверх |
 | Язык wiki | английский по умолчанию | канонические английские имена сущностей склеивают русские и английские упоминания |
 | Логи | structlog: консоль и JSONL-файл; в контейнерах — JSON в stdout | формат готов для Loki/Grafana и трейсинга |
 
@@ -1977,7 +1977,7 @@ mnogobase/
 │   │                http.py  device.py  progress.py
 │   ├── ingest/      pipeline.py  processing.py  removal.py
 │   ├── ops/         doctor.py  model_servers.py  maintenance.py  graph_analysis.py
-│   ├── api/app.py                # FastAPI: /api/*, /health, сайт / и /static (раздел 16)
+│   ├── api/app.py                # FastAPI: /api/*, /health, сайт /, /legacy и /static (раздел 16)
 │   ├── service/     kb.py  store.py  observability.py  client.py  errors.py
 │   ├── background/  queue.py  uploads.py  watch.py  worker.py
 │   ├── evaluation/  core.py  artifacts.py  ragas.py  report.py  comparison.py
@@ -1988,7 +1988,7 @@ mnogobase/
 │   ├── extraction/  extractor.py  resolver.py
 │   ├── stores/      qdrant_store.py  graph_store.py  registry.py
 │   ├── wiki/        builder.py  render.py  validate.py  obsidian.py
-│   ├── web/         index.html  app.js  style.css  lib/  views/  vendor/  fonts/   # сайт (16.6)
+│   ├── web/         dist/ (сборка frontend/)  index.html  app.js  views/  vendor/  # сайт (16.6); прежний UI — /legacy
 │   └── retrieval/   base.py  rag.py  wiki.py  graph.py  combined.py  answer.py  compare.py  rerank.py  translate.py
 ├── tests/
 │   ├── unit/  integration/  e2e/  security/
@@ -2395,7 +2395,17 @@ service:
 
 ### 16.6 Веб-интерфейс
 
-Сайт раздаёт сам API: `/` — страница, `/static/*` — файлы из `src/mnogobase/web/` (Preact + htm, markdown-it, DOMPurify, Cytoscape и шрифты Literata и Golos Text лежат в `web/vendor/` и `web/fonts/` с закреплёнными версиями и sha256 в `web/vendor/VERSIONS.md`; сборки, Node и CDN нет). Вход — по имени и паролю учётной записи из `mnogobase user create`.
+Сайт раздаёт сам API. Это React + Vite + TypeScript (`frontend/`), результат сборки лежит в `src/mnogobase/web/dist` (в `.gitignore`, входит в wheel и образ Docker). Вход — по адресу `/login`, по имени и паролю учётной записи из `mnogobase user create`; сессия, истёкшая посреди работы, возвращает на вход и затем обратно на ту же страницу. Прежний интерфейс (Preact + htm, `src/mnogobase/web/`) пока доступен по адресу `/legacy` и `/static/*`; он будет удалён на этапе 5 перестройки.
+
+Сборка и разработка (Node нужен только для сборки):
+
+```bash
+npm --prefix frontend ci && npm --prefix frontend run build   # продакшен-сборка в src/mnogobase/web/dist
+npm --prefix frontend run dev                                   # dev-сервер Vite на :5173, запросы /api проксируются на :8080
+npm --prefix frontend run check                                 # tsc + eslint + vitest
+```
+
+Для `dev` в соседнем терминале должен работать `uv run mnogobase api serve --port 8080`. В Docker сборка выполняется внутри `docker compose build`.
 
 | Раздел | Что там |
 |---|---|
@@ -2403,7 +2413,7 @@ service:
 | Документы | загрузка пачкой (перетаскиванием или выбором) с прогрессом по каждому файлу, список со статусами, удаление, очередь заданий с повтором; карточка документа со стадиями и ошибками, сущностями и ссылками на граф и wiki; чтение документа по фрагментам с подсветкой процитированного |
 | Wiki | поиск, список по типам, страница с переходами по `[[ссылкам]]` и сносками на фрагменты |
 | Граф | поиск сущности, её окрестность на 1–3 шага, карточка узла (описание, алиасы, PageRank и сообщество, связи с фрагментом-доказательством) |
-| Статус | worker и очередь, расход LLM за сутки и месяц, анализ графа с кнопкой запуска (задача worker'а), проверка сервисов |
+| Статус (`/status`) | worker и очередь, расход LLM за сутки и месяц, анализ графа с кнопкой запуска (задача worker'а), проверка сервисов |
 
 Безопасность страницы: CSP `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `nosniff`, `Referrer-Policy: no-referrer`. Ответы LLM, страницы wiki и тексты документов — недоверенные данные: Markdown рендерится с выключенным HTML и проходит через DOMPurify, ссылки только `http(s)`, якоря и `/api/`, картинки из Markdown не показываются; всё остальное выводится как текст. Документ в браузере читается по фрагментам из индекса, а не открывается исходником, поэтому загруженный HTML или PDF не исполняется.
 

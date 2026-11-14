@@ -1,7 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { AlertCircle, CheckCircle2, Clock3, FileText, LoaderCircle, Network, RefreshCw } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { isUnauthorized } from "../api/client";
+import { ApiError, isUnauthorized } from "../api/client";
+import { analysisActive, useAnalysis, useStartAnalysis } from "../api/status";
 import { useOverview, useRecentDocuments, useStats, useTypeCatalog } from "../api/queries";
 import type { NodeView, RecentDocument } from "../api/types";
 import { communityLabel, communitySummaries, type CommunitySummary } from "../graph/insights";
@@ -58,6 +59,8 @@ export function HomePage() {
   const recent = useRecentDocuments();
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const glossaryId = useId();
+  const analysis = useAnalysis();
+  const startAnalysis = useStartAnalysis();
 
   const graph = useMemo(() => (overview.data ? buildGraph(overview.data.graph) : null), [overview.data]);
   const communities = useMemo(() => (graph ? communitySummaries(graph) : []), [graph]);
@@ -130,6 +133,9 @@ export function HomePage() {
                 ready={s?.analysis.ready ?? null}
                 completedAt={s?.analysis.completed_at ?? null}
                 communities={communities}
+                running={analysisActive(analysis.data) || startAnalysis.isPending}
+                error={startAnalysis.error ? (startAnalysis.error instanceof ApiError ? startAnalysis.error.detail : "Ошибка запроса") : null}
+                onRecompute={() => startAnalysis.mutate()}
               />
             </section>
 
@@ -180,10 +186,18 @@ export function AnalysisCard({
   ready,
   completedAt,
   communities,
+  running = false,
+  error = null,
+  onRecompute,
 }: {
   ready: boolean | null;
   completedAt: string | null;
   communities: CommunitySummary[];
+  /** Задача анализа ждёт или идёт. */
+  running?: boolean;
+  /** Сообщение об ошибке запуска (например, очередь заполнена). */
+  error?: string | null;
+  onRecompute?: () => void;
 }) {
   const largest = communities.slice(0, 4);
   const colors = communityColors(communities.map((c) => c.id));
@@ -245,14 +259,19 @@ export function AnalysisCard({
         </Link>
         <button
           type="button"
-          disabled
-          title="Запуск анализа появится после этапа 2"
-          className="inline-flex items-center gap-2 rounded-xl border border-line bg-card/60 px-4 py-2 text-sm text-muted disabled:cursor-not-allowed"
+          disabled={running || !onRecompute}
+          onClick={onRecompute}
+          className="inline-flex items-center gap-2 rounded-xl border border-line bg-card/60 px-4 py-2 text-sm transition-colors hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:text-muted"
         >
-          <RefreshCw size={15} />
-          Пересчитать
+          <RefreshCw size={15} className={running ? "animate-spin motion-reduce:animate-none" : undefined} />
+          {running ? "Анализ идёт…" : "Пересчитать"}
         </button>
       </div>
+      {error && (
+        <p role="alert" className="mt-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
