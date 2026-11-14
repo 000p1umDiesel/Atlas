@@ -39,7 +39,7 @@ x-app: &app
       MB_REVISION: ${MB_REVISION:-unknown}   # коммит образа для отката (deploy/update.sh)
   pull_policy: never   # образ только локальный: нет — собрать, есть — взять, не ходить в Docker Hub
   env_file: .env       # секреты: LLM_API_KEY, POSTGRES_PASSWORD, NEO4J_PASSWORD, QDRANT_API_KEY
-  environment:
+  environment: &app-env
     # адреса сервисов внутри сети compose (вместо localhost из config.yaml);
     # всё остальное — из того же config.yaml
     MNOGOBASE_DATABASE__HOST: postgres
@@ -109,6 +109,7 @@ services:
     mem_limit: 1536m
     memswap_limit: 1536m
     cpus: 1.0
+    cpu_shares: 2048   # чат: под нагрузкой CPU получает раньше фоновых (см. «Распределение CPU»)
     # при остановке API до 2×20 с дописывает идущие ответы чата (service.kb.SHUTDOWN_GRACE_S)
     stop_grace_period: 60s
     # в slim-образе нет curl, поэтому /health проверяется стандартной библиотекой Python
@@ -125,9 +126,15 @@ services:
   worker:
     <<: *app
     command: ["mnogobase", "worker", "run", "--watch", "/data/inbox"]
+    environment:
+      <<: *app-env
+      # потоки Docling (layout, таблицы, OCR) = потолок cpus; иначе torch и onnxruntime
+      # берут по числу ядер хоста и упираются в квоту контейнера
+      OMP_NUM_THREADS: "4"
     mem_limit: 3g
     memswap_limit: 3g
-    cpus: 2.0
+    cpus: 4.0
+    cpu_shares: 256    # фон: свободные ядра берёт, но уступает чату
     stop_signal: SIGINT        # задача дорабатывает шаг и остаётся в очереди
     stop_grace_period: 15m     # столько ждать завершения шага, прежде чем убить процесс
     # кроме баз ждёт эмбеддер: без него индексировать нечем
@@ -229,6 +236,14 @@ services:
     restart: on-failure:5
     logging: *logging
 
+  # Распределение CPU (сервер на 8 vCPU). `cpus` — только потолок, в сумме он больше 8 и
+  # ничего не резервирует; кто важнее под нагрузкой, решает вес `cpu_shares` (по умолчанию
+  # 1024). Чат (api, embed, rerank) — 2048, базы — 1024, фон (worker, vision) — 256:
+  # свободные ядра берёт кто угодно, а при конкуренции первым CPU получает вопрос в чате.
+  # Число потоков llama.cpp (--threads / --threads-batch) равно потолку `cpus`: лишние потоки
+  # в квоте только ждут друг друга. Замер на VPS (Ryzen 5950X под KVM, 2 потока): rerank
+  # ~90 токенов/с, 30 кандидатов по ~360 токенов — ~110 с на вопрос.
+  #
   # Модели и флаги должны совпадать с config.yaml (embedder / rerank / vision .model);
   # при смене модели правятся оба места, а эмбеддер ещё требует `mnogobase reindex`.
   # --alias — имя модели в API, которое ждёт приложение (= model из config.yaml);
@@ -240,10 +255,11 @@ services:
     ports: ["${MB_BIND:-127.0.0.1}:8001:8080"]
     command: ["-hf", "mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0", "--alias", "mradermacher/Qwen3-Embedding-0.6B-GGUF:Q8_0",
               "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--embedding", "--ubatch-size", "4096",
-              "--n-gpu-layers", "0", "--threads", "2", "--threads-batch", "2", "--parallel", "1"]
+              "--n-gpu-layers", "0", "--threads", "4", "--threads-batch", "4", "--parallel", "1"]
     mem_limit: 2g
     memswap_limit: 2g
-    cpus: 2.0
+    cpus: 4.0
+    cpu_shares: 2048   # вектор вопроса в чате
 
   # Реранкер (Qwen3-Reranker-0.6B из gorse-io — конвертация с головой классификатора):
   # пересортировывает найденные чанки в режиме rag.
@@ -252,10 +268,11 @@ services:
     ports: ["${MB_BIND:-127.0.0.1}:8002:8080"]
     command: ["-hf", "gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0", "--alias", "gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0",
               "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--rerank", "--ubatch-size", "4096",
-              "--n-gpu-layers", "0", "--threads", "2", "--threads-batch", "2", "--parallel", "1"]
+              "--n-gpu-layers", "0", "--threads", "6", "--threads-batch", "6", "--parallel", "1"]
     mem_limit: 2g
     memswap_limit: 2g
-    cpus: 2.0
+    cpus: 6.0
+    cpu_shares: 2048   # самая тяжёлая CPU-работа чата: rerank.candidates фрагментов на вопрос
 
   # VLM для описания картинок при разборе документов (vision.enabled);
   # --image-min-tokens 1024 — достаточно деталей для небольших картинок из PDF.
@@ -264,7 +281,8 @@ services:
     ports: ["${MB_BIND:-127.0.0.1}:8003:8080"]
     command: ["-hf", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K", "--alias", "prithivMLmods/Xiaomi-OCR-0-GGUF:Q6_K",
               "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "4096", "--image-min-tokens", "1024",
-              "--n-gpu-layers", "0", "--threads", "2", "--threads-batch", "2", "--parallel", "1"]
+              "--n-gpu-layers", "0", "--threads", "4", "--threads-batch", "4", "--parallel", "1"]
     mem_limit: 3g
     memswap_limit: 3g
-    cpus: 2.0
+    cpus: 4.0
+    cpu_shares: 256    # фон: картинки при разборе документов

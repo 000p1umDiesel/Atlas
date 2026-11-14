@@ -102,7 +102,9 @@ rerank:
   enabled: true                      # rag: переоценка гибридных попаданий cross-encoder'ом
   model: gorse-io/Qwen3-Reranker-0.6B-GGUF:Q8_0   # llamacpp: GGUF с классификатором Qwen3-Reranker
   serve: llamacpp
-  candidates: 30                     # сколько гибридных попаданий оценивать на вопрос; остаются лучшие retrieval.k
+  # сколько гибридных попаданий оценивать на вопрос; остаются лучшие retrieval.k. Это самая
+  # тяжёлая CPU-работа чата: на VPS 30 кандидатов — ~110 с на 2 потоках, поэтому 15
+  candidates: 15
 
 vision:
   # описание картинок при разборе (графики, схемы, скриншоты) VLM-моделью: описание
