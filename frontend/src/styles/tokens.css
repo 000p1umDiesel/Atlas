@@ -48,6 +48,8 @@
   /* Текст на заливке primary-deep и акцентный «шалфейный» текст: читаемы в обеих темах. */
   --on-primary: #fffdf8;
   --primary-ink: #41604a;
+  /* Текст ошибок: ≥ 4.5:1 к фону и карточке. */
+  --danger: #a3372b;
   --line: color-mix(in oklab, var(--ink) 12%, transparent);
   --shadow: 0 1px 2px rgb(47 58 47 / 0.06), 0 8px 24px rgb(47 58 47 / 0.07);
   --radius: 14px;
@@ -66,6 +68,7 @@
     --muted: #a3aa9c;
     --on-primary: #f1efe6;
     --primary-ink: #a8c6ad;
+    --danger: #f2a093;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
     --t0: #7e7b70;
     color-scheme: dark;
@@ -78,6 +81,7 @@
   --muted: #a3aa9c;
   --on-primary: #f1efe6;
   --primary-ink: #a8c6ad;
+  --danger: #f2a093;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
   --t0: #7e7b70;
   color-scheme: dark;

@@ -1,5 +1,16 @@
 import { Link } from "@tanstack/react-router";
-import { Circle, FileText, Home, MessageCircle, Network, Notebook, Activity, User, type LucideIcon } from "lucide-react";
+import {
+  Activity,
+  Circle,
+  FileText,
+  Home,
+  LogOut,
+  MessageCircle,
+  Network,
+  Notebook,
+  User,
+  type LucideIcon,
+} from "lucide-react";
 import { motion } from "motion/react";
 import { ThemeButton } from "./ThemeButton";
 
@@ -16,8 +27,38 @@ export const NAV_ITEMS: { to: string; label: string; icon: LucideIcon }[] = [
 const BUTTON =
   "relative grid size-11 place-items-center rounded-[14px] text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-primary";
 
-/** Иконная рейка слева; на узких экранах — нижняя панель (тема там — в верхней панели). */
-export function Rail({ pathname }: { pathname: string }) {
+function RailLink({ to, label, title = label, icon: Icon, active, className = "" }: {
+  to: string;
+  label: string;
+  title?: string;
+  icon: LucideIcon;
+  active: boolean;
+  className?: string;
+}) {
+  return (
+    <Link to={to} aria-label={label} title={title} className={`${BUTTON} ${active ? "text-primary-ink" : ""} ${className}`}>
+      {active && (
+        <motion.span
+          layoutId="rail-active"
+          className="absolute inset-0 rounded-[14px] bg-primary/15"
+          transition={{ type: "spring", stiffness: 450, damping: 36 }}
+        />
+      )}
+      <Icon size={21} strokeWidth={active ? 2.2 : 1.8} className="relative" />
+    </Link>
+  );
+}
+
+type Props = {
+  pathname: string;
+  /** Имя вошедшего (подсказка у ссылки «Аккаунт»); пока неизвестно — undefined. */
+  username?: string;
+  onLogout: () => void;
+  logoutBusy?: boolean;
+};
+
+/** Иконная рейка слева; на узких экранах — нижняя панель (тема, аккаунт и выход там — в верхней панели). */
+export function Rail({ pathname, username, onLogout, logoutBusy = false }: Props) {
   return (
     <nav
       aria-label="Разделы"
@@ -26,31 +67,34 @@ export function Rail({ pathname }: { pathname: string }) {
       <div className="mb-3 hidden size-10 place-items-center rounded-[14px] bg-primary font-serif text-lg font-semibold text-white md:grid" aria-hidden="true">
         m
       </div>
-      {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
-        const active = to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(to + "/");
-        return (
-          <Link
-            key={to}
-            to={to}
-            aria-label={label}
-            title={label}
-            className={`${BUTTON} ${active ? "text-primary-ink" : ""}`}
-          >
-            {active && (
-              <motion.span
-                layoutId="rail-active"
-                className="absolute inset-0 rounded-[14px] bg-primary/15"
-                transition={{ type: "spring", stiffness: 450, damping: 36 }}
-              />
-            )}
-            <Icon size={21} strokeWidth={active ? 2.2 : 1.8} className="relative" />
-          </Link>
-        );
-      })}
+      {NAV_ITEMS.map(({ to, label, icon }) => (
+        <RailLink
+          key={to}
+          to={to}
+          label={label}
+          icon={icon}
+          active={to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(to + "/")}
+        />
+      ))}
       <div className="hidden flex-1 md:block" />
       <ThemeButton className={`${BUTTON} hidden md:grid`} />
-      <button type="button" className={`${BUTTON} hidden md:grid`} aria-label="Аккаунт" title="Аккаунт (скоро)">
-        <User size={20} strokeWidth={1.8} />
+      <RailLink
+        to="/account"
+        label="Аккаунт"
+        title={username ? `Аккаунт: ${username}` : "Аккаунт"}
+        icon={User}
+        active={pathname === "/account"}
+        className="hidden md:grid"
+      />
+      <button
+        type="button"
+        onClick={onLogout}
+        disabled={logoutBusy}
+        aria-label="Выйти"
+        title="Выйти"
+        className={`${BUTTON} hidden disabled:opacity-50 md:grid`}
+      >
+        <LogOut size={20} strokeWidth={1.8} />
       </button>
     </nav>
   );

@@ -60,3 +60,9 @@ export interface RecentDocument {
   status: string;
   updated_at: string | null;
 }
+
+/** Ответ `GET /api/auth/me`. */
+export interface Me {
+  id: string;
+  username: string;
+}

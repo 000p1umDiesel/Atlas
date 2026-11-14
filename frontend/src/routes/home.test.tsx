@@ -111,7 +111,7 @@ test("загрузка в очереди (status queued, updated_at: null) по�
   expect(first).not.toContain("queued");
 });
 
-test("без сессии — сообщение и подсказка о входе через старый интерфейс", async () => {
+test("без сессии — переход на вход, 401 не повторяется", async () => {
   vi.stubEnv("VITE_FIXTURES", "");
   const fetchMock = vi.fn(async () => Response.json({ detail: "Требуется вход" }, { status: 401 }));
   vi.stubGlobal("fetch", fetchMock);
@@ -119,8 +119,8 @@ test("без сессии — сообщение и подсказка о вхо
     const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/"] }) });
     await router.load();
     render(<App router={router} client={createQueryClient()} />);
-    expect(await screen.findByText("Требуется вход.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "старый интерфейс" }).getAttribute("href")).toBe("/legacy");
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/login?next=%2F"));
+    expect(await screen.findByLabelText("Имя пользователя")).toBeTruthy();
     // 401 не повторяется, сводка и последние документы — один запрос
     const urls = fetchMock.mock.calls.map((call) => String((call as unknown[])[0]));
     expect(urls.filter((url) => url === "/api/stats")).toHaveLength(1);

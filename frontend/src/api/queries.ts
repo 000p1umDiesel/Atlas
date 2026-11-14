@@ -10,7 +10,7 @@ const OVERVIEW_LIMIT = 500;
 // Фикстуры подгружаются динамически и попадают в сборку только при VITE_FIXTURES=1: проверка
 // флага стоит прямо перед import(), иначе сборщик не выбросит модуль фикстур из настоящей сборки.
 // Флаг читается при вызове (Vite всё равно подставляет его при сборке), чтобы тесты могли его менять.
-function fixturesMode(): boolean {
+export function fixturesMode(): boolean {
   return import.meta.env.VITE_FIXTURES === "1";
 }
 

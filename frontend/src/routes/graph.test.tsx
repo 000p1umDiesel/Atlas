@@ -263,15 +263,15 @@ test("чипы типов показывают число видимых сущ�
   expect(within(filters()).getByRole("button", { name: /^Человек/ }).textContent).toContain(String(person.count));
 });
 
-test("без сессии — спокойное сообщение вместо графа и подсказка о входе", async () => {
+test("без сессии — переход на вход с next=/graph", async () => {
   vi.stubEnv("VITE_FIXTURES", "");
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "Требуется вход" }, { status: 401 })));
   try {
     const router = createAppRouter({ history: createMemoryHistory({ initialEntries: ["/graph"] }) });
     await router.load();
     render(<App router={router} client={createQueryClient()} />);
-    expect(await screen.findByText("Граф пока недоступен")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "старый интерфейс" }).getAttribute("href")).toBe("/legacy");
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/login?next=%2Fgraph"));
+    expect(screen.queryByRole("navigation", { name: "Разделы" })).toBeNull();
   } finally {
     vi.unstubAllGlobals();
   }

@@ -27,6 +27,12 @@ describe.each(Object.entries(THEMES))("тема %s", (_name, { t }) => {
       expect(contrastRatio(t["--ink"], surface)).toBeGreaterThanOrEqual(10);
     }
   });
+
+  test("текст ошибок читается на фоне и карточке (≥ 4.5:1)", () => {
+    for (const surface of [t["--bg"], t["--card"]]) {
+      expect(contrastRatio(t["--danger"], surface)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 });
 
 test("системная тёмная тема совпадает с ручной", () => {

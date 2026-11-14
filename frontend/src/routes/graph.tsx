@@ -341,7 +341,7 @@ export function GraphPage() {
           <p className="font-serif text-xl font-semibold">Граф пока недоступен</p>
           <p className="text-sm text-muted">
             {overview.error instanceof Error ? overview.error.message : "Нет данных"}.
-            {/* Без сессии подсказка о входе — в плашке оболочки. */}
+            {/* Без сессии совет не нужен: 401 уводит на страницу входа. */}
             {isUnauthorized(overview.error) ? "" : " Обновите страницу чуть позже."}
           </p>
         </div>

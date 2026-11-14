@@ -12,8 +12,10 @@ import type { ComponentType } from "react";
 import { FilterPanel } from "./graph/FilterPanel";
 import { parseGraphSearch, serializeGraphSearch } from "./graph/search";
 import { parsePlainSearch, stringifyPlainSearch } from "./lib/searchParams";
+import { AccountPage } from "./routes/account";
 import { DesignPage } from "./routes/design";
 import { HomePage } from "./routes/home";
+import { LoginPage } from "./routes/login";
 import { Placeholder } from "./routes/placeholder";
 import { Shell } from "./shell/Shell";
 import { RouteError } from "./ui/ErrorNotice";
@@ -23,11 +25,16 @@ function Root() {
   // Раскладку оболочки задаёт листовой маршрут через staticData.
   const Column = useRouterState({ select: (s) => s.matches[s.matches.length - 1]?.staticData.column });
   const bleed = useRouterState({ select: (s) => s.matches[s.matches.length - 1]?.staticData.bleed ?? false });
+  const bare = useRouterState({ select: (s) => s.matches[s.matches.length - 1]?.staticData.bare ?? false });
   return (
     <MotionConfig reducedMotion="user">
-      <Shell pathname={pathname} column={Column ? <Column /> : null} bleed={bleed}>
+      {bare ? (
         <Outlet />
-      </Shell>
+      ) : (
+        <Shell pathname={pathname} column={Column ? <Column /> : null} bleed={bleed}>
+          <Outlet />
+        </Shell>
+      )}
     </MotionConfig>
   );
 }
@@ -55,6 +62,23 @@ const graphRoute = createRoute({
   component: lazyRouteComponent(() => import("./routes/graph"), "GraphPage"),
 });
 
+// Вход — без оболочки: рейка и колонка без сессии всё равно ничего не покажут.
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/login",
+  validateSearch: (raw: Record<string, unknown>): { next?: string } => ({
+    next: typeof raw.next === "string" ? raw.next : undefined,
+  }),
+  staticData: { bare: true },
+  component: LoginPage,
+});
+
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account",
+  component: AccountPage,
+});
+
 const designRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/_design",
@@ -64,6 +88,8 @@ const designRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   homeRoute,
   graphRoute,
+  loginRoute,
+  accountRoute,
   designRoute,
   page("/chat", "Чат"),
   page("/documents", "Документы"),
@@ -93,5 +119,7 @@ declare module "@tanstack/react-router" {
     column?: ComponentType;
     /** Страница во всю площадь, без полей. */
     bleed?: boolean;
+    /** Без оболочки (рейки, колонки, верхней панели): страница входа. */
+    bare?: boolean;
   }
 }

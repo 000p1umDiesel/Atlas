@@ -1,10 +1,11 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { AuthNotice } from "./AuthNotice";
+import { useMe } from "../api/auth";
 import { ShellColumnContext, type ShellColumnState } from "./columnContext";
 import { ContextColumn } from "./ContextColumn";
 import { Rail } from "./Rail";
 import { TopBar } from "./TopBar";
+import { useLogout } from "./useLogout";
 
 type Props = {
   pathname: string;
@@ -25,6 +26,9 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const hasColumn = column !== null && column !== undefined && column !== false;
+  // Проверка сессии на любой странице оболочки: без входа /api/auth/me ответит 401 — на вход.
+  const username = useMe().data?.username;
+  const { logout, busy: logoutBusy } = useLogout();
 
   // Смена раздела закрывает мобильное меню.
   useEffect(() => setMenuOpen(false), [pathname]);
@@ -51,7 +55,7 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
   return (
     <ShellColumnContext.Provider value={columnState}>
       <div className="flex h-dvh bg-bg text-ink">
-        <Rail pathname={pathname} />
+        <Rail pathname={pathname} username={username} onLogout={logout} logoutBusy={logoutBusy} />
         <AnimatePresence initial={false}>
           {hasColumn && !collapsed && (
             <motion.div
@@ -96,8 +100,12 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
           )}
         </AnimatePresence>
         <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
-          <TopBar onMenu={hasColumn ? () => setMenuOpen(true) : undefined} />
-          <AuthNotice />
+          <TopBar
+            onMenu={hasColumn ? () => setMenuOpen(true) : undefined}
+            username={username}
+            onLogout={logout}
+            logoutBusy={logoutBusy}
+          />
           <main
             className={
               bleed

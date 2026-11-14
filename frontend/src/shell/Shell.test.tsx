@@ -102,3 +102,19 @@ test("на телефоне тема переключается из верхн�
   const nav = screen.getByRole("navigation", { name: "Разделы" });
   expect(within(nav).getByRole("button", { name: /^Тема:/ }).getAttribute("aria-label")).toBe(after);
 });
+
+test("на телефоне «Аккаунт» и «Выйти» — в меню верхней панели", async () => {
+  await renderAt("/chat");
+  const bar = (await screen.findByText("mnogobase", { selector: "header span" })).closest("header")!;
+  const toggle = within(bar).getByRole("button", { name: "Меню аккаунта" });
+  expect(toggle.className.split(/\s+/)).toContain("md:hidden");
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(within(bar).queryByRole("button", { name: "Выйти" })).toBeNull();
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(within(bar).getByRole("link", { name: "Аккаунт" }).getAttribute("href")).toBe("/account");
+  expect(within(bar).getByRole("button", { name: "Выйти" })).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await vi.waitFor(() => expect(within(bar).queryByRole("button", { name: "Выйти" })).toBeNull());
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+});

@@ -31,23 +31,82 @@ function queryString(params: QueryParams): string {
   return text ? `?${text}` : "";
 }
 
-async function errorDetail(response: Response): Promise<string> {
-  try {
-    const body: unknown = await response.json();
-    if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") {
-      return body.detail;
-    }
-  } catch {
-    // не JSON (например, страница прокси) — ниже statusText
+/** Текст ошибки: строковый `detail` сервера, иначе — по коду ответа. */
+export function detailOf(body: unknown, status: number): string {
+  if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") {
+    return body.detail;
   }
-  return response.statusText || `Ошибка ${response.status}`;
+  if (status === 422) return "Проверьте введённые данные";
+  if (status === 413) return "Слишком большой запрос";
+  if (status >= 500) return "Сервис временно недоступен";
+  return "Ошибка запроса";
+}
+
+const unauthorizedHandlers = new Set<() => void>();
+
+/** Подписка на ответы 401 (сессия кончилась): возвращает отписку. */
+export function onUnauthorized(handler: () => void): () => void {
+  unauthorizedHandlers.add(handler);
+  return () => {
+    unauthorizedHandlers.delete(handler);
+  };
+}
+
+/** Сообщить подписчикам о 401 — для запросов в обход apiGet/apiSend (поток ответа, загрузка). */
+export function notifyUnauthorized(): void {
+  for (const handler of [...unauthorizedHandlers]) handler();
+}
+
+export type SendOptions = {
+  /** 401 здесь — не истёкшая сессия (неверный пароль): подписчиков не будить. */
+  quiet401?: boolean;
+};
+
+/** Ошибка из неуспешного ответа; при 401 (если не `quiet401`) — уведомление подписчиков. */
+export async function errorFromResponse(response: Response, options: SendOptions = {}): Promise<ApiError> {
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    // не JSON (например, страница прокси) — текст по коду ответа
+  }
+  if (response.status === 401 && !options.quiet401) notifyUnauthorized();
+  return new ApiError(response.status, detailOf(body, response.status));
+}
+
+/** fetch с переводом сетевого сбоя в `ApiError(0, …)`; отмену (`AbortError`) пробрасываем как есть. */
+async function request(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { credentials: "same-origin", ...init });
+  } catch (error) {
+    if ((error as { name?: unknown } | null)?.name === "AbortError") throw error;
+    throw new ApiError(0, "Нет связи с сервером");
+  }
 }
 
 export async function apiGet<T>(path: string, params: QueryParams = {}): Promise<T> {
-  const response = await fetch(`${path}${queryString(params)}`, {
-    credentials: "same-origin",
+  const response = await request(`${path}${queryString(params)}`, {
     headers: { Accept: "application/json" },
   });
-  if (!response.ok) throw new ApiError(response.status, await errorDetail(response));
+  if (!response.ok) throw await errorFromResponse(response);
+  return (await response.json()) as T;
+}
+
+/** Запрос с изменением: JSON-тело — только если `json` передан; 204 → `null`. */
+export async function apiSend<T>(
+  method: "POST" | "PATCH" | "DELETE",
+  path: string,
+  json?: unknown,
+  options: SendOptions = {},
+): Promise<T | null> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const init: RequestInit = { method, headers };
+  if (json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(json);
+  }
+  const response = await request(path, init);
+  if (!response.ok) throw await errorFromResponse(response, options);
+  if (response.status === 204) return null;
   return (await response.json()) as T;
 }

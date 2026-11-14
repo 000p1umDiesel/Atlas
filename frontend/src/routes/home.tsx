@@ -42,7 +42,7 @@ function Unavailable({ error }: { error: unknown }) {
       <h2 className="text-xl font-semibold">Сводка пока недоступна</h2>
       <p className="mt-2 text-muted">
         {error instanceof Error ? error.message : "Нет данных"}.
-        {/* Без сессии подсказка о входе — в плашке оболочки. */}
+        {/* Без сессии совет не нужен: 401 уводит на страницу входа. */}
         {isUnauthorized(error) ? "" : " Обновите страницу чуть позже."}
       </p>
     </div>
