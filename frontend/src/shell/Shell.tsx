@@ -23,6 +23,11 @@ function isDesktop(): boolean {
   return typeof matchMedia === "function" && matchMedia("(min-width: 768px)").matches;
 }
 
+/** Раздел — первый сегмент пути: `/chat/c1` → `chat`. */
+function section(pathname: string): string {
+  return pathname.split("/")[1] ?? "";
+}
+
 function isGraph(pathname: string): boolean {
   return pathname === "/graph" || pathname.startsWith("/graph/");
 }
@@ -118,9 +123,10 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
                 : "min-h-0 flex-1 overflow-y-auto px-4 pb-8 md:px-8"
             }
           >
-            {/* Только вход: выходящий поддерев рендерил бы живой <Outlet/> уже нового маршрута. */}
+            {/* Только вход: выходящий поддерев рендерил бы живой <Outlet/> уже нового маршрута.
+                Ключ — раздел: переход между диалогами не гасит и не перемонтирует страницу. */}
             <motion.div
-              key={pathname}
+              key={section(pathname)}
               className={bleed ? "h-full" : undefined}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}

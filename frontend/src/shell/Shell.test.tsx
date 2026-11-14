@@ -1,5 +1,5 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { App, createQueryClient } from "../App";
 import { createAppRouter } from "../router";
 
@@ -34,6 +34,21 @@ test("после перехода в DOM только новая страниц�
   await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
   expect(await screen.findAllByRole("heading", { name: "О чём спросить?" })).toHaveLength(1);
   expect(screen.queryByRole("heading", { name: "Граф" })).toBeNull();
+});
+
+test("переход внутри раздела не перемонтирует обёртку страницы, в другой раздел — перемонтирует", async () => {
+  const router = await renderAt("/chat");
+  await screen.findByRole("heading", { name: "О чём спросить?" });
+  const wrapper = () => screen.getByRole("main").firstElementChild;
+  const first = wrapper();
+  await act(() => router.navigate({ to: "/chat/$id", params: { id: "c1" } }));
+  expect(router.state.location.pathname).toBe("/chat/c1");
+  expect(wrapper()).toBe(first);
+  await act(() => router.navigate({ to: "/chat/$id", params: { id: "c2" } }));
+  expect(wrapper()).toBe(first);
+  await act(() => router.navigate({ to: "/status" }));
+  await screen.findByRole("heading", { name: "Статус" });
+  expect(wrapper()).not.toBe(first);
 });
 
 test("на /chat активен только «Чат»", async () => {
