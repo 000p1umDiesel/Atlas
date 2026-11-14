@@ -18,7 +18,8 @@ worker запускается только явной командой, при �
    ошибка останавливает поток, основной цикл видит это через список `health` и
    останавливает worker: молча перестать следить за каталогами хуже, чем упасть.
 3. **Цикл `dispatch`.** На каждом шаге worker отмечает heartbeat (его показывает
-   `/api/status`) и вызывает `process_one`: тот берёт блокировку корпуса (`ingest`) и
+   `/api/status`; пока идёт задача, его раз в `JOB_HEARTBEAT_S` отмечает поток
+   `HeartbeatTicker`, потому что разбор и эмбеддинг держат event loop) и вызывает `process_one`: тот берёт блокировку корпуса (`ingest`) и
    только под ней забирает одну готовую задачу (`claim`). Поэтому worker и CLI-писатели
    (ingest, remove, wiki build, reindex, reset) никогда не пишут корпус одновременно: если
    блокировка занята, worker просто ждёт `--interval` и пробует снова. Время одной задачи
@@ -53,7 +54,8 @@ import asyncio
 import json
 import signal
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
@@ -88,6 +90,8 @@ DB_RETRY_MIN_S = 5.0
 DB_RETRY_MAX_S = 60.0
 # как часто задача analyze отмечается в очереди, пока анализ идёт в отдельном потоке
 ANALYZE_HEARTBEAT_S = 30.0
+# как часто `HeartbeatTicker` отмечает worker, пока идёт задача (меньше HEARTBEAT_STALE_S)
+JOB_HEARTBEAT_S = 30.0
 
 
 def _next_pause(pause: float) -> float:
@@ -124,6 +128,70 @@ async def heartbeat_thread[T](
     except asyncio.CancelledError:
         work.add_done_callback(_log_orphan)
         raise
+
+
+class HeartbeatTicker:
+    """Отмечает heartbeat worker'а из отдельного потока, пока идёт задача (`busy()`).
+
+    Разбор Docling, эмбеддинг и запись в Qdrant синхронные и держат event loop минутами; без
+    этого потока отметок на это время нет, и `/api/status` показывает worker мёртвым
+    (`HEARTBEAT_STALE_S`). Соединения не делятся между потоками, поэтому очередь здесь своя:
+    открывается при первой отметке, после ошибки закрывается и открывается заново на
+    следующей. Ошибки (база недоступна) только пишутся в лог: отметка — не повод ронять
+    worker. Вне задачи поток молчит: в простое отмечает сам цикл `dispatch`."""
+
+    def __init__(
+        self,
+        target,
+        stop: threading.Event,
+        *,
+        interval: float = JOB_HEARTBEAT_S,
+        open_queue: Callable[[object], JobQueue] = JobQueue,
+    ):
+        self._target = target
+        self._stop = stop
+        self._interval = interval
+        self._open_queue = open_queue
+        self._busy = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="mnogobase-heartbeat")
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def join(self) -> None:
+        """Ждёт конца потока; сначала надо выставить `stop`."""
+        self._thread.join()
+
+    @contextmanager
+    def busy(self) -> Iterator[None]:
+        """Пока блок выполняется, поток отмечает heartbeat раз в `interval` секунд."""
+        self._busy.set()
+        try:
+            yield
+        finally:
+            self._busy.clear()
+
+    def _run(self) -> None:
+        log = get_logger(__name__)
+        q = None
+        try:
+            while not self._stop.wait(self._interval):
+                if not self._busy.is_set():
+                    continue
+                try:
+                    if q is None:
+                        q = self._open_queue(self._target)
+                    q.heartbeat()
+                except Exception as exc:
+                    log.warning("worker_heartbeat_failed", error_type=type(exc).__name__)
+                    if q is not None:
+                        with suppress(Exception):
+                            q.close()
+                    q = None
+        finally:
+            if q is not None:
+                with suppress(Exception):
+                    q.close()
 
 
 class WorkerLockLost(RuntimeError):
@@ -428,7 +496,7 @@ def run_worker(
         )
     q, application = None, None
     previous_term = None
-    stop, health, thread = threading.Event(), [], None
+    stop, health, thread, ticker = threading.Event(), [], None, None
     try:
         if threading.current_thread() is threading.main_thread():
             # SIGTERM ведёт себя как Ctrl+C: KeyboardInterrupt штатно завершает цикл ниже.
@@ -457,6 +525,8 @@ def run_worker(
                 name="mnogobase-watch",
             )
             thread.start()
+        ticker = HeartbeatTicker(database_target(settings), stop)
+        ticker.start()
 
         uploads = Uploads(settings)
         # True после ошибки базы: соединения App могли умереть, его надо создать заново
@@ -691,14 +761,16 @@ def run_worker(
                         raise RuntimeError(
                             f"Watcher остановился: {health[0]}. Перезапустите worker."
                         )
-                    processed = await process_one(
-                        q,
-                        handle,
-                        max_attempts=max_attempts,
-                        delay=retry_delay,
-                        timeout=settings.jobs.timeout_s,
-                        on_transient=reconnect,
-                    )
+                    # долгие синхронные шаги задачи держат цикл: heartbeat — из потока
+                    with ticker.busy():
+                        processed = await process_one(
+                            q,
+                            handle,
+                            max_attempts=max_attempts,
+                            delay=retry_delay,
+                            timeout=settings.jobs.timeout_s,
+                            on_transient=reconnect,
+                        )
                 except Exception as exc:
                     if once or not connection_lost(exc):
                         raise
@@ -739,6 +811,8 @@ def run_worker(
         stop.set()
         if thread is not None:
             thread.join()
+        if ticker is not None:
+            ticker.join()
         if application is not None:
             application.close()
         if q is not None:
