@@ -412,6 +412,63 @@ def test_files_over_the_parsing_limits_fail_before_docling(tmp_path):
     assert not parser.cache_path(DOC).exists()
 
 
+def _text_pdf(path: Path, texts: list[str]) -> None:
+    """Минимальный PDF: по странице на строку `texts`, текст стандартным шрифтом Helvetica."""
+    n = len(texts)
+    kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(n))
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {n} >>",
+    ]
+    font = 3 + 2 * n
+    for i, text in enumerate(texts):
+        stream = f"BT /F1 24 Tf 72 700 Td ({text}) Tj ET"
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {font} 0 R >> >> /Contents {4 + 2 * i} 0 R >>"
+        )
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+    objects.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n{body}\nendobj\n".encode()
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += "".join(f"{offset:010d} 00000 n \n" for offset in offsets).encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    path.write_bytes(bytes(out))
+
+
+def test_long_pdf_is_parsed_in_page_windows_with_original_page_numbers(tmp_path):
+    pdf = tmp_path / "long.pdf"
+    _text_pdf(pdf, [f"Alpha page {k} body text." for k in range(1, 6)])
+    parser = DoclingParser(ParsingSettings(ocr=False, page_window=2), "cpu", tmp_path / "c")
+    whole = DoclingParser(ParsingSettings(ocr=False), "cpu", tmp_path / "w").parse(pdf, DOC)
+
+    parsed = parser.parse(pdf, DOC)
+
+    assert parsed.n_pages == whole.n_pages == 5
+    assert parsed.mime == "application/pdf"
+    pages = {item.text: item.prov[0].page_no for item in parsed.doc.texts}
+    assert pages == {f"Alpha page {k} body text.": k for k in range(1, 6)}
+    assert pages == {item.text: item.prov[0].page_no for item in whole.doc.texts}
+    # кэш разбора читается обратно с теми же страницами
+    reloaded = parser.load(DOC, pdf)
+    assert {i.text: i.prov[0].page_no for i in reloaded.doc.texts} == pages
+
+
+def test_long_pdf_over_max_pages_fails_before_any_window(tmp_path):
+    pdf = tmp_path / "long.pdf"
+    _text_pdf(pdf, ["one", "two", "three"])
+    parser = DoclingParser(ParsingSettings(ocr=False, max_pages=2, page_window=1), "cpu", tmp_path)
+    with pytest.raises(docling_parser.ParseLimitError, match="3 стр."):
+        parser.parse(pdf, DOC)
+
+
 def test_a_failed_description_fails_the_parse(tmp_path):
     # Docling глушит ошибки API: описание остаётся пустым
     doc = DoclingDocument(name="d")

@@ -420,6 +420,11 @@ class ParsingSettings(Section):
     # больше — стадия parse падает сразу, а не держит worker часами (Docling на CPU)
     max_pages: int = Field(default=1000, ge=1)
     max_file_mb: int = Field(default=200, ge=1)
+    # PDF длиннее разбирается кусками по столько страниц и склеивается: Docling держит
+    # в памяти все страницы куска, и пик памяти растёт с их числом. Замер в Linux (книга на
+    # 144 стр., пик cgroup): кусками по 20 — 3.6 ГБ, по 10 — 3.05 ГБ при том же времени;
+    # целиком на Mac — 8.6 ГБ
+    page_window: int = Field(default=10, ge=1)
 
 
 class ChunkingSettings(Section):

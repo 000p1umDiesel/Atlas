@@ -11,6 +11,7 @@ dependencies = [
   "docling==2.142.0",
   "docling-core==2.104.0",
   "pillow==13.0.0",
+  "pypdfium2==5.14.0",  # число страниц PDF для разбора кусками (parsing.page_window)
   "qdrant-client==1.19.1",
   "fastembed==0.9.1",
   "neo4j==6.4.1",

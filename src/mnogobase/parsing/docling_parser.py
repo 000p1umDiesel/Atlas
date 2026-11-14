@@ -37,8 +37,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+import pypdfium2
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import ConversionStatus, InputFormat
+from docling.datamodel.document import ConversionResult
 from docling.datamodel.pipeline_options import (
     ConvertPipelineOptions,
     OcrAutoOptions,
@@ -134,6 +136,11 @@ class DoclingParser:
                 generate_picture_images=True,  # картинки сохраняются в кэш разбора (images/)
                 images_scale=2.0,
                 accelerator_options=AcceleratorOptions(device=AcceleratorDevice(self._device)),
+                # пачки по 4 страницы (по умолчанию) поднимают пик памяти моделей на ~1.3 ГБ
+                # (замер: обзор на 21 стр. — 4.9 против 3.6 ГБ) без выигрыша во времени на CPU
+                ocr_batch_size=1,
+                layout_batch_size=1,
+                table_batch_size=1,
             )
             # картинки (скриншоты) идут тем же конвейером, что и PDF: разметка, OCR, описание
             formats: dict[InputFormat, FormatOption] = {
@@ -148,6 +155,46 @@ class DoclingParser:
                 formats[InputFormat.PPTX] = PowerpointFormatOption(pipeline_options=office)
             self._converter = DocumentConverter(format_options=formats)
         return self._converter
+
+    def _convert(self, path: Path) -> tuple[DoclingDocument, InputFormat]:
+        """Документ Docling и формат входа. PDF длиннее `page_window` страниц разбирается
+        кусками (`page_range`) и склеивается `DoclingDocument.concatenate`: номера страниц
+        в provenance сохраняются, а пик памяти определяет кусок, а не весь документ."""
+        converter = self._get_converter()
+        pages = _pdf_pages(path)
+        window = self._s.page_window
+        if pages is None or pages <= window:
+            result = converter.convert(path, raises_on_error=False, max_num_pages=self._s.max_pages)
+            return self._checked(result, path).document, result.input.format
+        if pages > self._s.max_pages:
+            raise ParseLimitError(
+                f"{path.name}: {pages} стр., это больше parsing.max_pages={self._s.max_pages}"
+            )
+        parts = []
+        for start in range(1, pages + 1, window):
+            end = min(start + window - 1, pages)
+            result = converter.convert(path, raises_on_error=False, page_range=(start, end))
+            parts.append(self._checked(result, path).document)
+            self._log.info("parse_window", path=path.name, pages=f"{start}-{end}", total=pages)
+        doc = DoclingDocument.concatenate(parts)
+        doc.origin = parts[0].origin  # concatenate не переносит сведения об исходном файле
+        return doc, InputFormat.PDF
+
+    def _checked(self, result: ConversionResult, path: Path) -> ConversionResult:
+        """`result`, если Docling разобрал файл (в том числе частично), иначе исключение."""
+        if result.status in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
+            return result
+        # превышение max_num_pages Docling отдаёт как неуспешную конвертацию; отличаем
+        # этот случай по числу страниц входного файла, чтобы сообщить о лимите
+        pages = getattr(result.input, "page_count", 0) or 0
+        if pages > self._s.max_pages:
+            raise ParseLimitError(
+                f"{path.name}: {pages} стр., это больше parsing.max_pages={self._s.max_pages}"
+            )
+        details = "; ".join(e.error_message for e in result.errors)[:500]
+        raise ParseError(
+            f"{path.name}: Docling не смог разобрать файл ({result.status.value}) {details}"
+        )
 
     def cache_path(self, doc_id: str) -> Path:
         """Путь к JSON кэша разбора документа."""
@@ -167,24 +214,9 @@ class DoclingParser:
             raise ParseLimitError(
                 f"{path.name}: {size_mb:.0f} МБ, это больше parsing.max_file_mb={self._s.max_file_mb}"
             )
-        result = self._get_converter().convert(
-            path, raises_on_error=False, max_num_pages=self._s.max_pages
-        )
-        if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
-            # превышение max_num_pages Docling отдаёт как неуспешную конвертацию; отличаем
-            # этот случай по числу страниц входного файла, чтобы сообщить о лимите
-            pages = getattr(result.input, "page_count", 0) or 0
-            if pages > self._s.max_pages:
-                raise ParseLimitError(
-                    f"{path.name}: {pages} стр., это больше parsing.max_pages={self._s.max_pages}"
-                )
-            details = "; ".join(e.error_message for e in result.errors)[:500]
-            raise ParseError(
-                f"{path.name}: Docling не смог разобрать файл ({result.status.value}) {details}"
-            )
-        doc = result.document
+        doc, input_format = self._convert(path)
         if self._vision is not None and self._vision.enabled:
-            if result.input.format == InputFormat.IMAGE:
+            if input_format == InputFormat.IMAGE:
                 _describe_whole_image(doc, path, self._vision)
             _check_descriptions(doc, self._vision)
         self._cache.mkdir(parents=True, exist_ok=True)
@@ -338,6 +370,21 @@ def _check_descriptions(doc: DoclingDocument, vision: VisionSettings) -> None:
             f"{len(empty)} из {len(doc.pictures)} изображений не получили описания от VLM по адресу "
             f"{vision.url} (см. лог); запустите с --retry-failed"
         )
+
+
+def _pdf_pages(path: Path) -> int | None:
+    """Число страниц PDF или `None` для прочих форматов и файлов, которые pdfium не
+    открыл (повреждённые, с паролем): их целиком разбирает Docling и сам сообщает ошибку."""
+    if path.suffix.lower() != ".pdf":
+        return None
+    try:
+        pdf = pypdfium2.PdfDocument(path)
+    except pypdfium2.PdfiumError:
+        return None
+    try:
+        return len(pdf)
+    finally:
+        pdf.close()
 
 
 def _wrap(doc: DoclingDocument, path: Path) -> ParsedDocument:
