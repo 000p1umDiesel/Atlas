@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useRouter } from "@tanstack/react-router";
+import { useCallback, type ReactNode } from "react";
 import type { Source } from "../api/types";
 import { KIND_LABELS, labelOf } from "../lib/labels";
 import { usePanel, type PanelRef } from "../shell/panel";
@@ -10,6 +11,21 @@ export function sourceAction(source: Source): { panel: PanelRef } | { href: stri
   if (source.kind === "entity") return { panel: { kind: "entity", id: source.ref } };
   if (source.kind === "wiki") return { href: `/wiki/page/${encodeURIComponent(source.ref.split("#")[0]!)}` };
   return null; // связь: всё видно в самой строке
+}
+
+/** Открыть источник (например, по номеру `[n]` в ответе): панель или переход на страницу wiki. */
+export function useOpenSource(): (source: Source) => void {
+  const { open } = usePanel();
+  const router = useRouter();
+  return useCallback(
+    (source: Source) => {
+      const action = sourceAction(source);
+      if (action === null) return;
+      if ("panel" in action) open(action.panel);
+      else void router.navigate({ href: action.href });
+    },
+    [open, router],
+  );
 }
 
 /** Имя источника для списка. */

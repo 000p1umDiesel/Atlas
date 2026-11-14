@@ -32,7 +32,7 @@ test("после перехода в DOM только новая страниц�
   await screen.findByRole("heading", { name: "Граф" });
   fireEvent.click(screen.getByRole("link", { name: "Чат" }));
   await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-  expect(await screen.findAllByRole("heading", { name: "Чат" })).toHaveLength(1);
+  expect(await screen.findAllByRole("heading", { name: "О чём спросить?" })).toHaveLength(1);
   expect(screen.queryByRole("heading", { name: "Граф" })).toBeNull();
 });
 
@@ -69,8 +69,8 @@ test("мобильное меню раздела закрывается по Esc
 });
 
 test("на страницах без колонки её нет", async () => {
-  await renderAt("/chat");
-  await screen.findByRole("heading", { name: "Чат" });
+  await renderAt("/status");
+  await screen.findByRole("heading", { name: "Статус" });
   expect(screen.queryByRole("complementary", { name: "Контекст раздела" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Меню раздела" })).toBeNull();
 });

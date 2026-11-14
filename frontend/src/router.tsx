@@ -9,10 +9,12 @@ import {
 } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
 import type { ComponentType } from "react";
+import { ConversationList } from "./chat/ConversationList";
 import { FilterPanel } from "./graph/FilterPanel";
 import { parseGraphSearch, serializeGraphSearch } from "./graph/search";
 import { parsePlainSearch, stringifyPlainSearch } from "./lib/searchParams";
 import { AccountPage } from "./routes/account";
+import { ChatPage } from "./routes/chat";
 import { DesignPage } from "./routes/design";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
@@ -79,6 +81,22 @@ const accountRoute = createRoute({
   component: AccountPage,
 });
 
+// Чат: колонка — список диалогов; страница сама держит прокрутку истории и поле вопроса внизу.
+// Search-параметры не проверяются: `panel` (правая панель) сохраняется как есть.
+const chatRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/chat",
+  staticData: { column: ConversationList, bleed: true },
+  component: ChatPage,
+});
+
+const conversationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/chat/$id",
+  staticData: { column: ConversationList, bleed: true },
+  component: ChatPage,
+});
+
 const designRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/_design",
@@ -91,7 +109,8 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   accountRoute,
   designRoute,
-  page("/chat", "Чат"),
+  chatRoute,
+  conversationRoute,
   page("/documents", "Документы"),
   page("/entities", "Сущности"),
   page("/wiki", "Wiki"),

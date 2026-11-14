@@ -131,8 +131,8 @@ test("404 сущности — «Сущность не найдена»", async 
 
 test("неверный panel — панели нет", async () => {
   const api = fakeApi({ "GET /api/auth/me": ME });
-  await renderAt("/chat?panel=x:1", api);
-  await screen.findAllByRole("heading", { name: "Чат" });
+  await renderAt("/documents?panel=x:1", api);
+  await screen.findAllByRole("heading", { name: "Документы" });
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
