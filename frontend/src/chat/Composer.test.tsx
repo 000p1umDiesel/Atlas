@@ -8,13 +8,21 @@ const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInput
 beforeEach(() => localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
-test("Enter отправляет вопрос и режим, поле очищается", () => {
+test("Enter отправляет вопрос и режим; поле очищается, только когда вопрос принят", () => {
   const onSend = vi.fn();
   render(<Composer onSend={onSend} />);
   fireEvent.change(box(), { target: { value: "  Кто такой Смит?  " } });
   fireEvent.keyDown(box(), { key: "Enter" });
-  expect(onSend).toHaveBeenCalledWith("Кто такой Смит?", "rag");
+  expect(onSend).toHaveBeenCalledWith("Кто такой Смит?", "rag", expect.any(Function));
+  // Ошибка до начала ответа не должна стереть вопрос.
+  expect(box().value).toBe("  Кто такой Смит?  ");
+  act(() => onSend.mock.calls[0]![2]());
   expect(box().value).toBe("");
+});
+
+test("начальный текст поля — вопрос, который сервер не принял", () => {
+  render(<Composer onSend={vi.fn()} initialText="Неотправленный" />);
+  expect(box().value).toBe("Неотправленный");
 });
 
 test("Shift+Enter и Enter во время IME-набора не отправляют", () => {
@@ -39,7 +47,7 @@ test("пустой или пробельный вопрос — «Спросит
   fireEvent.change(box(), { target: { value: "вопрос" } });
   expect(ask().disabled).toBe(false);
   fireEvent.click(ask());
-  expect(onSend).toHaveBeenCalledWith("вопрос", "rag");
+  expect(onSend).toHaveBeenCalledWith("вопрос", "rag", expect.any(Function));
 });
 
 test("во время ответа — «Отвечаю…», кнопка и режимы недоступны", () => {
@@ -76,7 +84,7 @@ test("выбор режима сохраняется в mb.mode и восста�
   expect(radio("Граф").checked).toBe(true);
   fireEvent.change(box(), { target: { value: "вопрос" } });
   fireEvent.keyDown(box(), { key: "Enter" });
-  expect(onSend).toHaveBeenCalledWith("вопрос", "graph");
+  expect(onSend).toHaveBeenCalledWith("вопрос", "graph", expect.any(Function));
 });
 
 test("мусор в mb.mode — «Фрагменты»", () => {

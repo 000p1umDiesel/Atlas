@@ -4,6 +4,7 @@ import { LIST_LIMIT, useConversations, useMessages } from "../api/chat";
 import { ChatHeader } from "../chat/ChatHeader";
 import { Composer } from "../chat/Composer";
 import { MessageView } from "../chat/MessageView";
+import { useSend, useUnsentQuestion } from "../chat/useSend";
 import { useOpenSource } from "../sources/SourceList";
 import { FormNote } from "../ui/form";
 
@@ -29,6 +30,8 @@ export function ChatPage() {
   const conversations = useConversations();
   const history = useMessages(id);
   const openSource = useOpenSource();
+  const { send, busy, error } = useSend(id);
+  const unsent = useUnsentQuestion(id);
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<{ id: string | undefined; count: number }>({ id: undefined, count: 0 });
 
@@ -48,9 +51,6 @@ export function ChatPage() {
     if (smooth && typeof box.scrollTo === "function") box.scrollTo({ top: box.scrollHeight, behavior: "smooth" });
     else box.scrollTop = box.scrollHeight;
   }, [id, messages.length]);
-
-  // Отправка с потоком ответа подключается отдельно (useSend); пока поле — только интерфейс.
-  const send = () => {};
 
   return (
     <div className="flex h-full flex-col">
@@ -79,9 +79,15 @@ export function ChatPage() {
         </div>
       </div>
       <div className="shrink-0 px-4 pt-2 pb-3 md:px-8 md:pb-5">
-        <div className="mx-auto max-w-3xl">
+        <div className="mx-auto max-w-3xl space-y-2">
+          {error && <FormNote tone="error">{error.message}</FormNote>}
           {/* Черновик вопроса — свой у каждого диалога (и у нового). */}
-          <Composer key={id ?? "new"} onSend={send} />
+          <Composer
+            key={id ?? "new"}
+            busy={busy}
+            initialText={unsent ?? ""}
+            onSend={(question, mode, accepted) => void send(question, mode, { onAccepted: accepted })}
+          />
         </div>
       </div>
     </div>

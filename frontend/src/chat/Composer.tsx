@@ -27,15 +27,20 @@ function saveMode(mode: Mode): void {
 }
 
 type Props = {
-  /** Отправить вопрос (уже без пробелов по краям) в выбранном режиме. */
-  onSend: (question: string, mode: Mode) => void;
+  /**
+   * Отправить вопрос (уже без пробелов по краям) в выбранном режиме. `accepted` очищает
+   * поле: вызвать, когда сервер принял вопрос (ошибка до этого не должна стереть вопрос).
+   */
+  onSend: (question: string, mode: Mode, accepted: () => void) => void;
   /** Ответ ещё идёт: отправка и смена режима недоступны. */
   busy?: boolean;
+  /** Начальный текст поля (вопрос, который сервер не принял). */
+  initialText?: string;
 };
 
 /** Поле вопроса и выбор режима. Enter — отправить, Shift+Enter — новая строка. */
-export function Composer({ onSend, busy = false }: Props) {
-  const [text, setText] = useState("");
+export function Composer({ onSend, busy = false, initialText = "" }: Props) {
+  const [text, setText] = useState(initialText);
   const [mode, setMode] = useState<Mode>(loadMode);
   const name = useId();
   const question = text.trim();
@@ -43,8 +48,7 @@ export function Composer({ onSend, busy = false }: Props) {
 
   const send = () => {
     if (!canSend) return;
-    setText("");
-    onSend(question, mode);
+    onSend(question, mode, () => setText(""));
   };
 
   const onSubmit = (event: FormEvent) => {
