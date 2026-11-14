@@ -3,6 +3,7 @@ import { useRouter, useSearch } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { login } from "../api/auth";
 import { ApiError } from "../api/client";
+import { resetSendState } from "../chat/useSend";
 import { safeNext } from "../lib/safeNext";
 import { FormNote, SUBMIT_BUTTON, TextField } from "../ui/form";
 
@@ -35,6 +36,7 @@ export function LoginPage() {
     }
     // Данные и ошибки прежней сессии не переживают вход: всё запрашивается заново.
     client.clear();
+    resetSendState(client);
     // Замена записи: «Назад» не возвращает на форму входа.
     await router.navigate({ href: safeNext(next), replace: true });
   }

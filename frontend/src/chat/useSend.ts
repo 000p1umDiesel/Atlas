@@ -29,6 +29,8 @@ const IDLE: SendState = { busy: false, owner: null, error: null, unsent: null };
 class SendStore {
   private state = IDLE;
   private readonly listeners = new Set<() => void>();
+  /** Номер сессии: растёт при сбросе; отправка прежней сессии больше ничего не пишет. */
+  generation = 0;
 
   readonly subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -43,6 +45,11 @@ class SendStore {
     this.state = { ...this.state, ...patch };
     for (const listener of [...this.listeners]) listener();
   }
+
+  reset() {
+    this.generation += 1;
+    this.set(IDLE);
+  }
 }
 
 const stores = new WeakMap<QueryClient, SendStore>();
@@ -54,6 +61,15 @@ function storeFor(client: QueryClient): SendStore {
     stores.set(client, store);
   }
   return store;
+}
+
+/**
+ * Сброс состояния отправки при смене сессии (вход, выход) — рядом с `client.clear()`:
+ * ошибка и вопрос прежней сессии не показываются в новой, а ещё идущий поток прежней
+ * сессии больше не трогает ни это состояние, ни кэш.
+ */
+export function resetSendState(client: QueryClient): void {
+  storeFor(client).reset();
 }
 
 function useSendState(): SendState {
@@ -101,10 +117,16 @@ export function useSend(conversationId: string | undefined) {
       const store = storeFor(client);
       if (store.get().busy) return;
       store.set({ busy: true, owner: conversationId ?? null, error: null, unsent: null });
+      const generation = store.generation;
+      // Сессия та же (не было входа или выхода): только тогда пишем состояние и кэш.
+      const live = () => store.generation === generation;
+      const write = (patch: Partial<SendState>) => {
+        if (live()) store.set(patch);
+      };
       const fresh = conversationId === undefined;
       // Новый диалог открываем, только если пользователь всё ещё на `/chat`.
       const open = (id: string) => {
-        if (router.state.location.pathname !== "/chat") return;
+        if (!live() || router.state.location.pathname !== "/chat") return;
         void router.navigate({ to: "/chat/$id", params: { id } });
       };
 
@@ -116,11 +138,12 @@ export function useSend(conversationId: string | undefined) {
       try {
         if (cid === undefined) {
           cid = (await createConversation()).id;
-          store.set({ owner: cid });
+          write({ owner: cid });
         }
         const key = messagesKey(cid);
         // Запрос истории в полёте перезаписал бы оптимистичные сообщения.
         await client.cancelQueries({ queryKey: key });
+        if (!live()) return; // пока создавался диалог, сменилась сессия
         // История ещё не загружена: после ответа перечитаем диалог целиком.
         const partial = !fresh && client.getQueryData(key) === undefined;
         client.setQueryData<ChatMessage[]>(key, (list = []) => [
@@ -132,6 +155,7 @@ export function useSend(conversationId: string | undefined) {
         // Заменить ожидаемый ответ; false — его уже нет в кэше (историю перечитали).
         const update = (patch: (message: ChatMessage) => Partial<ChatMessage>): boolean => {
           let applied = false;
+          if (!live()) return true; // новая сессия: кэш прежней уже очищен
           client.setQueryData<ChatMessage[]>(key, (list) =>
             list?.map((message) => {
               if (message.id !== pendingId) return message;
@@ -166,6 +190,7 @@ export function useSend(conversationId: string | undefined) {
           undefined,
           () => {
             accepted = true;
+            if (!live()) return;
             options.onAccepted?.();
             if (fresh) {
               open(cid!);
@@ -175,10 +200,10 @@ export function useSend(conversationId: string | undefined) {
         );
         // Поток оборвался без итога (сеть, перезапуск сервера): ответ мог сохраниться —
         // перечитываем диалог с сервера.
-        if (!finished || missed || partial) void client.invalidateQueries({ queryKey: key });
+        if (live() && (!finished || missed || partial)) void client.invalidateQueries({ queryKey: key });
       } catch (caught) {
         const error = caught instanceof ApiError ? caught : new ApiError(0, "Ошибка запроса");
-        if (cid !== undefined) {
+        if (cid !== undefined && live()) {
           const key = messagesKey(cid);
           if (!accepted) {
             // Вопрос не принят: убрать его и пустой ответ, вопрос вернуть в поле.
@@ -188,12 +213,13 @@ export function useSend(conversationId: string | undefined) {
           }
           void client.invalidateQueries({ queryKey: key });
         }
-        store.set({ error, unsent: accepted ? null : question });
+        // 401 — сессия кончилась, вход уже открыт: текст ошибки после входа не нужен.
+        write({ error: isUnauthorized(error) ? null : error, unsent: accepted ? null : question });
         // 401 уже увёл на вход; иначе созданный диалог открываем — там ошибка и вопрос.
         if (fresh && cid !== undefined && !accepted && !isUnauthorized(error)) open(cid);
       } finally {
-        store.set({ busy: false });
-        void client.invalidateQueries({ queryKey: conversationsKey });
+        write({ busy: false });
+        if (live()) void client.invalidateQueries({ queryKey: conversationsKey });
       }
     },
     [client, router, conversationId],

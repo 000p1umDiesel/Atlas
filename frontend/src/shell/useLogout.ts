@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 import { logout } from "../api/auth";
+import { resetSendState } from "../chat/useSend";
 
 /** Выход: запрос к серверу (ошибки не мешают), страница входа, пустой кэш Query. */
 export function useLogout(): { logout: () => Promise<void>; busy: boolean } {
@@ -16,6 +17,7 @@ export function useLogout(): { logout: () => Promise<void>; busy: boolean } {
       // тут же запросили бы данные заново (уже без сессии).
       await router.navigate({ to: "/login" });
       client.clear();
+      resetSendState(client);
     } finally {
       setBusy(false);
     }

@@ -306,3 +306,88 @@ test("диалог не создался — ошибка на /chat, вопро
   expect(router.state.location.pathname).toBe("/chat");
   expect(box().value).toBe("Первый вопрос");
 });
+
+async function logIn() {
+  fireEvent.change(await screen.findByLabelText("Имя пользователя"), { target: { value: "owner" } });
+  fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "correct horse battery" } });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Войти" }));
+    await tick();
+  });
+}
+
+const AUTH = { "POST /api/auth/login": ME, "POST /api/auth/logout": { status: "ok" } };
+
+test("401 до потока → вход → снова в диалоге: прежней ошибки нет", async () => {
+  const api = fakeApi(routes({ ...AUTH, [STREAM("c1")]: () => fail(401, "Требуется вход") }));
+  const router = await renderAt("/chat/c1", api);
+  await screen.findByText("Кто такой Смит?");
+  await ask("Вопрос");
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/login"));
+
+  await logIn();
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat/c1"));
+  await screen.findByText("Кто такой Смит?");
+  await idle();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("401 при создании диалога → вход → /chat без прежней ошибки", async () => {
+  const api = fakeApi(routes({ ...AUTH, "POST /api/conversations": () => fail(401, "Требуется вход") }));
+  const router = await renderAt("/chat", api);
+  await ask("Первый вопрос");
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/login"));
+
+  await logIn();
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+  await screen.findByRole("heading", { name: "О чём спросить?" });
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("ошибка отправки не переживает выход и новый вход", async () => {
+  const api = fakeApi(routes({ ...AUTH, [STREAM("c1")]: () => fail(429, "Дневной лимит токенов исчерпан") }));
+  const router = await renderAt("/chat/c1", api);
+  await screen.findByText("Кто такой Смит?");
+  await ask("Лишний вопрос");
+  await screen.findByRole("alert");
+  await idle();
+
+  await act(async () => {
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Разделы" })).getByRole("button", { name: "Выйти" }));
+    await tick();
+  });
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/login"));
+  await logIn();
+  await act(async () => router.navigate({ to: "/chat/$id", params: { id: "c1" } }));
+  await screen.findByText("Кто такой Смит?");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(box().value).toBe("");
+});
+
+test("поток прежней сессии после выхода и входа не трогает новую", async () => {
+  const stream = sseStream();
+  const api = fakeApi(routes({ ...AUTH, [STREAM("c1")]: () => stream.response() }));
+  const router = await renderAt("/chat/c1", api);
+  await screen.findByText("Кто такой Смит?");
+  await ask("Вопрос до выхода");
+  await screen.findByRole("button", { name: "Отвечаю…" });
+
+  await act(async () => {
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Разделы" })).getByRole("button", { name: "Выйти" }));
+    await tick();
+  });
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/login"));
+  await logIn();
+  await act(async () => router.navigate({ to: "/chat/$id", params: { id: "c1" } }));
+  await screen.findByText("Кто такой Смит?");
+  // Новая сессия: можно спрашивать, недописанного ответа прежней нет.
+  expect(screen.getByRole("button", { name: /Спросить/ })).toBeTruthy();
+  expect(screen.queryByText("Вопрос до выхода", { selector: "p" })).toBeNull();
+
+  await stream.emit("delta", { text: "Старый ответ" });
+  await stream.emit("done", { ...SAVED, content: "Старый ответ" });
+  await stream.close();
+  expect(screen.queryByText("Старый ответ")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("button", { name: /Спросить/ })).toBeTruthy();
+});
