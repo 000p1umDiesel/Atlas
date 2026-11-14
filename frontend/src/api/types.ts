@@ -303,9 +303,15 @@ export interface CommunityGraph extends GraphPart {
   truncated: boolean;
 }
 
-/** Один путь между двумя сущностями (`GET /api/graph/path`). */
+/** Один путь между двумя сущностями: узлы по порядку от начала, связи — в порядке пути (направление — хранимое). */
 export interface PathView extends GraphPart {
   relations: EntityRelation[];
+}
+
+/** Ответ `GET /api/graph/path`; `timed_out` — поиск упёрся в таймаут (тогда `paths` пуст). */
+export interface PathPayload {
+  paths: PathView[];
+  timed_out: boolean;
 }
 
 /** Ответ `GET /api/entities/<id>/relations`: фасет `predicates` не учитывает фильтр по предикату. */

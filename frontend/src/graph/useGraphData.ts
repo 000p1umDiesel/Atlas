@@ -1,6 +1,6 @@
-// Данные графа текущего режима: обзор, окрестность, сообщество (путь — позже).
+// Данные графа текущего режима: обзор, окрестность, путь между двумя сущностями, сообщество.
 import { useMemo } from "react";
-import { useCommunity, useNeighbors } from "../api/graph";
+import { useCommunity, useNeighbors, usePath } from "../api/graph";
 import { fixturesMode, useOverview } from "../api/queries";
 import type { GraphPart, PathView } from "../api/types";
 import { mergeParts } from "./dataset";
@@ -20,6 +20,7 @@ export type GraphData =
       truncated: boolean;
       /** Режим «Сообщество»: настоящий размер сообщества (на графе — не больше 300 участников). */
       communitySize?: number;
+      /** Режим «Путь»: найденные пути (граф — их объединение) и признак таймаута поиска. */
       paths?: PathView[];
       timedOut?: boolean;
     };
@@ -28,6 +29,7 @@ export const PROMPTS = {
   neighbors: "Выберите сущность, чтобы увидеть её окрестность.",
   community: "Выберите сообщество.",
   path: "Выберите две сущности, чтобы найти путь между ними.",
+  samePath: "Выберите две разные сущности.",
 } as const;
 
 /** Режим, который реально показывается: на фикстурах есть только обзор. */
@@ -40,6 +42,8 @@ type Source = {
   part: GraphPart | undefined;
   truncated: boolean;
   communitySize?: number;
+  paths?: PathView[];
+  timedOut?: boolean;
   error: unknown;
   isError: boolean;
 };
@@ -54,6 +58,9 @@ export function useGraphData(search: GraphSearch): GraphData {
   const overview = useOverview(mode === "overview");
   const neighbors = useNeighbors(mode === "neighbors" ? search.center : null, search.depth, NEIGHBORS_LIMIT);
   const community = useCommunity(mode === "community" ? search.community : null);
+  const path = usePath(mode === "path" ? search.source : null, mode === "path" ? search.target : null, search.hops);
+  // Пути — одна часть графа; пересобирается только с новым ответом.
+  const pathPart = useMemo(() => (path.data ? mergeParts(path.data.paths) : undefined), [path.data]);
 
   let source: Source | null = null;
   let prompt: string | null = null;
@@ -78,8 +85,19 @@ export function useGraphData(search: GraphSearch): GraphData {
         error: community.error,
         isError: community.isError,
       };
-  } else {
+  } else if (search.source === null || search.target === null) {
     prompt = PROMPTS.path;
+  } else if (search.source === search.target) {
+    prompt = PROMPTS.samePath;
+  } else {
+    source = {
+      part: pathPart,
+      truncated: false,
+      paths: path.data?.paths,
+      timedOut: path.data?.timed_out,
+      error: path.error,
+      isError: path.isError,
+    };
   }
 
   const part = source?.part;
@@ -90,5 +108,9 @@ export function useGraphData(search: GraphSearch): GraphData {
   if (!graph || !source) return { state: "pending" };
   const ready: GraphData = { state: "ready", graph, truncated: source.truncated };
   if (source.communitySize !== undefined) ready.communitySize = source.communitySize;
+  if (source.paths !== undefined) {
+    ready.paths = source.paths;
+    ready.timedOut = source.timedOut ?? false;
+  }
   return ready;
 }

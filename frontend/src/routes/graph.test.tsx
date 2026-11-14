@@ -757,4 +757,106 @@ describe("живые данные: режимы «Окрестность» и «
     await screen.findByTestId("graph2d");
     expect(graphNodes()).toEqual(["e1", "e3"]);
   });
+
+  describe("режим «Путь»", () => {
+    const typed = (src: string, dst: string) => ({ ...relation(src, dst), src_type: "Person", dst_type: "Person" });
+    const TWO_PATHS = {
+      paths: [
+        { nodes: [node("a", "Ада"), node("b", "Бэббидж")], relations: [typed("b", "a")] },
+        { nodes: [node("a", "Ада"), node("c", "Менабреа"), node("b", "Бэббидж")], relations: [typed("a", "c"), typed("c", "b")] },
+      ],
+      timed_out: false,
+    };
+    const PATH_URL = (hops: number) => `GET /api/graph/path?source=a&target=b&max_hops=${hops}&limit=5`;
+    const pathRequested = (api: FakeApi) => api.requests().some((r) => r.includes("/api/graph/path"));
+
+    test("?mode=path&source=a → просьба выбрать две сущности, запроса пути нет", async () => {
+      const api = fakeApi(routes());
+      await renderLive("/graph?mode=path&source=a", api);
+      expect(await screen.findByText("Выберите две сущности, чтобы найти путь между ними.")).toBeTruthy();
+      expect(screen.getByRole("combobox", { name: "Откуда" })).toBeTruthy();
+      expect(screen.getByRole("combobox", { name: "Куда" })).toBeTruthy();
+      expect(pathRequested(api)).toBe(false);
+    });
+
+    test("source === target → «Выберите две разные сущности.», запроса нет", async () => {
+      const api = fakeApi(routes());
+      await renderLive("/graph?mode=path&source=a&target=a", api);
+      expect(await screen.findByText("Выберите две разные сущности.")).toBeTruthy();
+      expect(pathRequested(api)).toBe(false);
+    });
+
+    test("source=a&target=b&hops=3 → запрос пути, два пункта, наведение и клик подсвечивают узлы пути", async () => {
+      const api = fakeApi(routes({ [PATH_URL(3)]: TWO_PATHS }));
+      await renderLive("/graph?mode=path&source=a&target=b&hops=3", api);
+      await screen.findByTestId("graph2d");
+      expect(api.requests()).toContain(PATH_URL(3));
+      expect(graphNodes()).toEqual(["a", "b", "c"]);
+      const hops = screen.getByRole("radiogroup", { name: "Длина пути" });
+      expect(within(hops).getByRole("radio", { name: "3" }).getAttribute("aria-checked")).toBe("true");
+
+      const first = await screen.findByRole("button", { name: /Путь 1/ });
+      const second = screen.getByRole("button", { name: /Путь 2/ });
+      expect(first.textContent).toContain("Ада ← knows ← Бэббидж");
+      expect(second.textContent).toContain("Путь 2 · 2 шага");
+      // Ручка рендерера готова.
+      await vi.waitFor(() => expect((screen.getByRole("button", { name: "Вписать" }) as HTMLButtonElement).disabled).toBe(false));
+
+      fireEvent.mouseEnter(second);
+      expect(fake2d.api.emphasize).toHaveBeenLastCalledWith(new Set(["a", "c", "b"]));
+      fireEvent.mouseLeave(second);
+      expect(fake2d.api.emphasize).toHaveBeenLastCalledWith(null);
+
+      // Клик закрепляет подсветку: уход курсора её не снимает, повторный клик — снимает.
+      await click(second);
+      expect(second.getAttribute("aria-pressed")).toBe("true");
+      expect(fake2d.api.emphasize).toHaveBeenLastCalledWith(new Set(["a", "c", "b"]));
+      fireEvent.mouseEnter(first);
+      expect(fake2d.api.emphasize).toHaveBeenLastCalledWith(new Set(["a", "b"]));
+      fireEvent.mouseLeave(first);
+      expect(fake2d.api.emphasize).toHaveBeenLastCalledWith(new Set(["a", "c", "b"]));
+      await click(second);
+      expect(second.getAttribute("aria-pressed")).toBe("false");
+      expect(fake2d.api.emphasize).toHaveBeenLastCalledWith(null);
+    });
+
+    test("paths: [] и timed_out → текст про долгий поиск", async () => {
+      const api = fakeApi(routes({ [PATH_URL(4)]: { paths: [], timed_out: true } }));
+      await renderLive("/graph?mode=path&source=a&target=b", api);
+      expect(await screen.findByText("Поиск пути занял слишком долго. Уменьшите длину пути.")).toBeTruthy();
+      expect(screen.queryByText("Под фильтры ничего не попало")).toBeNull();
+    });
+
+    test("paths: [] при hops=3 → «Путей длиной до 3 шагов не нашлось.», кнопка ставит hops=5", async () => {
+      const api = fakeApi(routes({ [PATH_URL(3)]: { paths: [], timed_out: false } }));
+      const router = await renderLive("/graph?mode=path&source=a&target=b&hops=3", api);
+      expect(await screen.findByText("Путей длиной до 3 шагов не нашлось.")).toBeTruthy();
+      expect(screen.queryByText("Под фильтры ничего не попало")).toBeNull();
+      await click(screen.getByRole("button", { name: "Искать до 5 шагов" }));
+      await vi.waitFor(() => expect(params(router).get("hops")).toBe("5"));
+      await vi.waitFor(() => expect(api.requests()).toContain(PATH_URL(5)));
+    });
+
+    test("«Поменять местами» меняет source и target", async () => {
+      const api = fakeApi(routes({ [PATH_URL(4)]: TWO_PATHS }));
+      const router = await renderLive("/graph?mode=path&source=a&target=b", api);
+      await screen.findByTestId("graph2d");
+      await click(screen.getByRole("button", { name: "Поменять местами" }));
+      await vi.waitFor(() => expect(params(router).get("source")).toBe("b"));
+      expect(params(router).get("target")).toBe("a");
+    });
+
+    test("404 конца пути → «Сущность не найдена…»", async () => {
+      const api = fakeApi(routes({ [PATH_URL(4)]: () => fail(404, "Сущность не найдена") }));
+      await renderLive("/graph?mode=path&source=a&target=b", api);
+      expect(await screen.findByText("Сущность не найдена: возможно, её удалили вместе с документом.")).toBeTruthy();
+    });
+
+    test("карточка узла в режиме пути: настоящий размер сообщества", async () => {
+      const api = fakeApi(routes({ [PATH_URL(4)]: TWO_PATHS }));
+      await renderLive("/graph?mode=path&source=a&target=b&focus=a", api);
+      const dialog = await screen.findByRole("dialog", { name: "Ада" });
+      expect(await within(dialog).findByText("сообщество из 12 участников")).toBeTruthy();
+    });
+  });
 });

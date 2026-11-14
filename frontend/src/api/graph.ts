@@ -1,7 +1,7 @@
-// Части графа вокруг сущности (окрестность) и сообщества, которые не входят в обзор.
+// Части графа вокруг сущности (окрестность), пути и сообщества, которые не входят в обзор.
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "./client";
-import type { CommunityGraph, GraphPart } from "./types";
+import type { CommunityGraph, GraphPart, PathPayload } from "./types";
 
 /** Участников сообщества на графе: самые важные по PageRank. */
 export const COMMUNITY_LIMIT = 300;
@@ -12,6 +12,19 @@ export function useNeighbors(id: string | null, depth: 1 | 2 | 3, limit: number)
     queryKey: ["neighbors", id, depth, limit],
     queryFn: () => apiGet<GraphPart>(`/api/graph/${encodeURIComponent(id!)}/neighbors`, { depth, limit }),
     enabled: id !== null,
+  });
+}
+
+/** Кратчайших путей в ответе не больше. */
+export const PATHS_LIMIT = 5;
+
+/** Кратчайшие пути длиной до `hops` (1–5); без любого из концов или при `source === target` — без запроса. */
+export function usePath(source: string | null, target: string | null, hops: number) {
+  return useQuery<PathPayload>({
+    queryKey: ["path", source, target, hops],
+    queryFn: () =>
+      apiGet<PathPayload>("/api/graph/path", { source: source!, target: target!, max_hops: hops, limit: PATHS_LIMIT }),
+    enabled: source !== null && target !== null && source !== target,
   });
 }
 

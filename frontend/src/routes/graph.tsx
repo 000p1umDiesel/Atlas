@@ -15,6 +15,7 @@ import {
 } from "react";
 import { ApiError, isUnauthorized } from "../api/client";
 import { useCommunities } from "../api/entities";
+import type { PathView } from "../api/types";
 import { fixturesMode, useTypeCatalog } from "../api/queries";
 import { focusHighlightField, onFlyToMatch } from "../graph/commands";
 import { ENTITY_CARD_WIDTH, ENTITY_SHEET_SHARE, EntityCard } from "../graph/EntityCard";
@@ -24,6 +25,7 @@ import { communitySummaries, rankByPagerank } from "../graph/insights";
 import { Legend, type LegendTarget } from "../graph/Legend";
 import { COMMUNITIES_LIMIT } from "../graph/CommunityList";
 import { MODE_LABELS, ModeCard } from "../graph/ModeCard";
+import { PathList } from "../graph/PathList";
 import { sizeMetric, visibleSubgraph } from "../graph/model";
 import type { GraphMode, GraphView } from "../graph/search";
 import { activeMode, useGraphData } from "../graph/useGraphData";
@@ -48,6 +50,10 @@ const VIEW_OPTIONS: { value: GraphView; label: string }[] = [
 const MODES: GraphMode[] = ["overview", "neighbors", "path", "community"];
 
 const notFound = (error: unknown) => error instanceof ApiError && error.status === 404;
+
+/** Узлы пути для подсветки на графе. */
+const pathNodes = (path: PathView | undefined): ReadonlySet<string> | null =>
+  path ? new Set(path.nodes.map((n) => n.entity_id)) : null;
 
 const KEYS: [string, string][] = [
   ["F", "вписать граф в экран"],
@@ -81,7 +87,7 @@ const getWide = () => typeof matchMedia !== "function" || matchMedia(WIDE).match
 
 /**
  * Граф: холст 2D/3D во всю область, плавающие панели, легенда, карточка сущности. Режимы —
- * обзор, окрестность сущности, сообщество (данные режима — `useGraphData`).
+ * обзор, окрестность сущности, путь между двумя сущностями, сообщество (данные режима — `useGraphData`).
  */
 export function GraphPage() {
   const { search, update, setMode, reset } = useGraphSearch();
@@ -286,13 +292,42 @@ export function GraphPage() {
     return () => document.removeEventListener("keydown", onKey);
   }, [runAction]);
 
+  // Режим «Путь»: закреплённый путь подсвечен, пока его не снимут; закрепление живёт,
+  // пока не пришёл другой ответ (другие концы или длина).
+  const paths = data.state === "ready" ? data.paths : undefined;
+  const [pin, setPin] = useState<{ paths: PathView[]; index: number } | null>(null);
+  const pinnedIndex = pin !== null && pin.paths === paths ? pin.index : null;
+  const pinnedIds = useMemo(
+    () => (paths && pinnedIndex !== null ? pathNodes(paths[pinnedIndex]) : null),
+    [paths, pinnedIndex],
+  );
+  // Подсветка закреплённого пути — и в новом рендерере (смена 2D↔3D); снятие — при откреплении.
+  useEffect(() => {
+    if (!api?.emphasize || pinnedIds === null) return;
+    api.emphasize(pinnedIds);
+    return () => api.emphasize?.(null);
+  }, [api, pinnedIds]);
+  const onPathHover = useCallback(
+    (index: number | null) => {
+      const hovered = index === null || !paths ? null : pathNodes(paths[index]);
+      apiRef.current?.emphasize?.(hovered ?? pinnedIds);
+    },
+    [paths, pinnedIds],
+  );
+  // Открепление снимает подсветку (уборка эффекта выше).
+  const onPathPin = useCallback(
+    (index: number | null) => setPin(index === null || !paths ? null : { paths, index }),
+    [paths],
+  );
+
   // Легенда: наведение подсвечивает узлы пункта, клик — фильтр через URL (как чипы).
   const onLegendHover = useCallback(
     (target: LegendTarget | null) => {
       const current = apiRef.current;
       if (!current?.emphasize) return;
       if (!target || !graph) {
-        current.emphasize(null);
+        // Ушли с легенды — снова виден закреплённый путь, если он есть.
+        current.emphasize(pinnedIds);
         return;
       }
       const ids = new Set<string>();
@@ -301,7 +336,7 @@ export function GraphPage() {
       });
       current.emphasize(ids);
     },
-    [graph],
+    [graph, pinnedIds],
   );
   const onLegendToggle = useCallback(
     (target: LegendTarget) => {
@@ -347,7 +382,9 @@ export function GraphPage() {
     return () => clearTimeout(t);
   }, [notice]);
 
-  const empty = visible !== null && visible.nodes.size === 0;
+  // Путей не нашлось — объяснение в карточке режима, а не «под фильтры ничего не попало».
+  const noPaths = paths !== undefined && paths.length === 0;
+  const empty = visible !== null && visible.nodes.size === 0 && !noPaths;
   const truncated = data.state === "ready" && data.truncated;
   const showRotate = search.view === "3d" && !reducedMotion;
   const deselect = useCallback(() => setSelected(null), [setSelected]);
@@ -355,7 +392,10 @@ export function GraphPage() {
   // Размер сообщества выбранной сущности вне обзора — с сервера: на графе режима видна лишь часть
   // участников. В окрестности — из списка крупнейших сообществ (тот же запрос, что у списка режима).
   const selectedCommunity = showCard ? graph.getNodeAttribute(selected, "community") : null;
-  const topCommunities = useCommunities(COMMUNITIES_LIMIT, mode === "neighbors" && selectedCommunity !== null);
+  const topCommunities = useCommunities(
+    COMMUNITIES_LIMIT,
+    (mode === "neighbors" || mode === "path") && selectedCommunity !== null,
+  );
   let communitySize: number | null | undefined;
   if (mode === "community") {
     communitySize =
@@ -371,14 +411,24 @@ export function GraphPage() {
         <p className="max-w-xs font-serif text-lg font-semibold">{data.prompt}</p>
       </CanvasMessage>
     );
-  } else if (data.state === "error" && notFound(data.error) && mode === "neighbors") {
+  } else if (data.state === "error" && notFound(data.error) && (mode === "neighbors" || mode === "path")) {
     canvas = (
       <CanvasMessage>
         <div className="max-w-sm space-y-3">
           <p className="font-serif text-lg font-semibold">Сущность не найдена: возможно, её удалили вместе с документом.</p>
-          <button type="button" onClick={() => update({ center: null, focus: null, expand: [] })} className={CANVAS_BUTTON}>
-            Выбрать другую сущность
-          </button>
+          {mode === "neighbors" ? (
+            <button type="button" onClick={() => update({ center: null, focus: null, expand: [] })} className={CANVAS_BUTTON}>
+              Выбрать другую сущность
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => update({ source: null, target: null, focus: null, expand: [] })}
+              className={CANVAS_BUTTON}
+            >
+              Выбрать другие сущности
+            </button>
+          )}
         </div>
       </CanvasMessage>
     );
@@ -655,8 +705,20 @@ export function GraphPage() {
         update={update}
         compact={!wide}
         offsetTop={cardTop}
-        needsInput={data.state === "input"}
-      />
+        needsInput={data.state === "input" || noPaths}
+      >
+        {paths && (
+          <PathList
+            paths={paths}
+            timedOut={data.state === "ready" && data.timedOut === true}
+            hops={search.hops}
+            pinned={pinnedIndex}
+            onPin={onPathPin}
+            onHover={onPathHover}
+            onWiden={() => update({ hops: 5 })}
+          />
+        )}
+      </ModeCard>
 
       <AnimatePresence>
         {showCard && graph && selected && (

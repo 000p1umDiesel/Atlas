@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ArrowUpDown, ChevronDown } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { EntityPicker } from "../ui/EntityPicker";
 import { Segmented } from "../ui/Segmented";
@@ -18,6 +18,8 @@ const DEPTH_OPTIONS: { value: `${Depth}`; label: string }[] = [
   { value: "3", label: "3" },
 ];
 
+const HOPS_OPTIONS: { value: string; label: string }[] = ["1", "2", "3", "4", "5"].map((v) => ({ value: v, label: v }));
+
 /** Ширина карточки режима на широком экране, px. */
 export const MODE_CARD_WIDTH = 280;
 
@@ -31,13 +33,16 @@ type Props = {
   offsetTop: number;
   /** Ничего не выбрано: на узком экране карточка сразу раскрыта. */
   needsInput: boolean;
+  /** Под выбором режима: найденные пути. */
+  children?: ReactNode;
 };
 
 /**
  * Плавающая карточка выбора для режима (слева под панелью инструментов): сущность и глубина
- * окрестности или список сообществ. Обзору карточка не нужна; путь добавится отдельно.
+ * окрестности, два конца пути и его длина (под ними — найденные пути) или список сообществ.
+ * Обзору карточка не нужна.
  */
-export function ModeCard({ mode, search, update, compact, offsetTop, needsInput }: Props) {
+export function ModeCard({ mode, search, update, compact, offsetTop, needsInput, children }: Props) {
   const bodyId = useId();
   // null — пользователь ещё не сворачивал и не раскрывал: на узком экране раскрыто, пока выбора нет.
   const [openChoice, setOpenChoice] = useState<boolean | null>(null);
@@ -65,6 +70,50 @@ export function ModeCard({ mode, search, update, compact, offsetTop, needsInput 
             size="sm"
           />
         </div>
+      </div>
+    );
+  } else if (mode === "path") {
+    body = (
+      <div className="flex min-h-0 flex-col gap-3">
+        <div className="space-y-2">
+          <EntityPicker
+            label="Откуда"
+            value={search.source}
+            exclude={search.target ?? undefined}
+            onChange={(source) => update({ source })}
+          />
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => update({ source: search.target, target: search.source })}
+              disabled={search.source === null && search.target === null}
+              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
+            >
+              <ArrowUpDown size={13} aria-hidden="true" />
+              Поменять местами
+            </button>
+          </div>
+          <EntityPicker
+            label="Куда"
+            value={search.target}
+            exclude={search.source ?? undefined}
+            onChange={(target) => update({ target })}
+          />
+        </div>
+        <div className="space-y-1">
+          <p className="text-[13px] font-medium text-muted" aria-hidden="true">
+            Длина пути
+          </p>
+          <Segmented
+            label="Длина пути"
+            options={HOPS_OPTIONS}
+            value={`${search.hops}`}
+            onChange={(v) => update({ hops: Number(v) })}
+            layoutId="graph-hops"
+            size="sm"
+          />
+        </div>
+        {children && <div className="legend-scroll -mx-1 min-h-0 overflow-y-auto border-t border-line pt-2">{children}</div>}
       </div>
     );
   } else if (mode === "community") {
