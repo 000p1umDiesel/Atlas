@@ -83,7 +83,9 @@ main() {
     if [ "$old" = "$new" ]; then
         echo "Новых коммитов нет"
     else
-        as_owner git log --oneline --no-decorate "$old..HEAD" | head -30
+        # --max-count, не `| head`: head закрывает трубу, git получает SIGPIPE, и с pipefail
+        # скрипт молча выходил до сборки, когда новых коммитов больше 30
+        as_owner git log --oneline --no-decorate --max-count=30 "$old..HEAD"
     fi
 
     # 3. Образ — пока стек работает. Метка MB_REVISION — коммит, из которого он собран.
