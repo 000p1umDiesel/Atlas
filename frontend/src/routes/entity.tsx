@@ -1,4 +1,5 @@
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { BookOpen, MessageCircleQuestion, Network, Route } from "lucide-react";
 import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { communityTitle, useCommunities, useEntity } from "../api/entities";
@@ -8,9 +9,12 @@ import { useWikiPage } from "../api/wiki";
 import { GHOST_BUTTON } from "../documents/JobsTable";
 import { DocumentsTab } from "../entities/DocumentsTab";
 import { MentionsTab } from "../entities/MentionsTab";
+import { MiniGraph } from "../entities/MiniGraph";
 import { errorText } from "../entities/parts";
 import { RelationsTab, type RelationFilters } from "../entities/RelationsTab";
+import { graphLink } from "../graph/search";
 import { formatInt, formatScore } from "../lib/format";
+import { stringifyPlainSearch } from "../lib/searchParams";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { WikiBody } from "../wiki/WikiBody";
@@ -52,13 +56,47 @@ function CommunityMetric({ community }: { community: string }) {
   return (
     <Metric label="Сообщество">
       <RouterAnchor
-        href={`/graph?mode=community&community=${encodeURIComponent(community)}`}
+        href={graphLink({ mode: "community", community })}
         className="text-primary-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary"
         title={hit ? communityTitle(hit) : undefined}
       >
         {hit ? communityTitle(hit) : community}
       </RouterAnchor>
     </Metric>
+  );
+}
+
+/** Вопрос о сущности для чата: заготовка, которую можно поправить перед отправкой. */
+export function askAbout(name: string): string {
+  return `Что известно о «${name}» и с чем это связано?`;
+}
+
+const ACTION = `${GHOST_BUTTON} gap-1.5`;
+
+/** Переходы со страницы сущности: граф, путь, вопрос в чат, страница wiki. */
+function Actions({ entity }: { entity: EntityCard }) {
+  const id = entity.entity_id;
+  return (
+    <div role="group" aria-label="Действия" className="flex flex-wrap gap-2">
+      <RouterAnchor href={graphLink({ mode: "neighbors", center: id })} className={ACTION}>
+        <Network size={15} aria-hidden="true" />
+        Открыть в графе
+      </RouterAnchor>
+      <RouterAnchor href={graphLink({ mode: "path", source: id })} className={ACTION}>
+        <Route size={15} aria-hidden="true" />
+        Путь до…
+      </RouterAnchor>
+      <RouterAnchor href={`/chat${stringifyPlainSearch({ ask: askAbout(entity.name), mode: "graph" })}`} className={ACTION}>
+        <MessageCircleQuestion size={15} aria-hidden="true" />
+        Спросить
+      </RouterAnchor>
+      {entity.has_page && entity.slug && (
+        <RouterAnchor href={`/wiki/${encodeURIComponent(entity.slug)}`} className={ACTION}>
+          <BookOpen size={15} aria-hidden="true" />
+          Страница wiki
+        </RouterAnchor>
+      )}
+    </div>
   );
 }
 
@@ -92,6 +130,7 @@ function Header({ entity }: { entity: EntityCard }) {
         {entity.pagerank !== null && <Metric label="PageRank">{formatScore(entity.pagerank)}</Metric>}
         {entity.community !== null && <CommunityMetric community={entity.community} />}
       </dl>
+      <Actions entity={entity} />
     </header>
   );
 }
@@ -239,6 +278,7 @@ function Entity({ id }: { id: string }) {
     content = (
       <>
         <Header entity={entity} />
+        <MiniGraph id={id} />
         <div className="space-y-4">
           <TabList tabs={tabs} active={active} base={base} onSelect={selectTab} />
           <section

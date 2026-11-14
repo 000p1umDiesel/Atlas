@@ -372,3 +372,49 @@ test("черновик вопроса не переходит в другой д
   await screen.findByRole("heading", { name: "О чём спросить?" });
   expect((screen.getByRole("textbox", { name: "Вопрос" }) as HTMLTextAreaElement).value).toBe("");
 });
+
+describe("заготовка вопроса /chat?ask=&mode=", () => {
+  beforeEach(() => localStorage.removeItem("mb.mode"));
+
+  test("новый диалог: вопрос в поле, режим из ссылки, ничего не отправлено, ask/mode убраны из URL", async () => {
+    const api = fakeApi(routes());
+    const router = await renderAt("/chat?ask=Вопрос&mode=graph&panel=chunk:x", api);
+    const box = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" });
+    expect(box.value).toBe("Вопрос");
+    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Граф" }).checked).toBe(true);
+    await vi.waitFor(() => expect(router.state.location.search).toEqual({ panel: "chunk:x" }));
+    expect(router.state.location.pathname).toBe("/chat");
+    expect(router.history.length).toBe(1); // replace, без новой записи
+    expect(api.requests().some((r) => r.startsWith("POST"))).toBe(false);
+    // заготовка не запоминается как выбор режима
+    expect(localStorage.getItem("mb.mode")).toBeNull();
+  });
+
+  test("неизвестный режим — режим по умолчанию; параметры всё равно убираются", async () => {
+    const router = await renderAt("/chat?ask=Вопрос&mode=foo", fakeApi(routes()));
+    const box = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" });
+    expect(box.value).toBe("Вопрос");
+    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Фрагменты" }).checked).toBe(true);
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/chat"));
+  });
+
+  test("в существующем диалоге ask не заполняет поле", async () => {
+    await renderAt("/chat/c1?ask=Вопрос&mode=graph", fakeApi(routes()));
+    await screen.findByText("Кто такой Смит?");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" }).value).toBe("");
+    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Фрагменты" }).checked).toBe(true);
+  });
+
+  test("ask на уже открытом новом диалоге заменяет поле", async () => {
+    const router = await renderAt("/chat", fakeApi(routes()));
+    const box = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" });
+    fireEvent.change(box, { target: { value: "черновик" } });
+    await act(async () => {
+      await router.navigate({ href: "/chat?ask=Новый" });
+    });
+    await vi.waitFor(() =>
+      expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" }).value).toBe("Новый"),
+    );
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/chat"));
+  });
+});

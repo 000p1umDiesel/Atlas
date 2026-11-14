@@ -7,11 +7,16 @@ export const MAX_QUESTION_CHARS = 16000;
 
 const MODE_KEY = "mb.mode";
 
+/** Допустимый режим ответа (из URL, хранилища). */
+export function isMode(value: unknown): value is Mode {
+  return MODES.some((m) => m.value === value);
+}
+
 /** Режим из localStorage; недоступное хранилище или мусор — `rag`. */
 export function loadMode(): Mode {
   try {
     const value = localStorage.getItem(MODE_KEY);
-    if (MODES.some((m) => m.value === value)) return value as Mode;
+    if (isMode(value)) return value;
   } catch {
     // хранилище может быть недоступно (приватный режим, блокировка)
   }
@@ -34,16 +39,18 @@ type Props = {
   onSend: (question: string, mode: Mode, accepted: () => void) => void;
   /** Ответ ещё идёт: отправка и смена режима недоступны. */
   busy?: boolean;
-  /** Начальный текст поля (вопрос, который сервер не принял). */
+  /** Начальный текст поля (вопрос, который сервер не принял, или заготовка из ссылки). */
   initialText?: string;
+  /** Режим при монтировании вместо сохранённого (заготовка из ссылки); в хранилище не пишется. */
+  initialMode?: Mode;
   /** Сравнить режимы: вопрос уходит сюда, а не в `onSend`. Без него флажка нет. */
   onCompare?: (question: string) => void;
 };
 
 /** Поле вопроса и выбор режима. Enter — отправить, Shift+Enter — новая строка. */
-export function Composer({ onSend, busy = false, initialText = "", onCompare }: Props) {
+export function Composer({ onSend, busy = false, initialText = "", initialMode, onCompare }: Props) {
   const [text, setText] = useState(initialText);
-  const [mode, setMode] = useState<Mode>(loadMode);
+  const [mode, setMode] = useState<Mode>(() => initialMode ?? loadMode());
   const [compare, setCompare] = useState(false);
   const name = useId();
   const question = text.trim();

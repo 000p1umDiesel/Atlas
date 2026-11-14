@@ -1,3 +1,4 @@
+import { stringifyPlainSearch } from "../lib/searchParams";
 import { DEFAULT_FILTERS, type ColorBy, type GraphFilters, type SizeBy } from "./model";
 
 export type GraphView = "2d" | "3d";
@@ -67,4 +68,21 @@ export function serializeGraphSearch(s: GraphSearchInput): Record<string, string
   if (s.view !== "2d") out.view = s.view;
   if (s.focus) out.focus = s.focus;
   return out;
+}
+
+/** Что показать на графе по ссылке: окрестность сущности, путь от неё или сообщество. */
+export type GraphLinkTarget =
+  | { mode: "neighbors"; center: string }
+  | { mode: "path"; source: string }
+  | { mode: "community"; community: string };
+
+/** Адрес графа в нужном режиме; у окрестности центр сразу выбран (`focus`). */
+export function graphLink(p: GraphLinkTarget): string {
+  const search =
+    p.mode === "neighbors"
+      ? { mode: p.mode, center: p.center, focus: p.center }
+      : p.mode === "path"
+        ? { mode: p.mode, source: p.source }
+        : { mode: p.mode, community: p.community };
+  return `/graph${stringifyPlainSearch(search)}`;
 }

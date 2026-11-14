@@ -1,5 +1,5 @@
 import { DEFAULT_FILTERS } from "./model";
-import { parseGraphSearch, serializeGraphSearch } from "./search";
+import { graphLink, parseGraphSearch, serializeGraphSearch } from "./search";
 
 describe("graph search", () => {
   it("неверные значения дают дефолты", () => {
@@ -68,5 +68,16 @@ describe("graph search: выбранный узел (focus)", () => {
     for (const focus of ["", "   ", {}, ["a"], "a b", "<script>", "x".repeat(200), Number.NaN, true]) {
       expect(parseGraphSearch({ focus }).focus).toBeNull();
     }
+  });
+});
+
+describe("graphLink", () => {
+  it("окрестность, путь и сообщество", () => {
+    expect(graphLink({ mode: "neighbors", center: "e1" })).toBe("/graph?mode=neighbors&center=e1&focus=e1");
+    expect(graphLink({ mode: "path", source: "e1" })).toBe("/graph?mode=path&source=e1");
+    expect(graphLink({ mode: "community", community: "7" })).toBe("/graph?mode=community&community=7");
+    expect(graphLink({ mode: "community", community: "community:a b" })).toBe(
+      "/graph?mode=community&community=community%3Aa+b",
+    );
   });
 });

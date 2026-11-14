@@ -1,6 +1,7 @@
-import { BookOpen, Users } from "lucide-react";
+import { BookOpen, IdCard, Network, Users } from "lucide-react";
 import { useEntity } from "../api/entities";
 import { useTypeCatalog } from "../api/queries";
+import { graphLink } from "../graph/search";
 import { formatInt, formatScore } from "../lib/format";
 import { RouterAnchor } from "../ui/RouterAnchor";
 import { PANEL_ACTION, PanelError, PanelLoading } from "./common";
@@ -46,25 +47,28 @@ export function EntityPanel({ id }: { id: string }) {
         <Metric label="Документы" value={formatInt(entity.documents_count)} />
         {entity.pagerank !== null && <Metric label="PageRank" value={formatScore(entity.pagerank)} />}
       </dl>
-      {(entity.has_page && entity.slug) || entity.community !== null ? (
-        <div className="flex flex-wrap gap-2">
-          {entity.has_page && entity.slug && (
-            <RouterAnchor href={`/wiki/${encodeURIComponent(entity.slug)}`} className={PANEL_ACTION}>
-              <BookOpen size={15} aria-hidden="true" />
-              Страница wiki
-            </RouterAnchor>
-          )}
-          {entity.community !== null && (
-            <RouterAnchor
-              href={`/graph?community=${encodeURIComponent(entity.community)}`}
-              className={PANEL_ACTION}
-            >
-              <Users size={15} aria-hidden="true" />
-              Сообщество на графе
-            </RouterAnchor>
-          )}
-        </div>
-      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <RouterAnchor href={`/entities/${encodeURIComponent(entity.entity_id)}`} className={PANEL_ACTION}>
+          <IdCard size={15} aria-hidden="true" />
+          Страница сущности
+        </RouterAnchor>
+        <RouterAnchor href={graphLink({ mode: "neighbors", center: entity.entity_id })} className={PANEL_ACTION}>
+          <Network size={15} aria-hidden="true" />
+          Окрестность на графе
+        </RouterAnchor>
+        {entity.has_page && entity.slug && (
+          <RouterAnchor href={`/wiki/${encodeURIComponent(entity.slug)}`} className={PANEL_ACTION}>
+            <BookOpen size={15} aria-hidden="true" />
+            Страница wiki
+          </RouterAnchor>
+        )}
+        {entity.community !== null && (
+          <RouterAnchor href={graphLink({ mode: "community", community: entity.community })} className={PANEL_ACTION}>
+            <Users size={15} aria-hidden="true" />
+            Сообщество на графе
+          </RouterAnchor>
+        )}
+      </div>
     </div>
   );
 }

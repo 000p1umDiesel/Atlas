@@ -20,9 +20,13 @@ export interface RelationView {
   evidence: string[];
 }
 
-export interface GraphPayload {
+/** Узлы и связи части графа (окрестность сущности, путь, сообщество). */
+export interface GraphPart {
   nodes: NodeView[];
   relations: RelationView[];
+}
+
+export interface GraphPayload extends GraphPart {
   ranked_by: "pagerank" | "mentions";
   truncated: boolean;
   /** Узлов, прошедших фильтры (в ответе — не больше `limit`). */

@@ -104,6 +104,13 @@ test("панель сущности: тип по-русски, метрики, �
   expect(within(within(panel).getByRole("group", { name: "Документы" })).getByText("3")).toBeTruthy();
   expect(within(panel).getByRole("group", { name: "PageRank" })).toBeTruthy();
   expect(within(panel).getByRole("link", { name: "Страница wiki" }).getAttribute("href")).toBe("/wiki/adam-smith");
+  expect(within(panel).getByRole("link", { name: "Страница сущности" }).getAttribute("href")).toBe("/entities/e1");
+  expect(within(panel).getByRole("link", { name: "Окрестность на графе" }).getAttribute("href")).toBe(
+    "/graph?mode=neighbors&center=e1&focus=e1",
+  );
+  expect(within(panel).getByRole("link", { name: "Сообщество на графе" }).getAttribute("href")).toBe(
+    "/graph?mode=community&community=community%3Aabc",
+  );
 
   fireEvent.click(within(panel).getByRole("button", { name: "Закрыть" }));
   await vi.waitFor(() => expect(router.state.location.search).toEqual({}));
@@ -120,6 +127,9 @@ test("сущность без анализа и без страницы: нет 
   expect(within(panel).queryByRole("group", { name: "PageRank" })).toBeNull();
   expect(within(panel).queryByRole("link", { name: /Сообщество/ })).toBeNull();
   expect(within(panel).queryByRole("link", { name: "Страница wiki" })).toBeNull();
+  // страница сущности и окрестность есть всегда
+  expect(within(panel).getByRole("link", { name: "Страница сущности" }).getAttribute("href")).toBe("/entities/e1");
+  expect(within(panel).getByRole("link", { name: "Окрестность на графе" })).toBeTruthy();
 });
 
 test("404 сущности — «Сущность не найдена»", async () => {

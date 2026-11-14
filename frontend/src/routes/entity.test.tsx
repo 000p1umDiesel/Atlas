@@ -3,6 +3,9 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { App, createQueryClient } from "../App";
 import { createAppRouter } from "../router";
 import { fail, fakeApi, type FakeApi } from "../test/fakeApi";
+import { fake2d } from "../test/fakeGraph";
+
+vi.mock("../graph/Graph2D", async () => ({ Graph2D: (await import("../test/fakeGraph")).FakeGraph2D }));
 
 const ME = { id: "u1", username: "owner" };
 const TYPES = [
@@ -72,6 +75,13 @@ const DOCUMENTS = [
   { doc_id: "d1", name: "Записки.pdf", mentions: 5, url: null },
   { doc_id: "d2", name: "Письма.docx", mentions: 1, url: null },
 ];
+const NEIGHBORS = {
+  nodes: [
+    { entity_id: "a", name: "Ада Лавлейс", type: "Person", mention_count: 7, pagerank: 0.01, community: "7", degree: 3 },
+    { entity_id: "b", name: "Бэббидж", type: "Person", mention_count: 4, pagerank: 0.02, community: "7", degree: 2 },
+  ],
+  relations: [relation({ src_id: "b", src_name: "Бэббидж", predicate: "knows", dst_id: "a", dst_name: "Ада Лавлейс" })],
+};
 const rel = (id: string, query = "direction=both") => `GET /api/entities/${id}/relations?${query}&limit=50&offset=0`;
 
 type Routes = Parameters<typeof fakeApi>[0];
@@ -84,6 +94,7 @@ const routes = (extra: Routes = {}): Routes => ({
   [rel("a")]: RELATIONS,
   "GET /api/entities/a/mentions?limit=20&offset=0": MENTIONS,
   "GET /api/entities/a/documents?limit=200": DOCUMENTS,
+  "GET /api/graph/a/neighbors?depth=1&limit=40": NEIGHBORS,
   ...extra,
 });
 
@@ -298,4 +309,54 @@ test("колонка раздела — фильтры сущностей", asyn
   await screen.findByRole("heading", { level: 1, name: "Ада Лавлейс" });
   const column = screen.getByRole("complementary", { name: "Контекст раздела" });
   expect(within(column).getByRole("navigation", { name: "Фильтры сущностей" })).toBeTruthy();
+});
+
+test("действия: граф, путь, вопрос в чат и страница wiki", async () => {
+  await renderAt("/entities/a", fakeApi(routes()));
+  await screen.findByRole("heading", { level: 1, name: "Ада Лавлейс" });
+  const actions = screen.getByRole("group", { name: "Действия" });
+  expect(within(actions).getByRole("link", { name: "Открыть в графе" }).getAttribute("href")).toBe(
+    "/graph?mode=neighbors&center=a&focus=a",
+  );
+  expect(within(actions).getByRole("link", { name: "Путь до…" }).getAttribute("href")).toBe("/graph?mode=path&source=a");
+  expect(within(actions).getByRole("link", { name: "Страница wiki" }).getAttribute("href")).toBe("/wiki/ada");
+  const ask = within(actions).getByRole("link", { name: "Спросить" });
+  const url = new URL(ask.getAttribute("href")!, "http://x");
+  expect(url.pathname).toBe("/chat");
+  expect(url.searchParams.get("ask")).toBe("Что известно о «Ада Лавлейс» и с чем это связано?");
+  expect(url.searchParams.get("mode")).toBe("graph");
+});
+
+test("«Спросить» открывает новый диалог с готовым вопросом в режиме «Граф»", async () => {
+  const api = fakeApi(routes({ "GET /api/conversations?limit=200": [] }));
+  const router = await renderAt("/entities/a", api);
+  await screen.findByRole("heading", { level: 1, name: "Ада Лавлейс" });
+  await click(within(screen.getByRole("group", { name: "Действия" })).getByRole("link", { name: "Спросить" }));
+  await vi.waitFor(() => expect(router.state.location.href).toBe("/chat"));
+  const field = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" });
+  expect(field.value).toBe("Что известно о «Ада Лавлейс» и с чем это связано?");
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "Граф" }).checked).toBe(true);
+  expect(api.requests().some((r) => r.startsWith("POST"))).toBe(false);
+});
+
+test("без страницы wiki — нет действия «Страница wiki»", async () => {
+  await renderAt("/entities/a", fakeApi(routes({ "GET /api/entities/a": card("a", "Ада Лавлейс", { has_page: false, slug: null }) })));
+  await screen.findByRole("heading", { level: 1, name: "Ада Лавлейс" });
+  const actions = screen.getByRole("group", { name: "Действия" });
+  expect(within(actions).queryByRole("link", { name: "Страница wiki" })).toBeNull();
+  expect(within(actions).getByRole("link", { name: "Открыть в графе" })).toBeTruthy();
+});
+
+test("мини-граф: окрестность центра, клик по соседу — его страница", async () => {
+  const api = fakeApi(routes({ "GET /api/entities/b": card("b", "Бэббидж", { aliases: [] }), [rel("b")]: RELATIONS }));
+  const router = await renderAt("/entities/a", api);
+  const section = await screen.findByRole("region", { name: "Окрестность" });
+  await within(section).findByTestId("graph2d");
+  expect(fake2d.last!.selected).toBe("a");
+  await act(async () => {
+    fake2d.last!.onSelect("b");
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/entities/b"));
+  await screen.findByRole("heading", { level: 1, name: "Бэббидж" });
 });

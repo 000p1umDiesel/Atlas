@@ -1,7 +1,5 @@
 import { Link } from "@tanstack/react-router";
 import { motion } from "motion/react";
-import { DEFAULT_FILTERS } from "../graph/model";
-import { serializeGraphSearch } from "../graph/search";
 import { countOf, formatInt } from "../lib/format";
 import type { TypeCatalog } from "../lib/typeCatalog";
 
@@ -34,10 +32,10 @@ export function TypeBars({ catalog }: Props) {
         return (
           <li key={row.type}>
             <Link
-              to="/graph"
-              search={serializeGraphSearch({ ...DEFAULT_FILTERS, types: [row.type], view: "2d" })}
+              to="/entities"
+              search={{ type: row.type }}
               aria-label={label}
-              title={`${label}. Показать на графе`}
+              title={`${label}. Показать в каталоге сущностей`}
               className="group -mx-2 grid grid-cols-[minmax(5.5rem,8.5rem)_1fr] items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-bg focus-visible:outline-2 focus-visible:outline-primary"
             >
               <span className="truncate text-sm">{name}</span>

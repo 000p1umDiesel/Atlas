@@ -51,7 +51,7 @@ test("полос по типам — 18, строка «Человек» с чи
   expect(within(bars).queryByText("Person")).toBeNull();
   const person = within(bars).getByRole("link", { name: /^Человек/ });
   expect(person.textContent).toContain(String(types.find((t) => t.type === "Person")!.count));
-  expect(person.getAttribute("href")).toBe("/graph?types=Person");
+  expect(person.getAttribute("href")).toBe("/entities?type=Person");
 });
 
 test("«Что это за типы?» раскрывает справочник: название и определение каждого типа", async () => {
@@ -81,21 +81,15 @@ test("в подписи к главной и в списке важных сущ
   for (const t of types) expect(within(list).queryByText(new RegExp(`^${t.type},`))).toBeNull();
 });
 
-test("самые важные сущности ведут на граф с подсветкой", async () => {
+test("самые важные сущности ведут на свои страницы", async () => {
   const { graph } = generateFixtures();
   const top = [...graph.nodes].sort((a, b) => (b.pagerank ?? 0) - (a.pagerank ?? 0))[0]!;
-  const router = await renderHome();
+  await renderHome();
   const list = screen.getByRole("list", { name: "Самые важные сущности" });
   expect(within(list).getAllByRole("listitem")).toHaveLength(8);
   const escaped = top.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const link = within(list).getByRole("link", { name: new RegExp(`^${escaped}`) });
-  expect(link.getAttribute("href")).toBe(`/graph?${new URLSearchParams({ highlight: top.name })}`);
-  await act(async () => {
-    fireEvent.click(link);
-    await new Promise((r) => setTimeout(r, 0));
-  });
-  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/graph"));
-  expect(router.state.location.search).toMatchObject({ highlight: top.name });
+  expect(link.getAttribute("href")).toBe(`/entities/${encodeURIComponent(top.entity_id)}`);
 });
 
 test("последние документы — 5, анализ графа готов", async () => {

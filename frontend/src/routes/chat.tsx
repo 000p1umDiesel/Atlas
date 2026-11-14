@@ -1,12 +1,14 @@
-import { useParams } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useParams, useRouter, useSearch } from "@tanstack/react-router";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { LIST_LIMIT, useConversations, useMessages } from "../api/chat";
 import { ChatHeader } from "../chat/ChatHeader";
 import { Compare } from "../chat/Compare";
-import { Composer } from "../chat/Composer";
+import { Composer, isMode } from "../chat/Composer";
 import { MessageView } from "../chat/MessageView";
 import { useSend, useUnsentQuestion } from "../chat/useSend";
+import type { Mode } from "../lib/labels";
 import { prefersReducedMotion } from "../lib/motion";
+import { stringifyPlainSearch } from "../lib/searchParams";
 import { useOpenSource } from "../sources/SourceList";
 import { FormNote } from "../ui/form";
 
@@ -22,6 +24,36 @@ function EmptyChat() {
   );
 }
 
+type Prefill = { text: string; mode: Mode | undefined };
+
+/**
+ * Заготовка вопроса из ссылки `/chat?ask=…&mode=…` (только новый диалог): забирается в состояние,
+ * а `ask`/`mode` убираются из URL (replace, прочие параметры вроде `panel` остаются). Вопрос сам
+ * не отправляется. `round` растёт с каждой заготовкой: поле вопроса пересоздаётся с ней.
+ */
+function usePrefill(id: string | undefined): { prefill: Prefill | null; round: number } {
+  const router = useRouter();
+  const search = useSearch({ strict: false }) as Record<string, unknown>;
+  const [state, setState] = useState<{ prefill: Prefill | null; round: number }>({ prefill: null, round: 0 });
+  const incoming = id === undefined && (search.ask !== undefined || search.mode !== undefined);
+
+  // До отрисовки: поле не мелькает пустым перед заготовкой.
+  useLayoutEffect(() => {
+    if (!incoming) return;
+    const text = typeof search.ask === "string" ? search.ask : "";
+    setState((s) => ({ prefill: { text, mode: isMode(search.mode) ? search.mode : undefined }, round: s.round + 1 }));
+    const rest = Object.fromEntries(Object.entries(search).filter(([key]) => key !== "ask" && key !== "mode"));
+    void router.navigate({ href: `/chat${stringifyPlainSearch(rest)}`, replace: true });
+  }, [incoming, search, router]);
+
+  // Заготовка принадлежит новому диалогу: после перехода в диалог она не вернётся.
+  useEffect(() => {
+    if (id !== undefined) setState((s) => (s.prefill ? { ...s, prefill: null } : s));
+  }, [id]);
+
+  return { prefill: id === undefined ? state.prefill : null, round: state.round };
+}
+
 /** Чат `/chat` и `/chat/<id>`: шапка диалога, история, поле вопроса. */
 export function ChatPage() {
   const { id } = useParams({ strict: false });
@@ -30,6 +62,7 @@ export function ChatPage() {
   const openSource = useOpenSource();
   const { send, busy, error } = useSend(id);
   const unsent = useUnsentQuestion(id);
+  const { prefill, round } = usePrefill(id);
   // Сравнение режимов: не сохраняется; `key` — новый вопрос перезапускает цикл.
   const [compare, setCompare] = useState<{ question: string; key: number; conversation: string | undefined } | null>(null);
   // Сравнение принадлежит диалогу: при переходе в другой оно закрывается (и не вернётся).
@@ -90,9 +123,10 @@ export function ChatPage() {
           {error && <FormNote tone="error">{error.message}</FormNote>}
           {/* Черновик вопроса — свой у каждого диалога (и у нового). */}
           <Composer
-            key={id ?? "new"}
+            key={id ?? `new-${round}`}
             busy={busy}
-            initialText={unsent ?? ""}
+            initialText={prefill?.text ?? unsent ?? ""}
+            initialMode={prefill?.mode}
             onSend={(question, mode, accepted) => {
               setCompare(null);
               void send(question, mode, { onAccepted: accepted });

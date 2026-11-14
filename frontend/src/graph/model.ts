@@ -1,5 +1,5 @@
 import { MultiDirectedGraph } from "graphology";
-import type { GraphPayload, NodeView } from "../api/types";
+import type { GraphPart, NodeView } from "../api/types";
 
 export type ColorBy = "type" | "community";
 export type SizeBy = "pagerank" | "mentions" | "degree";
@@ -35,7 +35,7 @@ type EdgeAttrs = {
 
 export type Graph = MultiDirectedGraph<NodeView, EdgeAttrs>;
 
-export function buildGraph(p: GraphPayload): Graph {
+export function buildGraph(p: GraphPart): Graph {
   const g: Graph = new MultiDirectedGraph();
   for (const n of p.nodes) g.addNode(n.entity_id, { ...n });
   for (const r of p.relations) {

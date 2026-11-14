@@ -147,8 +147,8 @@ export function HomePage() {
                 {top.map((node, i) => (
                   <li key={node.entity_id} className="border-b border-line">
                     <Link
-                      to="/graph"
-                      search={serializeGraphSearch({ ...DEFAULT_FILTERS, highlight: node.name, view: "2d" })}
+                      to="/entities/$id"
+                      params={{ id: node.entity_id }}
                       className="group flex items-center gap-3 py-3 focus-visible:outline-2 focus-visible:outline-primary"
                     >
                       <span className="w-5 shrink-0 text-right font-serif text-sm text-muted tabular-nums" aria-hidden="true">
