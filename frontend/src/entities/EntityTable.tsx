@@ -31,8 +31,13 @@ function aliasText(item: EntityListItem): string {
   return rest.length > ALIASES_SHOWN ? `${shown}, …` : shown;
 }
 
+/** Точка цвета типа: блочная (строчный span с одним размером в браузере 0×0), обёртка — flex. */
 function TypeDot({ color }: { color: string }) {
-  return <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />;
+  return (
+    <span className="flex shrink-0 pt-1.5">
+      <span className="block size-2.5 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+    </span>
+  );
 }
 
 function WikiMark({ item }: { item: EntityListItem }) {
@@ -109,9 +114,7 @@ export function EntityTable({ items, catalog, showPagerank, ...sorting }: Props)
           const aliases = aliasText(item);
           return (
             <li key={item.entity_id} className="flex items-start gap-3 py-3">
-              <span className="mt-1.5">
-                <TypeDot color={catalog.typeColor(item.type)} />
-              </span>
+              <TypeDot color={catalog.typeColor(item.type)} />
               <div className="min-w-0 flex-1 space-y-0.5">
                 <RouterAnchor href={entityHref(item.entity_id)} className={NAME_LINK}>
                   {item.name}
@@ -158,9 +161,7 @@ export function EntityTable({ items, catalog, showPagerank, ...sorting }: Props)
               >
                 <td className={TD}>
                   <div className="flex items-start gap-2">
-                    <span className="mt-1.5">
-                      <TypeDot color={catalog.typeColor(item.type)} />
-                    </span>
+                    <TypeDot color={catalog.typeColor(item.type)} />
                     <div className="min-w-0">
                       <RouterAnchor href={entityHref(item.entity_id)} className={NAME_LINK}>
                         {item.name}

@@ -62,6 +62,17 @@ const entityRequests = (api: FakeApi) => api.requests().filter((r) => r.startsWi
 const column = () => screen.getByRole("complementary", { name: "Контекст раздела" });
 const table = () => screen.getByRole("table", { name: "Сущности" });
 
+/**
+ * Точка типа видна: строчный `<span>` с одним лишь size-2.5 в jsdom не проверить, а в браузере
+ * он 0×0. Точка — блочная (block / inline-block), её обёртка — flex или блок.
+ */
+function expectVisibleDot(scope: HTMLElement) {
+  const dot = scope.querySelector<HTMLElement>('span[aria-hidden="true"][style*="background-color"]');
+  expect(dot).not.toBeNull();
+  expect(dot!.className.split(/\s+/).some((c) => c === "block" || c === "inline-block")).toBe(true);
+  expect(dot!.parentElement!.className.split(/\s+/).some((c) => c === "flex" || c === "block")).toBe(true);
+}
+
 beforeAll(() => {
   window.scrollTo = vi.fn();
 });
@@ -82,6 +93,7 @@ test("каталог: заголовок, счётчик, строка с али
   expect(within(row).getByText("Человек")).toBeTruthy();
   expect(within(row).getByRole("link", { name: "Страница wiki" }).getAttribute("href")).toBe("/wiki/ada");
   expect(screen.getByRole("searchbox", { name: "Поиск сущностей" })).toBeTruthy();
+  expectVisibleDot(row);
 });
 
 test("?q=ada&type=Person → один запрос с повтором типа, limit и offset", async () => {
@@ -320,4 +332,5 @@ test("узкий экран: карточки вместо таблицы", asyn
   expect(within(cards).getByRole("link", { name: "Ада Лавлейс" }).getAttribute("href")).toBe("/entities/e1");
   expect(within(cards).getByText(/Человек · 3 упоминания · 2 связи/)).toBeTruthy();
   expect(screen.queryByRole("table", { name: "Сущности" })).toBeNull();
+  expectVisibleDot(within(cards).getByRole("listitem"));
 });
