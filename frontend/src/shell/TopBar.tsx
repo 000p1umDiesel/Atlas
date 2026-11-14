@@ -1,12 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { LogOut, Menu, Search, User } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef } from "react";
 import { paletteShortcut } from "./commands";
 import { ThemeButton } from "./ThemeButton";
 
 type Props = {
-  /** Текущий путь: переход на другую страницу закрывает меню аккаунта. */
-  pathname: string;
+  /** Меню аккаунта (телефон) открыто. Состояние у оболочки: она закрывает меню при смене пути. */
+  accountOpen: boolean;
+  onAccountOpenChange(open: boolean): void;
   onMenu?: () => void;
   /** Открыть палитру Ctrl+K. */
   onSearch: () => void;
@@ -21,14 +22,16 @@ const MENU_ITEM =
   "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-ink hover:bg-bg focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50";
 
 /** Меню аккаунта для телефона: на широком экране «Аккаунт» и «Выйти» стоят в рейке. */
-function AccountMenu({ pathname, username, onLogout, logoutBusy }: Omit<Props, "onMenu" | "onSearch">) {
-  const [open, setOpen] = useState(false);
+function AccountMenu({
+  open,
+  setOpen,
+  username,
+  onLogout,
+  logoutBusy,
+}: Pick<Props, "username" | "onLogout" | "logoutBusy"> & { open: boolean; setOpen(open: boolean): void }) {
   const menuId = useId();
   const root = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
-
-  // Смена страницы (в том числе «назад») закрывает меню.
-  useEffect(() => setOpen(false), [pathname]);
 
   useEffect(() => {
     if (!open) return;
@@ -47,7 +50,7 @@ function AccountMenu({ pathname, username, onLogout, logoutBusy }: Omit<Props, "
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onPointer);
     };
-  }, [open]);
+  }, [open, setOpen]);
 
   return (
     <div ref={root} className="relative md:hidden">
@@ -57,7 +60,7 @@ function AccountMenu({ pathname, username, onLogout, logoutBusy }: Omit<Props, "
         aria-label="Меню аккаунта"
         aria-expanded={open}
         aria-controls={menuId}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
         className={ICON_BUTTON}
       >
         <User size={20} strokeWidth={1.8} />
@@ -82,7 +85,7 @@ function AccountMenu({ pathname, username, onLogout, logoutBusy }: Omit<Props, "
   );
 }
 
-export function TopBar({ pathname, onMenu, onSearch, username, onLogout, logoutBusy }: Props) {
+export function TopBar({ accountOpen, onAccountOpenChange, onMenu, onSearch, username, onLogout, logoutBusy }: Props) {
   const shortcut = paletteShortcut();
   return (
     <header className="flex h-16 shrink-0 items-center gap-2 px-4 md:gap-3 md:px-8">
@@ -112,7 +115,7 @@ export function TopBar({ pathname, onMenu, onSearch, username, onLogout, logoutB
       </button>
       {/* На телефоне в нижней панели нет места: тема и аккаунт здесь; на широком экране — в рейке. */}
       <ThemeButton className={ICON_BUTTON} />
-      <AccountMenu pathname={pathname} username={username} onLogout={onLogout} logoutBusy={logoutBusy} />
+      <AccountMenu open={accountOpen} setOpen={onAccountOpenChange} username={username} onLogout={onLogout} logoutBusy={logoutBusy} />
     </header>
   );
 }

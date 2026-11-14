@@ -233,3 +233,31 @@ test("меню аккаунта: Esc, уже обработанный внутр
   expect(toggle.getAttribute("aria-expanded")).toBe("true");
   expect(within(bar).getByRole("button", { name: "Выйти" })).toBeTruthy();
 });
+
+test("окно стало широким — телефонные меню раздела и аккаунта закрываются", async () => {
+  // Узкое окно, которое потом расширяется: matches читается в момент вызова обработчика.
+  let wide = false;
+  const listeners = new Set<() => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    media: query,
+    get matches() {
+      return wide;
+    },
+    addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+    removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+  }));
+  try {
+    await renderAt("/chat");
+    const bar = (await screen.findByText("mnogobase", { selector: "header span" })).closest("header")!;
+    const toggle = within(bar).getByRole("button", { name: "Меню аккаунта" });
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Меню раздела" }));
+    await screen.findByRole("complementary", { name: "Меню раздела" });
+    wide = true;
+    act(() => listeners.forEach((cb) => cb()));
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await vi.waitFor(() => expect(screen.queryByRole("complementary", { name: "Меню раздела" })).toBeNull());
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

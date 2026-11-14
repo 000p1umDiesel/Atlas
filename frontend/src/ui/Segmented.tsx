@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import { useRef, type KeyboardEvent } from "react";
+import { useId, useRef, type KeyboardEvent } from "react";
 
 type Option<T extends string> = { value: T; label: string };
 
@@ -8,7 +8,11 @@ type Props<T extends string> = {
   options: Option<T>[];
   value: T;
   onChange(value: T): void;
-  /** Уникальный id «пилюли»: она перетекает между вариантами (layout-анимация). */
+  /**
+   * Имя «пилюли»: она перетекает между вариантами (layout-анимация). К нему добавляется id
+   * экземпляра: две копии одного переключателя (колонка на десктопе и меню на телефоне) не
+   * делят общий layoutId — иначе motion ждёт перехода между ними и не убирает уходящую копию.
+   */
   layoutId: string;
   size?: "sm" | "md";
 };
@@ -17,6 +21,7 @@ type Props<T extends string> = {
 export function Segmented<T extends string>({ label, options, value, onChange, layoutId, size = "md" }: Props<T>) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const index = options.findIndex((o) => o.value === value);
+  const pillId = `${layoutId}-${useId()}`;
 
   const onKeyDown = (event: KeyboardEvent) => {
     const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
@@ -53,7 +58,7 @@ export function Segmented<T extends string>({ label, options, value, onChange, l
           >
             {checked && (
               <motion.span
-                layoutId={layoutId}
+                layoutId={pillId}
                 // Перетекает только при смене выбора, а не при любом сдвиге раскладки вокруг.
                 layoutDependency={value}
                 className="absolute inset-0 rounded-full bg-card shadow-card ring-1 ring-line"

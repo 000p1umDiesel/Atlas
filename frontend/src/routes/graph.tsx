@@ -34,6 +34,7 @@ import { activeMode, EXPAND_RELATIONS_LIMIT, useGraphData } from "../graph/useGr
 import { useGraphSearch } from "../graph/useGraphSearch";
 import { countOf, formatInt, plural } from "../lib/format";
 import { useShellColumn } from "../shell/columnContext";
+import { useShellOverlayOpen } from "../shell/overlay";
 import { ErrorBoundary, ErrorNotice } from "../ui/ErrorNotice";
 import { Segmented } from "../ui/Segmented";
 import { Toggle } from "../ui/Toggle";
@@ -362,11 +363,11 @@ export function GraphPage() {
     },
     [column, keysOpen, switchView, setSelected],
   );
-  // Пока открыто меню раздела (телефон), клавиши принадлежат ему: Esc закрывает меню,
-  // а не снимает выделение на графе под ним.
-  const menuOpen = column.menuOpen;
+  // Пока открыт оверлей оболочки (меню раздела или аккаунта на телефоне), клавиши — его:
+  // Esc закрывает меню, а не снимает выделение на графе под ним.
+  const overlayOpen = useShellOverlayOpen();
   useEffect(() => {
-    if (menuOpen) return;
+    if (overlayOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const action = graphHotkey(e);
       if (!action) return;
@@ -380,7 +381,7 @@ export function GraphPage() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [runAction, menuOpen]);
+  }, [runAction, overlayOpen]);
 
   // Режим «Путь»: закреплённый путь подсвечен, пока его не снимут; закрепление живёт,
   // пока не пришёл другой ответ (другие концы или длина).

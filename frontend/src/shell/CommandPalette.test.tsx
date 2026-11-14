@@ -32,7 +32,7 @@ function Harness() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <TopBar pathname="/" onLogout={() => {}} onSearch={() => setOpen(true)} />
+      <TopBar accountOpen={false} onAccountOpenChange={() => {}} onLogout={() => {}} onSearch={() => setOpen(true)} />
       <input aria-label="Чужое поле" />
       <CommandPalette open={open} onOpenChange={setOpen} />
     </>

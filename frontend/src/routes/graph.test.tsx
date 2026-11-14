@@ -333,25 +333,68 @@ describe("выбранный узел живёт в URL (focus) и пережи�
     await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything()));
   });
 
-  test("Esc при открытом меню раздела закрывает только меню: выделение на графе остаётся", async () => {
+  const sectionMenu = () => screen.queryByRole("complementary", { name: "Меню раздела" });
+  const backdrop = () => document.querySelector("[data-menu-backdrop]");
+  async function pressEscape(el: Element = document.body) {
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Escape", code: "Escape" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  test("Esc при открытом меню раздела закрывает только меню: оно уходит из DOM, выделение остаётся", async () => {
     const { graph } = generateFixtures();
     const node = graph.nodes[5]!;
     const router = await renderAt(`/graph?focus=${node.entity_id}`);
     await screen.findByRole("dialog", { name: node.name });
     fireEvent.click(screen.getByRole("button", { name: "Меню раздела" }));
     await screen.findByRole("complementary", { name: "Меню раздела" });
-    await act(async () => {
-      fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
-      await new Promise((r) => setTimeout(r, 0));
+    await pressEscape();
+    // Меню и затемнение действительно уходят: невидимый слой не перехватывает касания.
+    await vi.waitFor(() => {
+      expect(sectionMenu()).toBeNull();
+      expect(backdrop()).toBeNull();
     });
     expect(params(router).get("focus")).toBe(node.entity_id);
-    // Меню закрыто (его уход проверяет Shell.test; здесь в jsdom выход анимации не завершается):
-    // клавиши графа снова работают — следующий Esc снимает выделение.
+    // Клавиши графа снова работают: следующий Esc снимает выделение.
+    await pressEscape();
+    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+  });
+
+  test("клик по затемнению закрывает меню раздела: меню и затемнение уходят из DOM", async () => {
+    const { graph } = generateFixtures();
+    const node = graph.nodes[5]!;
+    await renderAt(`/graph?focus=${node.entity_id}`);
+    await screen.findByRole("dialog", { name: node.name });
+    fireEvent.click(screen.getByRole("button", { name: "Меню раздела" }));
+    await screen.findByRole("complementary", { name: "Меню раздела" });
     await act(async () => {
-      fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+      fireEvent.click(backdrop()!);
       await new Promise((r) => setTimeout(r, 0));
     });
-    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+    await vi.waitFor(() => {
+      expect(sectionMenu()).toBeNull();
+      expect(backdrop()).toBeNull();
+    });
+  });
+
+  test("Esc при открытом меню аккаунта закрывает только его: выделение на графе остаётся", async () => {
+    const { graph } = generateFixtures();
+    const node = graph.nodes[5]!;
+    const router = await renderAt(`/graph?focus=${node.entity_id}`);
+    await screen.findByRole("dialog", { name: node.name });
+    const bar = screen.getByText("mnogobase", { selector: "header span" }).closest("header")!;
+    const toggle = within(bar).getByRole("button", { name: "Меню аккаунта" });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await pressEscape();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(params(router).get("focus")).toBe(node.entity_id);
+    // Esc с фокусом на пункте меню — так же.
+    fireEvent.click(toggle);
+    await pressEscape(within(bar).getByRole("link", { name: "Аккаунт" }));
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(params(router).get("focus")).toBe(node.entity_id);
   });
 
   test("неизвестный id в focus снимается", async () => {
