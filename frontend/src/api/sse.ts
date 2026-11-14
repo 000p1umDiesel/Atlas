@@ -36,6 +36,7 @@ export function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
 }
 
 const OFFLINE = "Нет связи с сервером";
+const MALFORMED = "Неожиданный ответ сервера";
 
 function isAbort(error: unknown): boolean {
   return (error as { name?: unknown } | null)?.name === "AbortError";
@@ -44,8 +45,9 @@ function isAbort(error: unknown): boolean {
 /**
  * `POST` с JSON и ответом потоком событий. Ответ не-2xx — `ApiError` (как у `apiSend`; 401
  * будит подписчиков сессии), сетевой сбой и обрыв чтения — `ApiError(0, …)`, отмена
- * (`AbortError`) — как есть. `onOpen` — сервер принял запрос (ответ 2xx, поток начался).
- * Завершается, когда сервер закрыл поток.
+ * (`AbortError`) — как есть, испорченный JSON события — `ApiError(502, …)`. При обрыве и
+ * испорченных данных поток закрывается (`reader.cancel()`). `onOpen` — сервер принял запрос
+ * (ответ 2xx, поток начался). Завершается, когда сервер закрыл поток.
  */
 export async function streamSse(
   path: string,
@@ -73,18 +75,29 @@ export async function streamSse(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  // Закрыть поток перед броском: соединение не висит; ошибка самой отмены не важна.
+  const cancel = () => {
+    void reader.cancel().catch(() => {});
+  };
   let buffer = "";
   for (;;) {
     let chunk: ReadableStreamReadResult<Uint8Array>;
     try {
       chunk = await reader.read();
     } catch (error) {
+      cancel();
       if (isAbort(error)) throw error;
       throw new ApiError(0, OFFLINE);
     }
     if (chunk.done) break;
-    // Потоковый режим: буква, разрезанная между кусками, склеивается со следующим.
-    const parsed = parseSse(buffer + decoder.decode(chunk.value, { stream: true }));
+    let parsed: ReturnType<typeof parseSse>;
+    try {
+      // Потоковый режим: буква, разрезанная между кусками, склеивается со следующим.
+      parsed = parseSse(buffer + decoder.decode(chunk.value, { stream: true }));
+    } catch {
+      cancel();
+      throw new ApiError(502, MALFORMED);
+    }
     buffer = parsed.rest;
     for (const { event, data } of parsed.events) onEvent(event, data);
   }

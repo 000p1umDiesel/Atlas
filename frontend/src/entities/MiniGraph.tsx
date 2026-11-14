@@ -41,7 +41,8 @@ export function MiniGraph({ id }: { id: string }) {
         <p className="text-sm text-muted">Загружаю…</p>
       </Box>
     );
-  } else if (graph.size === 0) {
+  } else if (query.data?.relations.length === 0) {
+    // По ответу, а не по графу: связь с соседом, не попавшим в nodes (предел), — всё же связь.
     body = (
       <Box>
         <p className="text-sm text-muted">Связей пока нет.</p>

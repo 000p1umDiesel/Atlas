@@ -43,14 +43,25 @@ type Props = {
   initialText?: string;
   /** Режим при монтировании вместо сохранённого (заготовка из ссылки); в хранилище не пишется. */
   initialMode?: Mode;
+  /**
+   * Сменить режим без пересоздания поля (ссылка `?mode=` без вопроса): каждый новый объект
+   * применяется один раз, черновик остаётся; в хранилище не пишется.
+   */
+  modeRequest?: { mode: Mode } | null;
   /** Сравнить режимы: вопрос уходит сюда, а не в `onSend`. Без него флажка нет. */
   onCompare?: (question: string) => void;
 };
 
 /** Поле вопроса и выбор режима. Enter — отправить, Shift+Enter — новая строка. */
-export function Composer({ onSend, busy = false, initialText = "", initialMode, onCompare }: Props) {
+export function Composer({ onSend, busy = false, initialText = "", initialMode, modeRequest = null, onCompare }: Props) {
   const [text, setText] = useState(initialText);
-  const [mode, setMode] = useState<Mode>(() => initialMode ?? loadMode());
+  const [mode, setMode] = useState<Mode>(() => modeRequest?.mode ?? initialMode ?? loadMode());
+  // Новый запрос смены режима — состояние правится прямо при отрисовке (без мелькания).
+  const [request, setRequest] = useState(modeRequest);
+  if (modeRequest !== request) {
+    setRequest(modeRequest);
+    if (modeRequest) setMode(modeRequest.mode);
+  }
   const [compare, setCompare] = useState(false);
   const name = useId();
   const question = text.trim();

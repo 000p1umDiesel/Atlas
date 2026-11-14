@@ -417,4 +417,25 @@ describe("заготовка вопроса /chat?ask=&mode=", () => {
     );
     await vi.waitFor(() => expect(router.state.location.href).toBe("/chat"));
   });
+
+  test("mode без ask на открытом новом диалоге: черновик остаётся, режим выбран, mode убран", async () => {
+    const router = await renderAt("/chat", fakeApi(routes()));
+    const box = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" });
+    fireEvent.change(box, { target: { value: "abc" } });
+    await act(async () => {
+      await router.navigate({ href: "/chat?mode=graph" });
+    });
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/chat"));
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" }).value).toBe("abc");
+    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Граф" }).checked).toBe(true);
+    expect(localStorage.getItem("mb.mode")).toBeNull();
+  });
+
+  test("ссылка /chat?mode=graph с нуля: пустое поле, режим graph, mode убран", async () => {
+    const router = await renderAt("/chat?mode=graph", fakeApi(routes()));
+    const box = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Вопрос" });
+    expect(box.value).toBe("");
+    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Граф" }).checked).toBe(true);
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/chat"));
+  });
 });

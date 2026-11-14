@@ -94,6 +94,13 @@ function sseStream() {
         await tick();
       });
     },
+    /** Обрыв соединения посреди чтения. */
+    async fail() {
+      await act(async () => {
+        controller.error(new TypeError("network error"));
+        await tick();
+      });
+    },
   };
 }
 
@@ -185,6 +192,42 @@ test("событие error — сообщение-ошибка с detail", async
   expect(screen.getByText("Модель или база знаний недоступны")).toBeTruthy();
   expect(screen.queryByText("Ищу в документах и пишу ответ…")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("событие error без detail — непустой текст «Не удалось получить ответ»", async () => {
+  const stream = sseStream();
+  const api = fakeApi(routes({ [STREAM("c1")]: () => stream.response() }));
+  await renderAt("/chat/c1", api);
+  await screen.findByText("Кто такой Смит?");
+  await ask("Вопрос");
+  await stream.emit("error", { status: 500 });
+  await stream.close();
+  await idle();
+  expect(screen.getByText("Не удалось получить ответ")).toBeTruthy();
+});
+
+test("обрыв чтения посреди ответа — пузырь больше не «отвечает», история перечитывается", async () => {
+  const stream = sseStream();
+  // Перечитанная история ещё не пришла: пузырь в кэше остаётся и не должен «отвечать» вечно.
+  const reloaded = deferred<Response>();
+  let loads = 0;
+  const api = fakeApi(
+    routes({
+      [STREAM("c1")]: () => stream.response(),
+      [MESSAGES("c1")]: () => (loads++ === 0 ? Response.json(HISTORY) : reloaded.promise),
+    }),
+  );
+  await renderAt("/chat/c1", api);
+  await screen.findByText("Кто такой Смит?");
+  await ask("Оборванный вопрос");
+  await stream.emit("delta", { text: "Начало" });
+  await stream.fail();
+  await idle();
+  await vi.waitFor(() => expect(count(api, MESSAGES("c1"))).toBe(2));
+  expect((await screen.findByRole("alert")).textContent).toBe("Нет связи с сервером");
+  const bubble = screen.getByText("Начало").closest("[aria-busy]")!;
+  expect(bubble.getAttribute("aria-busy")).toBe("false");
+  expect(document.querySelector('[aria-busy="true"]')).toBeNull();
 });
 
 test("поток оборвался без done/error — история перечитывается, «Отвечаю…» пропадает", async () => {

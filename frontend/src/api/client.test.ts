@@ -118,3 +118,15 @@ it("quiet401 keeps 401 from reaching the handlers", async () => {
   expect(seen).not.toHaveBeenCalled();
   off();
 });
+
+// Прокси или перезапуск сервера отдали HTML с кодом 200 вместо JSON: понятная ошибка, а не SyntaxError.
+it("2xx with a non-JSON body is ApiError(status, «Неожиданный ответ сервера»)", async () => {
+  respond(200, "<html>");
+  const get = apiGet("/api/stats");
+  await expect(get).rejects.toBeInstanceOf(ApiError);
+  await expect(get).rejects.toMatchObject({ status: 200, detail: "Неожиданный ответ сервера" });
+  respond(200, "<html>");
+  const send = apiSend("POST", "/api/conversations", {});
+  await expect(send).rejects.toBeInstanceOf(ApiError);
+  await expect(send).rejects.toMatchObject({ status: 200, detail: "Неожиданный ответ сервера" });
+});

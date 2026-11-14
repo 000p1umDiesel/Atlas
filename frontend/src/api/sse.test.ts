@@ -96,3 +96,43 @@ it("streamSse: a broken stream is ApiError(0)", async () => {
   await expect(streamSse("/api/x", {}, onEvent)).rejects.toMatchObject({ status: 0, detail: "Нет связи с сервером" });
   expect(onEvent).toHaveBeenCalledWith("delta", { text: "a" });
 });
+
+/** Тело ответа, у читателя которого отслеживается `cancel` (поток закрыт клиентом). */
+function watched(stream: ReadableStream<Uint8Array>) {
+  const cancel = vi.fn(() => Promise.reject(new Error("cancel failed"))); // ошибка отмены не мешает
+  const original = stream.getReader.bind(stream);
+  stream.getReader = (() => {
+    const reader = original();
+    reader.cancel = cancel;
+    return reader;
+  }) as typeof stream.getReader;
+  // Ответ-заглушка: `new Response` может обернуть поток, и подмена getReader потеряется.
+  return { response: { ok: true, status: 200, body: stream } as unknown as Response, cancel };
+}
+
+it("streamSse: broken JSON in an event is ApiError(502) and the stream is cancelled", async () => {
+  const { response, cancel } = watched(
+    body([new TextEncoder().encode('event: delta\ndata: {"text":"a"}\n\nevent: delta\ndata: {broken\n\n')]),
+  );
+  fetchMock.mockResolvedValueOnce(response);
+  const onEvent = vi.fn();
+  const result = streamSse("/api/x", {}, onEvent);
+  await expect(result).rejects.toBeInstanceOf(ApiError);
+  await expect(result).rejects.toMatchObject({ status: 502, detail: "Неожиданный ответ сервера" });
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+it("streamSse: a read failure mid-stream cancels the reader and is ApiError(0)", async () => {
+  let reads = 0;
+  const { response, cancel } = watched(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (reads++ === 0) controller.enqueue(new TextEncoder().encode('event: delta\ndata: {"text":"a"}\n\n'));
+        else controller.error(new TypeError("network error"));
+      },
+    }),
+  );
+  fetchMock.mockResolvedValueOnce(response);
+  await expect(streamSse("/api/x", {}, () => {})).rejects.toMatchObject({ status: 0, detail: "Нет связи с сервером" });
+  expect(cancel).toHaveBeenCalledTimes(1);
+});

@@ -25,33 +25,43 @@ function EmptyChat() {
 }
 
 type Prefill = { text: string; mode: Mode | undefined };
+type PrefillState = { prefill: Prefill | null; round: number; modeRequest: { mode: Mode } | null };
 
 /**
  * Заготовка вопроса из ссылки `/chat?ask=…&mode=…` (только новый диалог): забирается в состояние,
  * а `ask`/`mode` убираются из URL (replace, прочие параметры вроде `panel` остаются). Вопрос сам
  * не отправляется. `round` растёт с каждой заготовкой: поле вопроса пересоздаётся с ней.
+ * Ссылка с одним `mode` (без `ask`) черновик не трогает: поле не пересоздаётся, меняется только
+ * режим (`modeRequest`).
  */
-function usePrefill(id: string | undefined): { prefill: Prefill | null; round: number } {
+function usePrefill(id: string | undefined): PrefillState {
   const router = useRouter();
   const search = useSearch({ strict: false }) as Record<string, unknown>;
-  const [state, setState] = useState<{ prefill: Prefill | null; round: number }>({ prefill: null, round: 0 });
+  const [state, setState] = useState<PrefillState>({ prefill: null, round: 0, modeRequest: null });
   const incoming = id === undefined && (search.ask !== undefined || search.mode !== undefined);
 
   // До отрисовки: поле не мелькает пустым перед заготовкой.
   useLayoutEffect(() => {
     if (!incoming) return;
-    const text = typeof search.ask === "string" ? search.ask : "";
-    setState((s) => ({ prefill: { text, mode: isMode(search.mode) ? search.mode : undefined }, round: s.round + 1 }));
+    const mode = isMode(search.mode) ? search.mode : undefined;
+    if (search.ask !== undefined) {
+      const text = typeof search.ask === "string" ? search.ask : "";
+      setState((s) => ({ prefill: { text, mode }, round: s.round + 1, modeRequest: null }));
+    } else if (mode) {
+      setState((s) => ({ ...s, modeRequest: { mode } }));
+    }
     const rest = Object.fromEntries(Object.entries(search).filter(([key]) => key !== "ask" && key !== "mode"));
     void router.navigate({ href: `/chat${stringifyPlainSearch(rest)}`, replace: true });
   }, [incoming, search, router]);
 
   // Заготовка принадлежит новому диалогу: после перехода в диалог она не вернётся.
   useEffect(() => {
-    if (id !== undefined) setState((s) => (s.prefill ? { ...s, prefill: null } : s));
+    if (id !== undefined) {
+      setState((s) => (s.prefill || s.modeRequest ? { ...s, prefill: null, modeRequest: null } : s));
+    }
   }, [id]);
 
-  return { prefill: id === undefined ? state.prefill : null, round: state.round };
+  return id === undefined ? state : { prefill: null, round: state.round, modeRequest: null };
 }
 
 /** Чат `/chat` и `/chat/<id>`: шапка диалога, история, поле вопроса. */
@@ -62,7 +72,7 @@ export function ChatPage() {
   const openSource = useOpenSource();
   const { send, busy, error } = useSend(id);
   const unsent = useUnsentQuestion(id);
-  const { prefill, round } = usePrefill(id);
+  const { prefill, round, modeRequest } = usePrefill(id);
   // Сравнение режимов: не сохраняется; `key` — новый вопрос перезапускает цикл.
   const [compare, setCompare] = useState<{ question: string; key: number; conversation: string | undefined } | null>(null);
   // Сравнение принадлежит диалогу: при переходе в другой оно закрывается (и не вернётся).
@@ -127,6 +137,7 @@ export function ChatPage() {
             busy={busy}
             initialText={prefill?.text ?? unsent ?? ""}
             initialMode={prefill?.mode}
+            modeRequest={modeRequest}
             onSend={(question, mode, accepted) => {
               setCompare(null);
               void send(question, mode, { onAccepted: accepted });

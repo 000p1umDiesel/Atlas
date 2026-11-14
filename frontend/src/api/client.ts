@@ -86,12 +86,21 @@ async function request(url: string, init: RequestInit): Promise<Response> {
   }
 }
 
+/** Тело успешного ответа как JSON; не JSON (страница прокси с кодом 200) — `ApiError`, а не `SyntaxError`. */
+async function jsonBody<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiError(response.status, "Неожиданный ответ сервера");
+  }
+}
+
 export async function apiGet<T>(path: string, params: QueryParams = {}): Promise<T> {
   const response = await request(`${path}${queryString(params)}`, {
     headers: { Accept: "application/json" },
   });
   if (!response.ok) throw await errorFromResponse(response);
-  return (await response.json()) as T;
+  return jsonBody<T>(response);
 }
 
 /** Запрос с изменением: JSON-тело — только если `json` передан; 204 → `null`. */
@@ -111,5 +120,5 @@ export async function apiSend<T>(
   const response = await request(path, init);
   if (!response.ok) throw await errorFromResponse(response, options);
   if (response.status === 204) return null;
-  return (await response.json()) as T;
+  return jsonBody<T>(response);
 }

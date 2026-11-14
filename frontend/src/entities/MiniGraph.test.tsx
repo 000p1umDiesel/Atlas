@@ -58,6 +58,15 @@ test("без связей — «Связей пока нет.», холста н
   expect(screen.queryByTestId("graph2d")).toBeNull();
 });
 
+test("связь с соседом вне nodes — не «Связей пока нет.»: граф рисует, что есть", async () => {
+  // Сервер урезал узлы по пределу: конец связи e2 в nodes не попал.
+  vi.stubGlobal("fetch", fakeApi({ [NEIGHBORS]: { nodes: [node("e1", "Ада")], relations: [RELATION] } }));
+  await renderWithRouter(<MiniGraph id="e1" />, "/entities/e1");
+  await screen.findByTestId("graph2d");
+  expect(screen.queryByText("Связей пока нет.")).toBeNull();
+  expect(fake2d.last!.graph.order).toBe(1);
+});
+
 test("ошибка запроса — текст сервера", async () => {
   vi.stubGlobal("fetch", fakeApi({ [NEIGHBORS]: () => fail(503, "Граф недоступен") }));
   await renderWithRouter(<MiniGraph id="e1" />, "/entities/e1");

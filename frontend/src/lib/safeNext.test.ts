@@ -7,6 +7,8 @@ it.each([
   ["//evil.example", "/"],
   ["https://evil.example", "/"],
   ["/login?next=/x", "/"],
+  ["/LOGIN", "/"],
+  ["/Login?next=/x", "/"],
   ["chat", "/"],
 ])("safeNext(%s) = %s", (raw, expected) => expect(safeNext(raw)).toBe(expected));
 

@@ -135,6 +135,14 @@ export function useSend(conversationId: string | undefined) {
       const seq = ++sequence;
       const askedId = `asked-${seq}`;
       const pendingId = `pending-${seq}`;
+      // Снять «отвечаю» с ожидаемого ответа (обрыв, поток без итога): иначе пузырь «отвечает»,
+      // пока не придёт перечитанная история (а при обрыве сети она может не прийти).
+      const settle = () => {
+        if (cid === undefined || !live()) return;
+        client.setQueryData<ChatMessage[]>(messagesKey(cid), (list) =>
+          list?.map((message) => (message.id === pendingId ? { ...message, streaming: false } : message)),
+        );
+      };
       try {
         if (cid === undefined) {
           cid = (await createConversation()).id;
@@ -183,7 +191,9 @@ export function useSend(conversationId: string | undefined) {
               missed = !update(() => ({ ...(data as Message), streaming: false }));
             } else if (event === "error") {
               finished = true;
-              const detail = (data as { detail: string }).detail;
+              // Пустой или отсутствующий detail — всё равно понятный текст, а не пустой пузырь.
+              const raw = (data as { detail?: unknown } | null)?.detail;
+              const detail = typeof raw === "string" && raw.trim() ? raw : "Не удалось получить ответ";
               missed = !update(() => ({ id: `failed-${seq}`, status: "error", streaming: false, content: detail }));
             }
           },
@@ -200,6 +210,7 @@ export function useSend(conversationId: string | undefined) {
         );
         // Поток оборвался без итога (сеть, перезапуск сервера): ответ мог сохраниться —
         // перечитываем диалог с сервера.
+        if (!finished) settle();
         if (live() && (!finished || missed || partial)) void client.invalidateQueries({ queryKey: key });
       } catch (caught) {
         const error = caught instanceof ApiError ? caught : new ApiError(0, "Ошибка запроса");
@@ -210,6 +221,8 @@ export function useSend(conversationId: string | undefined) {
             client.setQueryData<ChatMessage[]>(key, (list) =>
               list?.filter((message) => message.id !== askedId && message.id !== pendingId),
             );
+          } else {
+            settle(); // обрыв или испорченный поток посреди ответа
           }
           void client.invalidateQueries({ queryKey: key });
         }
