@@ -53,5 +53,5 @@ class CombinedRetriever:
                     continue  # следующий элемент поменьше ещё может поместиться
                 seen.add(key)
                 used += cost
-                out.append(item)
+                out.append(item.model_copy(update={"via": name}))
         return out

@@ -1,6 +1,6 @@
 import { useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { LIST_LIMIT, useConversations, useMessages } from "../api/chat";
+import { LIST_LIMIT, useConversations, useMessages, type ChatMessage } from "../api/chat";
 import { ChatHeader } from "../chat/ChatHeader";
 import { Compare } from "../chat/Compare";
 import { Composer, isMode } from "../chat/Composer";
@@ -11,6 +11,12 @@ import { prefersReducedMotion } from "../lib/motion";
 import { stringifyPlainSearch } from "../lib/searchParams";
 import { useOpenSource } from "../sources/SourceList";
 import { FormNote } from "../ui/form";
+
+/** Вопрос, на который отвечает сообщение `i`: ближайшее сообщение пользователя выше. */
+export function questionBefore(messages: readonly ChatMessage[], i: number): string | null {
+  for (let j = i - 1; j >= 0; j--) if (messages[j]!.role === "user") return messages[j]!.content;
+  return null;
+}
 
 function EmptyChat() {
   return (
@@ -80,6 +86,13 @@ export function ChatPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<{ id: string | undefined; count: number }>({ id: undefined, count: 0 });
 
+  // Кнопки под ответом: тот же вопрос снова (в том же или другом режиме) или сравнение режимов.
+  const onAsk = (question: string, mode: Mode) => {
+    setCompare(null);
+    void send(question, mode);
+  };
+  const onCompare = (question: string) => setCompare((c) => ({ question, key: (c?.key ?? 0) + 1, conversation: id }));
+
   const conversation = id ? conversations.data?.find((c) => c.id === id) : undefined;
   const messages = id ? (history.data ?? []) : [];
   const loading = id !== undefined && history.isPending;
@@ -123,7 +136,14 @@ export function ChatPage() {
           ) : messages.length === 0 ? (
             <EmptyChat />
           ) : (
-            messages.map((message) => <MessageView key={message.id} message={message} onCite={openSource} />)
+            messages.map((message, i) => (
+              <MessageView
+                key={message.id}
+                message={message}
+                onCite={openSource}
+                actions={message.role === "assistant" ? { question: questionBefore(messages, i), busy, onAsk, onCompare } : undefined}
+              />
+            ))
           )}
           {compare && compare.conversation === id && <Compare key={`${id ?? "new"}-${compare.key}`} question={compare.question} onClose={() => setCompare(null)} />}
         </div>
@@ -142,7 +162,7 @@ export function ChatPage() {
               setCompare(null);
               void send(question, mode, { onAccepted: accepted });
             }}
-            onCompare={(question) => setCompare((c) => ({ question, key: (c?.key ?? 0) + 1, conversation: id }))}
+            onCompare={onCompare}
           />
         </div>
       </div>

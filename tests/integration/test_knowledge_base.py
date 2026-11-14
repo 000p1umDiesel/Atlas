@@ -460,6 +460,12 @@ async def test_messages_keep_metrics_and_first_question_titles_the_chat(env):
         reply = await kb.send_message(user["id"], chat["id"], question)
         assert isinstance(reply["meta"]["latency_ms"], int)
         assert reply["meta"]["tokens_out"] > 0
+        # Объяснение ответа: найдено не меньше, чем вошло; контекст в пределах бюджета.
+        meta, sources = reply["meta"], reply["sources"]
+        assert meta["retrieved"] >= len(sources) > 0
+        assert meta["context_budget"] == settings.retrieval.context_tokens
+        assert meta["context_tokens"] == sum(s["tokens"] for s in sources) > 0
+        assert all("score" in s and "via" in s for s in sources)
         assert kb.store.conversation(user["id"], chat["id"])["title"] == question[:60]
     finally:
         await kb.close()

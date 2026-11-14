@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections.abc import Callable
@@ -67,6 +68,9 @@ def _context_blocks(
                 path=item.path,
                 page=item.page,
                 snippet=item.text[:200],
+                score=item.score if math.isfinite(item.score) else None,
+                tokens=cost,
+                via=item.via,
             )
         )
         used += cost
@@ -117,6 +121,7 @@ class Answerer:
                 mode=mode,
                 text=NO_SOURCES,
                 latency_ms=int((time.perf_counter() - start) * 1000),
+                retrieved=len(items),
             )
         messages = render_messages(
             "answer", question=question, context=context, language=self._language
@@ -147,4 +152,5 @@ class Answerer:
             tokens_in=used.tokens_in,
             tokens_out=used.tokens_out,
             context_tokens=context_tokens,
+            retrieved=len(items),
         )

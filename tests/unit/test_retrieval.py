@@ -85,6 +85,10 @@ def test_combined_dedupes_and_respects_budget():
     tight = CombinedRetriever(parts, budget, 20).retrieve("q", 5, ["en q"])
     assert all(p.alt[-1] == ["en q"] for p in parts.values())
     assert [(i.kind, i.ref) for i in tight] == [("chunk", "c1")]
+    # Объяснение ответа: каждый элемент помнит режим, который его нашёл (дубль — первый).
+    vias = {i.ref: i.via for i in CombinedRetriever(parts, budget, 1000).retrieve("q", 5)}
+    assert vias == {"c1": "rag", "c2": "rag", "p#0": "wiki", "e1": "graph", "r1": "graph"}
+    assert shared.via is None  # исходный элемент retriever'а не меняется
 
 
 def test_combined_skips_an_oversized_item_but_keeps_smaller_later_ones():
@@ -102,6 +106,19 @@ async def test_answerer_marks_cited_sources():
     assert [s.cited for s in answer.sources] == [False, True]
     assert answer.mode == "rag" and answer.tokens_in > 0 and answer.context_tokens > 0
     assert "Question: Why?" in llm.calls_for("answer")[0]
+    # Для объяснения ответа: оценка, размер блока, сколько нашёл поиск.
+    assert answer.retrieved == 2
+    assert all(s.tokens > 0 and s.score == 0.0 and s.via is None for s in answer.sources)
+    assert sum(s.tokens for s in answer.sources) == answer.context_tokens
+
+
+async def test_answerer_reports_items_cut_by_budget_and_drops_non_finite_scores():
+    llm = FakeLLM(lambda task, prompt: "Ok [1].")
+    items = [item("chunk", "c1", "x" * 40), item("chunk", "c2", "x" * 4000)]
+    items[0].score = float("nan")
+    answer = await Answerer(llm, 20).answer("Why?", "rag", items)
+    assert [s.ref for s in answer.sources] == ["c1"] and answer.retrieved == 2
+    assert answer.sources[0].score is None
 
 
 async def test_answerer_without_sources_skips_llm():

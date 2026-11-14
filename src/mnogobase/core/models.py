@@ -196,7 +196,8 @@ class ContextItem(BaseModel):
     """Фрагмент контекста, который retriever отдаёт на ответ.
 
     `ref` — id источника (chunk_id, page_id, id сущности или связи), `path` / `page` —
-    откуда цитировать, `score` — оценка для сортировки и обрезки по бюджету токенов."""
+    откуда цитировать, `score` — оценка для сортировки и обрезки по бюджету токенов.
+    `via` — режим, который нашёл элемент (ставит `CombinedRetriever` режима `all`)."""
 
     kind: ContextKind
     ref: str
@@ -204,12 +205,15 @@ class ContextItem(BaseModel):
     path: str | None = None
     page: int | None = None
     score: float = 0.0
+    via: str | None = None
 
 
 class Source(BaseModel):
     """Источник в ответе: `n` — номер, на который ссылается текст ответа (`[n]`),
     `snippet` — начало фрагмента (до 200 символов) для показа, `cited` — сослался ли
-    ответ на него."""
+    ответ на него. Для объяснения ответа: `score` — оценка retriever'а (у каждого вида
+    своя шкала), `tokens` — оценка размера блока в контексте, `via` — режим, который нашёл
+    источник (только в режиме `all`)."""
 
     n: int
     kind: ContextKind
@@ -218,6 +222,9 @@ class Source(BaseModel):
     page: int | None = None
     snippet: str = ""
     cited: bool = False
+    score: float | None = None
+    tokens: int = 0
+    via: str | None = None
 
 
 class Answer(BaseModel):
@@ -235,3 +242,4 @@ class Answer(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     context_tokens: int = 0  # размер контекста в промпте ответа
+    retrieved: int = 0  # сколько элементов нашёл retriever до обрезки по бюджету

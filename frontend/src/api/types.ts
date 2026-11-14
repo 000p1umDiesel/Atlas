@@ -93,6 +93,12 @@ export interface Source {
   url?: string;
   /** Только в истории диалога: фрагмент ещё в графе / файл страницы wiki есть. */
   available?: boolean;
+  /** Оценка retriever'а (у каждого вида своя шкала); нет у старых ответов. */
+  score?: number | null;
+  /** Оценка размера блока в контексте, токены; нет у старых ответов. */
+  tokens?: number;
+  /** Режим, который нашёл источник (только в режиме «Всё вместе»). */
+  via?: string | null;
 }
 
 /** Метрики ответа (`kb._meta`). */
@@ -101,6 +107,11 @@ export interface MessageMeta {
   tokens_in: number;
   tokens_out: number;
   alt_queries: string[];
+  /** Сколько нашёл поиск до обрезки по бюджету (нет у старых ответов). */
+  retrieved?: number;
+  /** Токенов контекста в промпте ответа и бюджет `retrieval.context_tokens`. */
+  context_tokens?: number;
+  context_budget?: number;
 }
 
 /** Сообщение диалога. */

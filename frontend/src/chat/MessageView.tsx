@@ -1,14 +1,19 @@
+import { useId, useState } from "react";
 import type { ChatMessage } from "../api/chat";
 import type { MessageMeta, Source } from "../api/types";
 import { formatInt, seconds } from "../lib/format";
 import { MODES } from "../lib/labels";
 import { SourceList } from "../sources/SourceList";
 import { Markdown, type MarkdownRef } from "../ui/Markdown";
+import { AnswerActions, type AnswerActionsProps } from "./AnswerActions";
+import { WhyPanel } from "./WhyPanel";
 
 type Props = {
   message: ChatMessage;
   /** Клик по номеру `[n]` в ответе: источник с этим номером. */
   onCite: (source: Source) => void;
+  /** Кнопки под завершённым ответом (в диалоге); без них ответ только читается. */
+  actions?: AnswerActionsProps;
 };
 
 /** «1,5 с · 100 + 20 = 120 токенов». */
@@ -30,13 +35,20 @@ function Question({ message }: { message: ChatMessage }) {
   );
 }
 
-function Answer({ message, onCite }: Props) {
+function Answer({ message, onCite, actions }: Props) {
+  const [whyOpen, setWhyOpen] = useState(false);
+  const whyId = useId();
   if (message.status === "error") {
     // Только текст ошибки (сервер сохраняет «Не удалось получить ответ. Повторите вопрос.»).
     return (
-      <p className="rounded-xl bg-danger/10 px-3 py-2.5 text-sm text-danger break-words whitespace-pre-wrap">
-        {message.content}
-      </p>
+      <div>
+        <p className="rounded-xl bg-danger/10 px-3 py-2.5 text-sm text-danger break-words whitespace-pre-wrap">
+          {message.content}
+        </p>
+        {actions && (
+          <AnswerActions message={message} actions={actions} whyOpen={false} whyId={whyId} onToggleWhy={() => {}} />
+        )}
+      </div>
     );
   }
   const streaming = message.streaming === true;
@@ -60,6 +72,16 @@ function Answer({ message, onCite }: Props) {
               {metricsText(message.meta)}
             </p>
           )}
+          {actions && (
+            <AnswerActions
+              message={message}
+              actions={actions}
+              whyOpen={whyOpen}
+              whyId={whyId}
+              onToggleWhy={() => setWhyOpen((v) => !v)}
+            />
+          )}
+          {actions && whyOpen && <WhyPanel id={whyId} message={message} question={actions.question} />}
         </>
       )}
     </div>
@@ -67,6 +89,10 @@ function Answer({ message, onCite }: Props) {
 }
 
 /** Сообщение диалога: вопрос — простым текстом, ответ — Markdown с источниками и метриками. */
-export function MessageView({ message, onCite }: Props) {
-  return message.role === "user" ? <Question message={message} /> : <Answer message={message} onCite={onCite} />;
+export function MessageView({ message, onCite, actions }: Props) {
+  return message.role === "user" ? (
+    <Question message={message} />
+  ) : (
+    <Answer message={message} onCite={onCite} actions={actions} />
+  );
 }

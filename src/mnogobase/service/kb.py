@@ -173,13 +173,18 @@ def _job(job, names: dict[str, str] | None = None) -> dict:
     return data
 
 
-def _meta(answer: dict) -> dict:
-    """Метрики ответа для сообщения диалога: полное время, токены ответа и переводы запроса."""
+def _meta(answer: dict, context_budget: int) -> dict:
+    """Метрики ответа для сообщения диалога: полное время, токены ответа, переводы запроса
+    и для объяснения ответа — сколько нашёл поиск (`retrieved`), сколько токенов контекста
+    вошло в промпт (`context_tokens`) из бюджета `retrieval.context_tokens`."""
     return {
         "latency_ms": int(answer.get("latency_ms", 0)),
         "tokens_in": int(answer.get("tokens_in", 0)),
         "tokens_out": int(answer.get("tokens_out", 0)),
         "alt_queries": list(answer.get("alt_queries", [])),
+        "retrieved": int(answer.get("retrieved", 0)),
+        "context_tokens": int(answer.get("context_tokens", 0)),
+        "context_budget": int(context_budget),
     }
 
 
@@ -942,7 +947,7 @@ class KnowledgeBase:
             mode=mode,
             sources=answer.get("sources", []),
             query=answer.get("query", question),
-            meta=_meta(answer),
+            meta=_meta(answer, self.settings.retrieval.context_tokens),
         )
 
     async def _save_failure(self, user_id: str, conversation_id: str, mode: str) -> None:
