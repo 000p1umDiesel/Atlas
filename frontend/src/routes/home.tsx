@@ -9,6 +9,7 @@ import { communityLabel, communitySummaries, type CommunitySummary } from "../gr
 import { buildGraph } from "../graph/model";
 import { graphLink } from "../graph/search";
 import { StatTile } from "../home/StatTile";
+import { WorkCard } from "../home/WorkCard";
 import { TypeBars } from "../home/TypeBars";
 import { GlossaryToggle, TypeGlossary } from "../home/TypeGlossary";
 import { communityColors, themedCss } from "../lib/communityPalette";
@@ -167,6 +168,10 @@ export function HomePage() {
                   </li>
                 ))}
               </ol>
+            </section>
+
+            <section className="lg:order-2 lg:col-span-5 2xl:order-none 2xl:col-span-3" aria-label="Обработка">
+              <WorkCard />
             </section>
 
             <section className="lg:order-2 lg:col-span-5 2xl:order-none 2xl:col-span-3" aria-labelledby="home-recent">
