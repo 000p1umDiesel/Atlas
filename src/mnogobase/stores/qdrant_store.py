@@ -185,6 +185,18 @@ class QdrantStore:
         vectors = self._call(self.client.get_collection, name).config.params.vectors
         return vectors[DENSE].size
 
+    def has_chunks(self) -> bool:
+        """Есть ли что искать: хоть одна точка в коллекции чанков (нет коллекции — False).
+
+        Чанки появляются после стадии embed, раньше, чем документ станет `done`, поэтому
+        пустоту корпуса проверяют здесь, а не по registry."""
+        if not self._call(self.client.collection_exists, self.chunks):
+            return False
+        points, _ = self._call(
+            self.client.scroll, self.chunks, limit=1, with_payload=False, with_vectors=False
+        )
+        return bool(points)
+
     def drop_collections(self) -> None:
         """Удаляет все три коллекции (для `reset` и `reindex`), с теми же повторами при
         транспортных сбоях, что и остальные вызовы Qdrant."""

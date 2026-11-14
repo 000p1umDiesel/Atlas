@@ -268,6 +268,28 @@ async def test_validation_and_queue_limits(env):
         await kb.close()
 
 
+async def test_answers_use_chunks_before_the_first_document_is_done(env):
+    # первый документ ещё в обработке (graph/wiki), но его чанки уже в Qdrant: поиск
+    # и ответы должны их находить, а не отвечать «нет источников»
+    settings, factory, _ = env
+    kb = KnowledgeBase(settings, app_factory=factory)
+    try:
+        upload(kb, "Attention paper.md", (FIXTURES / "attention_en.md").read_bytes())
+        await work_once()
+        app = factory(settings)
+        try:
+            for row in app.registry.files():
+                app.registry.set_file_status(row.path, "processing")
+            assert app.registry.doc_ids() == []
+        finally:
+            await app.aclose()
+        assert await kb.search("What is the Transformer?", mode="rag")
+        answer = await kb.ask("What is the Transformer?", mode="rag")
+        assert answer["sources"] and answer["tokens_out"] > 0
+    finally:
+        await kb.close()
+
+
 async def test_messages_keep_metrics_and_first_question_titles_the_chat(env):
     settings, factory, root = env
     kb = KnowledgeBase(settings, app_factory=factory)

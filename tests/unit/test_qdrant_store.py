@@ -267,3 +267,12 @@ def test_find_entities_by_name_matches_name_and_alias_keys():
     assert store.find_entities_by_name(["magaox"], limit=3) == ["e1"]
     assert store.find_entities_by_name(["alma", "nothing"], limit=3) == ["e2"]
     assert store.find_entities_by_name([], limit=3) == []
+
+
+def test_has_chunks_reports_an_empty_or_missing_collection():
+    client = QdrantClient(":memory:")
+    assert not QdrantStore(client, "t_", 64).has_chunks()  # коллекций ещё нет
+    store = make_store(client)
+    assert not store.has_chunks()
+    index(store, chunks("d1", ["alpha"]))
+    assert store.has_chunks()

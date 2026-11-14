@@ -748,7 +748,7 @@ class KnowledgeBase:
         await asyncio.to_thread(self.check_budget)
 
         async def run(app: App) -> list[dict]:
-            if not app.registry.doc_ids():
+            if not app.vectors.has_chunks():
                 return []
             translator = QueryTranslator(app.llm) if self.settings.retrieval.translate else None
             alt = await translator.alt_queries(question) if translator else []
@@ -775,8 +775,9 @@ class KnowledgeBase:
         становится полным вопросом. История — недоверенные данные: каждое сообщение
         обрезается до 4000 символов, а из ответа LLM берётся только первая строка, и лишь
         если он не длиннее 4000 символов. В ответе `question` — исходный вопрос, `query` —
-        тот, по которому искали. Пустой корпус — `NO_SOURCES` без вызова LLM."""
-        if not app.registry.doc_ids():
+        тот, по которому искали. Пустой корпус (в Qdrant нет ни одного чанка; документ в
+        обработке после стадии embed уже ищется) — `NO_SOURCES` без вызова LLM."""
+        if not app.vectors.has_chunks():
             return Answer(question=question, mode=mode, text=NO_SOURCES).model_dump(
                 exclude={"contexts"}
             )
