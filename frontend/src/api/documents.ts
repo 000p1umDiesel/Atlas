@@ -1,10 +1,11 @@
 // Документы и очередь обработки: списки (Query, с опросом) и изменения (`/api/documents`, `/api/jobs`).
 import { keepPreviousData, useQuery, type QueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "./client";
+import { fetchPaged, PAGE_SIZE, type Paged } from "./paging";
 import type { DocumentListItem, Job } from "./types";
 
 /** Страница списка документов (предел сервера) и шаг «Показать ещё». */
-export const DOCUMENTS_PAGE = 200;
+export const DOCUMENTS_PAGE = PAGE_SIZE;
 /** Последние задачи очереди. */
 export const JOBS_LIMIT = 30;
 /** Опрос, пока в очереди есть задачи `pending` или `running`. */
@@ -13,22 +14,11 @@ export const POLL_MS = 3000;
 export const documentsKey = ["documents"] as const;
 export const jobsKey = ["jobs"] as const;
 
-export type DocumentPage = { items: DocumentListItem[]; more: boolean };
+export type DocumentPage = Paged<DocumentListItem>;
 
-/**
- * Первые `count` документов страницами по 200; `more` — есть ли ещё: когда набрано ровно `count`,
- * пробуем `limit=1` со следующего места.
- */
-export async function fetchDocuments(count: number): Promise<DocumentPage> {
-  const items: DocumentListItem[] = [];
-  while (items.length < count) {
-    const limit = Math.min(DOCUMENTS_PAGE, count - items.length);
-    const batch = await apiGet<DocumentListItem[]>("/api/documents", { limit, offset: items.length });
-    items.push(...batch);
-    if (batch.length < limit) return { items, more: false };
-  }
-  const probe = await apiGet<DocumentListItem[]>("/api/documents", { limit: 1, offset: items.length });
-  return { items, more: probe.length > 0 };
+/** Первые `count` документов страницами по 200; `more` — есть ли ещё. */
+export function fetchDocuments(count: number): Promise<DocumentPage> {
+  return fetchPaged<DocumentListItem>("/api/documents", count);
 }
 
 /** В очереди есть работа: тогда списки опрашиваются. */

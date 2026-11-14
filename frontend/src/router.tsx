@@ -22,6 +22,8 @@ import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { ReaderPage } from "./routes/reader";
 import { Placeholder } from "./routes/placeholder";
+import { WikiPage } from "./routes/wiki";
+import { WikiArticlePage } from "./routes/wikiPage";
 import { Shell } from "./shell/Shell";
 import { RouteError } from "./ui/ErrorNotice";
 
@@ -120,6 +122,15 @@ const readerRoute = createRoute({
   component: ReaderPage,
 });
 
+// Wiki: индекс с поиском (`?q`) и страницы по slug или id. `panel` и прочие параметры сохраняются.
+const wikiRoute = createRoute({ getParentRoute: () => rootRoute, path: "/wiki", component: WikiPage });
+const wikiSlugRoute = createRoute({ getParentRoute: () => rootRoute, path: "/wiki/$slug", component: WikiArticlePage });
+const wikiIdRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/wiki/page/$pageId",
+  component: WikiArticlePage,
+});
+
 const designRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/_design",
@@ -138,7 +149,9 @@ const routeTree = rootRoute.addChildren([
   documentRoute,
   readerRoute,
   page("/entities", "Сущности"),
-  page("/wiki", "Wiki"),
+  wikiRoute,
+  wikiSlugRoute,
+  wikiIdRoute,
   page("/status", "Статус"),
 ]);
 
