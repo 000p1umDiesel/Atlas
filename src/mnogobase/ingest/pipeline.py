@@ -795,7 +795,7 @@ class Pipeline:
             )
             self._save_chunks(doc, chunks)
         elif stage == "embed":
-            self._embed(doc_id)
+            self._embed(doc_id, progress)
         elif stage == "extract":
             await self._extract(doc_id, progress)
         elif stage == "graph":
@@ -803,26 +803,37 @@ class Pipeline:
         else:
             raise ValueError(f"неизвестная стадия {stage}")
 
-    def index_chunks(self, doc: DocumentRecord, chunks: list[ChunkRecord]) -> None:
+    def index_chunks(
+        self,
+        doc: DocumentRecord,
+        chunks: list[ChunkRecord],
+        progress: ProgressSink = NULL_PROGRESS,
+    ) -> None:
         """Эмбеддит чанки (dense + sparse) и делает их upsert в Qdrant.
 
         Эмбеддится `context_text` чанка (с контекстом заголовков), к dense-входу добавляется
-        заголовок документа для шаблона embedder. Используется стадией `embed` и `reindex`.
-        Граф не трогает."""
-        if not chunks:
-            return
-        texts = [c.context_text for c in chunks]
-        dense = self._embedder.embed_documents([EmbedInput(text=t, title=doc.title) for t in texts])
-        self._vectors.upsert_chunks(chunks, dense, self._sparse.encode_documents(texts))
+        заголовок документа для шаблона embedder. Чанки идут пачками по
+        `embedder.batch_size`; после каждой — `progress.advance(<размер пачки>)`. Используется
+        стадией `embed` и `reindex`. Граф не трогает."""
+        size = self._s.embedder.batch_size
+        for start in range(0, len(chunks), size):
+            batch = chunks[start : start + size]
+            texts = [c.context_text for c in batch]
+            dense = self._embedder.embed_documents(
+                [EmbedInput(text=t, title=doc.title) for t in texts]
+            )
+            self._vectors.upsert_chunks(batch, dense, self._sparse.encode_documents(texts))
+            progress.advance(len(batch))
 
-    def _embed(self, doc_id: str) -> None:
+    def _embed(self, doc_id: str, progress: ProgressSink = NULL_PROGRESS) -> None:
         """Стадия `embed`: векторы чанков в Qdrant, затем узлы `Document` и `Chunk` в Neo4j.
 
         Узел `Document` пишется и для документа без чанков, чтобы удаление и
         `_recorded_paths` его видели."""
         doc, chunks = self.load_chunks(doc_id)
+        progress.step("embed", len(chunks))
         # Qdrant раньше Neo4j: упавший embedder или Qdrant не оставит граф впереди векторов
-        self.index_chunks(doc, chunks)
+        self.index_chunks(doc, chunks, progress)
         self._graph.upsert_document(doc)
         if not chunks:
             return

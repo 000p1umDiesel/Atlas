@@ -74,7 +74,9 @@ class Job:
     `remove:<doc_id>`), `status` — `pending` / `running` / `done` / `failed` / `superseded`,
     `attempts` — сколько раз задачу брали в работу, `available_at` — unix-время, раньше
     которого её не берут, `error` — имя типа исключения (текст может содержать секреты);
-    только у исключений из `worker.SAFE_MESSAGE_ERRORS` — ещё и их текст, `progress` — короткое описание текущего шага. Метки времени — unix-секунды."""
+    только у исключений из `worker.SAFE_MESSAGE_ERRORS` — ещё и их текст, `progress` — короткое описание текущего шага (для CLI), `stage` / `step_done` / `step_total` — тот же
+    шаг для сайта: ключ стадии (`start`, `parse`, `embed`, `wiki draft`, `analyze`...) и счётчики
+    (None — неизвестно). Метки времени — unix-секунды."""
 
     id: int
     path: str
@@ -89,6 +91,10 @@ class Job:
     created_at: float = 0
     updated_at: float = 0
     started_at: float | None = None
+    stage: str | None = None
+    step_done: int | None = None
+    step_total: int | None = None
+    hidden: bool = False
 
 
 _JOB_FIELDS = tuple(Job.__dataclass_fields__)
@@ -124,6 +130,10 @@ _MIGRATIONS = (
     "WHERE created_at IS NULL OR updated_at IS NULL",
     # v5: таблица write_state больше никем не читается
     "DROP TABLE IF EXISTS write_state",
+    # v6: структурированный прогресс для сайта и скрытие завершённых задач из списка
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT, "
+    "ADD COLUMN IF NOT EXISTS step_done INTEGER, ADD COLUMN IF NOT EXISTS step_total INTEGER, "
+    "ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false",
 )
 
 
@@ -226,7 +236,8 @@ class JobQueue:
         self._db.execute("BEGIN")
         try:
             row = self._db.execute(
-                "UPDATE jobs SET status='running',attempts=attempts+1,progress='запуск',started_at=?,updated_at=? "
+                "UPDATE jobs SET status='running',attempts=attempts+1,progress='запуск',stage='start',"
+                "step_done=NULL,step_total=NULL,started_at=?,updated_at=? "
                 "WHERE id=(SELECT id FROM jobs WHERE status='pending' AND available_at<=?"
                 + limit
                 + " ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *",
@@ -422,9 +433,21 @@ class JobQueue:
             self._db.execute("ROLLBACK")
             raise
 
-    def set_progress(self, job_id: int, progress: str) -> None:
-        """Записывает короткий текст прогресса задачи (для `jobs list` и `/api/jobs`)."""
-        self._db.execute("UPDATE jobs SET progress=? WHERE id=?", (progress, job_id))
+    def set_progress(
+        self,
+        job_id: int,
+        progress: str,
+        *,
+        stage: str | None = None,
+        done: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        """Записывает прогресс задачи: текст для `jobs list` и шаг (`stage`, счётчики
+        `done` / `total`, None — неизвестно) для сайта."""
+        self._db.execute(
+            "UPDATE jobs SET progress=?,stage=?,step_done=?,step_total=? WHERE id=?",
+            (progress, stage, done, total, job_id),
+        )
 
     def get(self, job_id: int) -> Job | None:
         """Задача по id или `None`."""

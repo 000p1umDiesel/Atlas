@@ -271,7 +271,13 @@ class JobProgress(NullProgress):
         """Пишет сводку шага в строку задачи и обновляет heartbeat (два UPDATE в
         PostgreSQL на каждое событие)."""
         count = f" {self.completed}/{self.total}" if self.total is not None else ""
-        self.queue.set_progress(self.job_id, f"{self.stage}{count}; ошибок {self.failed}")
+        self.queue.set_progress(
+            self.job_id,
+            f"{self.stage}{count}; ошибок {self.failed}",
+            stage=self.stage,
+            done=self.completed if self.total is not None else None,
+            total=self.total,
+        )
         self.queue.heartbeat()
 
 
@@ -482,7 +488,7 @@ def run_worker(
             common.console.print(f"Анализ графа, задача {job.id}")
 
             def tick() -> None:
-                q.set_progress(job.id, "анализ графа")
+                q.set_progress(job.id, "анализ графа", stage="analyze")
                 q.heartbeat()
 
             await heartbeat_thread(lambda: run_analysis(app), tick)

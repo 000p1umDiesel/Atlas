@@ -269,6 +269,21 @@ def test_worker_rejects_invalid_options_before_opening_queue(
     assert not (project.parent / ".mnogobase/jobs.db").exists()
 
 
+def test_claim_marks_the_start_stage(tmp_path):
+    q = JobQueue(database_target(Settings()))
+    try:
+        q.enqueue(tmp_path / "a.md", "v1")
+        job = q.claim()
+        assert (job.stage, job.step_done, job.step_total, job.hidden) == (
+            "start",
+            None,
+            None,
+            False,
+        )
+    finally:
+        q.close()
+
+
 def test_job_progress_persists_steps_and_counts_and_updates_display(tmp_path):
     q, observer = (
         JobQueue(database_target(Settings())),
@@ -296,8 +311,12 @@ def test_job_progress_persists_steps_and_counts_and_updates_display(tmp_path):
         assert len(bars.tasks) == 1
         assert (bars.tasks[0].total, bars.tasks[0].completed) == (2, 1)
         assert bars.tasks[0].fields["note"] == "1 processed"
+        job = observer.get(job_id)
+        assert (job.stage, job.step_done, job.step_total) == ("embed", 3, 4)
         progress.step("wiki")
         assert observer.jobs()[0].progress == "wiki; ошибок 0"
+        job = observer.get(job_id)
+        assert (job.stage, job.step_done, job.step_total) == ("wiki", None, None)
         progress.advance(failed=True)
         assert observer.jobs()[0].progress == "wiki; ошибок 1"
         assert bars.tasks[1].description == "wiki"

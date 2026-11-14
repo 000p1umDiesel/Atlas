@@ -147,12 +147,13 @@ async def test_ingest_reports_progress(make_app, tmp_path):
     report = await app.pipeline.ingest([folder], progress=progress)
     [path] = report.processed
     _, chunks = app.pipeline.load_chunks(file_doc_id(Path(path)))
-    graph_total = progress.steps()[6][2]
+    graph_total = progress.steps()[7][2]
     pages = len(report.wiki.created)
     assert progress.steps() == [
         ("step", "parse", None),
         ("step", "chunk", None),
         ("step", "embed", None),
+        ("step", "embed", len(chunks)),  # пачки эмбеддингов считаются по чанкам
         ("step", "extract", None),
         ("step", "extract", len(chunks)),  # total известен, когда чанки загружены
         ("step", "graph", None),
@@ -162,6 +163,7 @@ async def test_ingest_reports_progress(make_app, tmp_path):
         ("step", "wiki write", pages),
     ]
     assert progress.events[:2] == [("files", 1), ("file", path)]
+    assert sum(n for _, n, _ in progress.advanced("embed")) == len(chunks)
     assert progress.advanced("extract") == [("advance", 1, False)] * len(chunks)
     assert graph_total > 0 and progress.advanced("graph") == [("advance", 1, False)] * graph_total
     for step in ("wiki evidence", "wiki draft", "wiki write"):
