@@ -1,9 +1,19 @@
-import { createMemoryHistory } from "@tanstack/react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Conversation, Message, Source } from "../api/types";
 import { App, createQueryClient } from "../App";
+import { ConversationList } from "../chat/ConversationList";
 import { createAppRouter } from "../router";
 import { fakeApi, type FakeApi } from "../test/fakeApi";
+import { ChatPage } from "./chat";
 
 const ME = { id: "u1", username: "owner" };
 const CHUNK_ID = "0123456789abcdef:00003";
@@ -290,4 +300,57 @@ describe("автопрокрутка к концу истории", () => {
     expect(screen.getByText("Ещё вопрос")).toBeTruthy();
     expect(scrollTo).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * Чат без оболочки: Shell сейчас перемонтирует страницу при смене пути (key={pathname}),
+ * но страница не должна на это полагаться — здесь тот же ChatPage живёт между диалогами.
+ */
+async function renderBare(path: string, api: FakeApi) {
+  vi.stubGlobal("fetch", api);
+  const root = createRootRoute({
+    component: () => (
+      <>
+        <aside aria-label="Контекст раздела">
+          <ConversationList />
+        </aside>
+        <Outlet />
+      </>
+    ),
+  });
+  const routeTree = root.addChildren([
+    createRoute({ getParentRoute: () => root, path: "/chat", component: ChatPage }),
+    createRoute({ getParentRoute: () => root, path: "/chat/$id", component: ChatPage }),
+  ]);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) });
+  await router.load();
+  render(
+    <QueryClientProvider client={createQueryClient()}>
+      <RouterProvider router={router as never} />
+    </QueryClientProvider>,
+  );
+  return router;
+}
+
+test("переход в другой диалог посреди переименования сбрасывает форму; PATCH не уходит", async () => {
+  const api = fakeApi(routes({ [MESSAGES("c2")]: [], "PATCH /api/conversations/c2": conv("c2", "Про Смита") }));
+  const router = await renderBare("/chat/c1", api);
+  await click(await screen.findByRole("button", { name: "Переименовать" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Название диалога" }), { target: { value: "Черновик" } });
+  await click(within(column()).getByRole("link", { name: "Без названия" }));
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat/c2"));
+  expect(await screen.findByRole("heading", { level: 1, name: "Без названия" })).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "Название диалога" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Сохранить" })).toBeNull();
+  expect(api.requests().some((r) => r.startsWith("PATCH"))).toBe(false);
+});
+
+test("черновик вопроса не переходит в другой диалог", async () => {
+  const router = await renderBare("/chat/c1", fakeApi(routes({ [MESSAGES("c2")]: [] })));
+  await screen.findByText("Кто такой Смит?");
+  fireEvent.change(screen.getByRole("textbox", { name: "Вопрос" }), { target: { value: "Недописанный вопрос" } });
+  await click(within(column()).getByRole("link", { name: "Без названия" }));
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat/c2"));
+  await screen.findByRole("heading", { name: "О чём спросить?" });
+  expect((screen.getByRole("textbox", { name: "Вопрос" }) as HTMLTextAreaElement).value).toBe("");
 });

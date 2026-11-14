@@ -57,7 +57,8 @@ export function ChatPage() {
       {conversation && (
         <div className="shrink-0 border-b border-line px-4 py-3 md:px-8">
           <div className="mx-auto max-w-3xl">
-            <ChatHeader conversation={conversation} />
+            {/* Ключ — диалог: форма переименования и ошибки не переезжают в другой диалог. */}
+            <ChatHeader key={conversation.id} conversation={conversation} />
           </div>
         </div>
       )}
@@ -79,7 +80,8 @@ export function ChatPage() {
       </div>
       <div className="shrink-0 px-4 pt-2 pb-3 md:px-8 md:pb-5">
         <div className="mx-auto max-w-3xl">
-          <Composer onSend={send} />
+          {/* Черновик вопроса — свой у каждого диалога (и у нового). */}
+          <Composer key={id ?? "new"} onSend={send} />
         </div>
       </div>
     </div>
