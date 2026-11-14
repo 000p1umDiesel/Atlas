@@ -20,12 +20,12 @@ const TOP_ENTITIES = 8;
 const RECENT_DOCUMENTS = 5;
 
 const STATUS: Record<string, { label: string; icon: ReactNode }> = {
-  done: { label: "Обработан", icon: <CheckCircle2 size={15} className="text-primary" /> },
+  done: { label: "Обработан", icon: <CheckCircle2 size={15} className="text-ok" /> },
   running: { label: "Обрабатывается", icon: <LoaderCircle size={15} className="animate-spin text-primary" /> },
   // queued — загрузка, которую worker ещё не взял; pending — документ registry ждёт обработки
   queued: { label: "В очереди", icon: <Clock3 size={15} className="text-muted" /> },
   pending: { label: "В очереди", icon: <Clock3 size={15} className="text-muted" /> },
-  failed: { label: "Ошибка", icon: <AlertCircle size={15} className="text-ink" /> },
+  failed: { label: "Ошибка", icon: <AlertCircle size={15} className="text-danger" /> },
 };
 
 function SectionTitle({ children, aside }: { children: ReactNode; aside?: ReactNode }) {

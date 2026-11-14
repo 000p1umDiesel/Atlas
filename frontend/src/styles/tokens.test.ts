@@ -28,10 +28,20 @@ describe.each(Object.entries(THEMES))("тема %s", (_name, { t }) => {
     }
   });
 
-  test("текст ошибок читается на фоне и карточке (≥ 4.5:1)", () => {
-    for (const surface of [t["--bg"], t["--card"]]) {
-      expect(contrastRatio(t["--danger"], surface)).toBeGreaterThanOrEqual(4.5);
+  test("текст ошибок и статусов читается на фоне, карточке и поднятой поверхности (≥ 4.5:1)", () => {
+    for (const surface of [t["--bg"], t["--card"], t["--raised"]]) {
+      for (const tone of ["--danger", "--ok", "--warn", "--primary-ink", "--muted"]) {
+        expect(contrastRatio(t[tone], surface), `${tone} на ${surface}`).toBeGreaterThanOrEqual(4.5);
+      }
     }
+  });
+
+  test("текст на основной кнопке читается (≥ 4.5:1)", () => {
+    expect(contrastRatio(t["--on-primary"], t["--primary-deep"])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("три уровня поверхностей различаются: фон, карточка, поднятое", () => {
+    expect(new Set([t["--bg"], t["--card"], t["--raised"]]).size).toBe(3);
   });
 });
 

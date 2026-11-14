@@ -22,7 +22,7 @@ export function GraphTooltip({ info, ref }: { info: TooltipInfo; ref?: Ref<HTMLD
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none absolute top-0 left-0 z-20 max-w-72 rounded-xl border border-line bg-card/95 px-3 py-2 shadow-card backdrop-blur-md"
+      className="pointer-events-none absolute top-0 left-0 z-20 max-w-72 rounded-xl border border-line bg-raised/95 px-3 py-2 shadow-raised backdrop-blur-md"
     >
       <p className="truncate text-[13px] leading-snug font-semibold text-ink">{info.name}</p>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">

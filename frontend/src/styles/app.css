@@ -4,6 +4,7 @@
 @theme {
   --color-bg: var(--bg);
   --color-card: var(--card);
+  --color-raised: var(--raised);
   --color-ink: var(--ink);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
@@ -12,12 +13,15 @@
   --color-on-primary: var(--on-primary);
   --color-line: var(--line);
   --color-danger: var(--danger);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
   --color-scrim: var(--scrim);
   --color-t0: var(--t0);
   --font-sans: "Golos Text Variable", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Literata Variable", ui-serif, Georgia, serif;
   --radius-card: var(--radius);
   --shadow-card: var(--shadow);
+  --shadow-raised: var(--shadow-raised);
 }
 
 @layer base {
@@ -44,7 +48,7 @@
   background-size: 22px 22px;
 }
 
-/* Ползунки фильтров: тонкая дорожка, заполненная часть шалфейная (--fill ставит компонент). */
+/* Ползунки фильтров: тонкая дорожка, заполненная часть акцентная (--fill ставит компонент). */
 .range {
   --fill: 0%;
   --track: color-mix(in oklab, var(--ink) 14%, transparent);

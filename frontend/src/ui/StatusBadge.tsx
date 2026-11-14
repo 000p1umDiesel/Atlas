@@ -3,7 +3,7 @@ import { labelOf, STATUS_LABELS } from "../lib/labels";
 /** Цвет по смыслу: ошибка, готово, в работе; остальное (ждёт, в очереди, заменена) — приглушённо. */
 const TONE: Readonly<Record<string, string>> = {
   failed: "bg-danger/10 text-danger",
-  done: "bg-primary/15 text-primary-ink",
+  done: "bg-ok/12 text-ok",
   running: "bg-primary/15 text-primary-ink",
   processing: "bg-primary/15 text-primary-ink",
 };

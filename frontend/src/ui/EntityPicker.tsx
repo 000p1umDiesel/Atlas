@@ -160,7 +160,7 @@ export function EntityPicker({ label, value, onChange, exclude }: Props) {
         role="listbox"
         aria-label={label}
         hidden={!expanded}
-        className="absolute inset-x-0 top-full z-50 mt-1 max-h-72 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-card"
+        className="absolute inset-x-0 top-full z-50 mt-1 max-h-72 overflow-y-auto rounded-xl border border-line bg-raised p-1 shadow-raised"
       >
         {expanded &&
           options.map((o, i) => (

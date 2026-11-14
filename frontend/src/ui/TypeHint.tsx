@@ -170,7 +170,7 @@ export function TypeHint({ info, color, placement = "bottom", toggleOnClick = fa
           id={id}
           role="tooltip"
           hidden={!open}
-          className="type-hint pointer-events-none fixed top-0 left-0 z-[70] w-max max-w-[min(18rem,calc(100vw-16px))] rounded-xl border border-line bg-card px-3 py-2.5 shadow-card"
+          className="type-hint pointer-events-none fixed top-0 left-0 z-[70] w-max max-w-[min(18rem,calc(100vw-16px))] rounded-xl border border-line bg-raised px-3 py-2.5 shadow-raised"
         >
           <span className="flex items-center gap-1.5 text-[13px] leading-snug font-semibold text-ink">
             <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />

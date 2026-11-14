@@ -33,61 +33,82 @@
 }
 
 /*
- * Палитра. Цвета типов сущностей и сообществ — не токены: их строит различимый генератор
+ * Палитра «терракота»: тёплая бумага, кирпичный акцент. Три уровня поверхностей —
+ * фон (--bg) < карточка (--card) < поднятое (--raised: меню, подсказки, Ctrl+K). Ошибка
+ * (--danger) малиновая, чтобы не путаться с акцентом; --ok / --warn — статусы.
+ * Цвета типов сущностей и сообществ — не токены: их строит различимый генератор
  * (lib/typePalette.ts, lib/communityPalette.ts) по порядку списка, своя пара для каждой темы.
  * Здесь только нейтральный --t0 — для типа вне списка и узла без сообщества.
  */
 :root {
-  --bg: #f5efe4;
-  --card: #fffdf8;
-  --ink: #2a352a;
-  /* 4.8:1 к --bg и 5.4:1 к --card (WCAG AA для обычного текста). */
-  --muted: #5f675b;
-  --primary: #6e9473;
-  --primary-deep: #41604a;
-  /* Текст на заливке primary-deep и акцентный «шалфейный» текст: читаемы в обеих темах. */
-  --on-primary: #fffdf8;
-  --primary-ink: #41604a;
-  /* Текст ошибок: ≥ 4.5:1 к фону и карточке. */
-  --danger: #a3372b;
+  --bg: #f6f0e8;
+  --card: #fffcf7;
+  --raised: #ffffff;
+  --ink: #2a221d;
+  /* 5.6:1 к --bg и 6.2:1 к --card (WCAG AA для обычного текста). */
+  --muted: #6a5d54;
+  --primary: #c46a4a;
+  --primary-deep: #9a4429;
+  /* Текст на заливке primary-deep и акцентный текст: читаемы в обеих темах. */
+  --on-primary: #fffaf5;
+  --primary-ink: #96432a;
+  /* Текст ошибок и статусов: ≥ 4.5:1 к фону и карточке. */
+  --danger: #9b1c3c;
+  --ok: #3d7a4f;
+  --warn: #8a6400;
   --line: color-mix(in oklab, var(--ink) 12%, transparent);
-  --shadow: 0 1px 2px rgb(47 58 47 / 0.06), 0 8px 24px rgb(47 58 47 / 0.07);
+  --shadow: 0 1px 2px rgb(42 34 29 / 0.06), 0 8px 24px rgb(42 34 29 / 0.07);
+  --shadow-raised: 0 2px 6px rgb(42 34 29 / 0.1), 0 16px 36px rgb(42 34 29 / 0.14);
   /* Затемнение под модальными окнами: тёмное в обеих темах (--ink тёмной темы светлый). */
-  --scrim: rgb(42 53 42 / 0.3);
+  --scrim: rgb(42 34 29 / 0.3);
   --radius: 14px;
 
-  --t0: #bdb6a8;
+  --t0: #c4b8ab;
 
   color-scheme: light;
 }
 
-/* Тёмная тема: системная (если не выбрана светлая вручную) и ручная. */
+/* Тёмная тема — своя, не затемнённая светлая: системная (если не выбрана светлая вручную) и ручная. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1f231e;
-    --card: #272c26;
-    --ink: #ece8dc;
-    --muted: #a3aa9c;
-    --on-primary: #f1efe6;
-    --primary-ink: #a8c6ad;
-    --danger: #f2a093;
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+    --bg: #1b1714;
+    --card: #241f1b;
+    --raised: #2e2823;
+    --ink: #eee5da;
+    --muted: #ab9e92;
+    --primary: #d98463;
+    --primary-deep: #9e4b2f;
+    --on-primary: #fff7f1;
+    --primary-ink: #f0a688;
+    --danger: #ff9fb0;
+    --ok: #9fd3a8;
+    --warn: #efc66e;
+    /* Тени на тёмном не видны: край карточки — тонкое кольцо цветом текста. */
+    --shadow: 0 0 0 1px rgb(238 229 218 / 0.07), 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+    --shadow-raised: 0 0 0 1px rgb(238 229 218 / 0.1), 0 4px 10px rgb(0 0 0 / 0.35), 0 18px 40px rgb(0 0 0 / 0.4);
     --scrim: rgb(0 0 0 / 0.5);
-    --t0: #7e7b70;
+    --t0: #857a70;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #1f231e;
-  --card: #272c26;
-  --ink: #ece8dc;
-  --muted: #a3aa9c;
-  --on-primary: #f1efe6;
-  --primary-ink: #a8c6ad;
-  --danger: #f2a093;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+  --bg: #1b1714;
+  --card: #241f1b;
+  --raised: #2e2823;
+  --ink: #eee5da;
+  --muted: #ab9e92;
+  --primary: #d98463;
+  --primary-deep: #9e4b2f;
+  --on-primary: #fff7f1;
+  --primary-ink: #f0a688;
+  --danger: #ff9fb0;
+  --ok: #9fd3a8;
+  --warn: #efc66e;
+  /* Тени на тёмном не видны: край карточки — тонкое кольцо цветом текста. */
+  --shadow: 0 0 0 1px rgb(238 229 218 / 0.07), 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+  --shadow-raised: 0 0 0 1px rgb(238 229 218 / 0.1), 0 4px 10px rgb(0 0 0 / 0.35), 0 18px 40px rgb(0 0 0 / 0.4);
   --scrim: rgb(0 0 0 / 0.5);
-  --t0: #7e7b70;
+  --t0: #857a70;
   color-scheme: dark;
 }
 

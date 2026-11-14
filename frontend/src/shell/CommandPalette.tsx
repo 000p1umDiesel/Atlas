@@ -93,7 +93,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
             role="dialog"
             aria-modal="true"
             aria-label="Поиск"
-            className="relative flex max-h-[min(560px,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-[14px] border border-line bg-card shadow-card sm:max-h-[70vh]"
+            className="relative flex max-h-[min(560px,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-[14px] border border-line bg-raised shadow-raised sm:max-h-[70vh]"
             initial={reduced ? false : { opacity: 0, y: -8, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={reduced ? undefined : { opacity: 0, y: -8, scale: 0.98 }}

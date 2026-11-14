@@ -68,7 +68,7 @@ function AccountMenu({
       {open && (
         <div
           id={menuId}
-          className="absolute top-12 right-0 z-40 w-56 rounded-[14px] border border-line bg-card p-1.5 shadow-card"
+          className="absolute top-12 right-0 z-40 w-56 rounded-[14px] border border-line bg-raised p-1.5 shadow-raised"
         >
           {username && <p className="truncate px-3 pt-2 pb-1 text-xs text-muted">{username}</p>}
           <Link to="/account" onClick={() => setOpen(false)} className={MENU_ITEM}>

@@ -79,7 +79,7 @@ export function DesignPage() {
             <span className="size-10 shrink-0 rounded-xl bg-t0" />
             <span className="leading-tight">
               <span className="block font-medium">Другой тип</span>
-              <span className="block text-sm text-muted tabular-nums">--t0 #BDB6A8 / #7E7B70</span>
+              <span className="block text-sm text-muted tabular-nums">--t0 #C4B8AB / #857A70</span>
             </span>
           </li>
         </ul>
