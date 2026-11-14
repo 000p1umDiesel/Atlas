@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_FILTERS } from "./model";
 import { parseGraphSearch, serializeGraphSearch, type GraphMode, type GraphSearch } from "./search";
 
-type Update = (patch: Partial<GraphSearch>, opts?: { replace?: boolean }) => void;
+/** Правка — объект или функция от свежего состояния URL (несколько правок подряд не теряются). */
+export type GraphPatch = Partial<GraphSearch> | ((prev: GraphSearch) => Partial<GraphSearch>);
+type Update = (patch: GraphPatch, opts?: { replace?: boolean }) => void;
 type SetMode = (mode: GraphMode, patch?: Partial<GraphSearch>) => void;
 
 /**
@@ -31,7 +33,10 @@ export function useGraphSearch(): { search: GraphSearch; update: Update; setMode
     (patch, opts) => {
       void navigate({
         to: "/graph",
-        search: (prev) => serializeGraphSearch({ ...parseGraphSearch(prev), ...patch }),
+        search: (prev) => {
+          const s = parseGraphSearch(prev);
+          return serializeGraphSearch({ ...s, ...(typeof patch === "function" ? patch(s) : patch) });
+        },
         replace: opts?.replace,
       });
     },

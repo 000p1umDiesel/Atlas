@@ -333,6 +333,27 @@ describe("выбранный узел живёт в URL (focus) и пережи�
     await vi.waitFor(() => expect(fake2d.api.focusNode).toHaveBeenCalledWith(node.entity_id, expect.anything()));
   });
 
+  test("Esc при открытом меню раздела закрывает только меню: выделение на графе остаётся", async () => {
+    const { graph } = generateFixtures();
+    const node = graph.nodes[5]!;
+    const router = await renderAt(`/graph?focus=${node.entity_id}`);
+    await screen.findByRole("dialog", { name: node.name });
+    fireEvent.click(screen.getByRole("button", { name: "Меню раздела" }));
+    await screen.findByRole("complementary", { name: "Меню раздела" });
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(params(router).get("focus")).toBe(node.entity_id);
+    // Меню закрыто (его уход проверяет Shell.test; здесь в jsdom выход анимации не завершается):
+    // клавиши графа снова работают — следующий Esc снимает выделение.
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
+  });
+
   test("неизвестный id в focus снимается", async () => {
     const router = await renderAt("/graph?focus=nope-404");
     await vi.waitFor(() => expect(params(router).get("focus")).toBeNull());
@@ -762,6 +783,26 @@ describe("живые данные: режимы «Окрестность» и «
     });
   });
 
+  test("узкий экран: свёрнутая карточка «Окрестность» не оставляет свёрнутой карточку «Сообщество»", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const router = await renderLive("/graph?mode=neighbors", fakeApi(routes()));
+    const neighborsCard = await screen.findByRole("region", { name: "Режим «Окрестность»" });
+    const header = within(neighborsCard).getByRole("button", { name: "Окрестность" });
+    // Сущность не выбрана — карточка раскрыта; пользователь её сворачивает.
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    await click(within(modes()).getByRole("button", { name: "Сообщество" }));
+    await vi.waitFor(() => expect(params(router).get("mode")).toBe("community"));
+    const communityCard = await screen.findByRole("region", { name: "Режим «Сообщество»" });
+    expect(within(communityCard).getByRole("button", { name: "Сообщество" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
   describe("раскрытие соседей", () => {
     const EXPAND_E1 = "GET /api/graph/e1/neighbors?depth=1&limit=40";
     const E1_NEIGHBORS = {
@@ -842,6 +883,24 @@ describe("живые данные: режимы «Окрестность» и «
       });
       await vi.waitFor(() => expect(params(router).get("expand")).toBe([...old.slice(1), "e1"].join(",")));
       await vi.waitFor(() => expect(graphNodes()).toContain("e3"));
+    });
+
+    test("два раскрытия подряд без ожидания — в expand оба", async () => {
+      const api = fakeApi(
+        routes({
+          [EXPAND_E1]: E1_NEIGHBORS,
+          "GET /api/graph/e2/neighbors?depth=1&limit=40": { nodes: [node("e2", "Бэббидж")], relations: [] },
+        }),
+      );
+      const router = await renderLive("/graph", api);
+      await screen.findByTestId("graph2d");
+      await act(async () => {
+        fake2d.last?.onExpand?.("e1");
+        fake2d.last?.onExpand?.("e2");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await vi.waitFor(() => expect(params(router).get("expand")).toBe("e1,e2"));
+      expect(params(router).get("focus")).toBe("e2");
     });
 
     test("кнопка «Показать связи» в карточке делает то же", async () => {

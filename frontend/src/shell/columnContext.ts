@@ -8,6 +8,8 @@ export interface ShellColumnState {
   setCollapsed(collapsed: boolean): void;
   /** Открыть колонку: на десктопе развернуть, на узком экране — выезжающее меню. */
   open(): void;
+  /** Выезжающее меню раздела (узкий экран) открыто: клавиши страницы ему не мешают. */
+  menuOpen: boolean;
 }
 
 export const ShellColumnContext = createContext<ShellColumnState>({
@@ -15,6 +17,7 @@ export const ShellColumnContext = createContext<ShellColumnState>({
   collapsed: false,
   setCollapsed: () => {},
   open: () => {},
+  menuOpen: false,
 });
 
 export function useShellColumn(): ShellColumnState {

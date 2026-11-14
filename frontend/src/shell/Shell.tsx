@@ -57,7 +57,8 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
   useEffect(() => {
     if (!menuOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      // Esc уже обработал внутренний элемент (список подсказок, диалог) — меню остаётся.
+      if (event.key === "Escape" && !event.defaultPrevented) setMenuOpen(false);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -69,8 +70,9 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
       collapsed,
       setCollapsed,
       open: () => (isDesktop() ? setCollapsed(false) : setMenuOpen(true)),
+      menuOpen: hasColumn && menuOpen,
     }),
-    [hasColumn, collapsed],
+    [hasColumn, collapsed, menuOpen],
   );
 
   return (
@@ -124,6 +126,7 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
           </AnimatePresence>
           <div className="flex min-w-0 flex-1 flex-col pb-[68px] md:pb-0">
             <TopBar
+              pathname={pathname}
               onMenu={hasColumn ? () => setMenuOpen(true) : undefined}
               onSearch={() => setPaletteOpen(true)}
               username={username}

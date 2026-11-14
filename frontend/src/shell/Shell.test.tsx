@@ -7,8 +7,11 @@ import { createAppRouter } from "../router";
 vi.mock("../graph/Graph2D", async () => ({ Graph2D: (await import("../test/fakeGraph")).FakeGraph2D }));
 vi.mock("../graph/Graph3D", async () => ({ default: (await import("../test/fakeGraph")).FakeGraph3D }));
 
-async function renderAt(path: string) {
-  const router = createAppRouter({ history: createMemoryHistory({ initialEntries: [path] }) });
+async function renderAt(path: string | string[]) {
+  const entries = Array.isArray(path) ? path : [path];
+  const router = createAppRouter({
+    history: createMemoryHistory({ initialEntries: entries, initialIndex: entries.length - 1 }),
+  });
   await router.load();
   render(<App router={router} client={createQueryClient()} />);
   return router;
@@ -174,4 +177,59 @@ test("Ctrl+K открывает палитру на страницах обол�
   fireEvent.keyDown(document, { key: "k", code: "KeyK", ctrlKey: true });
   await act(async () => new Promise((r) => setTimeout(r, 50)));
   expect(screen.queryByRole("dialog", { name: "Поиск" })).toBeNull();
+});
+
+/** Esc, который внутренний элемент уже обработал (preventDefault) и пустил всплывать дальше. */
+function handledEscape(el: HTMLElement) {
+  const handle = (event: Event) => event.preventDefault();
+  el.addEventListener("keydown", handle);
+  fireEvent.keyDown(el, { key: "Escape" });
+  el.removeEventListener("keydown", handle);
+}
+
+test("меню раздела: «назад» закрывает его", async () => {
+  const router = await renderAt(["/chat", "/graph"]);
+  fireEvent.click(await screen.findByRole("button", { name: "Меню раздела" }));
+  await screen.findByRole("complementary", { name: "Меню раздела" });
+  await act(async () => {
+    router.history.back();
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await vi.waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+  // У чата тоже есть колонка: меню закрыла смена пути, а не отсутствие колонки.
+  expect(screen.getByRole("button", { name: "Меню раздела" })).toBeTruthy();
+  await vi.waitFor(() => expect(screen.queryByRole("complementary", { name: "Меню раздела" })).toBeNull());
+});
+
+test("меню раздела: Esc, уже обработанный внутренним элементом, его не закрывает", async () => {
+  await renderAt("/graph");
+  fireEvent.click(await screen.findByRole("button", { name: "Меню раздела" }));
+  const menu = await screen.findByRole("complementary", { name: "Меню раздела" });
+  handledEscape(within(menu).getByRole("switch", { name: "Скрыть одиночные" }));
+  // Меню уезжает анимацией выхода: ждём дольше неё, иначе проверка ничего не докажет.
+  await act(async () => new Promise((r) => setTimeout(r, 1000)));
+  expect(screen.getByRole("complementary", { name: "Меню раздела" })).toBeTruthy();
+});
+
+test("меню аккаунта: смена пути закрывает его", async () => {
+  const router = await renderAt("/chat");
+  const bar = (await screen.findByText("mnogobase", { selector: "header span" })).closest("header")!;
+  const toggle = within(bar).getByRole("button", { name: "Меню аккаунта" });
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  await act(() => router.navigate({ to: "/status" }));
+  await screen.findByRole("heading", { name: "Статус" });
+  expect(within(bar).queryByRole("button", { name: "Выйти" })).toBeNull();
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("меню аккаунта: Esc, уже обработанный внутренним элементом, его не закрывает", async () => {
+  await renderAt("/chat");
+  const bar = (await screen.findByText("mnogobase", { selector: "header span" })).closest("header")!;
+  const toggle = within(bar).getByRole("button", { name: "Меню аккаунта" });
+  fireEvent.click(toggle);
+  handledEscape(within(bar).getByRole("link", { name: "Аккаунт" }));
+  await act(async () => new Promise((r) => setTimeout(r, 50)));
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(within(bar).getByRole("button", { name: "Выйти" })).toBeTruthy();
 });

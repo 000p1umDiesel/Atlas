@@ -5,6 +5,8 @@ import { paletteShortcut } from "./commands";
 import { ThemeButton } from "./ThemeButton";
 
 type Props = {
+  /** Текущий путь: переход на другую страницу закрывает меню аккаунта. */
+  pathname: string;
   onMenu?: () => void;
   /** Открыть палитру Ctrl+K. */
   onSearch: () => void;
@@ -19,16 +21,20 @@ const MENU_ITEM =
   "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-ink hover:bg-bg focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50";
 
 /** Меню аккаунта для телефона: на широком экране «Аккаунт» и «Выйти» стоят в рейке. */
-function AccountMenu({ username, onLogout, logoutBusy }: Omit<Props, "onMenu" | "onSearch">) {
+function AccountMenu({ pathname, username, onLogout, logoutBusy }: Omit<Props, "onMenu" | "onSearch">) {
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const root = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
 
+  // Смена страницы (в том числе «назад») закрывает меню.
+  useEffect(() => setOpen(false), [pathname]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      // Esc, уже обработанный внутренним элементом, меню не закрывает.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       setOpen(false);
       toggle.current?.focus();
     };
@@ -76,7 +82,7 @@ function AccountMenu({ username, onLogout, logoutBusy }: Omit<Props, "onMenu" | 
   );
 }
 
-export function TopBar({ onMenu, onSearch, username, onLogout, logoutBusy }: Props) {
+export function TopBar({ pathname, onMenu, onSearch, username, onLogout, logoutBusy }: Props) {
   const shortcut = paletteShortcut();
   return (
     <header className="flex h-16 shrink-0 items-center gap-2 px-4 md:gap-3 md:px-8">
@@ -106,7 +112,7 @@ export function TopBar({ onMenu, onSearch, username, onLogout, logoutBusy }: Pro
       </button>
       {/* На телефоне в нижней панели нет места: тема и аккаунт здесь; на широком экране — в рейке. */}
       <ThemeButton className={ICON_BUTTON} />
-      <AccountMenu username={username} onLogout={onLogout} logoutBusy={logoutBusy} />
+      <AccountMenu pathname={pathname} username={username} onLogout={onLogout} logoutBusy={logoutBusy} />
     </header>
   );
 }

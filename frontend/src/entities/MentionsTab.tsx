@@ -1,4 +1,4 @@
-import { Fragment, useMemo, type MouseEvent } from "react";
+import { Fragment, useId, useMemo, type MouseEvent } from "react";
 import { useEntityMentions } from "../api/entities";
 import type { EntityMention } from "../api/types";
 import { NAME_LINK } from "../documents/JobsTable";
@@ -12,6 +12,7 @@ import { errorText, LoadMore } from "./parts";
 function MentionCard({ mention: m, needles }: { mention: EntityMention; needles: string[] }) {
   const { open } = usePanel();
   const parts = useMemo(() => splitMatches(m.text, needles), [m.text, needles]);
+  const textId = useId();
   const show = () => open({ kind: "chunk", id: m.chunk_id });
   // Клик по свободному месту карточки открывает фрагмент; ссылки и кнопки — сами по себе.
   const onCard = (event: MouseEvent<HTMLLIElement>) => {
@@ -32,13 +33,16 @@ function MentionCard({ mention: m, needles }: { mention: EntityMention; needles:
       {m.headings.length > 0 && (
         <p className="mt-0.5 text-xs break-words text-muted">{m.headings.join(" › ")}</p>
       )}
-      {/* Текст индекса как есть: подсветка — <mark> из разбиения строки, не HTML. */}
+      {/* Текст индекса как есть: подсветка — <mark> из разбиения строки, не HTML.
+          Имя кнопки короткое, а сам фрагмент — её описание: читалка не зачитывает весь текст как имя. */}
       <button
         type="button"
         onClick={show}
+        aria-label={`Открыть фрагмент: ${m.name}`}
+        aria-describedby={textId}
         className="mt-2 block w-full rounded-md text-left focus-visible:outline-2 focus-visible:outline-primary"
       >
-        <span className="line-clamp-6 font-serif text-[15px] leading-relaxed break-words whitespace-pre-wrap">
+        <span id={textId} className="line-clamp-6 font-serif text-[15px] leading-relaxed break-words whitespace-pre-wrap">
           {parts.map((p, i) =>
             p.match ? (
               <mark key={i} className="rounded-sm bg-primary/20 px-0.5 text-ink">

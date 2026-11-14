@@ -270,10 +270,13 @@ export function GraphPage() {
         void queryClient.resetQueries({ queryKey: neighborsQuery(id, 1, EXPAND_RELATIONS_LIMIT).queryKey, exact: true });
       }
       setExpanding({ id, before: new Set(graph?.nodes() ?? []) });
-      const expand = [...search.expand.filter((x) => x !== id), id].slice(-EXPAND_LIMIT);
-      update({ expand, focus: id }, { replace: true });
+      // От свежего URL: два раскрытия подряд до перерисовки сохраняют оба.
+      update(
+        (prev) => ({ expand: [...prev.expand.filter((x) => x !== id), id].slice(-EXPAND_LIMIT), focus: id }),
+        { replace: true },
+      );
     },
-    [graph, expansions, queryClient, search.expand, update],
+    [graph, expansions, queryClient, update],
   );
   const expandStatus = expanding ? expansions?.get(expanding.id) : undefined;
   useEffect(() => {
@@ -359,7 +362,11 @@ export function GraphPage() {
     },
     [column, keysOpen, switchView, setSelected],
   );
+  // Пока открыто меню раздела (телефон), клавиши принадлежат ему: Esc закрывает меню,
+  // а не снимает выделение на графе под ним.
+  const menuOpen = column.menuOpen;
   useEffect(() => {
+    if (menuOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const action = graphHotkey(e);
       if (!action) return;
@@ -373,7 +380,7 @@ export function GraphPage() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [runAction]);
+  }, [runAction, menuOpen]);
 
   // Режим «Путь»: закреплённый путь подсвечен, пока его не снимут; закрепление живёт,
   // пока не пришёл другой ответ (другие концы или длина).
@@ -788,7 +795,9 @@ export function GraphPage() {
         </div>
       )}
 
+      {/* Ключ — режим: свёрнутость карточки у каждого режима своя, с чистого листа. */}
       <ModeCard
+        key={mode}
         mode={mode}
         search={search}
         update={update}

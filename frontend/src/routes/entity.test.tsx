@@ -259,6 +259,15 @@ test("«Упоминания»: ссылка на место в документ
   expect(router.state.location.search).toEqual({ tab: "mentions", panel: "chunk:d1:00012" });
 });
 
+test("«Упоминания»: у кнопки карточки короткое имя, текст фрагмента — описание", async () => {
+  await renderAt("/entities/a?tab=mentions", fakeApi(routes()));
+  const panel = await screen.findByRole("tabpanel", { name: /Упоминания/ });
+  const button = await within(panel).findByRole("button", { name: "Открыть фрагмент: Записки.pdf" });
+  const describedBy = button.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  expect(document.getElementById(describedBy!)?.textContent).toBe("Тогда Ада Лавлейс написала программу.");
+});
+
 test("переход с /entities/a на /entities/b сбрасывает выбранный предикат", async () => {
   const api = fakeApi(
     routes({
