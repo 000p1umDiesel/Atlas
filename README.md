@@ -2401,11 +2401,12 @@ service:
 
 ```bash
 npm --prefix frontend ci && npm --prefix frontend run build   # продакшен-сборка в src/mnogobase/web/dist
-npm --prefix frontend run dev                                   # dev-сервер Vite на :5173, запросы /api проксируются на :8080
+npm --prefix frontend run dev                                   # dev-сервер Vite на :5173, запросы /api проксируются на 127.0.0.1:8080
 npm --prefix frontend run check                                 # tsc + eslint + vitest
+npm --prefix frontend run build:mock                            # сборка на фикстурах, только для макета; на сервер не выкладывать
 ```
 
-Для `dev` в соседнем терминале должен работать `uv run mnogobase api serve --port 8080`. В Docker сборка выполняется внутри `docker compose build`.
+Для `dev` в соседнем терминале должен работать `MNOGOBASE_SERVICE__COOKIE_SECURE=false uv run mnogobase api serve --port 8080`: прокси Vite не меняет заголовок `Host`, поэтому проверка `Origin` проходит, а cookie без `Secure` принимается по `http`. Сборка кладёт результат в `src/mnogobase/web/dist`; API раздаёт его сам (`/assets/` с `immutable`, любой другой путь — `index.html`). В Docker сборка выполняется внутри `docker compose build`.
 
 | Раздел | Что там |
 |---|---|
@@ -2418,6 +2419,6 @@ npm --prefix frontend run check                                 # tsc + eslint +
 | Ctrl+K | палитра команд на любой странице: быстрый поиск по сущностям, wiki, документам и своим диалогам (по 5 в группе) и действия (переходы, смена темы); результаты последнего запроса, пустая строка запрос не шлёт |
 | Статус (`/status`) | worker и очередь, расход LLM за сутки и месяц, анализ графа с кнопкой запуска (задача worker'а), проверка сервисов |
 
-Безопасность страницы: CSP `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `nosniff`, `Referrer-Policy: no-referrer`. Ответы LLM, страницы wiki и тексты документов — недоверенные данные: Markdown рендерится с выключенным HTML и проходит через DOMPurify, ссылки только `http(s)`, якоря и внутренние пути `/api/`, `/wiki/`, `/documents/`, определения ссылок вида `[n]: адрес` не разбираются (номер источника `[n]` не подменить), картинки из Markdown не показываются; всё остальное выводится как текст. Документ в браузере читается по фрагментам из индекса, а не открывается исходником, поэтому загруженный HTML или PDF не исполняется.
+Безопасность страницы: CSP `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `nosniff`, `Referrer-Policy: no-referrer`. Ответы LLM, страницы wiki и тексты документов — недоверенные данные: Markdown рендерится с выключенным HTML и проходит через DOMPurify, ссылки только `http(s)`, якоря и внутренние пути `/api/`, `/wiki/`, `/documents/`, определения ссылок вида `[n]: адрес` не разбираются (номер источника `[n]` не подменить), картинки из Markdown не показываются; всё остальное выводится как текст. Правила кода сайта: `dangerouslySetInnerHTML` встречается только в `frontend/src/ui/Markdown.tsx` (markdown-it с `html: false` и DOMPurify); inline-скриптов и `<style>` нет, цвета данных (типы сущностей, сообщества) задаются через React `style`, а CSP проверяется на сборке, которую раздаёт FastAPI. Документ в браузере читается по фрагментам из индекса, а не открывается исходником, поэтому загруженный HTML или PDF не исполняется.
 
 Локально по `http`: если браузер не сохраняет вход (cookie с флагом `Secure` по `http` принимают не все браузеры), поставьте `service.cookie_secure: false` в локальном `config.yaml` или `MNOGOBASE_SERVICE__COOKIE_SECURE=false`. На сервере за HTTPS оставьте `true`.

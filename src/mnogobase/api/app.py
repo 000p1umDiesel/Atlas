@@ -10,16 +10,21 @@
 - `/health` — проверка живости без авторизации и без обращения к базам;
 - `/api/auth/login|logout|me|password` — вход, отзыв сессии, текущий пользователь, смена
   своего пароля;
-- `/api/documents` — список, загрузка (202, задача `ingest`), скачивание исходника,
-  удаление (задача `remove`);
+- `/api/documents` — список, карточка, фрагменты, загрузка (202, задача `ingest`),
+  скачивание исходника, удаление (задача `remove`); `/api/chunks/{id}` — один фрагмент;
 - `/api/jobs` — задачи фоновой очереди и их повтор;
-- `/api/search`, `/api/ask` — поиск фрагментов и ответ на вопрос;
+- `/api/search`, `/api/ask` — поиск фрагментов и ответ на вопрос; `/api/search/quick` —
+  быстрый поиск для Ctrl+K (сущности, wiki, документы, свои диалоги);
 - `/api/conversations` — личные диалоги (создание, переименование, удаление) и сообщения в
   них (вопрос с учётом истории, в том числе потоком SSE);
-- `/api/wiki`, `/api/graph` — страницы wiki, поиск сущностей и их окрестность в графе;
-- `/api/stats` — сводка для главной; `/api/entities` — типы, каталог сущностей и
-  страница сущности (связи, упоминания, документы);
-- `/api/status` — очередь, жив ли worker, расход LLM.
+- `/api/wiki` — список страниц, страница по id и по slug;
+- `/api/graph` — поиск сущностей, запуск и состояние анализа (`analyze`, `analysis`),
+  `overview`, `path`, `communities[/{community}]`, сущность и её окрестность
+  (`/{id}`, `/{id}/neighbors`);
+- `/api/stats` — сводка для главной; `/api/entities` — типы (`/types`), каталог сущностей и
+  страница сущности (`/{id}`, `/relations`, `/mentions`, `/documents`);
+- `/api/status` — очередь, жив ли worker, расход LLM; `/api/status/checks` — проверки
+  баз и серверов моделей.
 
 Модель безопасности:
 - Сессии: `Authorization: Bearer <токен>` (CLI-клиент) или cookie `mb_session` (браузер:
@@ -794,8 +799,8 @@ def create_api(
 
     @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def spa(path: str):
-        """History fallback: любой неизвестный путь отдаёт `index.html` SPA. Пути API, статики
-        и `/health` сюда не попадают: для них 404 в JSON."""
+        """History fallback: любой неизвестный путь отдаёт `index.html` SPA. Пути `/api`,
+        `/assets` и `/health` сюда не попадают: для них 404 в JSON."""
         head = path.split("/", 1)[0]
         if head in ("api", "health", "assets"):
             raise HTTPException(404)
