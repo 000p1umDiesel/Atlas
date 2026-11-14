@@ -2,12 +2,11 @@ import { useParams, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { READER_PAGE, useDocumentChunks, type ReaderChunk } from "../api/documents";
-import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 import { prefersReducedMotion } from "../lib/motion";
 import { useScrollMainToTop } from "../shell/mainScroll";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
-
+import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 
 function Pager({ offset, total, onMove }: { offset: number; total: number; onMove: (offset: number) => void }) {
   if (total <= READER_PAGE) return null;

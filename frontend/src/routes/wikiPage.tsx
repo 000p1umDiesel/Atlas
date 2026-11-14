@@ -1,12 +1,11 @@
 import { useParams } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { useWikiPage } from "../api/wiki";
-import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 import { usePanel } from "../shell/panel";
 import { FormNote } from "../ui/form";
 import { RouterAnchor } from "../ui/RouterAnchor";
+import { CRUMB, GHOST_BUTTON } from "../ui/styles";
 import { WikiBody } from "../wiki/WikiBody";
-
 
 function Article({ ref_ }: { ref_: { slug: string } | { pageId: string } }) {
   const query = useWikiPage(ref_);
