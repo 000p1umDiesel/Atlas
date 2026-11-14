@@ -64,6 +64,38 @@ def test_enqueue_list_and_retry_without_models(project, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
+def test_cancel_and_clear_commands(project, monkeypatch):
+    monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
+    assert runner.invoke(cli.app, ["jobs", "enqueue", str(project)]).exit_code == 0
+    q = JobQueue(database_target(Settings()))
+    try:
+        [job] = q.jobs()
+        result = runner.invoke(cli.app, ["jobs", "cancel", str(job.id)])
+        assert result.exit_code == 0, result.output
+        assert q.get(job.id).status == "cancelled"
+        assert project.exists()  # локальная отмена не трогает файлы
+
+        result = runner.invoke(cli.app, ["jobs", "cancel", str(job.id)])
+        assert result.exit_code == 2
+        assert "уже выполняется или завершена" in result.output
+        result = runner.invoke(cli.app, ["jobs", "cancel", "999999"])
+        assert result.exit_code == 2
+        assert "Задача не найдена" in result.output
+
+        result = runner.invoke(cli.app, ["jobs", "clear"])
+        assert result.exit_code == 0, result.output
+        assert "Скрыто задач: 1" in result.output
+        assert q.jobs() == []
+    finally:
+        q.close()
+
+
+def test_cancel_without_a_queue_fails(project):
+    result = runner.invoke(cli.app, ["jobs", "cancel", "1"])
+    assert result.exit_code == 2
+    assert "Задача не найдена" in result.output
+
+
 def test_worker_once_processes_queue_and_closes_app(project, monkeypatch):
     calls, closed, snapshots = [], [], []
 
@@ -204,7 +236,7 @@ def test_worker_rebinds_changed_queued_revision_before_ingest(project, monkeypat
     q.close()
 
 
-@pytest.mark.parametrize("arguments", [["list"], ["retry"], ["retry", "--id", "1"]])
+@pytest.mark.parametrize("arguments", [["list"], ["retry"], ["retry", "--id", "1"], ["clear"]])
 def test_empty_queue_commands_do_not_create_a_database(project, monkeypatch, arguments):
     monkeypatch.setattr(cli.common, "build_app", lambda *a: pytest.fail("models constructed"))
 

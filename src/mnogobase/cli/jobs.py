@@ -231,6 +231,46 @@ def retry(
         q.close()
 
 
+@jobs_app.command()
+def cancel(job_id: Annotated[int, typer.Argument(min=1, help="id задачи")]) -> None:
+    """Отменить задачу, которая ещё ждёт в очереди.
+
+    Идущую или завершённую задачу отменить нельзя. Отменённое удаление оставляет документ в
+    базе; отменённую загрузку watcher не вернёт, пока файл не изменится. Файлы на диске
+    команда не трогает."""
+    settings = common.get_settings()
+    target = database_target(settings)
+    if not target_exists(target, "jobs"):
+        common.fail(LookupError("Задача не найдена"))
+    q = JobQueue(target)
+    try:
+        job = q.get(job_id)
+        if job is None:
+            common.fail(LookupError("Задача не найдена"))
+        if q.cancel(job_id) is None:
+            common.fail(RuntimeError("Задача уже выполняется или завершена"))
+        common.console.print(f"Задача {job_id} отменена.")
+    finally:
+        q.close()
+
+
+@jobs_app.command()
+def clear() -> None:
+    """Скрыть из списка завершённые задачи (готовые, заменённые и отменённые).
+
+    Упавшие задачи остаются на виду: их можно повторить командой `jobs retry`."""
+    settings = common.get_settings()
+    target = database_target(settings)
+    if not target_exists(target, "jobs"):
+        common.console.print("Очередь пуста.")
+        return
+    q = JobQueue(target)
+    try:
+        common.console.print(f"Скрыто задач: {q.hide_finished()}")
+    finally:
+        q.close()
+
+
 class JobProgress(NullProgress):
     """`ProgressSink` задачи очереди: передаёт события пайплайна в терминальный прогресс
     (`delegate`) и сохраняет сводку текущего шага в строке задачи.

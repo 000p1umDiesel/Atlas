@@ -254,6 +254,20 @@ def jobs_retry(ctx: typer.Context, job_id: Annotated[str, typer.Argument(help="i
     _print(c.request("POST", c.path(f"jobs/{_id(job_id)}/retry")).json())
 
 
+@jobs.command("cancel")
+def jobs_cancel(ctx: typer.Context, job_id: Annotated[str, typer.Argument(help="id задачи")]):
+    """Отменить задачу, которая ещё ждёт в очереди, и показать её состояние."""
+    c = _client(ctx)
+    _print(c.request("POST", c.path(f"jobs/{_id(job_id)}/cancel")).json())
+
+
+@jobs.command("clear")
+def jobs_clear(ctx: typer.Context):
+    """Скрыть из списка очереди завершённые задачи (упавшие остаются)."""
+    c = _client(ctx)
+    _print(c.request("POST", c.path("jobs/clear")).json())
+
+
 @client_app.command("ask")
 def ask(
     ctx: typer.Context,

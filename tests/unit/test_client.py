@@ -60,6 +60,8 @@ def test_login_stores_private_token_and_uses_unscoped_paths(tmp_path, monkeypatc
         (["documents", "list"], "/api/documents"),
         (["wiki", "show", "page id"], "/api/wiki/page%20id"),
         (["graph", "search", "x"], "/api/graph/search"),
+        (["jobs", "cancel", "7"], "/api/jobs/7/cancel"),
+        (["jobs", "clear"], "/api/jobs/clear"),
     ]:
         assert client(tmp_path, *args).exit_code == 0
         assert seen[-1][1] == path.replace("%20", " ")
