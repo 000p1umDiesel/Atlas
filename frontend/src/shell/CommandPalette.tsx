@@ -82,7 +82,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
           <motion.div
             data-palette-backdrop=""
             aria-hidden="true"
-            className="absolute inset-0 bg-ink/30"
+            className="absolute inset-0 bg-scrim"
             initial={reduced ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={reduced ? undefined : { opacity: 0 }}

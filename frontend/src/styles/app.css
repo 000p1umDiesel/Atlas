@@ -12,6 +12,7 @@
   --color-on-primary: var(--on-primary);
   --color-line: var(--line);
   --color-danger: var(--danger);
+  --color-scrim: var(--scrim);
   --color-t0: var(--t0);
   --font-sans: "Golos Text Variable", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Literata Variable", ui-serif, Georgia, serif;

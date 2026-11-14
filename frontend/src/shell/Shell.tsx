@@ -96,7 +96,8 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
             {hasColumn && menuOpen && (
               <motion.div
                 key="menu-backdrop"
-                className="fixed inset-0 z-30 bg-ink/20 md:hidden"
+                data-menu-backdrop=""
+                className="fixed inset-0 z-30 bg-scrim md:hidden"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

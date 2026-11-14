@@ -77,6 +77,8 @@ test("мобильное меню раздела закрывается по Esc
   await renderAt("/graph");
   fireEvent.click(await screen.findByRole("button", { name: "Меню раздела" }));
   const menu = await screen.findByRole("complementary", { name: "Меню раздела" });
+  // Затемнение под меню — токен --scrim, не --ink (тот в тёмной теме светлый).
+  expect(document.querySelector("[data-menu-backdrop]")?.classList.contains("bg-scrim")).toBe(true);
   fireEvent.click(within(menu).getByRole("switch", { name: "Скрыть одиночные" }));
   expect(screen.getByRole("complementary", { name: "Меню раздела" })).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });

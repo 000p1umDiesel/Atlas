@@ -40,4 +40,24 @@ test("системная тёмная тема совпадает с ручно�
   const system = tokens.call(null, ':root:not([data-theme="light"])');
   expect(media.length).toBeGreaterThan(0);
   expect(system).toEqual(THEMES.dark.t);
+  expect(scrim(':root:not([data-theme="light"])')).toEqual(scrim(':root[data-theme="dark"]'));
+});
+
+/** Значение `--scrim` в блоке: rgb(r g b / a) → [r, g, b, a]. */
+function scrim(selector: string): number[] {
+  const start = css.indexOf(`${selector} {`);
+  const body = css.slice(start, css.indexOf("}", start));
+  const m = body.match(/--scrim:\s*rgb\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\/\s*([\d.]+)\s*\)\s*;/);
+  expect(m, `--scrim в ${selector}`).not.toBeNull();
+  return m!.slice(1).map(Number);
+}
+
+test("затемнение под модальными окнами (--scrim): тёмное в обеих темах, в тёмной — плотнее", () => {
+  const light = scrim(":root");
+  const dark = scrim(':root[data-theme="dark"]');
+  // Тёмный цвет (не светлый --ink тёмной темы): иначе фон под окном высветлится.
+  expect(Math.max(...light.slice(0, 3))).toBeLessThan(80);
+  expect(Math.max(...dark.slice(0, 3))).toBeLessThan(80);
+  expect(light[3]).toBeGreaterThan(0.2);
+  expect(dark[3]).toBeGreaterThan(light[3]!);
 });

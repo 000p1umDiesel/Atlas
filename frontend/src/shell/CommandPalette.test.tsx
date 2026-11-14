@@ -222,6 +222,8 @@ test("клик по фону закрывает; Tab не уходит из ди
   expect(screen.getByRole("dialog", { name: "Поиск" })).toBeTruthy();
   const backdrop = document.querySelector("[data-palette-backdrop]");
   expect(backdrop).not.toBeNull();
+  // Затемнение — токен --scrim (в тёмной теме --ink светлый и высветлил бы фон).
+  expect(backdrop!.classList.contains("bg-scrim")).toBe(true);
   fireEvent.click(backdrop!);
   await closed();
 });
