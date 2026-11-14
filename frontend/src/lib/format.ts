@@ -34,3 +34,22 @@ export function formatDayTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : DAY_TIME.format(d);
 }
+
+const RELATIVE = new Intl.RelativeTimeFormat("ru", { numeric: "auto" });
+
+/** «5 минут назад» по unix-секундам; `null` — «никогда». */
+export function ago(unixSeconds: number | null): string {
+  if (unixSeconds === null) return "никогда";
+  const diff = unixSeconds - Date.now() / 1000;
+  const abs = Math.abs(diff);
+  if (abs < 60) return RELATIVE.format(Math.round(diff), "second");
+  if (abs < 3600) return RELATIVE.format(Math.round(diff / 60), "minute");
+  if (abs < 86400) return RELATIVE.format(Math.round(diff / 3600), "hour");
+  return RELATIVE.format(Math.round(diff / 86400), "day");
+}
+
+/** Длительность в секундах: «1,2 с»; меньше 100 мс — «<0,1 с». */
+export function seconds(ms: number): string {
+  if (ms < 100) return "<0,1 с";
+  return `${(ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} с`;
+}

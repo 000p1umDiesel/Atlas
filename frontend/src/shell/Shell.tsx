@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMe } from "../api/auth";
 import { ShellColumnContext, type ShellColumnState } from "./columnContext";
 import { ContextColumn } from "./ContextColumn";
+import { PanelHost } from "./PanelHost";
 import { Rail } from "./Rail";
 import { TopBar } from "./TopBar";
 import { useLogout } from "./useLogout";
@@ -20,6 +21,10 @@ const SPRING = { type: "spring", stiffness: 380, damping: 38 } as const;
 
 function isDesktop(): boolean {
   return typeof matchMedia === "function" && matchMedia("(min-width: 768px)").matches;
+}
+
+function isGraph(pathname: string): boolean {
+  return pathname === "/graph" || pathname.startsWith("/graph/");
 }
 
 export function Shell({ pathname, column = null, bleed = false, children }: Props) {
@@ -125,6 +130,8 @@ export function Shell({ pathname, column = null, bleed = false, children }: Prop
             </motion.div>
           </main>
         </div>
+        {/* У графа своя карточка сущности: правая панель там не нужна. */}
+        {!isGraph(pathname) && <PanelHost />}
       </div>
     </ShellColumnContext.Provider>
   );

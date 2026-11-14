@@ -1,4 +1,4 @@
-import { countOf, formatInt, formatScore, plural } from "./format";
+import { ago, countOf, formatInt, formatScore, plural, seconds } from "./format";
 
 const DOCS: [string, string, string] = ["документ", "документа", "документов"];
 
@@ -35,4 +35,31 @@ test("countOf: родительный падеж после «из» (карто
     "22 участников",
     "111 участников",
   ]);
+});
+
+describe("ago и seconds", () => {
+  const NOW = new Date("2026-11-14T12:00:00Z");
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+  const now = NOW.getTime() / 1000;
+
+  test("ago: относительное время по-русски, null — «никогда»", () => {
+    expect(ago(null)).toBe("никогда");
+    expect(ago(now)).toBe("сейчас");
+    expect(ago(now - 30)).toBe("30 секунд назад");
+    expect(ago(now - 5 * 60)).toBe("5 минут назад");
+    expect(ago(now - 3 * 3600)).toBe("3 часа назад");
+    expect(ago(now - 86400)).toBe("вчера");
+    expect(ago(now - 5 * 86400)).toBe("5 дней назад");
+    expect(ago(now + 120)).toBe("через 2 минуты");
+  });
+
+  test("seconds: меньше 0,1 с и дробь с запятой", () => {
+    expect(seconds(42)).toBe("<0,1 с");
+    expect(seconds(1234)).toBe("1,2 с");
+    expect(seconds(3000)).toBe("3 с");
+  });
 });
